@@ -1,0 +1,37 @@
+{
+  "name": "finance-agent",
+  "version": "1.0.0",
+  "description": "Finance AI Automation for Workday",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean"
+  },
+  "keywords": [
+    "finance",
+    "workday",
+    "lambda",
+    "aws"
+  ],
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.598.0",
+    "@pga/lambda-env": "^0.0.11",
+    "@pga/logger": "^0.1.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+

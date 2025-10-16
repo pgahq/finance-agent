@@ -1,0 +1,122 @@
+version: '2.1'
+references:
+  deploy_container_config: &deploy_container_config
+    docker:
+      - image: cimg/node:20.11.0
+    working_directory: ~/app
+    steps:
+      - attach_workspace:
+          at: ~/app
+      - restore_cache:
+          name: Load cached production dependencies
+          keys:
+            - prod-dependency-cache-{{ checksum "package.json" }}
+            - prod-dependency-cache-
+      - run:
+          name: Install production dependencies
+          command: npm install --production
+      - save_cache:
+          name: Cache production dependencies
+          key: prod-dependency-cache-{{ checksum "package.json" }}
+          paths:
+            - ./node_modules
+      - run:
+          name: Install AWS CLI
+          command: |
+            cd
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            sudo ./aws/install
+      - run:
+          name: Package and upload lambda code
+          command: >
+            aws cloudformation package
+            --template-file template.yml
+            --s3-bucket $AWS_ARTIFACT_BUCKET
+            --s3-prefix $CIRCLE_PROJECT_REPONAME
+            --output-template-file packaged.yml
+      - run:
+          name: Deploy CloudFormation template to AWS
+          command: >
+            aws cloudformation deploy
+            --template-file packaged.yml
+            --stack-name $CIRCLE_PROJECT_REPONAME
+            --capabilities CAPABILITY_IAM
+            --region us-east-1
+            --role-arn $AWS_DEPLOY_ROLE_ARN
+            --parameter-overrides LogLevel=$LOG_LEVEL
+jobs:
+  build:
+    working_directory: ~/app
+    docker:
+      - image: cimg/node:20.11.0
+    steps:
+      - checkout
+      - restore_cache:
+          name: Load cached dependencies
+          keys:
+            - dev-dependency-cache-{{ checksum "package.json" }}
+            - dev-dependency-cache-
+      - run:
+          name: Install dependencies
+          command: npm install
+      - save_cache:
+          name: Cache dependencies
+          key: dev-dependency-cache-{{ checksum "package.json" }}
+          paths:
+            - ./node_modules
+      - run:
+          name: Run tests
+          environment:
+            JEST_JUNIT_OUTPUT_DIR: reports
+          command: |
+            if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
+              npm test -- --ci --coverage --reporters=default --reporters=jest-junit || true
+            else
+              npm test -- --ci --coverage --reporters=default --reporters=jest-junit
+            fi
+      - store_test_results:
+          path: reports
+      - store_artifacts:
+          path: reports
+      - run:
+          name: Build TypeScript
+          command: npm run build
+      - persist_to_workspace:
+          root: ~/app
+          paths:
+            - dist
+            - package.json
+            - package-lock.json
+            - template.yml
+            - layers
+
+  deploy-to-dev:
+    <<: *deploy_container_config
+    environment:
+      LOG_LEVEL: DEBUG
+
+  deploy-to-prod:
+    <<: *deploy_container_config
+    environment:
+      LOG_LEVEL: WARN
+
+workflows:
+  version: 2
+  build-deploy:
+    jobs:
+      - build
+      - deploy-to-dev:
+          context: chatbot-development
+          requires:
+            - build
+          filters:
+            branches:
+              only: development
+      - deploy-to-prod:
+          context: chatbot-production
+          requires:
+            - build
+          filters:
+            branches:
+              only: main

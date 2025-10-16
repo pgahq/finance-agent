@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Finance AI Automation for Workday
+
+Parameters:
+  LogLevel:
+    Type: String
+    Description: Logger Log Level
+    Default: DEBUG
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    CodeUri: .
+    MemorySize: 1024
+    Timeout: 300
+    Environment:
+      Variables:
+        LOG_LEVEL: !Ref LogLevel
+        WORKDAY_API_URL: ssm:/finance-agent/workday-api-url
+        WORKDAY_TENANT: ssm:/finance-agent/workday-tenant
+        WORKDAY_USER: ssm:/finance-agent/workday-user
+        WORKDAY_PASSWORD: ssm:/finance-agent/workday-password
+        OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
+        EVENT_BUS_NAME: !Ref FinanceAgentEventBus
+
+Resources:
+  FinanceAgentEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: FinanceAgentEventBus
+
+  PopplerLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: poppler
+      Description: Poppler PDF utilities for Lambda
+      ContentUri: layers/poppler/release-x86_64.zip
+      CompatibleRuntimes:
+        - nodejs20.x
+      CompatibleArchitectures:
+        - x86_64
+
+  FinanceAgentLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FinanceAgentLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource:
+                  - arn:aws:ssm:*:*:parameter/finance-agent/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !GetAtt FinanceAgentEventBus.Arn
+
+  WqlToEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/wqlToEvent.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Events:
+        EnrichInvoicesSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Description: Query Workday for OCR invoices needing enrichment
+            Input:
+              action: enrich_invoice
+              query: >
+                SELECT
+                  invoiceNumber,
+                  invoiceStatus as Status,
+                  company1,
+                  supplier,
+                  suppliersInvoiceNumber,
+                  invoiceDate,
+                  controlTotalAmount,
+                  purchaseOrders,
+                  passedSupplierInvoiceAutoSubmitRules,
+                  passedSupplierInvoiceValidations,
+                  supplierInvoiceDocumentAutoSubmitted,
+                  allAttachmentsForBusinessDocument as Attachments
+                FROM supplierInvoices
+                WHERE OCRSupplierInvoice is not empty
+                  AND invoiceStatus.statusName = "Draft"
+                  AND (
+                    supplier is empty
+                    OR company1.companyName = "Default OCR Company"
+                  )
+                ORDER BY invoiceDate DESC, invoiceNumber DESC
+
+  # Action: enrich_invoice
+  EnrichInvoiceAction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/actions/enrich_invoice.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Layers:
+        - !Ref PopplerLayer
+      Events:
+        Trigger:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref FinanceAgentEventBus
+            Pattern:
+              detail:
+                action: [enrich_invoice]

@@ -112,7 +112,6 @@ aws ssm put-parameter --name /finance-agent/workday-user --value "ISU_USERNAME" 
 aws ssm put-parameter --name /finance-agent/workday-password --value "password" --type SecureString
 
 # API Keys
-aws ssm put-parameter --name /finance-agent/client-api-key --value "your-key" --type SecureString
 aws ssm put-parameter --name /finance-agent/openai-api-key --value "sk-..." --type SecureString
 ```
 
