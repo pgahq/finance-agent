@@ -29,7 +29,13 @@ export async function identifySupplier(
     ORDER BY name
   `;
   
-  const suppliers = await executeWorkdayQuery(config, suppliersQuery);
+  const suppliers = await executeWorkdayQuery(config, suppliersQuery) as Array<{
+    id: string;
+    name: string;
+    legalName: string;
+    taxId: string;
+    status: string;
+  }>;
   
   // Prepare AI request for supplier identification
   const systemPrompt = `You are a supplier identification specialist. Given an invoice and a list of registered suppliers, identify which supplier this invoice belongs to. If no match is found, respond with "None" and provide your reasoning.`;

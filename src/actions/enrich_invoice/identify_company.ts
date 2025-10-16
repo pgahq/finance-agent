@@ -29,7 +29,13 @@ export async function identifyCompany(
     ORDER BY name
   `;
   
-  const companies = await executeWorkdayQuery(config, companiesQuery);
+  const companies = await executeWorkdayQuery(config, companiesQuery) as Array<{
+    id: string;
+    name: string;
+    legalName: string;
+    taxId: string;
+    status: string;
+  }>;
   
   // Prepare AI request for company identification
   const systemPrompt = `You are a company identification specialist. Given an invoice and a list of internal companies, identify which company this invoice belongs to. If no match is found, respond with "None" and provide your reasoning.`;
@@ -40,7 +46,7 @@ Invoice Data: ${JSON.stringify(invoice, null, 2)}
 Attachments: ${JSON.stringify(attachmentData)}
 
 Available Companies:
-${companies.map(c => `${c.name} (ID: ${c.id})`).join('\n')}`;
+${companies.map(c => `${(c as any).name} (ID: ${(c as any).id})`).join('\n')}`;
 
   const schema = {
     type: 'object',
