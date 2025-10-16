@@ -43,3 +43,20 @@ export async function executeWorkdayQuery(
   return result.data || [];
 }
 
+export async function getAttachmentContent(_config: WorkdayConfig, attachments: any[]): Promise<any[]> {
+  if (!attachments || attachments.length === 0) {
+    return [];
+  }
+
+  // For now, return attachment metadata
+  // TODO: Implement actual base64 content retrieval via RaaS or SOAP API
+  return attachments.map(attachment => ({
+    id: attachment.id,
+    fileName: attachment.fileName,
+    contentType: attachment.contentType,
+    // Note: Base64 content would need to be retrieved via separate API call
+    // This requires either RaaS report or SOAP API integration
+  }));
+}
+
+

@@ -86,36 +86,30 @@ Resources:
           Properties:
             Schedule: rate(1 day)
             Description: Query Workday for OCR invoices needing enrichment
-            Input:
-              action: enrich_invoice
-              query: >
-                SELECT
+            Input: !Sub |
+              {
+                "action": "enrich_invoice",
+                "query": "SELECT
+                  id,
                   invoiceNumber,
-                  invoiceStatus as Status,
-                  company1,
                   supplier,
-                  suppliersInvoiceNumber,
-                  invoiceDate,
-                  controlTotalAmount,
-                  purchaseOrders,
-                  passedSupplierInvoiceAutoSubmitRules,
-                  passedSupplierInvoiceValidations,
-                  supplierInvoiceDocumentAutoSubmitted,
-                  allAttachmentsForBusinessDocument as Attachments
+                  company1
                 FROM supplierInvoices
                 WHERE OCRSupplierInvoice is not empty
-                  AND invoiceStatus.statusName = "Draft"
+                  AND invoiceStatus.statusName = \"Draft\"
+                  AND hasPurchaseOrder = false
                   AND (
                     supplier is empty
-                    OR company1.companyName = "Default OCR Company"
+                    OR company1.companyName = \"Default OCR Company\"
                   )
-                ORDER BY invoiceDate DESC, invoiceNumber DESC
+                ORDER BY invoiceDate DESC, invoiceNumber DESC"
+              }
 
   # Action: enrich_invoice
   EnrichInvoiceAction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/actions/enrich_invoice.handler
+      Handler: dist/actions/enrich_invoice/index.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Layers:
         - !Ref PopplerLayer
