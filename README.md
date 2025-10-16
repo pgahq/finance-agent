@@ -16,7 +16,9 @@ src/
 ├── actions/              # Action handlers (one per action type)
 │   └── enrich_invoice.ts # Example: invoice enrichment
 ├── lib/
-│   └── workday.ts        # Workday API utilities
+│   ├── workday.ts        # Workday API utilities
+│   └── openai.ts         # OpenAI API utilities
+├── __tests__/            # Jest test files
 └── globals.d.ts          # Type declarations for external packages
 ```
 
@@ -25,6 +27,7 @@ src/
 ```bash
 npm install
 npm run build
+npm test                    # Run tests with coverage
 sam build && sam deploy --guided
 ```
 
@@ -116,4 +119,14 @@ aws ssm put-parameter --name /finance-agent/openai-api-key --value "sk-..." --ty
 ```
 
 **Note:** `LOG_LEVEL` is set via CloudFormation parameter (DEBUG for dev, WARN for prod) during deployment.
+
+## Development
+
+### Scripts
+- `npm run build` - Compile TypeScript
+- `npm run build:watch` - Compile TypeScript in watch mode
+- `npm test` - Run tests
+- `npm run test:coverage` - Run tests with coverage
+- `npm run lint` - Run ESLint
+- `npm run lint:fix` - Fix ESLint issues
 
