@@ -71,9 +71,9 @@ jobs:
             JEST_JUNIT_OUTPUT_DIR: reports
           command: |
             if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
-              npm test -- --ci --coverage --reporters=default --reporters=jest-junit || true
+              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit || true
             else
-              npm test -- --ci --coverage --reporters=default --reporters=jest-junit
+              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit
             fi
       - store_test_results:
           path: reports
