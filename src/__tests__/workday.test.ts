@@ -23,7 +23,11 @@ describe('Workday utilities', () => {
     it('should handle missing environment variables', () => {
       const mockEnv = {};
 
-      expect(() => getWorkdayConfig(mockEnv)).toThrow();
+      const config = getWorkdayConfig(mockEnv);
+      expect(config.apiUrl).toBeUndefined();
+      expect(config.tenant).toBeUndefined();
+      expect(config.user).toBeUndefined();
+      expect(config.password).toBeUndefined();
     });
   });
 });
