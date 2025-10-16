@@ -89,20 +89,7 @@ Resources:
             Input: !Sub |
               {
                 "action": "enrich_invoice",
-                "query": "SELECT
-                  id,
-                  invoiceNumber,
-                  supplier,
-                  company1
-                FROM supplierInvoices
-                WHERE OCRSupplierInvoice is not empty
-                  AND invoiceStatus.statusName = \"Draft\"
-                  AND hasPurchaseOrder = false
-                  AND (
-                    supplier is empty
-                    OR company1.companyName = \"Default OCR Company\"
-                  )
-                ORDER BY invoiceDate DESC, invoiceNumber DESC"
+                "query": "SELECT id, invoiceNumber, supplier, company1 FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND (supplier is empty OR company1.companyName = 'Default OCR Company') ORDER BY invoiceDate DESC, invoiceNumber DESC"
               }
 
   # Action: enrich_invoice
