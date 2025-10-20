@@ -1,5 +1,6 @@
 declare module '@pga/lambda-env' {
-  export function loadEnv(): Promise<NodeJS.ProcessEnv>;
+  function loadEnv(): Promise<NodeJS.ProcessEnv>;
+  export = { loadEnv };
 }
 
 declare module '@pga/logger' {

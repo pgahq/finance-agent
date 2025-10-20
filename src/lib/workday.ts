@@ -24,7 +24,7 @@ export async function executeWorkdayQuery(
   debug(`Executing WQL query on tenant: ${config.tenant}`);
   debug(`Query: ${wqlQuery.substring(0, 100)}...`);
 
-  const authString = Buffer.from(`${config.user}@${config.tenant}:${config.password}`).toString('base64');
+  const authString = Buffer.from(`${config.user}:${config.password}`).toString('base64');
 
   const response = await fetch(url.toString(), {
     method: 'GET',
