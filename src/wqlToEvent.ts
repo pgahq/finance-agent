@@ -1,6 +1,6 @@
 import { Handler } from 'aws-lambda';
 import { EventBridgeClient, PutEventsCommand } from '@aws-sdk/client-eventbridge';
-import { loadEnv } from '@pga/lambda-env';
+import loadEnv from '@pga/lambda-env';
 import { debug, error } from '@pga/logger';
 import { getWorkdayConfig, executeWorkdayQuery } from './lib/workday.js';
 

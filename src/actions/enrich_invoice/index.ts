@@ -1,5 +1,5 @@
 import { EventBridgeHandler } from 'aws-lambda';
-import { loadEnv } from '@pga/lambda-env';
+import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { getWorkdayConfig, executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from '../../lib/workday.js';
 import { identifySupplier } from './identify_supplier.js';

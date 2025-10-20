@@ -1,6 +1,7 @@
 declare module '@pga/lambda-env' {
-  function loadEnv(): Promise<NodeJS.ProcessEnv>;
-  export = { loadEnv };
+  // Default export is the async function (module.exports = async (...))
+  function loadEnv(ssm?: unknown, currentEnv?: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv>;
+  export default loadEnv;
 }
 
 declare module '@pga/logger' {
