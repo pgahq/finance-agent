@@ -4,19 +4,21 @@ describe('Workday utilities', () => {
   describe('getWorkdayConfig', () => {
     it('should extract configuration from environment variables', () => {
       const mockEnv = {
-        WORKDAY_API_URL: 'https://test.workday.com',
+        WORKDAY_DOMAIN: 'test.workday.com',
         WORKDAY_TENANT: 'test-tenant',
-        WORKDAY_USER: 'test-user',
-        WORKDAY_PASSWORD: 'test-password',
+        WORKDAY_CLIENT_ID: 'test-client-id',
+        WORKDAY_CLIENT_SECRET: 'test-client-secret',
+        WORKDAY_REFRESH_TOKEN: 'test-refresh-token',
       };
 
       const config = getWorkdayConfig(mockEnv);
 
       expect(config).toEqual({
-        apiUrl: 'https://test.workday.com',
+        domain: 'test.workday.com',
         tenant: 'test-tenant',
-        user: 'test-user',
-        password: 'test-password',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token',
       });
     });
 
@@ -24,10 +26,11 @@ describe('Workday utilities', () => {
       const mockEnv = {};
 
       const config = getWorkdayConfig(mockEnv);
-      expect(config.apiUrl).toBeUndefined();
+      expect(config.domain).toBeUndefined();
       expect(config.tenant).toBeUndefined();
-      expect(config.user).toBeUndefined();
-      expect(config.password).toBeUndefined();
+      expect(config.clientId).toBeUndefined();
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.refreshToken).toBeUndefined();
     });
   });
 });

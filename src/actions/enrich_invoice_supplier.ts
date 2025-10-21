@@ -1,11 +1,10 @@
-import { EventBridgeHandler } from 'aws-lambda';
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { getWorkdayConfig, executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from '../lib/workday.js';
 import { callOpenAIWithSchema } from '../lib/openai.js';
 import type { WorkdayQueryResultDetail } from '../wqlToEvent.js';
 
-export const handler: EventBridgeHandler<'WorkdayQueryResult', WorkdayQueryResultDetail, void> = async (event) => {
+export const handler = async (event: { detail: WorkdayQueryResultDetail }) => {
   process.env = await loadEnv();
   debug('Supplier enrichment event received:', JSON.stringify(event, null, 2));
 

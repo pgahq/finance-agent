@@ -15,10 +15,11 @@ jest.mock('@pga/logger', () => ({
 
 jest.mock('../lib/workday.js', () => ({
   getWorkdayConfig: jest.fn().mockReturnValue({
-    apiUrl: 'https://test.workday.com',
+    domain: 'test.workday.com',
     tenant: 'test-tenant',
-    user: 'test-user',
-    password: 'test-password'
+    clientId: 'test-client-id',
+    clientSecret: 'test-client-secret',
+    refreshToken: 'test-refresh-token'
   }),
   executeWorkdayQuery: jest.fn().mockResolvedValue([{
     id: 'test-invoice-id',
