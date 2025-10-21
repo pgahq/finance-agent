@@ -81,22 +81,32 @@ Resources:
       Handler: dist/wqlToEvent.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Events:
-        EnrichInvoicesSchedule:
+        EnrichInvoicesCompanySchedule:
           Type: Schedule
           Properties:
             Schedule: rate(1 day)
-            Description: Query Workday for OCR invoices needing enrichment
+            Description: Query Workday for OCR invoices missing company
             Input: !Sub |
               {
-                "action": "enrich_invoice",
-                "query": "SELECT id, invoiceNumber, supplier, company1 FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND (supplier is empty OR company1.companyName = 'Default OCR Company') ORDER BY invoiceDate DESC, invoiceNumber DESC"
+                "action": "enrich_invoice_company",
+                "query": "SELECT id, invoiceNumber, company1 FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND (company1 is empty OR company1.companyName = 'Default OCR Company') ORDER BY invoiceDate DESC, invoiceNumber DESC"
+              }
+        EnrichInvoicesSupplierSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Description: Query Workday for OCR invoices missing supplier
+            Input: !Sub |
+              {
+                "action": "enrich_invoice_supplier",
+                "query": "SELECT id, invoiceNumber, supplier FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND supplier is empty ORDER BY invoiceDate DESC, invoiceNumber DESC"
               }
 
-  # Action: enrich_invoice
-  EnrichInvoiceAction:
+  # Action: enrich_invoice_company
+  EnrichInvoiceCompanyAction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/actions/enrich_invoice/index.handler
+      Handler: dist/actions/enrich_invoice_company.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Layers:
         - !Ref PopplerLayer
@@ -107,4 +117,21 @@ Resources:
             EventBusName: !Ref FinanceAgentEventBus
             Pattern:
               detail:
-                action: [enrich_invoice]
+                action: [enrich_invoice_company]
+
+  # Action: enrich_invoice_supplier
+  EnrichInvoiceSupplierAction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: dist/actions/enrich_invoice_supplier.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Layers:
+        - !Ref PopplerLayer
+      Events:
+        Trigger:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref FinanceAgentEventBus
+            Pattern:
+              detail:
+                action: [enrich_invoice_supplier]
