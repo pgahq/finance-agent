@@ -25,11 +25,6 @@ Globals:
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
-        ACTION_FUNCTION_MAP: !Sub |
-          {
-            "CacheSuppliersAction": "${CacheSuppliersAction}",
-            "EnrichInvoiceSupplierAction": "${EnrichInvoiceSupplierAction}"
-          }
 
 Resources:
   FinanceAgentBucket:
@@ -110,7 +105,7 @@ Resources:
             Description: Cache all suppliers data for daily use
             Input: !Sub |
               {
-                "action": "CacheSuppliersAction",
+                "action": "${AWS::StackName}-CacheSuppliersAction",
                 "bulk": true,
                 "query": "SELECT supplier, lastUpdatedDateTime, supplierStatus, allPhoneNumbers, allEmailAddresses, allAddresses FROM suppliers1 (dataSourceFilter = defaultFilter)"
               }
@@ -121,7 +116,7 @@ Resources:
             Description: Query Workday for OCR invoices missing supplier
             Input: !Sub |
               {
-                "action": "EnrichInvoiceSupplierAction",
+                "action": "${AWS::StackName}-EnrichInvoiceSupplierAction",
                 "query": "SELECT workdayID, invoiceStatusAsText, OCRSupplierInvoice, supplier FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) WHERE OCRSupplierInvoice is not empty AND supplier is empty AND isCanceled = false"
               }
 
@@ -129,6 +124,7 @@ Resources:
   CacheSuppliersAction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheSuppliersAction"
       Handler: dist/actions/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
 
@@ -136,6 +132,7 @@ Resources:
   EnrichInvoiceSupplierAction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierAction"
       Handler: dist/actions/enrich_invoice_supplier.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Layers:

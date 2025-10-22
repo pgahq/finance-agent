@@ -3,7 +3,6 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import loadEnv from '@pga/lambda-env';
 import { debug, error } from '@pga/logger';
 import { getWorkdayConfig, executeWorkdayQuery } from './lib/workday.js';
-import { getFunctionArn, isValidAction, getValidActions } from './lib/actions.js';
 import type { ScheduleEvent } from './lib/types.js';
 
 export const handler: Handler<ScheduleEvent> = async (event, context) => {
@@ -24,12 +23,6 @@ export const handler: Handler<ScheduleEvent> = async (event, context) => {
     
     const queryResults = (queryResponse as any).data;
     debug(`Query returned ${(queryResponse as any).total} total results, processing ${queryResults.length} records`);
-
-    if (!isValidAction(action)) {
-      throw new Error(`Invalid action: ${action}. Must be one of: ${getValidActions().join(', ')}`);
-    }
-
-    const functionArn = getFunctionArn(action);
     
     // Create Lambda client once
     const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -46,14 +39,14 @@ export const handler: Handler<ScheduleEvent> = async (event, context) => {
       };
       
       const invokeCommand = new InvokeCommand({
-        FunctionName: functionArn,
+        FunctionName: action,
         InvocationType: 'RequestResponse', // Sync for bulk
         Payload: JSON.stringify({
           detail: payload
         })
       });
       
-      debug(`Invoking Lambda function: ${functionArn} (${action}) with ${queryResults.length} records`);
+      debug(`Invoking Lambda function: ${action} with ${queryResults.length} records`);
       
       await lambdaClient.send(invokeCommand);
     } else {
@@ -69,7 +62,7 @@ export const handler: Handler<ScheduleEvent> = async (event, context) => {
         };
         
         const invokeCommand = new InvokeCommand({
-          FunctionName: functionArn,
+          FunctionName: action,
           InvocationType: 'Event', // Async for individual
           Payload: JSON.stringify({
             detail: payload
