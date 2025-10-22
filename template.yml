@@ -48,34 +48,29 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub "${AWS::StackName}-database-secret"
-      Description: Database credentials for Finance Agent
+      Description: "Secret for PostgreSQL RDS user instance"
       GenerateSecretString:
-        SecretStringTemplate: '{"username": "postgres"}'
-        GenerateStringKey: "password"
-        PasswordLength: 32
-        ExcludeCharacters: '"@/\'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\\'
 
   # Aurora Serverless PostgreSQL Cluster
   FinanceAgentDatabase:
     Type: AWS::RDS::DBCluster
     Properties:
       DBClusterIdentifier: !Sub "${AWS::StackName}-cluster"
-      DatabaseName: finance_agent
       Engine: aurora-postgresql
       EngineMode: serverless
-      EngineVersion: "15.4"
+      EngineVersion: 15.4
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1.0
+      DatabaseName: finance_agent
       MasterUsername: postgres
-      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}'
       VPCSecurityGroups:
         - !Ref DatabaseSecurityGroup
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
-      BackupRetentionPeriod: 7
-      StorageEncrypted: true
-      ScalingConfiguration:
-        AutoPause: true
-        MaxCapacity: 2
-        MinCapacity: 0.5
-        SecondsUntilAutoPause: 300
+      Port: 5432
 
   # VPC and Networking
   FinanceAgentVPC:
