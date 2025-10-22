@@ -26,6 +26,9 @@ Globals:
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName
+        DATABASE_SECRET_ARN: !Ref DatabaseSecret
+        DATABASE_CLUSTER_ENDPOINT: !GetAtt FinanceAgentDatabase.Endpoint.Address
+        DATABASE_NAME: finance_agent
 
 Resources:
   FinanceAgentBucket:
@@ -39,6 +42,81 @@ Resources:
           - Id: DeleteOldVersions
             Status: Enabled
             NoncurrentVersionExpirationInDays: 30
+
+  # Database Secret for password management
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-database-secret"
+      Description: Database credentials for Finance Agent
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: "password"
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  # Aurora Serverless PostgreSQL Cluster
+  FinanceAgentDatabase:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub "${AWS::StackName}-cluster"
+      DatabaseName: finance_agent
+      Engine: aurora-postgresql
+      EngineMode: serverless
+      EngineVersion: "15.4"
+      MasterUsername: postgres
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      ScalingConfiguration:
+        AutoPause: true
+        MaxCapacity: 2
+        MinCapacity: 0.5
+        SecondsUntilAutoPause: 300
+
+  # VPC and Networking
+  FinanceAgentVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Finance Agent database
+      SubnetIds:
+        - !Ref DatabaseSubnet1
+        - !Ref DatabaseSubnet2
+
+  DatabaseSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  DatabaseSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Finance Agent database
+      VpcId: !Ref FinanceAgentVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref FinanceAgentLambdaRole
 
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
@@ -72,6 +150,11 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - arn:aws:ssm:*:*:parameter/finance-agent/*
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecret
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
