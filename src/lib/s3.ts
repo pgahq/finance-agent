@@ -7,7 +7,7 @@ export interface S3Config {
   bucketName: string;
 }
 
-export function getS3Config(env: Record<string, string>): S3Config {
+export function getS3Config(env: NodeJS.ProcessEnv): S3Config {
   const bucketName = env.S3_BUCKET_NAME;
   if (!bucketName) {
     throw new Error('S3_BUCKET_NAME environment variable is required');

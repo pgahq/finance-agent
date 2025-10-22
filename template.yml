@@ -25,6 +25,7 @@ Globals:
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
+        AWS_STACK_NAME: !Ref AWS::StackName
 
 Resources:
   FinanceAgentBucket:
@@ -89,51 +90,40 @@ Resources:
                 Action:
                   - lambda:InvokeFunction
                 Resource:
-                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CacheSuppliersAction
-                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-EnrichInvoiceSupplierAction
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
 
-  WqlToEventFunction:
+  # Cache Suppliers - Bulk processing
+  CacheSuppliersFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/wqlToEvent.handler
+      FunctionName: !Sub "${AWS::StackName}-CacheSuppliers"
+      Handler: dist/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Events:
-        CacheSuppliersSchedule:
+        Schedule:
           Type: Schedule
           Properties:
             Schedule: rate(1 day)
-            Description: Cache all suppliers data for daily use
-            Input: !Sub |
-              {
-                "action": "${AWS::StackName}-CacheSuppliersAction",
-                "bulk": true,
-                "query": "SELECT supplier, lastUpdatedDateTime, supplierStatus, allPhoneNumbers, allEmailAddresses, allAddresses FROM suppliers1 (dataSourceFilter = defaultFilter)"
-              }
-        EnrichInvoicesSupplierSchedule:
-          Type: Schedule
-          Properties:
-            Schedule: rate(1 day)
-            Description: Query Workday for OCR invoices missing supplier
-            Input: !Sub |
-              {
-                "action": "${AWS::StackName}-EnrichInvoiceSupplierAction",
-                "query": "SELECT workdayID, invoiceStatusAsText, OCRSupplierInvoice, supplier FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) WHERE OCRSupplierInvoice is not empty AND supplier is empty AND isCanceled = false"
-              }
 
-  # Action: cache_suppliers
-  CacheSuppliersAction:
+  # Enrich Invoice Supplier - Query executor
+  EnrichInvoiceSupplierFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-CacheSuppliersAction"
-      Handler: dist/actions/cache_suppliers.handler
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
+      Handler: dist/enrich_invoice_supplier.batchHandler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
 
-  # Action: enrich_invoice_supplier
-  EnrichInvoiceSupplierAction:
+  # Enrich Invoice Supplier Processor - Individual record processing
+  EnrichInvoiceSupplierProcessor:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierAction"
-      Handler: dist/actions/enrich_invoice_supplier.handler
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
+      Handler: dist/enrich_invoice_supplier.dataProcessor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Layers:
         - !Ref PopplerLayer

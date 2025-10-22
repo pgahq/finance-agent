@@ -1,4 +1,4 @@
-import { handler } from '../actions/cache_suppliers.js';
+import { handler } from '../cache_suppliers.js';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -24,66 +24,72 @@ jest.mock('../lib/s3.js', () => ({
   putJsonToS3: jest.fn().mockResolvedValue({})
 }));
 
+jest.mock('../lib/workday.js', () => ({
+  getWorkdayConfig: jest.fn().mockReturnValue({
+    domain: 'test.workday.com',
+    tenant: 'test-tenant',
+    clientId: 'test-client-id',
+    clientSecret: 'test-client-secret',
+    refreshToken: 'test-refresh-token'
+  }),
+  executeWorkdayQuery: jest.fn()
+}));
+
 describe('cache_suppliers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('should process supplier cache event with new format', async () => {
-    const mockEvent = {
-      detail: {
-        action: 'cache_suppliers',
-        data: {
-          total: 2,
-          data: [
-            {
-              supplier: {
-                descriptor: 'Test Supplier 1',
-                id: 'supplier-1'
-              },
-              lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-              supplierStatus: {
-                descriptor: 'Active',
-                id: 'status-1'
-              },
-              allPhoneNumbers: [
-                { descriptor: '555-1234', id: 'phone-1' }
-              ],
-              allEmailAddresses: [
-                { descriptor: 'test1@supplier.com', id: 'email-1' }
-              ],
-              allAddresses: [
-                { descriptor: '123 Test St', id: 'address-1' }
-              ]
-            },
-            {
-              supplier: {
-                descriptor: 'Test Supplier 2',
-                id: 'supplier-2'
-              },
-              lastUpdatedDateTime: '2024-01-02T00:00:00Z',
-              supplierStatus: {
-                descriptor: 'Active',
-                id: 'status-2'
-              },
-              allPhoneNumbers: [
-                { descriptor: '555-5678', id: 'phone-2' }
-              ],
-              allEmailAddresses: [
-                { descriptor: 'test2@supplier.com', id: 'email-2' }
-              ],
-              allAddresses: [
-                { descriptor: '456 Test Ave', id: 'address-2' }
-              ]
-            }
+  it('should process supplier cache with new format', async () => {
+    // Mock the Workday query response
+    const { executeWorkdayQuery } = require('../lib/workday.js');
+    executeWorkdayQuery.mockResolvedValue({
+      total: 2,
+      data: [
+        {
+          supplier: {
+            descriptor: 'Test Supplier 1',
+            id: 'supplier-1'
+          },
+          lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+          supplierStatus: {
+            descriptor: 'Active',
+            id: 'status-1'
+          },
+          allPhoneNumbers: [
+            { descriptor: '555-1234', id: 'phone-1' }
+          ],
+          allEmailAddresses: [
+            { descriptor: 'test1@supplier.com', id: 'email-1' }
+          ],
+          allAddresses: [
+            { descriptor: '123 Test St', id: 'address-1' }
           ]
         },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
-      }
-    };
+        {
+          supplier: {
+            descriptor: 'Test Supplier 2',
+            id: 'supplier-2'
+          },
+          lastUpdatedDateTime: '2024-01-02T00:00:00Z',
+          supplierStatus: {
+            descriptor: 'Active',
+            id: 'status-2'
+          },
+          allPhoneNumbers: [
+            { descriptor: '555-5678', id: 'phone-2' }
+          ],
+          allEmailAddresses: [
+            { descriptor: 'test2@supplier.com', id: 'email-2' }
+          ],
+          allAddresses: [
+            { descriptor: '456 Test Ave', id: 'address-2' }
+          ]
+        }
+      ]
+    });
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(handler()).resolves.not.toThrow();
 
     const { putJsonToS3 } = require('../lib/s3.js');
     expect(putJsonToS3).toHaveBeenCalledWith(
@@ -117,32 +123,26 @@ describe('cache_suppliers', () => {
   });
 
   it('should handle suppliers with missing optional fields', async () => {
-    const mockEvent = {
-      detail: {
-        action: 'cache_suppliers',
-        data: {
-          total: 1,
-          data: [
-            {
-              supplier: {
-                descriptor: 'Minimal Supplier',
-                id: 'supplier-minimal'
-              },
-              lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-              supplierStatus: {
-                descriptor: 'Active',
-                id: 'status-1'
-              }
-              // Missing optional fields: allPhoneNumbers, allEmailAddresses, allAddresses
-            }
-          ]
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
-      }
-    };
+    const { executeWorkdayQuery } = require('../lib/workday.js');
+    executeWorkdayQuery.mockResolvedValue({
+      total: 1,
+      data: [
+        {
+          supplier: {
+            descriptor: 'Minimal Supplier',
+            id: 'supplier-minimal'
+          },
+          lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+          supplierStatus: {
+            descriptor: 'Active',
+            id: 'status-1'
+          }
+          // Missing optional fields: allPhoneNumbers, allEmailAddresses, allAddresses
+        }
+      ]
+    });
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(handler()).resolves.not.toThrow();
 
     const { putJsonToS3 } = require('../lib/s3.js');
     expect(putJsonToS3).toHaveBeenCalledWith(
@@ -164,78 +164,63 @@ describe('cache_suppliers', () => {
   });
 
   it('should skip processing when no data received', async () => {
-    const mockEvent = {
-      detail: {
-        action: 'cache_suppliers',
-        data: {
-          total: 0,
-          data: []
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
-      }
-    };
+    const { executeWorkdayQuery } = require('../lib/workday.js');
+    executeWorkdayQuery.mockResolvedValue({
+      total: 0,
+      data: []
+    });
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(handler()).resolves.not.toThrow();
 
     const { putJsonToS3 } = require('../lib/s3.js');
     expect(putJsonToS3).not.toHaveBeenCalled();
   });
 
   it('should handle null/undefined data gracefully', async () => {
-    const mockEvent = {
-      detail: {
-        action: 'cache_suppliers',
-        data: null,
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
-      }
-    };
+    const { executeWorkdayQuery } = require('../lib/workday.js');
+    executeWorkdayQuery.mockResolvedValue({
+      total: 0,
+      data: []
+    });
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(handler()).resolves.not.toThrow();
 
     const { putJsonToS3 } = require('../lib/s3.js');
     expect(putJsonToS3).not.toHaveBeenCalled();
   });
 
   it('should transform supplier data correctly', async () => {
-    const mockEvent = {
-      detail: {
-        action: 'cache_suppliers',
-        data: {
-          total: 1,
-          data: [
-            {
-              supplier: {
-                descriptor: 'Complex Supplier',
-                id: 'supplier-complex'
-              },
-              lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-              supplierStatus: {
-                descriptor: 'Inactive',
-                id: 'status-inactive'
-              },
-              allPhoneNumbers: [
-                { descriptor: '555-1111', id: 'phone-1' },
-                { descriptor: '555-2222', id: 'phone-2' }
-              ],
-              allEmailAddresses: [
-                { descriptor: 'primary@supplier.com', id: 'email-1' },
-                { descriptor: 'secondary@supplier.com', id: 'email-2' }
-              ],
-              allAddresses: [
-                { descriptor: '123 Main St', id: 'address-1' },
-                { descriptor: '456 Oak Ave', id: 'address-2' }
-              ]
-            }
+    const { executeWorkdayQuery } = require('../lib/workday.js');
+    executeWorkdayQuery.mockResolvedValue({
+      total: 1,
+      data: [
+        {
+          supplier: {
+            descriptor: 'Complex Supplier',
+            id: 'supplier-complex'
+          },
+          lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+          supplierStatus: {
+            descriptor: 'Inactive',
+            id: 'status-inactive'
+          },
+          allPhoneNumbers: [
+            { descriptor: '555-1111', id: 'phone-1' },
+            { descriptor: '555-2222', id: 'phone-2' }
+          ],
+          allEmailAddresses: [
+            { descriptor: 'primary@supplier.com', id: 'email-1' },
+            { descriptor: 'secondary@supplier.com', id: 'email-2' }
+          ],
+          allAddresses: [
+            { descriptor: '123 Main St', id: 'address-1' },
+            { descriptor: '456 Oak Ave', id: 'address-2' }
           ]
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
-      }
-    };
+        }
+      ]
+    });
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(handler()).resolves.not.toThrow();
 
     const { putJsonToS3 } = require('../lib/s3.js');
     const putCall = putJsonToS3.mock.calls[0];

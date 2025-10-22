@@ -1,46 +1,31 @@
-import loadEnv from '@pga/lambda-env';
+import { withBatchHandler, withRecordHandler } from './lib/actions.js';
 import { debug } from '@pga/logger';
-import { getWorkdayConfig, executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from '../lib/workday.js';
-import { getS3Config, getJsonFromS3, type S3Config } from '../lib/s3.js';
-import { callOpenAIWithSchema } from '../lib/openai.js';
-import type { WorkdayQueryResultDetail, SupplierIdentificationResult, SupplierCacheData } from '../lib/types.js';
+import { executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from './lib/workday.js';
+import { getJsonFromS3, type S3Config } from './lib/s3.js';
+import { callOpenAIWithSchema } from './lib/openai.js';
+import type { SupplierIdentificationResult, SupplierCacheData, InvoiceData } from './lib/types.js';
 
-export const handler = async (event: { detail: WorkdayQueryResultDetail }) => {
-  process.env = await loadEnv();
-  debug('Supplier enrichment event received:', JSON.stringify(event, null, 2));
+const QUERY = `
+  SELECT 
+    workdayID, 
+    invoiceStatusAsText, 
+    OCRSupplierInvoice, 
+    supplier 
+  FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) 
+  WHERE OCRSupplierInvoice is not empty 
+    AND supplier is empty 
+    AND isCanceled = false
+`;
 
-  const { data, timestamp, requestId } = event.detail;
-  
-  debug(`Event timestamp: ${timestamp}`);
-  debug(`Request ID: ${requestId}`);
+export const batchHandler = withBatchHandler(QUERY)(`finance-agent-EnrichInvoiceSupplierProcessor`);
 
-  const workdayConfig = getWorkdayConfig(process.env);
-  const s3Config = getS3Config(process.env as Record<string, string>);
+export const dataProcessor = withRecordHandler<InvoiceData>(processAction);
 
-  await processAction(workdayConfig, s3Config, data);
-
-  debug('Successfully processed supplier enrichment');
-};
-
-async function processAction(
-  config: WorkdayConfig,
-  s3Config: S3Config,
-  invoiceData: unknown
-): Promise<void> {
+async function processAction({ workdayConfig, s3Config, data: invoiceData }: { workdayConfig: WorkdayConfig; s3Config: S3Config; data: InvoiceData }): Promise<void> {
   debug('Enriching invoice supplier with AI and Workday data');
   debug('Invoice data:', JSON.stringify(invoiceData, null, 2));
   
-  // Cast the invoice data to expected structure
-  const invoice = invoiceData as {
-    workdayID: string;
-    invoiceStatusAsText: string;
-    OCRSupplierInvoice: {
-      descriptor: string;
-      id: string;
-    };
-  };
-
-  debug(`Processing invoice with workdayID: ${invoice.workdayID}`);
+  debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
   // Get detailed invoice data using Workday ID
   const detailedQuery = `
@@ -57,12 +42,11 @@ async function processAction(
       purchaseOrders, 
       allAttachmentsForBusinessDocument 
     FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) 
-    WHERE workdayID = "${invoice.workdayID}"
+    WHERE workdayID = "${invoiceData.workdayID}"
   `;
 
-  const detailedResponse = await executeWorkdayQuery(config, detailedQuery);
+  const detailedResponse = await executeWorkdayQuery(workdayConfig, detailedQuery);
   
-  // Handle new format: object with data array
   if (!detailedResponse || typeof detailedResponse !== 'object' || !('data' in detailedResponse) || !Array.isArray((detailedResponse as any).data)) {
     throw new Error('Expected detailed query response format: {total: number, data: array}');
   }
@@ -73,7 +57,7 @@ async function processAction(
   // Get attachment content via separate API call if attachments are available
   let attachmentData: any[] = [];
   if (detailedInvoice.allAttachmentsForBusinessDocument) {
-    attachmentData = await getAttachmentContent(config, detailedInvoice.allAttachmentsForBusinessDocument);
+    attachmentData = await getAttachmentContent(workdayConfig, detailedInvoice.allAttachmentsForBusinessDocument);
   } else {
     debug('No attachments found for this invoice');
   }

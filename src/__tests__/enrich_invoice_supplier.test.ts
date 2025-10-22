@@ -1,4 +1,4 @@
-import { handler } from '../actions/enrich_invoice_supplier.js';
+import { dataProcessor } from '../enrich_invoice_supplier.js';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -70,22 +70,17 @@ describe('enrich_invoice_supplier', () => {
 
   it('should process supplier enrichment event with new format', async () => {
     const mockEvent = {
-      detail: {
-        action: 'enrich_invoice_supplier',
-        data: {
-          workdayID: 'test-invoice-id',
-          invoiceStatusAsText: 'Draft',
-          OCRSupplierInvoice: {
-            descriptor: '24953$4729',
-            id: '0627e00a601c1001085f64bd33e20000'
-          }
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
+      data: {
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
       }
     };
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(dataProcessor(mockEvent as any)).resolves.not.toThrow();
   });
 
   it('should handle missing supplier and identify supplier', async () => {
@@ -101,22 +96,17 @@ describe('enrich_invoice_supplier', () => {
     });
 
     const mockEvent = {
-      detail: {
-        action: 'enrich_invoice_supplier',
-        data: {
-          workdayID: 'test-invoice-id',
-          invoiceStatusAsText: 'Draft',
-          OCRSupplierInvoice: {
-            descriptor: '24953$4729',
-            id: '0627e00a601c1001085f64bd33e20000'
-          }
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
+      data: {
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
       }
     };
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(dataProcessor(mockEvent as any)).resolves.not.toThrow();
   });
 
   it('should skip processing when supplier already exists', async () => {
@@ -132,22 +122,17 @@ describe('enrich_invoice_supplier', () => {
     });
 
     const mockEvent = {
-      detail: {
-        action: 'enrich_invoice_supplier',
-        data: {
-          workdayID: 'test-invoice-id',
-          invoiceStatusAsText: 'Draft',
-          OCRSupplierInvoice: {
-            descriptor: '24953$4729',
-            id: '0627e00a601c1001085f64bd33e20000'
-          }
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
+      data: {
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
       }
     };
 
-    await expect(handler(mockEvent as any)).resolves.not.toThrow();
+    await expect(dataProcessor(mockEvent as any)).resolves.not.toThrow();
   });
 
   it('should handle missing supplier cache gracefully', async () => {
@@ -168,21 +153,16 @@ describe('enrich_invoice_supplier', () => {
     getJsonFromS3.mockResolvedValue(null); // Cache not found
 
     const mockEvent = {
-      detail: {
-        action: 'enrich_invoice_supplier',
-        data: {
-          workdayID: 'test-invoice-id',
-          invoiceStatusAsText: 'Draft',
-          OCRSupplierInvoice: {
-            descriptor: '24953$4729',
-            id: '0627e00a601c1001085f64bd33e20000'
-          }
-        },
-        timestamp: '2024-01-01T00:00:00Z',
-        requestId: 'test-request-id'
+      data: {
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
       }
     };
 
-    await expect(handler(mockEvent as any)).rejects.toThrow('Supplier cache not found');
+    await expect(dataProcessor(mockEvent as any)).rejects.toThrow('Supplier cache not found');
   });
 });

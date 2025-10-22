@@ -23,6 +23,43 @@ export interface SupplierIdentificationResult {
   reasoning: string;
 }
 
+// Data types for actions
+export interface SupplierData {
+  total: number;
+  data: Array<{
+    supplier: {
+      descriptor: string;
+      id: string;
+    };
+    lastUpdatedDateTime: string;
+    supplierStatus: {
+      descriptor: string;
+      id: string;
+    };
+    allPhoneNumbers?: Array<{
+      descriptor: string;
+      id: string;
+    }>;
+    allEmailAddresses?: Array<{
+      descriptor: string;
+      id: string;
+    }>;
+    allAddresses?: Array<{
+      descriptor: string;
+      id: string;
+    }>;
+  }>;
+}
+
+export interface InvoiceData {
+  workdayID: string;
+  invoiceStatusAsText: string;
+  OCRSupplierInvoice: {
+    descriptor: string;
+    id: string;
+  };
+}
+
 export interface CompanyIdentificationResult {
   companyId: string;
   companyName: string;
@@ -39,7 +76,9 @@ export interface ScheduleEvent {
 
 export interface WorkdayQueryResultDetail {
   action: string;
-  data: unknown;
+  data?: unknown;
+  query?: string;
+  bulk?: boolean;
   timestamp: string;
   requestId: string;
 }
