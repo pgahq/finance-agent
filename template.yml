@@ -127,6 +127,63 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
+  # Interface endpoints for AWS services
+  SSMVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref DatabaseSubnet1
+        - !Ref DatabaseSubnet2
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+
+  SecretsManagerVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref DatabaseSubnet1
+        - !Ref DatabaseSubnet2
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref DatabaseRouteTable1
+        - !Ref DatabaseRouteTable2
+
+  # Route tables for VPC endpoints
+  DatabaseRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+
+  DatabaseRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FinanceAgentVPC
+
+  DatabaseSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DatabaseSubnet1
+      RouteTableId: !Ref DatabaseRouteTable1
+
+  DatabaseSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DatabaseSubnet2
+      RouteTableId: !Ref DatabaseRouteTable2
 
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
@@ -184,6 +241,12 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
 
   # Cache Suppliers - Bulk processing
   CacheSuppliersFunction:
@@ -192,6 +255,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CacheSuppliers"
       Handler: dist/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -205,6 +274,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
       Handler: dist/enrich_invoice_supplier.batchHandler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -218,5 +293,11 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
       Handler: dist/enrich_invoice_supplier.dataProcessor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Layers:
         - !Ref PopplerLayer
