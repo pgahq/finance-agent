@@ -81,7 +81,7 @@ describe('Workday utilities', () => {
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
-      expect(result).toEqual(mockQueryResponse.data);
+      expect(result).toEqual(mockQueryResponse);
     });
 
     it('should handle query response with new format', async () => {
@@ -107,7 +107,7 @@ describe('Workday utilities', () => {
 
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
-      expect(result).toEqual(mockQueryResponse.data);
+      expect(result).toEqual(mockQueryResponse);
     });
 
     it('should handle empty query response', async () => {
@@ -127,7 +127,7 @@ describe('Workday utilities', () => {
 
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ data: [] });
     });
 
     it('should handle query response without data property', async () => {
@@ -147,7 +147,7 @@ describe('Workday utilities', () => {
 
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ total: 0 });
     });
 
     it('should throw error when token request fails', async () => {

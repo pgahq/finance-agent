@@ -57,7 +57,7 @@ const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
 export async function executeWorkdayQuery(
   config: WorkdayConfig,
   wqlQuery: string
-): Promise<unknown[]> {
+): Promise<{ total?: number; data?: unknown[] }> {
   const wqlUrl = `https://${config.domain}/api/wql/v1/${config.tenant}/data`;
   const url = new URL(wqlUrl);
   url.searchParams.set('query', wqlQuery);
@@ -80,8 +80,8 @@ export async function executeWorkdayQuery(
     throw new Error(`Workday API error: ${response.status} ${response.statusText} - ${errorText}`);
   }
 
-  const result = await response.json() as { data?: unknown[] };
-  return result.data || [];
+  const result = await response.json() as { total?: number; data?: unknown[] };
+  return result;
 }
 
 export async function getAttachmentContent(_config: WorkdayConfig, attachments: any[]): Promise<any[]> {
