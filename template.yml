@@ -24,15 +24,9 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
-        EVENT_BUS_NAME: !Ref FinanceAgentEventBus
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
 
 Resources:
-  FinanceAgentEventBus:
-    Type: AWS::Events::EventBus
-    Properties:
-      Name: FinanceAgentEventBus
-
   FinanceAgentBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -85,17 +79,18 @@ Resources:
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
               - Effect: Allow
                 Action:
-                  - events:PutEvents
-                Resource:
-                  - !GetAtt FinanceAgentEventBus.Arn
-              - Effect: Allow
-                Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
                 Resource:
                   - !Sub arn:aws:s3:::${FinanceAgentBucket}/*
                   - !Sub arn:aws:s3:::${FinanceAgentBucket}
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CacheSuppliersAction
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:EnrichInvoiceSupplierAction
 
   WqlToEventFunction:
     Type: AWS::Serverless::Function
@@ -110,7 +105,7 @@ Resources:
             Description: Cache all suppliers data for daily use
             Input: !Sub |
               {
-                "action": "cache_suppliers",
+                "action": "CacheSuppliersAction",
                 "bulk": true,
                 "query": "SELECT supplier, lastUpdatedDateTime, supplierStatus, allPhoneNumbers, allEmailAddresses, allAddresses FROM suppliers1 (dataSourceFilter = defaultFilter)"
               }
@@ -121,7 +116,7 @@ Resources:
             Description: Query Workday for OCR invoices missing supplier
             Input: !Sub |
               {
-                "action": "enrich_invoice_supplier",
+                "action": "EnrichInvoiceSupplierAction",
                 "query": "SELECT workdayID, invoiceStatusAsText, OCRSupplierInvoice, supplier FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) WHERE OCRSupplierInvoice is not empty AND supplier is empty AND isCanceled = false"
               }
 
@@ -131,14 +126,6 @@ Resources:
     Properties:
       Handler: dist/actions/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Events:
-        Trigger:
-          Type: EventBridgeRule
-          Properties:
-            EventBusName: !Ref FinanceAgentEventBus
-            Pattern:
-              detail:
-                action: [cache_suppliers]
 
   # Action: enrich_invoice_supplier
   EnrichInvoiceSupplierAction:
@@ -148,11 +135,3 @@ Resources:
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Layers:
         - !Ref PopplerLayer
-      Events:
-        Trigger:
-          Type: EventBridgeRule
-          Properties:
-            EventBusName: !Ref FinanceAgentEventBus
-            Pattern:
-              detail:
-                action: [enrich_invoice_supplier]

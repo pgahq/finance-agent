@@ -33,7 +33,7 @@
     "typescript": "^5.5.2"
   },
   "dependencies": {
-    "@aws-sdk/client-eventbridge": "^3.598.0",
+    "@aws-sdk/client-lambda": "^3.914.0",
     "@pga/lambda-env": "^0.0.11",
     "@pga/logger": "^0.1.10"
   },
@@ -41,4 +41,3 @@
     "node": ">=20.0.0"
   }
 }
-

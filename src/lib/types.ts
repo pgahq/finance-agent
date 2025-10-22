@@ -32,7 +32,7 @@ export interface CompanyIdentificationResult {
 
 // Event Types
 export interface ScheduleEvent {
-  action: string;
+  action: string; // Function name as action
   query: string;
   bulk?: boolean;
 }

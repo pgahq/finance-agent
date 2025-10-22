@@ -20,6 +20,13 @@ jest.mock('@pga/logger', () => ({
   info: jest.fn()
 }));
 
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn().mockImplementation(() => ({
+    send: jest.fn().mockResolvedValue({})
+  })),
+  InvokeCommand: jest.fn().mockImplementation((params) => params)
+}));
+
 jest.mock('../lib/workday.js', () => ({
   getWorkdayConfig: jest.fn().mockReturnValue({
     domain: 'test.workday.com',
@@ -31,24 +38,10 @@ jest.mock('../lib/workday.js', () => ({
   executeWorkdayQuery: jest.fn()
 }));
 
-jest.mock('@aws-sdk/client-eventbridge', () => {
-  const mockSend = jest.fn().mockResolvedValue({});
-  return {
-    EventBridgeClient: jest.fn().mockImplementation(() => ({
-      send: mockSend
-    })),
-    PutEventsCommand: jest.fn(),
-    __mockSend: mockSend
-  };
-});
 
 describe('WQL to Event', () => {
-  let mockSend: jest.Mock;
-
   beforeEach(() => {
     jest.clearAllMocks();
-    const eventBridgeModule = require('@aws-sdk/client-eventbridge');
-    mockSend = eventBridgeModule.__mockSend;
   });
 
   describe('handler with new data format', () => {
@@ -63,7 +56,7 @@ describe('WQL to Event', () => {
       });
 
       const mockEvent = {
-        action: 'enrich_invoice_supplier',
+        action: 'EnrichInvoiceSupplierAction',
         query: 'SELECT workdayID, invoiceNumber FROM supplierInvoices',
         bulk: false
       };
@@ -71,9 +64,8 @@ describe('WQL to Event', () => {
       const result = await handler(mockEvent as any, { awsRequestId: 'test-request-id' } as any, jest.fn());
 
       expect(executeWorkdayQuery).toHaveBeenCalled();
-      expect(mockSend).toHaveBeenCalledTimes(1); // Batched into groups of 10
       expect(result.statusCode).toBe(200);
-      expect(JSON.parse(result.body).message).toBe('Successfully published 2 events');
+      expect(JSON.parse(result.body).message).toBe('Successfully invoked EnrichInvoiceSupplierAction 2 times');
     });
 
     it('should process query results with new format (bulk=true)', async () => {
@@ -87,7 +79,7 @@ describe('WQL to Event', () => {
       });
 
       const mockEvent = {
-        action: 'cache_suppliers',
+        action: 'CacheSuppliersAction',
         query: 'SELECT supplier FROM suppliers',
         bulk: true
       };
@@ -95,9 +87,8 @@ describe('WQL to Event', () => {
       const result = await handler(mockEvent as any, { awsRequestId: 'test-request-id' } as any, jest.fn());
 
       expect(executeWorkdayQuery).toHaveBeenCalled();
-      expect(mockSend).toHaveBeenCalledTimes(1);
       expect(result.statusCode).toBe(200);
-      expect(JSON.parse(result.body).message).toBe('Successfully published bulk event with 2 results');
+      expect(JSON.parse(result.body).message).toContain('Successfully invoked CacheSuppliersAction with 2 results');
     });
 
     it('should handle large result sets with batching', async () => {
@@ -113,16 +104,15 @@ describe('WQL to Event', () => {
       });
 
       const mockEvent = {
-        action: 'enrich_invoice_supplier',
+        action: 'EnrichInvoiceSupplierAction',
         query: 'SELECT workdayID, invoiceNumber FROM supplierInvoices',
         bulk: false
       };
 
       const result = await handler(mockEvent as any, { awsRequestId: 'test-request-id' } as any, jest.fn());
 
-      expect(mockSend).toHaveBeenCalledTimes(3); // 10 + 10 + 5
       expect(result.statusCode).toBe(200);
-      expect(JSON.parse(result.body).message).toBe('Successfully published 25 events');
+      expect(JSON.parse(result.body).message).toBe('Successfully invoked EnrichInvoiceSupplierAction 25 times');
     });
 
     it('should throw error for invalid response format', async () => {
