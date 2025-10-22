@@ -66,6 +66,6 @@ export const withRecordHandler = <T = unknown>(
 ) => async (event: { data: any }) => {
   const { workdayConfig, s3Config } = await setupEnvironment();
   
-  debug(`Processing individual record: ${JSON.stringify(event.data, null, 2)}`);
+  debug(`Processing individual record with ID: ${event.data?.workdayID || 'unknown'}`);
   await processAction({ workdayConfig, s3Config, data: event.data as T });
 };

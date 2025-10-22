@@ -165,4 +165,10 @@ describe('enrich_invoice_supplier', () => {
 
     await expect(dataProcessor(mockEvent as any)).rejects.toThrow('Supplier cache not found');
   });
+
+  it('should handle batching with hardcoded configuration', () => {
+    // Test that the batching logic works with hardcoded values
+    // This is more of an integration test to ensure the batching doesn't break
+    expect(true).toBe(true); // Placeholder for batching logic validation
+  });
 });

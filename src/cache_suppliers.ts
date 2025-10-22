@@ -16,11 +16,9 @@ const QUERY = `
 
 async function processAction({ s3Config, data }: { s3Config: S3Config; data: unknown }): Promise<void> {
   debug('Processing and caching supplier data');
-  debug('Raw suppliers data received:', JSON.stringify(data, null, 2));
 
   // Data is already the array from executeQuery
   const suppliers = data as any[];
-  debug('Suppliers array:', JSON.stringify(suppliers, null, 2));
 
   // Check if we have data results
   if (!suppliers || suppliers.length === 0) {

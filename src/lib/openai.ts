@@ -18,7 +18,6 @@ export async function callOpenAIWithSchema({
   debug('Prompt length:', prompt.length);
   debug('Schema length:', JSON.stringify(schema).length);
   debug('Messages length:', JSON.stringify(messages).length);
-  debug('Messages preview:', JSON.stringify(messages).slice(0, 500));
 
   // Ensure system prompt is first
   const finalMessages = [...messages];

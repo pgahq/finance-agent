@@ -23,6 +23,16 @@ export interface SupplierIdentificationResult {
   reasoning: string;
 }
 
+export interface BatchSupplierIdentificationResult {
+  supplierId: string;
+  supplierName: string;
+  confidence: number;
+  reasoning: string;
+  batchIndex: number;
+  totalBatches: number;
+}
+
+
 // Data types for actions
 export interface SupplierData {
   total: number;
