@@ -113,7 +113,7 @@ describe('Workday utilities', () => {
     it('should handle empty query response', async () => {
       const mockQuery = 'SELECT id FROM emptyTable';
       const mockTokenResponse = { access_token: 'mock-access-token' };
-      const mockQueryResponse = { data: [] };
+      const mockQueryResponse = { total: 0, data: [] };
 
       (global.fetch as jest.Mock)
         .mockResolvedValueOnce({
@@ -127,13 +127,13 @@ describe('Workday utilities', () => {
 
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
-      expect(result).toEqual({ data: [] });
+      expect(result).toEqual({ total: 0, data: [] });
     });
 
     it('should handle query response without data property', async () => {
       const mockQuery = 'SELECT id FROM suppliers';
       const mockTokenResponse = { access_token: 'mock-access-token' };
-      const mockQueryResponse = { total: 0 };
+      const mockQueryResponse = { total: 0, data: [] };
 
       (global.fetch as jest.Mock)
         .mockResolvedValueOnce({
@@ -147,7 +147,7 @@ describe('Workday utilities', () => {
 
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
-      expect(result).toEqual({ total: 0 });
+      expect(result).toEqual({ total: 0, data: [] });
     });
 
     it('should throw error when token request fails', async () => {

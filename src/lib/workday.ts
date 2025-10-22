@@ -54,18 +54,18 @@ const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
   return accessToken;
 };
 
-export async function executeWorkdayQuery(
+async function fetchWorkdayPage(
   config: WorkdayConfig,
-  wqlQuery: string
+  accessToken: string,
+  wqlQuery: string,
+  limit: number,
+  offset: number
 ): Promise<{ total?: number; data?: unknown[] }> {
   const wqlUrl = `https://${config.domain}/api/wql/v1/${config.tenant}/data`;
   const url = new URL(wqlUrl);
   url.searchParams.set('query', wqlQuery);
-
-  debug(`Executing WQL query on tenant: ${config.tenant}`);
-  debug(`Query: ${wqlQuery.substring(0, 100)}...`);
-
-  const accessToken = await getAccessToken(config);
+  url.searchParams.set('limit', limit.toString());
+  url.searchParams.set('offset', offset.toString());
 
   const response = await fetch(url.toString(), {
     method: 'GET',
@@ -80,8 +80,81 @@ export async function executeWorkdayQuery(
     throw new Error(`Workday API error: ${response.status} ${response.statusText} - ${errorText}`);
   }
 
-  const result = await response.json() as { total?: number; data?: unknown[] };
-  return result;
+  return response.json() as { total?: number; data?: unknown[] };
+}
+
+async function fetchRemainingPages(
+  config: WorkdayConfig,
+  accessToken: string,
+  wqlQuery: string,
+  totalCount: number,
+  initialData: unknown[]
+): Promise<unknown[]> {
+  const maxLimit = 10000;
+  const remainingCount = totalCount - initialData.length;
+  
+  if (remainingCount <= 0) {
+    return [];
+  }
+
+  const additionalPages = Math.ceil(remainingCount / maxLimit);
+  debug(`Fetching ${additionalPages} additional pages to get remaining ${remainingCount} records`);
+
+  const pageRequests = [];
+  for (let page = 0; page < additionalPages; page++) {
+    const offset = maxLimit + (page * maxLimit);
+    const limit = Math.min(maxLimit, totalCount - offset);
+    
+    const pageRequest = fetchWorkdayPage(config, accessToken, wqlQuery, limit, offset);
+    pageRequests.push(pageRequest);
+  }
+
+  const pageResults = await Promise.all(pageRequests);
+  
+  // Combine all data from additional pages
+  const additionalData: unknown[] = [];
+  for (const pageResult of pageResults) {
+    if (pageResult.data && Array.isArray(pageResult.data)) {
+      additionalData.push(...pageResult.data);
+    }
+  }
+
+  return additionalData;
+}
+
+export async function executeWorkdayQuery(
+  config: WorkdayConfig,
+  wqlQuery: string
+): Promise<{ total?: number; data?: unknown[] }> {
+  debug(`Executing WQL query on tenant: ${config.tenant}`);
+  debug(`Query: ${wqlQuery}`);
+
+  const accessToken = await getAccessToken(config);
+
+  // Start with max limit to get as much as possible in one request
+  const initialResult = await fetchWorkdayPage(config, accessToken, wqlQuery, 10000, 0);
+  const totalCount = initialResult.total || 0;
+  const initialData = initialResult.data || [];
+  
+  debug(`Total records available: ${totalCount}, got ${initialData.length} in initial request`);
+
+  // If we got all records in the initial request, return it
+  if (totalCount <= 10000) {
+    return initialResult;
+  }
+
+  // Fetch remaining pages in parallel
+  const additionalData = await fetchRemainingPages(config, accessToken, wqlQuery, totalCount, initialData);
+  
+  // Combine all data
+  const allData = [...initialData, ...additionalData];
+  
+  debug(`Successfully fetched ${allData.length} records total`);
+
+  return {
+    total: totalCount,
+    data: allData
+  };
 }
 
 export async function getAttachmentContent(_config: WorkdayConfig, attachments: any[]): Promise<any[]> {

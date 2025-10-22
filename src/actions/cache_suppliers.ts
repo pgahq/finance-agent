@@ -25,6 +25,7 @@ async function processAction(
   suppliersData: unknown
 ): Promise<void> {
   debug('Processing and caching supplier data');
+  debug('Raw suppliers data received:', JSON.stringify(suppliersData, null, 2));
 
   // Cast the data to expected structure (new format with total and data array)
   const response = suppliersData as {
@@ -56,6 +57,8 @@ async function processAction(
 
   // Extract the data array from the response
   const suppliers = response?.data;
+  debug('Response structure:', JSON.stringify(response, null, 2));
+  debug('Suppliers array:', JSON.stringify(suppliers, null, 2));
 
   // Check if we have data results
   if (!suppliers || suppliers.length === 0) {
