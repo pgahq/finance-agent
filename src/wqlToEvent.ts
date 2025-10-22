@@ -60,7 +60,7 @@ export const handler: Handler<ScheduleEvent> = async (event, context) => {
       
       const invokeCommand = new InvokeCommand({
         FunctionName: action,
-        InvocationType: 'Event', // Async invocation
+        InvocationType: bulk ? 'RequestResponse' : 'Event', // Sync for bulk, async for individual
         Payload: JSON.stringify({
           detail: payload
         })
