@@ -275,7 +275,7 @@ export async function bulkInsertDocuments(
   
   try {
     // Build VALUES clause for bulk insert
-    const values = documents.map((doc, index) => {
+    const values = documents.map((_doc, index) => {
       const baseIndex = index * 5;
       return `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, $${baseIndex + 5})`;
     }).join(', ');
