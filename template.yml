@@ -67,7 +67,7 @@ Resources:
       DatabaseName: finance_agent
       MasterUsername: postgres
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}'
-      VPCSecurityGroups:
+      VpcSecurityGroupIds:
         - !Ref DatabaseSecurityGroup
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
       Port: 5432
