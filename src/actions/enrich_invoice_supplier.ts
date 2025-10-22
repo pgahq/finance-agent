@@ -1,8 +1,9 @@
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { getWorkdayConfig, executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from '../lib/workday.js';
+import { getS3Config, getJsonFromS3, type S3Config } from '../lib/s3.js';
 import { callOpenAIWithSchema } from '../lib/openai.js';
-import type { WorkdayQueryResultDetail } from '../wqlToEvent.js';
+import type { WorkdayQueryResultDetail, SupplierIdentificationResult, SupplierCacheData } from '../lib/types.js';
 
 export const handler = async (event: { detail: WorkdayQueryResultDetail }) => {
   process.env = await loadEnv();
@@ -14,14 +15,16 @@ export const handler = async (event: { detail: WorkdayQueryResultDetail }) => {
   debug(`Request ID: ${requestId}`);
 
   const workdayConfig = getWorkdayConfig(process.env);
+  const s3Config = getS3Config(process.env as Record<string, string>);
 
-  await processAction(workdayConfig, data);
+  await processAction(workdayConfig, s3Config, data);
 
   debug('Successfully processed supplier enrichment');
 };
 
 async function processAction(
   config: WorkdayConfig,
+  s3Config: S3Config,
   invoiceData: unknown
 ): Promise<void> {
   debug('Enriching invoice supplier with AI and Workday data');
@@ -29,44 +32,56 @@ async function processAction(
   
   // Cast the invoice data to expected structure
   const invoice = invoiceData as {
-    id: string;
-    invoiceNumber: string;
-    supplier: unknown;
+    workdayID: string;
+    invoiceStatusAsText: string;
+    OCRSupplierInvoice: {
+      descriptor: string;
+      id: string;
+    };
   };
 
-  debug(`Processing invoice ${invoice.invoiceNumber} (ID: ${invoice.id})`);
+  debug(`Processing invoice with workdayID: ${invoice.workdayID}`);
 
   // Get detailed invoice data using Workday ID
   const detailedQuery = `
-    SELECT
-      id,
-      invoiceNumber,
-      invoiceStatus as Status,
-      company1,
-      supplier,
-      suppliersInvoiceNumber,
-      invoiceDate,
-      controlTotalAmount,
-      purchaseOrders,
-      allAttachmentsForBusinessDocument as Attachments,
-      supplierInvoiceDocumentAutoSubmitted,
-      passedSupplierInvoiceAutoSubmitRules,
-      passedSupplierInvoiceValidations,
-      OCRSupplierInvoice
-    FROM supplierInvoices
-    WHERE id = "${invoice.id}"
+    SELECT 
+      workdayID, 
+      invoiceNumber, 
+      invoiceStatus, 
+      OCRStatus, 
+      OCRSupplierInvoice, 
+      company1, 
+      supplier, 
+      suppliersInvoiceNumber, 
+      controlTotalAmount, 
+      purchaseOrders, 
+      allAttachmentsForBusinessDocument 
+    FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) 
+    WHERE workdayID = "${invoice.workdayID}"
   `;
 
-  const detailedResults = await executeWorkdayQuery(config, detailedQuery);
+  const detailedResponse = await executeWorkdayQuery(config, detailedQuery);
+  
+  // Handle new format: object with data array
+  if (!detailedResponse || typeof detailedResponse !== 'object' || !('data' in detailedResponse) || !Array.isArray((detailedResponse as any).data)) {
+    throw new Error('Expected detailed query response format: {total: number, data: array}');
+  }
+  
+  const detailedResults = (detailedResponse as any).data;
   const detailedInvoice = detailedResults[0] as any;
 
-  // Get attachment content via separate API call
-  const attachmentData = await getAttachmentContent(config, detailedInvoice.Attachments);
+  // Get attachment content via separate API call if attachments are available
+  let attachmentData: any[] = [];
+  if (detailedInvoice.allAttachmentsForBusinessDocument) {
+    attachmentData = await getAttachmentContent(config, detailedInvoice.allAttachmentsForBusinessDocument);
+  } else {
+    debug('No attachments found for this invoice');
+  }
 
   // Check if supplier is missing
   if (!detailedInvoice.supplier || detailedInvoice.supplier === '') {
     debug('Missing supplier - identifying supplier');
-    const supplierResult = await identifySupplier(config, detailedInvoice, attachmentData);
+    const supplierResult = await identifySupplier(s3Config, detailedInvoice, attachmentData);
     
     if (supplierResult.confidence > 0.8) {
       debug('High confidence supplier identification - updating invoice');
@@ -82,51 +97,36 @@ async function processAction(
   }
 }
 
-interface SupplierIdentificationResult {
-  supplierId: string;
-  supplierName: string;
-  confidence: number;
-  reasoning: string;
-}
-
 async function identifySupplier(
-  config: WorkdayConfig,
+  s3Config: S3Config,
   invoice: any,
   attachmentData: any[]
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.invoiceNumber);
   
-  // Get all registered suppliers from Workday
-  const suppliersQuery = `
-    SELECT 
-      id,
-      name,
-      legalName,
-      taxId,
-      status
-    FROM supplier
-    WHERE status = "Active"
-    ORDER BY name
-  `;
+  // Get cached suppliers directly from S3
+  const cacheKey = 'cache/suppliers.json';
+  const cacheData = await getJsonFromS3<SupplierCacheData>(s3Config, cacheKey);
   
-  const suppliers = await executeWorkdayQuery(config, suppliersQuery) as Array<{
-    id: string;
-    name: string;
-    legalName: string;
-    taxId: string;
-    status: string;
-  }>;
+  if (!cacheData) {
+    throw new Error('Supplier cache not found. Please ensure cache_suppliers has run successfully.');
+  }
+  
+  const suppliers = cacheData.suppliers;
+  debug(`Loaded ${suppliers.length} suppliers from cache (cached at: ${cacheData.cachedAt})`);
   
   // Prepare AI request for supplier identification
   const systemPrompt = `You are a supplier identification specialist. Given an invoice and a list of registered suppliers, identify which supplier this invoice belongs to. If no match is found, respond with "None" and provide your reasoning.`;
   
   const userMessage = `Please identify the supplier for this invoice:
-Invoice Number: ${invoice.invoiceNumber}
-Invoice Data: ${JSON.stringify(invoice, null, 2)}
+Invoice WorkdayID: ${invoice.workdayID}
+Invoice Status: ${invoice.invoiceStatusAsText}
+OCR Supplier Invoice: ${JSON.stringify(invoice.OCRSupplierInvoice, null, 2)}
+Detailed Invoice Data: ${JSON.stringify(invoice, null, 2)}
 Attachments: ${JSON.stringify(attachmentData)}
 
 Available Suppliers:
-${suppliers.map(s => `${s.name} (ID: ${s.id})`).join('\n')}`;
+${JSON.stringify(suppliers, null, 2)}`;
 
   const schema = {
     type: 'object',

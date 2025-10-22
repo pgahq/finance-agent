@@ -25,12 +25,25 @@ Globals:
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         EVENT_BUS_NAME: !Ref FinanceAgentEventBus
+        S3_BUCKET_NAME: !Ref FinanceAgentBucket
 
 Resources:
   FinanceAgentEventBus:
     Type: AWS::Events::EventBus
     Properties:
       Name: FinanceAgentEventBus
+
+  FinanceAgentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub finance-agent-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
 
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
@@ -75,6 +88,13 @@ Resources:
                   - events:PutEvents
                 Resource:
                   - !GetAtt FinanceAgentEventBus.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub ${FinanceAgentBucket}/*
 
   WqlToEventFunction:
     Type: AWS::Serverless::Function
@@ -82,15 +102,16 @@ Resources:
       Handler: dist/wqlToEvent.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Events:
-        EnrichInvoicesCompanySchedule:
+        CacheSuppliersSchedule:
           Type: Schedule
           Properties:
             Schedule: rate(1 day)
-            Description: Query Workday for OCR invoices missing company
+            Description: Cache all suppliers data for daily use
             Input: !Sub |
               {
-                "action": "enrich_invoice_company",
-                "query": "SELECT id, invoiceNumber, company1 FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND (company1 is empty OR company1.companyName = 'Default OCR Company') ORDER BY invoiceDate DESC, invoiceNumber DESC"
+                "action": "cache_suppliers",
+                "bulk": true,
+                "query": "SELECT supplier, lastUpdatedDateTime, supplierStatus, allPhoneNumbers, allEmailAddresses, allAddresses FROM suppliers1 (dataSourceFilter = defaultFilter)"
               }
         EnrichInvoicesSupplierSchedule:
           Type: Schedule
@@ -100,17 +121,15 @@ Resources:
             Input: !Sub |
               {
                 "action": "enrich_invoice_supplier",
-                "query": "SELECT id, invoiceNumber, supplier FROM supplierInvoices WHERE OCRSupplierInvoice is not empty AND invoiceStatus.statusName = 'Draft' AND hasPurchaseOrder = false AND supplier is empty ORDER BY invoiceDate DESC, invoiceNumber DESC"
+                "query": "SELECT workdayID, invoiceStatusAsText, OCRSupplierInvoice, supplier FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) WHERE OCRSupplierInvoice is not empty AND supplier is empty AND isCanceled = false"
               }
 
-  # Action: enrich_invoice_company
-  EnrichInvoiceCompanyAction:
+  # Action: cache_suppliers
+  CacheSuppliersAction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/actions/enrich_invoice_company.handler
+      Handler: dist/actions/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Layers:
-        - !Ref PopplerLayer
       Events:
         Trigger:
           Type: EventBridgeRule
@@ -118,7 +137,7 @@ Resources:
             EventBusName: !Ref FinanceAgentEventBus
             Pattern:
               detail:
-                action: [enrich_invoice_company]
+                action: [cache_suppliers]
 
   # Action: enrich_invoice_supplier
   EnrichInvoiceSupplierAction:
