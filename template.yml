@@ -59,7 +59,6 @@ Resources:
     Properties:
       DBClusterIdentifier: !Sub "${AWS::StackName}-cluster"
       Engine: aurora-postgresql
-      EngineMode: serverless
       EngineVersion: 15.4
       ServerlessV2ScalingConfiguration:
         MinCapacity: 0.5
@@ -71,6 +70,15 @@ Resources:
         - !Ref DatabaseSecurityGroup
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
       Port: 5432
+
+  # Aurora Serverless PostgreSQL Instance
+  FinanceAgentDatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref FinanceAgentDatabase
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
 
   # VPC and Networking
   FinanceAgentVPC:
