@@ -15,12 +15,6 @@ Globals:
     CodeUri: .
     MemorySize: 1024
     Timeout: 300
-    VpcConfig:
-      SecurityGroupIds:
-        - !Ref LambdaSecurityGroup
-      SubnetIds:
-        - !Ref DatabaseSubnet1
-        - !Ref DatabaseSubnet2
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel
@@ -113,11 +107,6 @@ Resources:
     Properties:
       GroupDescription: Security group for Finance Agent Lambda functions
       VpcId: !Ref FinanceAgentVPC
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -200,6 +189,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CacheSuppliers"
       Handler: dist/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -213,6 +208,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
       Handler: dist/enrich_invoice_supplier.batchHandler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -226,5 +227,11 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
       Handler: dist/enrich_invoice_supplier.dataProcessor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
       Layers:
         - !Ref PopplerLayer
