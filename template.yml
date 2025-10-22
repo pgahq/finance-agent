@@ -15,6 +15,12 @@ Globals:
     CodeUri: .
     MemorySize: 1024
     Timeout: 300
+    VpcConfig:
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      SubnetIds:
+        - !Ref DatabaseSubnet1
+        - !Ref DatabaseSubnet2
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel
@@ -102,6 +108,17 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
 
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Finance Agent Lambda functions
+      VpcId: !Ref FinanceAgentVPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -111,7 +128,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
-          SourceSecurityGroupId: !Ref FinanceAgentLambdaRole
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
@@ -169,6 +186,12 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
 
   # Cache Suppliers - Bulk processing
   CacheSuppliersFunction:
