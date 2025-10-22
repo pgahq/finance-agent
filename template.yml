@@ -134,6 +134,7 @@ Resources:
       VpcId: !Ref FinanceAgentVPC
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       VpcEndpointType: Interface
+      PrivateDnsEnabled: true
       SubnetIds:
         - !Ref DatabaseSubnet1
         - !Ref DatabaseSubnet2
@@ -146,6 +147,7 @@ Resources:
       VpcId: !Ref FinanceAgentVPC
       ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
       VpcEndpointType: Interface
+      PrivateDnsEnabled: true
       SubnetIds:
         - !Ref DatabaseSubnet1
         - !Ref DatabaseSubnet2
