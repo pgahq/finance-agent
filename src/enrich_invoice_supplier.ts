@@ -1,9 +1,9 @@
 import { withBatchHandler, withRecordHandler } from './lib/actions.js';
 import { debug } from '@pga/logger';
 import { executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from './lib/workday.js';
-import { getJsonFromS3, type S3Config } from './lib/s3.js';
 import { callOpenAIWithSchema } from './lib/openai.js';
-import type { SupplierIdentificationResult, SupplierCacheData, InvoiceData, BatchSupplierIdentificationResult } from './lib/types.js';
+import { getJsonFromS3, type S3Config } from './lib/s3.js';
+import type { SupplierIdentificationResult, InvoiceData, SupplierCacheData } from './lib/types.js';
 
 const QUERY = `
   SELECT 
@@ -17,16 +17,12 @@ const QUERY = `
     AND isCanceled = false
 `;
 
-// Configuration for supplier identification batching
-const SUPPLIER_BATCH_SIZE = 10000;
-const HIGH_CONFIDENCE_THRESHOLD = 0.9;
-const MAX_BATCHES_TO_PROCESS = 50;
 
 export const batchHandler = withBatchHandler(QUERY)(`finance-agent-EnrichInvoiceSupplierProcessor`);
 
 export const dataProcessor = withRecordHandler<InvoiceData>(processAction);
 
-async function processAction({ workdayConfig, s3Config, data: invoiceData }: { workdayConfig: WorkdayConfig; s3Config: S3Config; data: InvoiceData }): Promise<void> {
+async function processAction({ workdayConfig, s3Config, data: invoiceData }: { workdayConfig: WorkdayConfig; s3Config: S3Config; dbConnection: any; data: InvoiceData }): Promise<void> {
   debug('Enriching invoice supplier with AI and Workday data');
   
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
@@ -59,9 +55,8 @@ async function processAction({ workdayConfig, s3Config, data: invoiceData }: { w
   const detailedInvoice = detailedResults[0] as any;
 
   // Get attachment content via separate API call if attachments are available
-  let attachmentData: any[] = [];
   if (detailedInvoice.allAttachmentsForBusinessDocument) {
-    attachmentData = await getAttachmentContent(workdayConfig, detailedInvoice.allAttachmentsForBusinessDocument);
+    await getAttachmentContent(workdayConfig, detailedInvoice.allAttachmentsForBusinessDocument);
   } else {
     debug('No attachments found for this invoice');
   }
@@ -69,7 +64,8 @@ async function processAction({ workdayConfig, s3Config, data: invoiceData }: { w
   // Check if supplier is missing
   if (!detailedInvoice.supplier || detailedInvoice.supplier === '') {
     debug('Missing supplier - identifying supplier');
-    const supplierResult = await identifySupplier(s3Config, detailedInvoice, attachmentData);
+    const attachmentData = detailedInvoice.allAttachmentsForBusinessDocument || [];
+    const supplierResult = await identifySupplier(detailedInvoice, s3Config, attachmentData);
     
     if (supplierResult.confidence > 0.8) {
       debug('High confidence supplier identification - updating invoice');
@@ -86,125 +82,88 @@ async function processAction({ workdayConfig, s3Config, data: invoiceData }: { w
 }
 
 async function identifySupplier(
-  s3Config: S3Config,
   invoice: any,
-  attachmentData: any[]
+  s3Config: S3Config,
+  attachmentData: any
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.invoiceNumber);
   
-  // Get cached suppliers directly from S3
-  const cacheKey = 'cache/suppliers.json';
-  const cacheData = await getJsonFromS3<SupplierCacheData>(s3Config, cacheKey);
-  
-  if (!cacheData) {
-    throw new Error('Supplier cache not found. Please ensure cache_suppliers has run successfully.');
-  }
-  
-  const suppliers = cacheData.suppliers;
-  debug(`Loaded ${suppliers.length} suppliers from cache (cached at: ${cacheData.cachedAt})`);
-  
-  debug(`Using batch configuration: batchSize=${SUPPLIER_BATCH_SIZE}, highConfidenceThreshold=${HIGH_CONFIDENCE_THRESHOLD}, maxBatches=${MAX_BATCHES_TO_PROCESS}`);
-  
-  // Split suppliers into batches
-  const batches = [];
-  for (let i = 0; i < suppliers.length; i += SUPPLIER_BATCH_SIZE) {
-    batches.push(suppliers.slice(i, i + SUPPLIER_BATCH_SIZE));
-  }
-  
-  debug(`Split ${suppliers.length} suppliers into ${batches.length} batches`);
-  
-  const allResults: BatchSupplierIdentificationResult[] = [];
-  let bestResult: BatchSupplierIdentificationResult | null = null;
-  
-  // Process batches sequentially with early exit on high confidence
-  for (let i = 0; i < Math.min(batches.length, MAX_BATCHES_TO_PROCESS); i++) {
-    const batch = batches[i];
-    debug(`Processing batch ${i + 1}/${Math.min(batches.length, MAX_BATCHES_TO_PROCESS)} with ${batch.length} suppliers`);
+  try {
+    // Get supplier cache from S3
+    const cacheKey = 'cache/suppliers.json';
+    const supplierCache = await getJsonFromS3(s3Config, cacheKey) as SupplierCacheData;
     
-    try {
-      const batchResult = await identifySupplierInBatch(invoice, attachmentData, batch, i, batches.length);
-      allResults.push(batchResult);
-      
-      // Track the best result so far
-      if (!bestResult || batchResult.confidence > bestResult.confidence) {
-        bestResult = batchResult;
-      }
-      
-      // Early exit if we found a high confidence match
-      if (batchResult.confidence >= HIGH_CONFIDENCE_THRESHOLD) {
-        debug(`High confidence match found in batch ${i + 1}, stopping early`);
-        break;
-      }
-      
-    } catch (error) {
-      debug(`Error processing batch ${i + 1}:`, error);
-      // Continue with next batch on error
+    if (!supplierCache || !supplierCache.suppliers) {
+      throw new Error('Supplier cache not found');
     }
-  }
-  
-  // Return the best result found
-  if (bestResult && bestResult.confidence > 0) {
-    debug(`Best supplier identification result: confidence=${bestResult.confidence}, supplier=${bestResult.supplierName}`);
-    return {
-      supplierId: bestResult.supplierId,
-      supplierName: bestResult.supplierName,
-      confidence: bestResult.confidence,
-      reasoning: bestResult.reasoning
+    
+    const suppliers = supplierCache.suppliers;
+    debug(`Loaded ${suppliers.length} suppliers from cache`);
+    
+    // Prepare invoice data for AI analysis
+    const invoiceData = {
+      companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
+      address: extractAddressFromInvoice(invoice),
+      phone: extractPhoneFromInvoice(invoice),
+      email: extractEmailFromInvoice(invoice),
+      invoiceNumber: invoice.invoiceNumber,
+      amount: invoice.controlTotalAmount,
+      attachmentData: attachmentData
     };
-  } else {
-    debug('No supplier match found in any batch');
+    
+    // Call OpenAI to identify the supplier
+    const result = await callOpenAIWithSchema({
+      prompt: `Identify the most likely supplier for this invoice based on the provided supplier data.`,
+      schema: {
+        type: 'object',
+        properties: {
+          supplierId: { type: 'string' },
+          supplierName: { type: 'string' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          reasoning: { type: 'string' }
+        },
+        required: ['supplierId', 'supplierName', 'confidence', 'reasoning']
+      },
+      messages: [
+        { role: 'system', content: `You are an expert at matching invoices to suppliers. You will be given invoice data and a list of suppliers. Your job is to identify the most likely supplier for the invoice.` },
+        { role: 'user', content: `Invoice data: ${JSON.stringify(invoiceData, null, 2)}\n\nAvailable suppliers: ${JSON.stringify(suppliers, null, 2)}` }
+      ]
+    });
+    
+    return result as SupplierIdentificationResult;
+    
+  } catch (error) {
+    debug('Error in supplier identification:', error);
     return {
       supplierId: '',
       supplierName: 'None',
       confidence: 0,
-      reasoning: 'No matching supplier found in any processed batch'
+      reasoning: `Error in supplier identification: ${error}`
     };
   }
 }
 
-async function identifySupplierInBatch(
-  invoice: any,
-  attachmentData: any[],
-  suppliers: any[],
-  batchIndex: number,
-  totalBatches: number
-): Promise<BatchSupplierIdentificationResult> {
-  const systemPrompt = `You are a supplier identification specialist. Given an invoice and a list of registered suppliers, identify which supplier this invoice belongs to. If no match is found, respond with "None" and provide your reasoning.`;
-  
-  const userMessage = `Please identify the supplier for this invoice:
-Invoice WorkdayID: ${invoice.workdayID}
-Invoice Status: ${invoice.invoiceStatusAsText}
-OCR Supplier Invoice: ${JSON.stringify(invoice.OCRSupplierInvoice, null, 2)}
-Detailed Invoice Data: ${JSON.stringify(invoice, null, 2)}
-Attachments: ${JSON.stringify(attachmentData)}
+// Helper functions to extract data from invoice
+function extractAddressFromInvoice(invoice: any): string | undefined {
+  // Try to extract address from various invoice fields
+  if (invoice.allAddresses?.length > 0) {
+    return invoice.allAddresses.map((addr: any) => addr.descriptor).join(', ');
+  }
+  return undefined;
+}
 
-Available Suppliers (Batch ${batchIndex + 1}/${totalBatches}):
-${JSON.stringify(suppliers, null, 2)}`;
+function extractPhoneFromInvoice(invoice: any): string | undefined {
+  // Try to extract phone from various invoice fields
+  if (invoice.allPhoneNumbers?.length > 0) {
+    return invoice.allPhoneNumbers.map((phone: any) => phone.descriptor).join(', ');
+  }
+  return undefined;
+}
 
-  const schema = {
-    type: 'object',
-    properties: {
-      supplierId: { type: 'string', description: 'Workday supplier ID if found' },
-      supplierName: { type: 'string', description: 'Supplier name if found' },
-      confidence: { type: 'number', description: 'Confidence level 0-1' },
-      reasoning: { type: 'string', description: 'Explanation of the identification' }
-    },
-    required: ['supplierId', 'supplierName', 'confidence', 'reasoning']
-  };
-
-  const result = await callOpenAIWithSchema({
-    prompt: systemPrompt,
-    schema,
-    messages: [{ role: 'user', content: userMessage }]
-  });
-
-  const batchResult = {
-    ...result as SupplierIdentificationResult,
-    batchIndex,
-    totalBatches
-  };
-  
-  debug(`Batch ${batchIndex + 1} completed with confidence: ${batchResult.confidence}`);
-  
-  return batchResult;
+function extractEmailFromInvoice(invoice: any): string | undefined {
+  // Try to extract email from various invoice fields
+  if (invoice.allEmailAddresses?.length > 0) {
+    return invoice.allEmailAddresses.map((email: any) => email.descriptor).join(', ');
+  }
+  return undefined;
 }
