@@ -11,7 +11,7 @@ export async function callOpenAIWithSchema({
   prompt,
   schema,
   messages,
-  model = 'gpt-4.1-2025-04-14'
+  model = 'gpt-4o'
 }: OpenAICallOptions): Promise<unknown> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
 
