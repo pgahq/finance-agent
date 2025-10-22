@@ -94,7 +94,8 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                 Resource:
-                  - !Sub ${FinanceAgentBucket}/*
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}/*
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}
 
   WqlToEventFunction:
     Type: AWS::Serverless::Function
