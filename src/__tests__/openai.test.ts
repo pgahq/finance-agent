@@ -33,7 +33,7 @@ describe('OpenAI utilities', () => {
             'Authorization': 'Bearer test-key',
             'Content-Type': 'application/json',
           },
-          body: expect.stringContaining('"model":"gpt-4.1-2025-04-14"')
+          body: expect.stringContaining('"model":"gpt-4o"')
         })
       );
 

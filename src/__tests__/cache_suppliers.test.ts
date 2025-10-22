@@ -102,8 +102,6 @@ describe('cache_suppliers', () => {
           expect.objectContaining({
             supplierId: 'supplier-1',
             supplierName: 'Test Supplier 1',
-            lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-            supplierStatus: 'Active',
             allPhoneNumbers: ['555-1234'],
             allEmailAddresses: ['test1@supplier.com'],
             allAddresses: ['123 Test St']
@@ -111,8 +109,6 @@ describe('cache_suppliers', () => {
           expect.objectContaining({
             supplierId: 'supplier-2',
             supplierName: 'Test Supplier 2',
-            lastUpdatedDateTime: '2024-01-02T00:00:00Z',
-            supplierStatus: 'Active',
             allPhoneNumbers: ['555-5678'],
             allEmailAddresses: ['test2@supplier.com'],
             allAddresses: ['456 Test Ave']
@@ -153,10 +149,8 @@ describe('cache_suppliers', () => {
         suppliers: expect.arrayContaining([
           expect.objectContaining({
             supplierId: 'supplier-minimal',
-            supplierName: 'Minimal Supplier',
-            allPhoneNumbers: [],
-            allEmailAddresses: [],
-            allAddresses: []
+            supplierName: 'Minimal Supplier'
+            // Empty arrays are no longer included in the output
           })
         ])
       })
@@ -201,8 +195,8 @@ describe('cache_suppliers', () => {
           },
           lastUpdatedDateTime: '2024-01-01T00:00:00Z',
           supplierStatus: {
-            descriptor: 'Inactive',
-            id: 'status-inactive'
+            descriptor: 'Active',
+            id: 'status-active'
           },
           allPhoneNumbers: [
             { descriptor: '555-1111', id: 'phone-1' },
@@ -229,8 +223,6 @@ describe('cache_suppliers', () => {
     expect(cacheData.suppliers[0]).toEqual({
       supplierId: 'supplier-complex',
       supplierName: 'Complex Supplier',
-      lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-      supplierStatus: 'Inactive',
       allPhoneNumbers: ['555-1111', '555-2222'],
       allEmailAddresses: ['primary@supplier.com', 'secondary@supplier.com'],
       allAddresses: ['123 Main St', '456 Oak Ave']

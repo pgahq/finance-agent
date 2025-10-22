@@ -28,16 +28,30 @@ async function processAction({ s3Config, data }: { s3Config: S3Config; data: unk
 
   debug(`Processing ${suppliers.length} suppliers from Workday query`);
 
+  // Filter to Active suppliers only
+  const activeSuppliers = suppliers.filter((supplier: any) => supplier.supplierStatus.descriptor === 'Active');
+  debug(`Filtered to ${activeSuppliers.length} Active suppliers (${((activeSuppliers.length / suppliers.length) * 100).toFixed(1)}% of total)`);
+
   // Transform the data to simplified format
-  const simplifiedSuppliers: CachedSupplier[] = suppliers.map((supplier: any) => ({
-    supplierId: supplier.supplier.id,
-    supplierName: supplier.supplier.descriptor,
-    lastUpdatedDateTime: supplier.lastUpdatedDateTime,
-    supplierStatus: supplier.supplierStatus.descriptor,
-    allPhoneNumbers: supplier.allPhoneNumbers?.map((p: any) => p.descriptor) || [],
-    allEmailAddresses: supplier.allEmailAddresses?.map((e: any) => e.descriptor) || [],
-    allAddresses: supplier.allAddresses?.map((a: any) => a.descriptor) || []
-  }));
+  const simplifiedSuppliers: CachedSupplier[] = activeSuppliers.map((supplier: any) => {
+      const simplified: any = {
+        supplierId: supplier.supplier.id,
+        supplierName: supplier.supplier.descriptor
+      };
+
+      // Only include non-empty arrays
+      if (supplier.allPhoneNumbers?.length > 0) {
+        simplified.allPhoneNumbers = supplier.allPhoneNumbers.map((p: any) => p.descriptor);
+      }
+      if (supplier.allEmailAddresses?.length > 0) {
+        simplified.allEmailAddresses = supplier.allEmailAddresses.map((e: any) => e.descriptor);
+      }
+      if (supplier.allAddresses?.length > 0) {
+        simplified.allAddresses = supplier.allAddresses.map((a: any) => a.descriptor);
+      }
+
+      return simplified;
+    });
 
   // Store in S3 with simple key structure
   const cacheKey = 'cache/suppliers.json';
@@ -48,7 +62,7 @@ async function processAction({ s3Config, data }: { s3Config: S3Config; data: unk
   };
   await putJsonToS3(s3Config, cacheKey, cacheData);
 
-  debug(`Successfully cached ${simplifiedSuppliers.length} suppliers to S3: ${cacheKey}`);
+  debug(`Successfully cached ${simplifiedSuppliers.length} Active suppliers to S3: ${cacheKey}`);
 }
 
 export const handler = withBulkHandler(QUERY)(processAction);

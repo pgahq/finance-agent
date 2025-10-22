@@ -2,11 +2,9 @@
 export interface CachedSupplier {
   supplierId: string;
   supplierName: string;
-  lastUpdatedDateTime: string;
-  supplierStatus: string;
-  allPhoneNumbers: string[];
-  allEmailAddresses: string[];
-  allAddresses: string[];
+  allPhoneNumbers?: string[];
+  allEmailAddresses?: string[];
+  allAddresses?: string[];
 }
 
 export interface SupplierCacheData {
