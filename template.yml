@@ -127,6 +127,7 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
+
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
@@ -183,12 +184,6 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
-              - Effect: Allow
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-                Resource: "*"
 
   # Cache Suppliers - Bulk processing
   CacheSuppliersFunction:
@@ -197,12 +192,6 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CacheSuppliers"
       Handler: dist/cache_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
-        SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -216,12 +205,6 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
       Handler: dist/enrich_invoice_supplier.batchHandler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
-        SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
       Events:
         Schedule:
           Type: Schedule
@@ -235,11 +218,5 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
       Handler: dist/enrich_invoice_supplier.dataProcessor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      VpcConfig:
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroup
-        SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
       Layers:
         - !Ref PopplerLayer
