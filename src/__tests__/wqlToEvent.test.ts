@@ -9,7 +9,11 @@ jest.mock('@pga/lambda-env', () => ({
     WORKDAY_TENANT: 'test-tenant',
     WORKDAY_CLIENT_ID: 'test-client-id',
     WORKDAY_CLIENT_SECRET: 'test-client-secret',
-    WORKDAY_REFRESH_TOKEN: 'test-refresh-token'
+    WORKDAY_REFRESH_TOKEN: 'test-refresh-token',
+    ACTION_FUNCTION_MAP: JSON.stringify({
+      'CacheSuppliersAction': 'arn:aws:lambda:us-east-1:123456789012:function:finance-agent-CacheSuppliersAction-ABC123',
+      'EnrichInvoiceSupplierAction': 'arn:aws:lambda:us-east-1:123456789012:function:finance-agent-EnrichInvoiceSupplierAction-DEF456'
+    })
   })
 }));
 

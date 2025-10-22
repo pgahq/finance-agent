@@ -25,6 +25,11 @@ Globals:
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
+        ACTION_FUNCTION_MAP: !Sub |
+          {
+            "CacheSuppliersAction": "${CacheSuppliersAction}",
+            "EnrichInvoiceSupplierAction": "${EnrichInvoiceSupplierAction}"
+          }
 
 Resources:
   FinanceAgentBucket:
