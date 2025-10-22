@@ -1,7 +1,7 @@
 import { withBulkHandler } from './lib/actions.js';
 import { debug } from '@pga/logger';
-import { putJsonToS3, type S3Config } from './lib/s3.js';
-import type { CachedSupplier, SupplierCacheData } from './lib/types.js';
+import { createSupplierContent, createDocumentEmbedding } from './lib/embedding.js';
+import { bulkInsertDocuments, bulkUpdateDocuments, bulkDeleteDocuments, getDocumentsByType } from './lib/database.js';
 
 const QUERY = `
   SELECT 
@@ -14,15 +14,15 @@ const QUERY = `
   FROM suppliers1 (dataSourceFilter = defaultFilter)
 `;
 
-async function processAction({ s3Config, data }: { s3Config: S3Config; data: unknown }): Promise<void> {
-  debug('Processing and caching supplier data');
+async function processAction({ data, dbConnection }: { data: unknown; dbConnection: any }): Promise<void> {
+  debug('Starting incremental supplier sync');
 
   // Data is already the array from executeQuery
   const suppliers = data as any[];
 
   // Check if we have data results
   if (!suppliers || suppliers.length === 0) {
-    debug('No supplier data received - skipping cache update');
+    debug('No supplier data received - skipping sync');
     return;
   }
 
@@ -32,37 +32,159 @@ async function processAction({ s3Config, data }: { s3Config: S3Config; data: unk
   const activeSuppliers = suppliers.filter((supplier: any) => supplier.supplierStatus.descriptor === 'Active');
   debug(`Filtered to ${activeSuppliers.length} Active suppliers (${((activeSuppliers.length / suppliers.length) * 100).toFixed(1)}% of total)`);
 
-  // Transform the data to simplified format
-  const simplifiedSuppliers: CachedSupplier[] = activeSuppliers.map((supplier: any) => {
-      const simplified: any = {
+  // Get existing suppliers from database
+  debug('Fetching existing suppliers from database...');
+  const existingSuppliers = await getDocumentsByType(dbConnection, 'supplier');
+  const existingSupplierMap = new Map(
+    existingSuppliers.map(s => [s.workday_id, s])
+  );
+
+  // Create maps for efficient lookups
+  const workdaySupplierMap = new Map(
+    activeSuppliers.map((supplier: any) => [
+      supplier.supplier.id,
+      {
         supplierId: supplier.supplier.id,
-        supplierName: supplier.supplier.descriptor
-      };
-
-      // Only include non-empty arrays
-      if (supplier.allPhoneNumbers?.length > 0) {
-        simplified.allPhoneNumbers = supplier.allPhoneNumbers.map((p: any) => p.descriptor);
+        supplierName: supplier.supplier.descriptor,
+        lastUpdatedDateTime: supplier.lastUpdatedDateTime,
+        allPhoneNumbers: supplier.allPhoneNumbers?.length > 0 
+          ? supplier.allPhoneNumbers.map((p: any) => p.descriptor) 
+          : undefined,
+        allEmailAddresses: supplier.allEmailAddresses?.length > 0 
+          ? supplier.allEmailAddresses.map((e: any) => e.descriptor) 
+          : undefined,
+        allAddresses: supplier.allAddresses?.length > 0 
+          ? supplier.allAddresses.map((a: any) => a.descriptor) 
+          : undefined
       }
-      if (supplier.allEmailAddresses?.length > 0) {
-        simplified.allEmailAddresses = supplier.allEmailAddresses.map((e: any) => e.descriptor);
+    ])
+  );
+
+  // Identify changes
+  const newSuppliers: string[] = [];
+  const updatedSuppliers: string[] = [];
+  const unchangedSuppliers: string[] = [];
+  const deletedSuppliers: string[] = [];
+
+  // Check each Workday supplier
+  for (const [supplierId, workdaySupplier] of workdaySupplierMap) {
+    const existingSupplier = existingSupplierMap.get(supplierId);
+    
+    if (!existingSupplier) {
+      newSuppliers.push(supplierId);
+    } else {
+      const existingLastUpdated = existingSupplier.metadata?.lastUpdatedDateTime;
+      if (existingLastUpdated !== workdaySupplier.lastUpdatedDateTime) {
+        updatedSuppliers.push(supplierId);
+      } else {
+        unchangedSuppliers.push(supplierId);
       }
-      if (supplier.allAddresses?.length > 0) {
-        simplified.allAddresses = supplier.allAddresses.map((a: any) => a.descriptor);
+    }
+  }
+
+  // Check for deleted suppliers (in DB but not in Workday)
+  for (const [supplierId] of existingSupplierMap) {
+    if (!workdaySupplierMap.has(supplierId)) {
+      deletedSuppliers.push(supplierId);
+    }
+  }
+
+  debug(`Sync analysis: ${newSuppliers.length} new, ${updatedSuppliers.length} updated, ${unchangedSuppliers.length} unchanged, ${deletedSuppliers.length} deleted`);
+
+  // Process changes using bulk operations
+  let successCount = 0;
+  let errorCount = 0;
+
+  try {
+    // Step 1: Bulk delete removed suppliers
+    if (deletedSuppliers.length > 0) {
+      debug(`Bulk deleting ${deletedSuppliers.length} removed suppliers...`);
+      const deletedCount = await bulkDeleteDocuments(dbConnection, deletedSuppliers, 'supplier');
+      successCount += deletedCount;
+      debug(`Deleted ${deletedCount} suppliers`);
+    }
+
+    // Step 2: Prepare new suppliers for bulk insert
+    const newSupplierDocuments = [];
+    if (newSuppliers.length > 0) {
+      debug(`Preparing ${newSuppliers.length} new suppliers for bulk insert...`);
+      
+      for (const supplierId of newSuppliers) {
+        try {
+          const supplier = workdaySupplierMap.get(supplierId)!;
+          const content = createSupplierContent(supplier);
+          const metadata = {
+            supplierId: supplier.supplierId,
+            supplierName: supplier.supplierName,
+            workdayId: supplier.supplierId,
+            lastUpdatedDateTime: supplier.lastUpdatedDateTime
+          };
+          
+          const embedding = await createDocumentEmbedding(content);
+          newSupplierDocuments.push({
+            workdayId: supplier.supplierId,
+            type: 'supplier' as const,
+            content,
+            metadata,
+            embedding
+          });
+        } catch (error) {
+          debug(`Error preparing supplier ${supplierId} for insert:`, error);
+          errorCount++;
+        }
       }
+      
+      if (newSupplierDocuments.length > 0) {
+        await bulkInsertDocuments(dbConnection, newSupplierDocuments);
+        successCount += newSupplierDocuments.length;
+        debug(`Bulk inserted ${newSupplierDocuments.length} new suppliers`);
+      }
+    }
 
-      return simplified;
-    });
+    // Step 3: Prepare updated suppliers for bulk update
+    const updatedSupplierDocuments = [];
+    if (updatedSuppliers.length > 0) {
+      debug(`Preparing ${updatedSuppliers.length} updated suppliers for bulk update...`);
+      
+      for (const supplierId of updatedSuppliers) {
+        try {
+          const supplier = workdaySupplierMap.get(supplierId)!;
+          const content = createSupplierContent(supplier);
+          const metadata = {
+            supplierId: supplier.supplierId,
+            supplierName: supplier.supplierName,
+            workdayId: supplier.supplierId,
+            lastUpdatedDateTime: supplier.lastUpdatedDateTime
+          };
+          
+          const embedding = await createDocumentEmbedding(content);
+          updatedSupplierDocuments.push({
+            workdayId: supplier.supplierId,
+            type: 'supplier' as const,
+            content,
+            metadata,
+            embedding
+          });
+        } catch (error) {
+          debug(`Error preparing supplier ${supplierId} for update:`, error);
+          errorCount++;
+        }
+      }
+      
+      if (updatedSupplierDocuments.length > 0) {
+        await bulkUpdateDocuments(dbConnection, updatedSupplierDocuments);
+        successCount += updatedSupplierDocuments.length;
+        debug(`Bulk updated ${updatedSupplierDocuments.length} suppliers`);
+      }
+    }
 
-  // Store in S3 with simple key structure
-  const cacheKey = 'cache/suppliers.json';
-  const cacheData: SupplierCacheData = {
-    cachedAt: new Date().toISOString(),
-    totalCount: simplifiedSuppliers.length,
-    suppliers: simplifiedSuppliers
-  };
-  await putJsonToS3(s3Config, cacheKey, cacheData);
-
-  debug(`Successfully cached ${simplifiedSuppliers.length} Active suppliers to S3: ${cacheKey}`);
+    debug(`Bulk sync complete: ${successCount} operations successful, ${errorCount} errors`);
+    debug(`Skipped ${unchangedSuppliers.length} unchanged suppliers`);
+    
+  } catch (error) {
+    debug('Error during bulk sync operations:', error);
+    throw error;
+  }
 }
 
 export const handler = withBulkHandler(QUERY)(processAction);

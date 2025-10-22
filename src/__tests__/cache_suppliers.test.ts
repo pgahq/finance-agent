@@ -16,12 +16,20 @@ jest.mock('@pga/logger', () => ({
   info: jest.fn()
 }));
 
-jest.mock('../lib/s3.js', () => ({
-  getS3Config: jest.fn().mockReturnValue({
-    bucketName: 'test-bucket',
-    region: 'us-east-1'
+jest.mock('../lib/embedding.js', () => ({
+  createSupplierContent: jest.fn().mockReturnValue('Supplier content'),
+  createDocumentEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
+}));
+
+jest.mock('../lib/database.js', () => ({
+  getDatabaseConnection: jest.fn().mockResolvedValue({
+    query: jest.fn().mockResolvedValue([]),
+    close: jest.fn().mockResolvedValue({})
   }),
-  putJsonToS3: jest.fn().mockResolvedValue({})
+  getDocumentsByType: jest.fn().mockResolvedValue([]),
+  bulkInsertDocuments: jest.fn().mockResolvedValue({}),
+  bulkUpdateDocuments: jest.fn().mockResolvedValue({}),
+  bulkDeleteDocuments: jest.fn().mockResolvedValue(0)
 }));
 
 jest.mock('../lib/workday.js', () => ({
@@ -91,30 +99,27 @@ describe('cache_suppliers', () => {
 
     await expect(handler()).resolves.not.toThrow();
 
-    const { putJsonToS3 } = require('../lib/s3.js');
-    expect(putJsonToS3).toHaveBeenCalledWith(
-      expect.any(Object),
-      'cache/suppliers.json',
+    const { bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkInsertDocuments).toHaveBeenCalledTimes(1);
+    expect(bulkInsertDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
-        cachedAt: expect.any(String),
-        totalCount: 2,
-        suppliers: expect.arrayContaining([
-          expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'supplier-1',
+          type: 'supplier',
+          content: 'Supplier content',
+          metadata: expect.objectContaining({
             supplierId: 'supplier-1',
             supplierName: 'Test Supplier 1',
-            allPhoneNumbers: ['555-1234'],
-            allEmailAddresses: ['test1@supplier.com'],
-            allAddresses: ['123 Test St']
+            workdayId: 'supplier-1',
+            lastUpdatedDateTime: '2024-01-01T00:00:00Z'
           }),
-          expect.objectContaining({
-            supplierId: 'supplier-2',
-            supplierName: 'Test Supplier 2',
-            allPhoneNumbers: ['555-5678'],
-            allEmailAddresses: ['test2@supplier.com'],
-            allAddresses: ['456 Test Ave']
-          })
-        ])
-      })
+          embedding: [0.1, 0.2, 0.3]
+        })
+      ])
     );
   });
 
@@ -140,20 +145,27 @@ describe('cache_suppliers', () => {
 
     await expect(handler()).resolves.not.toThrow();
 
-    const { putJsonToS3 } = require('../lib/s3.js');
-    expect(putJsonToS3).toHaveBeenCalledWith(
-      expect.any(Object),
-      'cache/suppliers.json',
+    const { bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkInsertDocuments).toHaveBeenCalledTimes(1);
+    expect(bulkInsertDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
-        totalCount: 1,
-        suppliers: expect.arrayContaining([
-          expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'supplier-minimal',
+          type: 'supplier',
+          content: 'Supplier content',
+          metadata: expect.objectContaining({
             supplierId: 'supplier-minimal',
-            supplierName: 'Minimal Supplier'
-            // Empty arrays are no longer included in the output
-          })
-        ])
-      })
+            supplierName: 'Minimal Supplier',
+            workdayId: 'supplier-minimal',
+            lastUpdatedDateTime: '2024-01-01T00:00:00Z'
+          }),
+          embedding: [0.1, 0.2, 0.3]
+        })
+      ])
     );
   });
 
@@ -166,8 +178,8 @@ describe('cache_suppliers', () => {
 
     await expect(handler()).resolves.not.toThrow();
 
-    const { putJsonToS3 } = require('../lib/s3.js');
-    expect(putJsonToS3).not.toHaveBeenCalled();
+    const { bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkInsertDocuments).not.toHaveBeenCalled();
   });
 
   it('should handle null/undefined data gracefully', async () => {
@@ -179,8 +191,8 @@ describe('cache_suppliers', () => {
 
     await expect(handler()).resolves.not.toThrow();
 
-    const { putJsonToS3 } = require('../lib/s3.js');
-    expect(putJsonToS3).not.toHaveBeenCalled();
+    const { bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkInsertDocuments).not.toHaveBeenCalled();
   });
 
   it('should transform supplier data correctly', async () => {
@@ -216,16 +228,27 @@ describe('cache_suppliers', () => {
 
     await expect(handler()).resolves.not.toThrow();
 
-    const { putJsonToS3 } = require('../lib/s3.js');
-    const putCall = putJsonToS3.mock.calls[0];
-    const cacheData = putCall[2];
-
-    expect(cacheData.suppliers[0]).toEqual({
-      supplierId: 'supplier-complex',
-      supplierName: 'Complex Supplier',
-      allPhoneNumbers: ['555-1111', '555-2222'],
-      allEmailAddresses: ['primary@supplier.com', 'secondary@supplier.com'],
-      allAddresses: ['123 Main St', '456 Oak Ave']
-    });
+    const { bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkInsertDocuments).toHaveBeenCalledTimes(1);
+    expect(bulkInsertDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'supplier-complex',
+          type: 'supplier',
+          content: 'Supplier content',
+          metadata: expect.objectContaining({
+            supplierId: 'supplier-complex',
+            supplierName: 'Complex Supplier',
+            workdayId: 'supplier-complex',
+            lastUpdatedDateTime: '2024-01-01T00:00:00Z'
+          }),
+          embedding: [0.1, 0.2, 0.3]
+        })
+      ])
+    );
   });
 });
