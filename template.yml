@@ -89,8 +89,8 @@ Resources:
                 Action:
                   - lambda:InvokeFunction
                 Resource:
-                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:CacheSuppliersAction
-                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:EnrichInvoiceSupplierAction
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-CacheSuppliersAction
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-EnrichInvoiceSupplierAction
 
   WqlToEventFunction:
     Type: AWS::Serverless::Function
