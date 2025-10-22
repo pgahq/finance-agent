@@ -220,7 +220,7 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            'Authorization': expect.stringContaining('ID ')
+            'Authorization': expect.stringContaining('Basic ')
           }),
           body: expect.any(URLSearchParams)
         })

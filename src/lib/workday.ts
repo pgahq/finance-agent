@@ -22,7 +22,7 @@ const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clien
 
 const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
   const authToken = generateAuthToken({ clientId: config.clientId, clientSecret: config.clientSecret });
-  const headers = { Authorization: `ID ${authToken}` };
+  const headers = { Authorization: `Basic ${authToken}` };
 
   const params = new URLSearchParams();
   params.append('grant_type', 'refresh_token');
