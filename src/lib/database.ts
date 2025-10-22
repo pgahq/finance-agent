@@ -73,14 +73,15 @@ export async function getDatabaseConfig(env: NodeJS.ProcessEnv): Promise<Databas
       throw new Error('No secret value found in Secrets Manager');
     }
     
-    const secret = JSON.parse(response.SecretString);
+    // CloudFormation GenerateSecretString creates a plain password string
+    const password = response.SecretString;
     
     return {
       host: clusterEndpoint,
       port: 5432,
       database: databaseName,
-      user: secret.username || 'postgres',
-      password: secret.password
+      user: 'postgres',
+      password: password
     };
   } catch (error) {
     debug('Error retrieving database credentials:', error);
