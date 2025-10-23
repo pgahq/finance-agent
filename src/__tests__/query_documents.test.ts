@@ -42,7 +42,7 @@ describe('QueryDocuments', () => {
       similarityThreshold: 0.7
     };
 
-    const result = await handler(queryRequest);
+    const result = await handler({ data: queryRequest });
 
     // Verify queryDocuments was called with correct parameters
     expect(mockQueryDocuments).toHaveBeenCalledWith(queryRequest);
@@ -66,7 +66,7 @@ describe('QueryDocuments', () => {
       limit: 5
     };
 
-    await expect(handler(queryRequest)).rejects.toThrow('Query parameter is required and cannot be empty');
+    await expect(handler({ data: queryRequest })).rejects.toThrow('Query parameter is required and cannot be empty');
   });
 
   it('should handle database errors', async () => {
@@ -77,7 +77,7 @@ describe('QueryDocuments', () => {
       limit: 5
     };
 
-    await expect(handler(queryRequest)).rejects.toThrow('Database connection failed');
+    await expect(handler({ data: queryRequest })).rejects.toThrow('Database connection failed');
   });
 
   it('should query all document types when no type specified', async () => {
@@ -88,7 +88,7 @@ describe('QueryDocuments', () => {
       limit: 10
     };
 
-    await handler(queryRequest);
+    await handler({ data: queryRequest });
 
     // Verify queryDocuments was called with correct parameters
     expect(mockQueryDocuments).toHaveBeenCalledWith(queryRequest);
@@ -102,7 +102,7 @@ describe('QueryDocuments', () => {
       limit: 5
     };
 
-    const result = await handler(queryRequest);
+    const result = await handler({ data: queryRequest });
 
     expect(result).toHaveLength(0);
   });

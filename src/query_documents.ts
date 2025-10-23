@@ -1,3 +1,4 @@
+import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { queryDocuments, RAGQuery, RAGResult, DEFAULT_RAG_LIMIT, DEFAULT_RAG_SIMILARITY_THRESHOLD } from './lib/rag.js';
 
@@ -7,19 +8,20 @@ export interface QueryRequest extends RAGQuery {}
 // Query result interface (alias for RAGResult)
 export interface QueryResult extends RAGResult {}
 
-// Use defaults from RAG library for consistency
-
-// Main handler function
-export async function handler(event: QueryRequest): Promise<QueryResult[]> {
+// Main handler function with environment setup
+export async function handler(event: { data: QueryRequest }): Promise<QueryResult[]> {
+  // Setup environment to unwrap SSM parameters
+  process.env = await loadEnv();
+  
   debug('Starting document query handler');
   
   try {
     // Apply defaults for configurable parameters
     const queryRequest: RAGQuery = {
-      query: event.query,
-      documentType: event.documentType,
-      limit: event.limit ?? DEFAULT_RAG_LIMIT,
-      similarityThreshold: event.similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD
+      query: event.data.query,
+      documentType: event.data.documentType,
+      limit: event.data.limit ?? DEFAULT_RAG_LIMIT,
+      similarityThreshold: event.data.similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD
     };
 
     debug(`Querying documents with: "${queryRequest.query}"`);
