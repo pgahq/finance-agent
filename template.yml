@@ -123,7 +123,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
-          DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+          CidrIp: 10.0.0.0/16
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
