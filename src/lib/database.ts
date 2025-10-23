@@ -362,6 +362,9 @@ export async function searchSimilarDocuments(
   limit: number = 5
 ): Promise<any[]> {
   try {
+    // Format the embedding as a PostgreSQL vector literal
+    const vectorString = `[${queryEmbedding.join(',')}]`;
+    
     const results = await db.query(`
       SELECT 
         id,
@@ -369,12 +372,12 @@ export async function searchSimilarDocuments(
         type,
         content,
         metadata,
-        1 - (embedding <=> $1) as similarity
+        1 - (embedding <=> '${vectorString}'::vector) as similarity
       FROM documents 
-      WHERE type = $2
-      ORDER BY embedding <=> $1
-      LIMIT $3
-    `, [queryEmbedding, documentType, limit]);
+      WHERE type = $1
+      ORDER BY embedding <=> '${vectorString}'::vector
+      LIMIT $2
+    `, [documentType, limit]);
     
     debug(`Found ${results.length} similar ${documentType} documents`);
     return results;
