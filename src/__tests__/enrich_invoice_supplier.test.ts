@@ -46,8 +46,8 @@ jest.mock('../lib/rag.js', () => ({
   createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
-jest.mock('../lib/openai.js', () => ({
-  callOpenAIWithSchema: jest.fn().mockResolvedValue({
+jest.mock('../lib/ai.js', () => ({
+  getAiResponse: jest.fn().mockResolvedValue({
     supplierId: 'supplier-1',
     supplierName: 'Test Supplier',
     confidence: 0.9,

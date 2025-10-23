@@ -1,5 +1,7 @@
 import { debug } from '@pga/logger';
 import { getDatabaseConnection, searchDocuments } from './database.js';
+import { tool } from 'ai';
+import { z } from 'zod';
 
 // Document types
 export type DocumentType = 'supplier' | 'invoice';
@@ -57,7 +59,7 @@ export function createInvoiceContent(invoice: any): string {
 }
 
 // Default configuration for RAG queries
-export const DEFAULT_RAG_LIMIT = 5;
+export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 
 // RAG query interface
@@ -149,45 +151,55 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
   }
 }
 
-/**
- * Get context for a query by retrieving relevant documents
- * This is useful for providing context to LLMs
- */
-export async function getContextForQuery(
-  query: string, 
-  options: {
-    documentType?: 'supplier' | 'invoice';
-    maxDocuments?: number;
-    similarityThreshold?: number;
-  } = {}
-): Promise<string> {
-  const {
-    documentType,
-    maxDocuments = 3,
-    similarityThreshold = DEFAULT_RAG_SIMILARITY_THRESHOLD
-  } = options;
 
-  const results = await queryDocuments({
-    query,
-    documentType,
-    limit: maxDocuments,
-    similarityThreshold
-  });
-
-  if (results.length === 0) {
-    return 'No relevant documents found.';
+// AI Tools for use with Vercel AI SDK
+export const findSuppliersTool = tool({
+  description: `Search for suppliers using semantic similarity and exact text matching. 
+  
+  This tool is optimized for finding suppliers by:
+  - Company names (e.g., "Acme Corp", "Microsoft")
+  - Partial company names (e.g., "Acme", "Micro")
+  - Addresses or parts of addresses (e.g., "123 Main St", "New York", "NY 10001")
+  - Email addresses (e.g., "contact@acme.com", "support@microsoft.com")
+  - Phone numbers (e.g., "555-123-4567", "(555) 123-4567")
+  - Business descriptions or industries (e.g., "software company", "construction")
+  
+  Examples: "suppliers in New York", "Acme Corporation", "contact@acme.com", "555-123-4567"`,
+  inputSchema: z.object({
+    query: z.string().describe('Search query for suppliers (company name, address, email, phone, or description)'),
+    limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    debug(`Find Suppliers Tool: Searching for "${query}"`);
+    
+    try {
+      const results = await queryDocuments({
+        query,
+        documentType: 'supplier',
+        limit,
+        similarityThreshold
+      });
+      
+      debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
+      
+      return {
+        success: true,
+        results: results.map(result => ({
+          workdayId: result.workday_id,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          similarity: result.similarity
+        }))
+      };
+    } catch (error) {
+      debug(`Find Suppliers Tool Error: ${error}`);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
   }
+});
 
-  // Format results as context
-  const context = results.map((result, index) => {
-    return `Document ${index + 1} (${result.type}, similarity: ${result.similarity.toFixed(3)}):
-${result.content}
-
-Metadata: ${JSON.stringify(result.metadata)}
----`;
-  }).join('\n\n');
-
-  return context;
-}
-
-// Types and functions are already exported above

@@ -1,9 +1,17 @@
 import { withBatchHandler, withRecordHandler } from './lib/actions.js';
 import { debug } from '@pga/logger';
 import { executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from './lib/workday.js';
-import { callOpenAIWithSchema } from './lib/openai.js';
-import { getJsonFromS3, type S3Config } from './lib/s3.js';
-import type { SupplierIdentificationResult, InvoiceData, SupplierCacheData } from './lib/types.js';
+import { getAiResponse } from './lib/ai.js';
+import type { SupplierIdentificationResult, InvoiceData } from './lib/types.js';
+import { z } from 'zod';
+
+// Zod schema for supplier identification result
+const SupplierIdentificationSchema = z.object({
+  supplierId: z.string().describe('The unique identifier of the supplier'),
+  supplierName: z.string().describe('The name of the supplier'),
+  confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1'),
+  reasoning: z.string().describe('Explanation of the reasoning behind the identification')
+});
 
 const QUERY = `
   SELECT 
@@ -22,7 +30,7 @@ export const batchHandler = withBatchHandler(QUERY)(`finance-agent-EnrichInvoice
 
 export const dataProcessor = withRecordHandler<InvoiceData>(processAction);
 
-async function processAction({ workdayConfig, s3Config, data: invoiceData }: { workdayConfig: WorkdayConfig; s3Config: S3Config; dbConnection: any; data: InvoiceData }): Promise<void> {
+async function processAction({ workdayConfig, data: invoiceData }: { workdayConfig: WorkdayConfig; dbConnection: any; data: InvoiceData }): Promise<void> {
   debug('Enriching invoice supplier with AI and Workday data');
   
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
@@ -65,8 +73,9 @@ async function processAction({ workdayConfig, s3Config, data: invoiceData }: { w
   if (!detailedInvoice.supplier || detailedInvoice.supplier === '') {
     debug('Missing supplier - identifying supplier');
     const attachmentData = detailedInvoice.allAttachmentsForBusinessDocument || [];
-    const supplierResult = await identifySupplier(detailedInvoice, s3Config, attachmentData);
-    
+    const supplierResult = await identifySupplier(detailedInvoice, attachmentData);
+    debug('Supplier result:', supplierResult);
+
     if (supplierResult.confidence > 0.8) {
       debug('High confidence supplier identification - updating invoice');
       // TODO: Update Workday with identified supplier
@@ -83,23 +92,11 @@ async function processAction({ workdayConfig, s3Config, data: invoiceData }: { w
 
 async function identifySupplier(
   invoice: any,
-  s3Config: S3Config,
   attachmentData: any
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.invoiceNumber);
   
   try {
-    // Get supplier cache from S3
-    const cacheKey = 'cache/suppliers.json';
-    const supplierCache = await getJsonFromS3(s3Config, cacheKey) as SupplierCacheData;
-    
-    if (!supplierCache || !supplierCache.suppliers) {
-      throw new Error('Supplier cache not found');
-    }
-    
-    const suppliers = supplierCache.suppliers;
-    debug(`Loaded ${suppliers.length} suppliers from cache`);
-    
     // Prepare invoice data for AI analysis
     const invoiceData = {
       companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
@@ -111,22 +108,26 @@ async function identifySupplier(
       attachmentData: attachmentData
     };
     
-    // Call OpenAI to identify the supplier
-    const result = await callOpenAIWithSchema({
-      prompt: `Identify the most likely supplier for this invoice based on the provided supplier data.`,
-      schema: {
-        type: 'object',
-        properties: {
-          supplierId: { type: 'string' },
-          supplierName: { type: 'string' },
-          confidence: { type: 'number', minimum: 0, maximum: 1 },
-          reasoning: { type: 'string' }
-        },
-        required: ['supplierId', 'supplierName', 'confidence', 'reasoning']
-      },
+    // Call AI to identify the supplier using RAG
+    const result = await getAiResponse({
+      prompt: `You are an expert at matching invoices to suppliers. Your task is to identify the most likely supplier for the given invoice.
+
+      You have access to a findSuppliers tool that can search our supplier database using semantic similarity. Use this tool to find relevant suppliers based on the invoice data, then analyze the results to identify the best match.
+
+      Consider the following when matching:
+      - Company name similarity
+      - Address information
+      - Contact details (phone, email)
+      - Business context and industry
+      - Any other relevant details from the invoice
+
+      Use the findSuppliers tool to search for suppliers, then provide your analysis and recommendation.`,
+      schema: SupplierIdentificationSchema,
       messages: [
-        { role: 'system', content: `You are an expert at matching invoices to suppliers. You will be given invoice data and a list of suppliers. Your job is to identify the most likely supplier for the invoice.` },
-        { role: 'user', content: `Invoice data: ${JSON.stringify(invoiceData, null, 2)}\n\nAvailable suppliers: ${JSON.stringify(suppliers, null, 2)}` }
+        { 
+          role: 'user', 
+          content: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis.` 
+        }
       ]
     });
     
