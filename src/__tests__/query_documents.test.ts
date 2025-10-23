@@ -1,11 +1,11 @@
 import { handler, QueryRequest } from '../query_documents';
 
 // Mock the dependencies
-jest.mock('../lib/rag', () => ({
+jest.mock('../lib/rag.js', () => ({
   queryDocuments: jest.fn()
 }));
 
-import { queryDocuments } from '../lib/rag';
+import { queryDocuments } from '../lib/rag.js';
 
 const mockQueryDocuments = queryDocuments as jest.MockedFunction<typeof queryDocuments>;
 

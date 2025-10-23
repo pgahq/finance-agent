@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { queryDocuments, RAGQuery, RAGResult, DEFAULT_RAG_LIMIT, DEFAULT_RAG_SIMILARITY_THRESHOLD } from './lib/rag';
+import { queryDocuments, RAGQuery, RAGResult, DEFAULT_RAG_LIMIT, DEFAULT_RAG_SIMILARITY_THRESHOLD } from './lib/rag.js';
 
 // Query interface (alias for RAGQuery)
 export interface QueryRequest extends RAGQuery {}
