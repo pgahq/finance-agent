@@ -273,18 +273,19 @@ export async function bulkInsertDocuments(
   if (documents.length === 0) return;
   
   try {
-    // Build VALUES clause for bulk insert
-    const values = documents.map((_doc, index) => {
-      const baseIndex = index * 5;
-      return `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, $${baseIndex + 5})`;
+    // Build VALUES clause for bulk insert with raw vector formatting
+    const values = documents.map((doc, index) => {
+      const baseIndex = index * 4;
+      const vectorString = `[${doc.embedding.join(',')}]`;
+      debug(`Vector string for doc ${index}: ${vectorString.substring(0, 100)}...`);
+      return `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, '${vectorString}'::vector)`;
     }).join(', ');
     
     const params = documents.flatMap(doc => [
       doc.workdayId,
       doc.type,
       doc.content,
-      JSON.stringify(doc.metadata),
-      `[${doc.embedding.join(',')}]`
+      JSON.stringify(doc.metadata)
     ]);
     
     await db.query(`
@@ -316,11 +317,12 @@ export async function bulkUpdateDocuments(
     await db.query('BEGIN');
     
     for (const doc of documents) {
+      const vectorString = `[${doc.embedding.join(',')}]`;
       await db.query(`
         UPDATE documents 
-        SET content = $3, metadata = $4, embedding = $5, updated_at = CURRENT_TIMESTAMP
+        SET content = $3, metadata = $4, embedding = '${vectorString}'::vector, updated_at = CURRENT_TIMESTAMP
         WHERE workday_id = $1 AND type = $2
-      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata), `[${doc.embedding.join(',')}]`]);
+      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
     }
     
     await db.query('COMMIT');
