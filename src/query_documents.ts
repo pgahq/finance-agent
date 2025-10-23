@@ -9,7 +9,7 @@ export interface QueryRequest extends RAGQuery {}
 export interface QueryResult extends RAGResult {}
 
 // Main handler function with environment setup
-export async function handler(event: { data: QueryRequest }): Promise<QueryResult[]> {
+export async function handler(event: QueryRequest): Promise<QueryResult[]> {
   // Setup environment to unwrap SSM parameters
   process.env = await loadEnv();
   
@@ -18,10 +18,10 @@ export async function handler(event: { data: QueryRequest }): Promise<QueryResul
   try {
     // Apply defaults for configurable parameters
     const queryRequest: RAGQuery = {
-      query: event.data.query,
-      documentType: event.data.documentType,
-      limit: event.data.limit ?? DEFAULT_RAG_LIMIT,
-      similarityThreshold: event.data.similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD
+      query: event.query,
+      documentType: event.documentType,
+      limit: event.limit ?? DEFAULT_RAG_LIMIT,
+      similarityThreshold: event.similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD
     };
 
     debug(`Querying documents with: "${queryRequest.query}"`);

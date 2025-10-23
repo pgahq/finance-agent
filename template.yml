@@ -185,6 +185,12 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-Retrieval"
       Handler: dist/query_documents.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
 
   # Cache Suppliers - Bulk processing
   CacheSuppliersFunction:
