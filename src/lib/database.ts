@@ -386,3 +386,46 @@ export async function searchSimilarDocuments(
     throw error;
   }
 }
+
+// Hybrid search that combines semantic similarity with exact text matching
+export async function searchDocuments(
+  db: DatabaseConnection,
+  queryEmbedding: number[],
+  queryText: string,
+  documentType: 'supplier' | 'invoice',
+  limit: number = 5
+): Promise<any[]> {
+  try {
+    // Format the embedding as a PostgreSQL vector literal
+    const vectorString = `[${queryEmbedding.join(',')}]`;
+    
+    // Search combining semantic similarity with text matching
+    const results = await db.query(`
+      SELECT 
+        id,
+        workday_id,
+        type,
+        content,
+        metadata,
+        -- Boost exact matches significantly
+        CASE 
+          WHEN LOWER(content) LIKE LOWER($3) THEN 1.0
+          ELSE 1 - (embedding <=> '${vectorString}'::vector)
+        END as similarity
+      FROM documents 
+      WHERE type = $1
+      ORDER BY similarity DESC
+      LIMIT $2
+    `, [
+      documentType, 
+      limit,
+      `%${queryText.toLowerCase()}%`
+    ]);
+    
+    debug(`Found ${results.length} hybrid search results for ${documentType}`);
+    return results;
+  } catch (error) {
+    debug(`Error in hybrid search for ${documentType} documents:`, error);
+    throw error;
+  }
+}

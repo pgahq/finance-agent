@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { getDatabaseConnection, searchSimilarDocuments } from './database.js';
+import { getDatabaseConnection, searchDocuments } from './database.js';
 
 // Document types
 export type DocumentType = 'supplier' | 'invoice';
@@ -58,7 +58,7 @@ export function createInvoiceContent(invoice: any): string {
 
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 5;
-export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.7;
+export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 
 // RAG query interface
 export interface RAGQuery {
@@ -108,10 +108,11 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     const db = await getDatabaseConnection(process.env);
     
     try {
-      // Use existing database function for similarity search
-      const results = await searchSimilarDocuments(
+      // Use hybrid search that combines semantic similarity with exact text matching
+      const results = await searchDocuments(
         db,
         queryEmbedding,
+        query,
         documentType || 'supplier', // Default to supplier if no type specified
         limit
       );
