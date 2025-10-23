@@ -14,7 +14,7 @@ Globals:
     Runtime: nodejs20.x
     CodeUri: .
     MemorySize: 1024
-    Timeout: 300
+    Timeout: 600
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel

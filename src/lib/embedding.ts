@@ -4,9 +4,7 @@ import { debug } from '@pga/logger';
 export type DocumentType = 'supplier' | 'invoice';
 
 // Create embedding for text using OpenAI
-export async function createEmbedding(text: string): Promise<number[]> {
-  debug('Creating embedding for text:', text.substring(0, 100) + '...');
-  
+export async function createEmbedding(text: string): Promise<number[]> {  
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
   
   const response = await fetch('https://api.openai.com/v1/embeddings', {
@@ -76,6 +74,5 @@ export async function searchSimilarDocuments(
 export async function createDocumentEmbedding(
   content: string
 ): Promise<number[]> {
-  debug('Creating embedding for document content');
   return await createEmbedding(content);
 }
