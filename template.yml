@@ -57,7 +57,7 @@ Resources:
   FinanceAgentDatabase:
     Type: AWS::RDS::DBCluster
     Properties:
-      DBClusterIdentifier: !Sub "${AWS::StackName}-cluster"
+      DBClusterIdentifier: !Sub "${AWS::StackName}-db-cluster"
       Engine: aurora-postgresql
       EngineVersion: 15.4
       ServerlessV2ScalingConfiguration:
