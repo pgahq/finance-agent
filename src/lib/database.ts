@@ -277,7 +277,6 @@ export async function bulkInsertDocuments(
     const values = documents.map((doc, index) => {
       const baseIndex = index * 4;
       const vectorString = `[${doc.embedding.join(',')}]`;
-      debug(`Vector string for doc ${index}: ${vectorString.substring(0, 100)}...`);
       return `($${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4}, '${vectorString}'::vector)`;
     }).join(', ');
     
