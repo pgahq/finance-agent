@@ -1,6 +1,6 @@
 import { withBulkHandler } from './lib/actions.js';
 import { debug } from '@pga/logger';
-import { createSupplierContent, createDocumentEmbedding } from './lib/embedding.js';
+import { createSupplierContent, createEmbedding } from './lib/rag.js';
 import { bulkInsertDocuments, bulkUpdateDocuments, bulkDeleteDocuments, getDocumentsByType } from './lib/database.js';
 
 const QUERY = `
@@ -129,7 +129,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
               lastUpdatedDateTime: supplier.lastUpdatedDateTime
             };
             
-            const embedding = await createDocumentEmbedding(content);
+            const embedding = await createEmbedding(content);
             newSupplierDocuments.push({
               workdayId: supplier.supplierId,
               type: 'supplier' as const,
@@ -177,7 +177,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
               lastUpdatedDateTime: supplier.lastUpdatedDateTime
             };
             
-            const embedding = await createDocumentEmbedding(content);
+            const embedding = await createEmbedding(content);
             updatedSupplierDocuments.push({
               workdayId: supplier.supplierId,
               type: 'supplier' as const,

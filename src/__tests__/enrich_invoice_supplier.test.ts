@@ -42,7 +42,7 @@ jest.mock('../lib/database.js', () => ({
   searchSimilarDocuments: jest.fn().mockResolvedValue([])
 }));
 
-jest.mock('../lib/embedding.js', () => ({
+jest.mock('../lib/rag.js', () => ({
   createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 

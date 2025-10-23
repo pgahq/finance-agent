@@ -16,9 +16,9 @@ jest.mock('@pga/logger', () => ({
   info: jest.fn()
 }));
 
-jest.mock('../lib/embedding.js', () => ({
+jest.mock('../lib/rag.js', () => ({
   createSupplierContent: jest.fn().mockReturnValue('Supplier content'),
-  createDocumentEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
+  createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
 jest.mock('../lib/database.js', () => ({

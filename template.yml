@@ -178,6 +178,14 @@ Resources:
                   - ec2:DeleteNetworkInterface
                 Resource: "*"
 
+  # RAG Documents - Query Retrieval
+  RetrievalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-Retrieval"
+      Handler: dist/query_documents.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+
   # Cache Suppliers - Bulk processing
   CacheSuppliersFunction:
     Type: AWS::Serverless::Function
@@ -231,8 +239,4 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-2
       Layers:
         - !Ref PopplerLayer
-
-
-
-
   

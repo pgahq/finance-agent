@@ -1,0 +1,49 @@
+import { debug } from '@pga/logger';
+import { queryDocuments, RAGQuery, RAGResult, DEFAULT_RAG_LIMIT, DEFAULT_RAG_SIMILARITY_THRESHOLD } from './lib/rag';
+
+// Query interface (alias for RAGQuery)
+export interface QueryRequest extends RAGQuery {}
+
+// Query result interface (alias for RAGResult)
+export interface QueryResult extends RAGResult {}
+
+// Use defaults from RAG library for consistency
+
+// Main handler function
+export async function handler(event: QueryRequest): Promise<QueryResult[]> {
+  debug('Starting document query handler');
+  
+  try {
+    // Apply defaults for configurable parameters
+    const queryRequest: RAGQuery = {
+      query: event.query,
+      documentType: event.documentType,
+      limit: event.limit ?? DEFAULT_RAG_LIMIT,
+      similarityThreshold: event.similarityThreshold ?? DEFAULT_RAG_SIMILARITY_THRESHOLD
+    };
+
+    debug(`Querying documents with: "${queryRequest.query}"`);
+    debug(`Document type filter: ${queryRequest.documentType || 'all'}`);
+    debug(`Limit: ${queryRequest.limit}, Similarity threshold: ${queryRequest.similarityThreshold}`);
+
+    // Use the RAG utility function
+    const results = await queryDocuments(queryRequest);
+    
+    debug(`Found ${results.length} similar documents`);
+    
+    // Log results summary
+    if (results.length > 0) {
+      debug(`Top similarity scores: ${results.map(r => r.similarity.toFixed(3)).join(', ')}`);
+    } else {
+      debug('No documents found above similarity threshold');
+    }
+
+    return results;
+
+  } catch (error) {
+    debug(`Error in document query handler: ${error}`);
+    throw error;
+  }
+}
+
+// Types are already exported above
