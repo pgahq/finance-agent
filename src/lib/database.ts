@@ -284,7 +284,7 @@ export async function bulkInsertDocuments(
       doc.type,
       doc.content,
       JSON.stringify(doc.metadata),
-      doc.embedding
+      `[${doc.embedding.join(',')}]`
     ]);
     
     await db.query(`
@@ -320,7 +320,7 @@ export async function bulkUpdateDocuments(
         UPDATE documents 
         SET content = $3, metadata = $4, embedding = $5, updated_at = CURRENT_TIMESTAMP
         WHERE workday_id = $1 AND type = $2
-      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata), doc.embedding]);
+      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata), `[${doc.embedding.join(',')}]`]);
     }
     
     await db.query('COMMIT');
