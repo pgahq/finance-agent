@@ -109,34 +109,32 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
       connectionTimeoutMillis: 2000, // Return error after 2 seconds if connection could not be established
     });
-    
-    // Handle pool errors
-    pool.on('error', (err: Error) => {
-      debug('Database pool error:', err);
-    });
-  }
 
-  pool.on('connect', async () => {
     debug('Database connection established');
     debug('Initializing database schema...');
     
     try {
       // Enable pgvector extension
-      await pool!.query(ENABLE_PGVECTOR);
+      await pool.query(ENABLE_PGVECTOR);
       
       // Create documents table
-      await pool!.query(CREATE_DOCUMENTS_TABLE);
+      await pool.query(CREATE_DOCUMENTS_TABLE);
       
       // Create indexes
       for (const indexSql of CREATE_INDEXES) {
-        await pool!.query(indexSql);
+        await pool.query(indexSql);
       }
       
     } catch (error) {
       debug('Error initializing database schema:', error);
       throw error;
     }
-  });
+    
+    // Handle pool errors
+    pool.on('error', (err: Error) => {
+      debug('Database pool error:', err);
+    });
+  }
   
   return {
     query: async (sql: string, params?: any[]) => {
