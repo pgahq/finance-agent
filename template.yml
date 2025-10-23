@@ -68,7 +68,7 @@ Resources:
       MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}'
       VpcSecurityGroupIds:
         - !Ref DatabaseSecurityGroup
-      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      DBSubnetGroupName: !Ref FinanceAgentSubnetGroup
       Port: 5432
 
   # Aurora Serverless PostgreSQL Instance
@@ -80,41 +80,20 @@ Resources:
       Engine: aurora-postgresql
       PubliclyAccessible: false
 
-  # VPC and Networking
-  FinanceAgentVPC:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsHostnames: true
-      EnableDnsSupport: true
-
-  DatabaseSubnetGroup:
+  # Use existing VPC infrastructure from pgagent stack
+  FinanceAgentSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Subnet group for Finance Agent database
       SubnetIds:
-        - !Ref DatabaseSubnet1
-        - !Ref DatabaseSubnet2
-
-  DatabaseSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
-
-  DatabaseSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [1, !GetAZs '']
+        - !ImportValue pgagent-private-subnet-id-1
+        - !ImportValue pgagent-private-subnet-id-2
 
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Finance Agent Lambda functions
-      VpcId: !Ref FinanceAgentVPC
+      VpcId: !ImportValue pgagent-vpc-id
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443
@@ -129,72 +108,12 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Finance Agent database
-      VpcId: !Ref FinanceAgentVPC
+      VpcId: !ImportValue pgagent-vpc-id
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
-
-  # Interface endpoints for AWS services
-  SSMVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref DatabaseSubnet1
-        - !Ref DatabaseSubnet2
-      SecurityGroupIds:
-        - !Ref LambdaSecurityGroup
-
-  SecretsManagerVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref DatabaseSubnet1
-        - !Ref DatabaseSubnet2
-      SecurityGroupIds:
-        - !Ref LambdaSecurityGroup
-
-  S3VpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
-      VpcEndpointType: Gateway
-      RouteTableIds:
-        - !Ref DatabaseRouteTable1
-        - !Ref DatabaseRouteTable2
-
-  # Route tables for VPC endpoints
-  DatabaseRouteTable1:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-
-  DatabaseRouteTable2:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref FinanceAgentVPC
-
-  DatabaseSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref DatabaseSubnet1
-      RouteTableId: !Ref DatabaseRouteTable1
-
-  DatabaseSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref DatabaseSubnet2
-      RouteTableId: !Ref DatabaseRouteTable2
 
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
@@ -270,8 +189,8 @@ Resources:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
         SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
       Events:
         Schedule:
           Type: Schedule
@@ -289,8 +208,8 @@ Resources:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
         SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
       Events:
         Schedule:
           Type: Schedule
@@ -308,7 +227,12 @@ Resources:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
         SubnetIds:
-          - !Ref DatabaseSubnet1
-          - !Ref DatabaseSubnet2
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
       Layers:
         - !Ref PopplerLayer
+
+
+
+
+  
