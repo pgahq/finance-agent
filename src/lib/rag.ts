@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { getDatabaseConnection, searchSimilarDocuments } from './database';
+import { getDatabaseConnection, searchSimilarDocuments } from './database.js';
 
 // Document types
 export type DocumentType = 'supplier' | 'invoice';
