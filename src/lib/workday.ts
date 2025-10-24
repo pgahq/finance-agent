@@ -271,12 +271,14 @@ export async function getSupplierInvoiceWithAttachments(
 
   // Process attachments: upload to S3 and generate presigned URLs
   const presignedAttachments: PresignedAttachment[] = [];
-  const attachmentData = invoice.Attachment_Data || [];
+  const attachmentData = invoice.Attachment_Data;
   
-  if (attachmentData.length > 0) {
-    debug(`Processing ${attachmentData.length} attachments for invoice`);
+  if (attachmentData) {
+    // Handle both single attachment object and array of attachments
+    const attachments = Array.isArray(attachmentData) ? attachmentData : [attachmentData];
+    debug(`Processing ${attachments.length} attachments for invoice`);
     
-    for (const attachment of attachmentData) {
+    for (const attachment of attachments) {
       try {
         // Convert base64 content to buffer
         const buffer = Buffer.from(attachment.File_Content || '', 'base64');
