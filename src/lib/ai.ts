@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText } from 'ai';
+import { generateText, stepCountIs } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool } from './rag.js';
 
@@ -24,6 +24,7 @@ export async function getAiResponse({
       model: openai(model),
       messages,
       system: prompt,
+      stopWhen: stepCountIs(10),
       temperature: 0.2,
       tools: {
         findSuppliers: findSuppliersTool
@@ -43,6 +44,7 @@ export async function getAiResponse({
     }
 
     const result = await generateText(generateTextOptions);
+    debug('result', result);
     
     // Parse the JSON response
     let parsedResult: unknown;
