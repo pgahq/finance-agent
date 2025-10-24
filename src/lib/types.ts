@@ -129,20 +129,22 @@ export interface WorkdaySoapConfig {
 }
 
 export interface SupplierInvoiceSoapResponse {
-  Get_Supplier_Invoices_Response: {
-    Response_Data: {
-      Supplier_Invoice: Array<{
-        Supplier_Invoice_Data: {
-          Invoice_ID: string;
-          Attachment_Data?: Array<{
-            $attributes: {
-              Filename: string;
-              Content_Type: string;
-            };
-            File_Content: string; // base64
-          }>;
-        };
-      }>;
-    };
+  $attributes?: any;
+  Request_References?: any;
+  Response_Group?: any;
+  Response_Results?: any;
+  Response_Data?: {
+    Supplier_Invoice: Array<{
+      Supplier_Invoice_Data: {
+        Invoice_ID: string;
+        Attachment_Data?: Array<{
+          $attributes: {
+            Filename: string;
+            Content_Type: string;
+          };
+          File_Content: string; // base64
+        }>;
+      };
+    }>;
   };
 }

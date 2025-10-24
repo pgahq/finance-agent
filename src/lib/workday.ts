@@ -232,7 +232,8 @@ export async function getSupplierInvoiceWithAttachments(
             }
           },
           Response_Group: {
-            Include_Reference: true
+            Include_Reference: true,
+            Include_Attachment_Data: true
           }
         }
       };
@@ -253,9 +254,9 @@ export async function getSupplierInvoiceWithAttachments(
   // Extract invoice data
   debug('Parsing SOAP response for invoice data');
   debug('soapResponse keys:', Object.keys(soapResponse || {}));
-  debug('Get_Supplier_Invoices_Response:', soapResponse?.Get_Supplier_Invoices_Response);
+  debug('Response_Data:', soapResponse?.Response_Data);
   
-  const invoices = soapResponse?.Get_Supplier_Invoices_Response?.Response_Data?.Supplier_Invoice || [];
+  const invoices = soapResponse?.Response_Data?.Supplier_Invoice || [];
   debug('Found invoices:', invoices.length);
   debug('Invoices structure:', JSON.stringify(invoices, null, 2));
   
