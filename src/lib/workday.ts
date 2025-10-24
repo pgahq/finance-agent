@@ -256,16 +256,15 @@ export async function getSupplierInvoiceWithAttachments(
   debug('soapResponse keys:', Object.keys(soapResponse || {}));
   debug('Response_Data:', soapResponse?.Response_Data);
   
-  const invoices = soapResponse?.Response_Data?.Supplier_Invoice || [];
-  debug('Found invoices:', invoices.length);
-  debug('Invoices structure:', JSON.stringify(invoices, null, 2));
+  const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
+  debug('Found supplier invoice:', !!supplierInvoice);
+  debug('Supplier invoice structure:', JSON.stringify(supplierInvoice, null, 2));
   
-  if (invoices.length === 0) {
+  if (!supplierInvoice) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
   }
   
-  const invoiceRecord = invoices[0];
-  const invoice = invoiceRecord?.Supplier_Invoice_Data || {};
+  const invoice = supplierInvoice?.Supplier_Invoice_Data || {};
   
   debug('Invoice data from SOAP', invoice);
 
@@ -278,14 +277,15 @@ export async function getSupplierInvoiceWithAttachments(
     const attachments = Array.isArray(attachmentData) ? attachmentData : [attachmentData];
     debug(`Processing ${attachments.length} attachments for invoice`);
     
-    for (const attachment of attachments) {
+    for (let i = 0; i < attachments.length; i++) {
+      const attachment = attachments[i];
       try {
         // Convert base64 content to buffer
         const buffer = Buffer.from(attachment.File_Content || '', 'base64');
         
         const downloadedAttachment: DownloadedAttachment = {
-          id: `${workdayID}-${attachmentData.indexOf(attachment)}`,
-          fileName: attachment.$attributes?.Filename || `attachment-${attachmentData.indexOf(attachment)}`,
+          id: `${workdayID}-${i}`,
+          fileName: attachment.$attributes?.Filename || `attachment-${i}`,
           contentType: attachment.$attributes?.Content_Type || 'application/octet-stream',
           buffer,
           size: buffer.length

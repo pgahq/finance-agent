@@ -134,17 +134,17 @@ export interface SupplierInvoiceSoapResponse {
   Response_Group?: any;
   Response_Results?: any;
   Response_Data?: {
-    Supplier_Invoice: Array<{
+    Supplier_Invoice: {
       Supplier_Invoice_Data: {
         Invoice_ID: string;
-        Attachment_Data?: Array<{
+        Attachment_Data?: {
           $attributes: {
             Filename: string;
             Content_Type: string;
           };
           File_Content: string; // base64
-        }>;
+        };
       };
-    }>;
+    };
   };
 }
