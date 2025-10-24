@@ -117,16 +117,6 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
-  PopplerLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: poppler
-      Description: Poppler PDF utilities for Lambda
-      ContentUri: layers/poppler/release-x86_64.zip
-      CompatibleRuntimes:
-        - nodejs20.x
-      CompatibleArchitectures:
-        - x86_64
 
   FinanceAgentLambdaRole:
     Type: AWS::IAM::Role
@@ -247,6 +237,4 @@ Resources:
         SubnetIds:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
-      Layers:
-        - !Ref PopplerLayer
   

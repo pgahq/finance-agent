@@ -1,4 +1,4 @@
-import { getWorkdayConfig, executeWorkdayQuery } from '../lib/workday.js';
+import { getWorkdayConfig, getWorkdaySoapConfig, executeWorkdayQuery, getSupplierInvoiceWithAttachments } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -10,6 +10,36 @@ jest.mock('@pga/logger', () => ({
 
 // Mock fetch globally
 global.fetch = jest.fn();
+
+// Mock strong-soap
+jest.mock('strong-soap', () => ({
+  soap: {
+    createClient: jest.fn(),
+    WSSecurity: jest.fn()
+  }
+}));
+
+// Mock path module
+jest.mock('path', () => ({
+  join: jest.fn((...args) => args.join('/'))
+}));
+
+// Mock the pdf and s3 modules
+jest.mock('../lib/pdf.js', () => ({
+  processPdfAttachment: jest.fn().mockResolvedValue({
+    originalFileName: 'test.pdf',
+    images: []
+  })
+}));
+
+jest.mock('../lib/s3.js', () => ({
+  uploadAttachmentToS3: jest.fn().mockResolvedValue({
+    id: 'test-id',
+    presignedUrl: 'https://test-url.com',
+    expiresAt: new Date(),
+    s3Key: 'test-key'
+  })
+}));
 
 describe('Workday utilities', () => {
   beforeEach(() => {
@@ -46,6 +76,36 @@ describe('Workday utilities', () => {
       expect(config.clientId).toBeUndefined();
       expect(config.clientSecret).toBeUndefined();
       expect(config.refreshToken).toBeUndefined();
+    });
+  });
+
+  describe('getWorkdaySoapConfig', () => {
+    it('should extract SOAP configuration from environment variables', () => {
+      const mockEnv = {
+        WORKDAY_DOMAIN: 'test.workday.com',
+        WORKDAY_TENANT: 'test-tenant',
+        WORKDAY_USER: 'test-user',
+        WORKDAY_PASSWORD: 'test-password',
+      };
+
+      const config = getWorkdaySoapConfig(mockEnv);
+
+      expect(config).toEqual({
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        username: 'test-user',
+        password: 'test-password',
+      });
+    });
+
+    it('should handle missing environment variables', () => {
+      const mockEnv = {};
+
+      const config = getWorkdaySoapConfig(mockEnv);
+      expect(config.domain).toBeUndefined();
+      expect(config.tenant).toBeUndefined();
+      expect(config.username).toBeUndefined();
+      expect(config.password).toBeUndefined();
     });
   });
 
@@ -237,6 +297,182 @@ describe('Workday utilities', () => {
           })
         })
       );
+    });
+  });
+
+  describe('getSupplierInvoiceWithAttachments', () => {
+    const mockContext = {
+      workdaySoapConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        username: 'test-user',
+        password: 'test-password'
+      },
+      s3Config: {
+        bucketName: 'test-bucket'
+      }
+    };
+
+    const mockWorkdayID = 'test-workday-id';
+
+    beforeEach(() => {
+      // Mock process.cwd to return a predictable path
+      Object.defineProperty(process, 'cwd', {
+        value: jest.fn(() => '/test/path'),
+        writable: true
+      });
+    });
+
+    it('should throw error when password is missing', async () => {
+      const contextWithoutPassword = {
+        ...mockContext,
+        workdaySoapConfig: {
+          ...mockContext.workdaySoapConfig,
+          password: undefined as any
+        }
+      };
+
+      await expect(getSupplierInvoiceWithAttachments(contextWithoutPassword, mockWorkdayID))
+        .rejects.toThrow('Workday SOAP password is not configured');
+    });
+
+    it('should handle SOAP client creation error', async () => {
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(new Error('WSDL not found'), null);
+      });
+
+      await expect(getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID))
+        .rejects.toThrow('WSDL not found');
+    });
+
+    it('should handle SOAP request error', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(new Error('SOAP request failed'), null);
+      });
+
+      await expect(getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID))
+        .rejects.toThrow('SOAP request failed');
+    });
+
+    it('should handle missing invoice in response', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      // Mock response without Supplier_Invoice
+      const mockResponse = {
+        Response_Data: {}
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockResponse);
+      });
+
+      await expect(getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID))
+        .rejects.toThrow(`No invoice found for workdayID: ${mockWorkdayID}`);
+    });
+
+    it('should process invoice with attachments successfully', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      // Mock response with invoice and attachment
+      const mockResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_ID: 'INV-001',
+              Attachment_Data: {
+                $attributes: {
+                  Filename: 'test.pdf',
+                  Content_Type: 'application/pdf'
+                },
+                File_Content: 'JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9Db2x'
+              }
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockResponse);
+      });
+
+      const result = await getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID);
+
+      expect(result.invoice).toEqual({
+        Invoice_ID: 'INV-001',
+        Attachment_Data: {
+          $attributes: {
+            Filename: 'test.pdf',
+            Content_Type: 'application/pdf'
+          },
+          File_Content: 'JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9Db2x'
+        }
+      });
+      expect(result.presignedAttachments).toBeDefined();
+    });
+
+    it('should handle invoice without attachments', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      // Mock response with invoice but no attachments
+      const mockResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_ID: 'INV-001'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockResponse);
+      });
+
+      const result = await getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID);
+
+      expect(result.invoice).toEqual({
+        Invoice_ID: 'INV-001'
+      });
+      expect(result.presignedAttachments).toEqual([]);
     });
   });
 
