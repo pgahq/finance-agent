@@ -117,6 +117,18 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
+  # Poppler Layer for PDF processing
+  PopplerLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-poppler-layer"
+      Description: "Poppler binaries for PDF processing"
+      ContentUri: layers/poppler/
+      CompatibleRuntimes:
+        - nodejs20.x
+      CompatibleArchitectures:
+        - x86_64
+      RetentionPolicy: Delete
 
   FinanceAgentLambdaRole:
     Type: AWS::IAM::Role
@@ -231,6 +243,8 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
       Handler: dist/enrich_invoice_supplier.dataProcessor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Layers:
+        - !Ref PopplerLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup

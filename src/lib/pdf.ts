@@ -1,8 +1,17 @@
 import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import pdf from 'pdf-poppler';
 import type { DownloadedAttachment, PresignedAttachment } from './types.js';
+
+// Import node-pdftocairo with type assertion
+const pdftocairo = require('node-pdftocairo') as {
+  convert: (pdfPath: string, outputPath: string, options?: {
+    format?: string;
+    firstPage?: number;
+    lastPage?: number;
+    resolution?: number;
+  }) => Promise<string>;
+};
 
 export interface ProcessedImage {
   fileName: string;
@@ -31,33 +40,54 @@ export async function convertPdfToImages(pdfBuffer: Buffer, baseFileName: string
     // Write PDF buffer to temporary file
     writeFileSync(tempPdfPath, pdfBuffer);
     
-    // Convert PDF to images
-    const options = {
-      format: 'png',
-      out_dir: outputDir,
-      out_prefix: 'page',
-      page: null // Convert all pages
-    };
+    // Ensure output directory exists
+    if (!existsSync(outputDir)) {
+      mkdirSync(outputDir, { recursive: true });
+    }
     
-    const result = await pdf.convert(tempPdfPath, options);
-    
-    // Read generated images
+    // Convert PDF to images using node-pdftocairo
+    // We need to convert each page individually
     const processedImages: ProcessedImage[] = [];
     
-    if (result && result.length > 0) {
-      for (let i = 0; i < result.length; i++) {
-        const imagePath = result[i];
-        const imageBuffer = require('fs').readFileSync(imagePath);
-        
-        processedImages.push({
-          fileName: `${baseFileName}-page-${i + 1}.png`,
-          buffer: imageBuffer,
-          contentType: 'image/png',
-          pageNumber: i + 1
+    // First, let's try to get the number of pages by converting the first page
+    let pageNumber = 1;
+    let hasMorePages = true;
+    
+    while (hasMorePages) {
+      const outputPath = join(outputDir, `page-${pageNumber}.png`);
+      
+      try {
+        await pdftocairo.convert(tempPdfPath, outputPath, {
+          format: 'png',
+          firstPage: pageNumber,
+          lastPage: pageNumber,
+          resolution: 150 // DPI
         });
         
-        // Clean up individual image file
-        unlinkSync(imagePath);
+        // Check if the file was created and has content
+        if (existsSync(outputPath)) {
+          const imageBuffer = require('fs').readFileSync(outputPath);
+          
+          if (imageBuffer.length > 0) {
+            processedImages.push({
+              fileName: `${baseFileName}-page-${pageNumber}.png`,
+              buffer: imageBuffer,
+              contentType: 'image/png',
+              pageNumber: pageNumber
+            });
+            
+            // Clean up individual image file
+            unlinkSync(outputPath);
+            pageNumber++;
+          } else {
+            hasMorePages = false;
+          }
+        } else {
+          hasMorePages = false;
+        }
+      } catch (error) {
+        // If conversion fails, we've reached the end of the document
+        hasMorePages = false;
       }
     }
     

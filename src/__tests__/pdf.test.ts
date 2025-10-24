@@ -1,5 +1,5 @@
 import { convertPdfToImages, processPdfAttachment } from '../lib/pdf.js';
-import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync, rmSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync } from 'fs';
 
 // Mock fs and path modules
 jest.mock('fs', () => ({
@@ -8,7 +8,6 @@ jest.mock('fs', () => ({
   mkdirSync: jest.fn(),
   existsSync: jest.fn(),
   readFileSync: jest.fn(),
-  rmSync: jest.fn()
 }));
 
 jest.mock('path', () => ({
@@ -19,8 +18,8 @@ jest.mock('os', () => ({
   tmpdir: jest.fn(() => '/tmp')
 }));
 
-// Mock pdf-poppler
-jest.mock('pdf-poppler', () => ({
+// Mock node-pdftocairo
+jest.mock('node-pdftocairo', () => ({
   convert: jest.fn()
 }));
 
@@ -35,8 +34,7 @@ describe('PDF Library', () => {
   let mockMkdirSync: jest.MockedFunction<typeof mkdirSync>;
   let mockExistsSync: jest.MockedFunction<typeof existsSync>;
   let mockReadFileSync: jest.MockedFunction<typeof readFileSync>;
-  let mockRmSync: jest.MockedFunction<typeof rmSync>;
-  let mockPdfConvert: jest.MockedFunction<any>;
+  let mockPdftocairoConvert: jest.MockedFunction<any>;
   let mockUploadAttachmentToS3: jest.MockedFunction<any>;
 
   beforeEach(() => {
@@ -47,10 +45,9 @@ describe('PDF Library', () => {
     mockMkdirSync = mkdirSync as jest.MockedFunction<typeof mkdirSync>;
     mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>;
     mockReadFileSync = readFileSync as jest.MockedFunction<typeof readFileSync>;
-    mockRmSync = rmSync as jest.MockedFunction<typeof rmSync>;
     
-    const pdfModule = require('pdf-poppler');
-    mockPdfConvert = pdfModule.convert;
+    const pdftocairoModule = require('node-pdftocairo');
+    mockPdftocairoConvert = pdftocairoModule.convert;
     
     const s3Module = require('../lib/s3.js');
     mockUploadAttachmentToS3 = s3Module.uploadAttachmentToS3;
@@ -63,10 +60,26 @@ describe('PDF Library', () => {
       
       // Mock file system operations
       mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue([
-        '/tmp/pdf-processing/test-document/page-1.png',
-        '/tmp/pdf-processing/test-document/page-2.png'
-      ]);
+      
+      // Mock node-pdftocairo convert - simulate 2 pages
+      let callCount = 0;
+      mockPdftocairoConvert.mockImplementation(() => {
+        callCount++;
+        if (callCount <= 2) {
+          return Promise.resolve('/tmp/pdf-processing/test-document/page-1.png');
+        } else {
+          return Promise.reject(new Error('No more pages'));
+        }
+      });
+      
+      // Mock file existence checks
+      mockExistsSync.mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('page-1.png') || pathStr.includes('page-2.png')) {
+          return true;
+        }
+        return false;
+      });
       
       // Mock image file reading
       mockReadFileSync
@@ -77,12 +90,17 @@ describe('PDF Library', () => {
 
       expect(mockMkdirSync).toHaveBeenCalledWith('/tmp/pdf-processing', { recursive: true });
       expect(mockWriteFileSync).toHaveBeenCalledWith('/tmp/pdf-processing/test-document.pdf', mockPdfBuffer);
-      expect(mockPdfConvert).toHaveBeenCalledWith('/tmp/pdf-processing/test-document.pdf', {
-        format: 'png',
-        out_dir: '/tmp/pdf-processing/test-document',
-        out_prefix: 'page',
-        page: null
-      });
+      expect(mockPdftocairoConvert).toHaveBeenCalledTimes(3); // 2 successful + 1 failure
+      expect(mockPdftocairoConvert).toHaveBeenCalledWith(
+        '/tmp/pdf-processing/test-document.pdf',
+        '/tmp/pdf-processing/test-document/page-1.png',
+        {
+          format: 'png',
+          firstPage: 1,
+          lastPage: 1,
+          resolution: 150
+        }
+      );
       
       expect(result).toHaveLength(2);
       expect(result[0]).toEqual({
@@ -104,7 +122,7 @@ describe('PDF Library', () => {
       const baseFileName = 'empty-document';
       
       mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue([]);
+      mockPdftocairoConvert.mockRejectedValue(new Error('No pages'));
 
       const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
 
@@ -115,8 +133,15 @@ describe('PDF Library', () => {
       const mockPdfBuffer = Buffer.from('mock pdf content');
       const baseFileName = 'test-document';
       
-      mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue(['/tmp/pdf-processing/test-document/page-1.png']);
+      mockExistsSync.mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('page-1.png')) {
+          return true;
+        }
+        return false;
+      });
+      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/test-document/page-1.png')
+        .mockRejectedValueOnce(new Error('No more pages'));
       mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
 
       const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
@@ -129,13 +154,19 @@ describe('PDF Library', () => {
       const mockPdfBuffer = Buffer.from('mock pdf content');
       const baseFileName = 'test-document';
       
-      mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue(['/tmp/pdf-processing/test-document/page-1.png']);
+      mockExistsSync.mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('page-1.png')) {
+          return true;
+        }
+        return false;
+      });
+      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/test-document/page-1.png')
+        .mockRejectedValueOnce(new Error('No more pages'));
       mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
       
       // Mock cleanup to succeed
       mockUnlinkSync.mockReturnValue(undefined);
-      mockRmSync.mockReturnValue(undefined);
 
       const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
       
@@ -152,11 +183,22 @@ describe('PDF Library', () => {
       const s3Config = { bucketName: 'test-bucket' };
       
       // Mock PDF conversion
-      mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue([
-        '/tmp/pdf-processing/invoice/page-1.png',
-        '/tmp/pdf-processing/invoice/page-2.png'
-      ]);
+      mockExistsSync.mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('page-1.png') || pathStr.includes('page-2.png')) {
+          return true;
+        }
+        return false;
+      });
+      let callCount = 0;
+      mockPdftocairoConvert.mockImplementation(() => {
+        callCount++;
+        if (callCount <= 2) {
+          return Promise.resolve('/tmp/pdf-processing/invoice/page-1.png');
+        } else {
+          return Promise.reject(new Error('No more pages'));
+        }
+      });
       mockReadFileSync
         .mockReturnValueOnce(Buffer.from('mock image 1'))
         .mockReturnValueOnce(Buffer.from('mock image 2'));
@@ -202,8 +244,15 @@ describe('PDF Library', () => {
       const attachmentIndex = 1;
       const s3Config = { bucketName: 'test-bucket' };
       
-      mockExistsSync.mockReturnValue(false);
-      mockPdfConvert.mockResolvedValue(['/tmp/pdf-processing/single-page/page-1.png']);
+      mockExistsSync.mockImplementation((path) => {
+        const pathStr = String(path);
+        if (pathStr.includes('page-1.png')) {
+          return true;
+        }
+        return false;
+      });
+      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/single-page/page-1.png')
+        .mockRejectedValueOnce(new Error('No more pages'));
       mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
       
       mockUploadAttachmentToS3.mockResolvedValue({
