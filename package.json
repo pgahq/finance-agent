@@ -4,8 +4,9 @@
   "description": "Finance AI Automation for Workday",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy:assets",
     "build:watch": "tsc --watch",
+    "copy:assets": "mkdir -p dist/soap && cp src/soap/*.wsdl dist/soap/",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "clean": "rm -rf dist",
