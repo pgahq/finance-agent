@@ -7,8 +7,15 @@ import type {
   DownloadedAttachment
 } from './types.js';
 
-// Import strong-soap for SOAP client
-const strong = require('strong-soap').soap;
+// Import strong-soap for SOAP client using dynamic import
+let strong: any;
+const getStrongSoap = async () => {
+  if (!strong) {
+    const strongSoapModule = await import('strong-soap');
+    strong = strongSoapModule.soap;
+  }
+  return strong;
+};
 
 export interface WorkdayConfig {
   domain: string;
@@ -189,15 +196,18 @@ export async function getSupplierInvoiceWithAttachments(
   debug(`WSDL path: ${wsdlPath}`);
   debug(`WorkdayID: ${workdayID}`);
 
+  // Get the strong-soap module
+  const strongSoap = await getStrongSoap();
+  
   // First, get the SOAP response
   const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
-    strong.createClient(wsdlPath, {}, (err: any, client: any) => {
+    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
       if (err) {
         debug('Failed to create SOAP client:', err);
         return reject(err);
       }
 
-      client.setSecurity(new strong.WSSecurity(username, context.workdaySoapConfig.password, { 
+      client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, { 
         passwordType: 'PasswordText', 
         mustUnderstand: true 
       }));

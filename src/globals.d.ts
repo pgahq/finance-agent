@@ -11,3 +11,16 @@ declare module '@pga/logger' {
   export function error(message: string, ...args: unknown[]): void;
 }
 
+declare module 'strong-soap' {
+  export interface WSSecurity {
+    new (username: string, password: string, options?: any): any;
+  }
+
+  export interface SoapClient {
+    createClient(wsdlPath: string, options: any, callback: (err: any, client: any) => void): void;
+    WSSecurity: WSSecurity;
+  }
+
+  export const soap: SoapClient;
+}
+
