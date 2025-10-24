@@ -226,15 +226,13 @@ export async function getSupplierInvoiceWithAttachments(
 
       const request = {
         Get_Supplier_Invoices_Request: {
-          $attributes: { version: 'v44.1' },
           Request_References: {
             Supplier_Invoice_Reference: {
               ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
             }
           },
           Response_Group: {
-            Include_Reference: true,
-            Include_Supplier_Invoice_Data: true
+            Include_Reference: true
           }
         }
       };
