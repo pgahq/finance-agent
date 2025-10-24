@@ -44,10 +44,10 @@ export async function getAiResponse({
     }
 
     const result = await generateText(generateTextOptions);
-    debug('result', result);
+    debug(`AI Response: ${result}`);
     
-    // Parse the JSON response
     let parsedResult: unknown;
+    
     try {
       parsedResult = JSON.parse(result.text);
     } catch (parseError) {

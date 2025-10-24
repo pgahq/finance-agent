@@ -3,16 +3,26 @@ import { getAiResponse } from '../lib/ai.js';
 // Mock the AI SDK
 jest.mock('ai', () => ({
   generateText: jest.fn(),
-  tool: jest.fn()
+  tool: jest.fn(),
+  stepCountIs: jest.fn()
 }));
 
 jest.mock('@ai-sdk/openai', () => ({
   openai: jest.fn()
 }));
 
+jest.mock('../lib/rag.js', () => ({
+  findSuppliersTool: {
+    description: 'Mock tool',
+    inputSchema: {},
+    execute: jest.fn()
+  }
+}));
+
 describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
   const mockOpenai = require('@ai-sdk/openai').openai;
+  const mockStepCountIs = require('ai').stepCountIs;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -20,10 +30,12 @@ describe('AI utilities', () => {
     
     // Setup default mocks
     mockGenerateText.mockResolvedValue({
-      text: '{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}'
+      text: '{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}',
+      toolResults: []
     });
     
     mockOpenai.mockReturnValue('mocked-openai-model');
+    mockStepCountIs.mockReturnValue('mocked-step-count-is');
   });
 
   describe('getAiResponse', () => {
@@ -38,9 +50,10 @@ describe('AI utilities', () => {
         model: 'mocked-openai-model',
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
+        stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
         tools: {
-          queryDocuments: undefined
+          findSuppliers: expect.any(Object)
         }
       });
 
@@ -63,9 +76,10 @@ describe('AI utilities', () => {
         model: 'mocked-openai-model',
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
+        stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
         tools: {
-          queryDocuments: undefined
+          findSuppliers: expect.any(Object)
         }
       });
     });
