@@ -244,13 +244,21 @@ export async function getSupplierInvoiceWithAttachments(
           return reject(err);
         }
         debug('Workday SOAP response received');
+        debug('Full SOAP response structure:', JSON.stringify(result, null, 2));
         resolve(result);
       });
     });
   });
 
   // Extract invoice data
+  debug('Parsing SOAP response for invoice data');
+  debug('soapResponse keys:', Object.keys(soapResponse || {}));
+  debug('Get_Supplier_Invoices_Response:', soapResponse?.Get_Supplier_Invoices_Response);
+  
   const invoices = soapResponse?.Get_Supplier_Invoices_Response?.Response_Data?.Supplier_Invoice || [];
+  debug('Found invoices:', invoices.length);
+  debug('Invoices structure:', JSON.stringify(invoices, null, 2));
+  
   if (invoices.length === 0) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
   }
