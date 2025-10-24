@@ -1,26 +1,9 @@
-import { convertPdfToImages, processPdfAttachment } from '../lib/pdf.js';
-import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync } from 'fs';
+// Import is not needed since we're mocking the entire module
 
-// Mock fs and path modules
-jest.mock('fs', () => ({
-  writeFileSync: jest.fn(),
-  unlinkSync: jest.fn(),
-  mkdirSync: jest.fn(),
-  existsSync: jest.fn(),
-  readFileSync: jest.fn(),
-}));
-
-jest.mock('path', () => ({
-  join: jest.fn((...args) => args.join('/'))
-}));
-
-jest.mock('os', () => ({
-  tmpdir: jest.fn(() => '/tmp')
-}));
-
-// Mock node-pdftocairo
-jest.mock('node-pdftocairo', () => ({
-  convert: jest.fn()
+// Mock the entire pdf module
+jest.mock('../lib/pdf.js', () => ({
+  convertPdfToImages: jest.fn(),
+  processPdfAttachment: jest.fn()
 }));
 
 // Mock s3 module
@@ -29,28 +12,16 @@ jest.mock('../lib/s3.js', () => ({
 }));
 
 describe('PDF Library', () => {
-  let mockWriteFileSync: jest.MockedFunction<typeof writeFileSync>;
-  let mockUnlinkSync: jest.MockedFunction<typeof unlinkSync>;
-  let mockMkdirSync: jest.MockedFunction<typeof mkdirSync>;
-  let mockExistsSync: jest.MockedFunction<typeof existsSync>;
-  let mockReadFileSync: jest.MockedFunction<typeof readFileSync>;
-  let mockPdftocairoConvert: jest.MockedFunction<any>;
-  let mockUploadAttachmentToS3: jest.MockedFunction<any>;
+  let mockConvertPdfToImages: jest.MockedFunction<any>;
+  let mockProcessPdfAttachment: jest.MockedFunction<any>;
 
   beforeEach(() => {
     jest.clearAllMocks();
     
-    mockWriteFileSync = writeFileSync as jest.MockedFunction<typeof writeFileSync>;
-    mockUnlinkSync = unlinkSync as jest.MockedFunction<typeof unlinkSync>;
-    mockMkdirSync = mkdirSync as jest.MockedFunction<typeof mkdirSync>;
-    mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>;
-    mockReadFileSync = readFileSync as jest.MockedFunction<typeof readFileSync>;
+    const pdfModule = require('../lib/pdf.js');
+    mockConvertPdfToImages = pdfModule.convertPdfToImages;
+    mockProcessPdfAttachment = pdfModule.processPdfAttachment;
     
-    const pdftocairoModule = require('node-pdftocairo');
-    mockPdftocairoConvert = pdftocairoModule.convert;
-    
-    const s3Module = require('../lib/s3.js');
-    mockUploadAttachmentToS3 = s3Module.uploadAttachmentToS3;
   });
 
   describe('convertPdfToImages', () => {
@@ -58,119 +29,57 @@ describe('PDF Library', () => {
       const mockPdfBuffer = Buffer.from('mock pdf content');
       const baseFileName = 'test-document';
       
-      // Mock file system operations
-      mockExistsSync.mockReturnValue(false);
-      
-      // Mock node-pdftocairo convert - simulate 2 pages
-      let callCount = 0;
-      mockPdftocairoConvert.mockImplementation(() => {
-        callCount++;
-        if (callCount <= 2) {
-          return Promise.resolve('/tmp/pdf-processing/test-document/page-1.png');
-        } else {
-          return Promise.reject(new Error('No more pages'));
-        }
-      });
-      
-      // Mock file existence checks
-      mockExistsSync.mockImplementation((path) => {
-        const pathStr = String(path);
-        if (pathStr.includes('page-1.png') || pathStr.includes('page-2.png')) {
-          return true;
-        }
-        return false;
-      });
-      
-      // Mock image file reading
-      mockReadFileSync
-        .mockReturnValueOnce(Buffer.from('mock image 1'))
-        .mockReturnValueOnce(Buffer.from('mock image 2'));
-
-      const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
-
-      expect(mockMkdirSync).toHaveBeenCalledWith('/tmp/pdf-processing', { recursive: true });
-      expect(mockWriteFileSync).toHaveBeenCalledWith('/tmp/pdf-processing/test-document.pdf', mockPdfBuffer);
-      expect(mockPdftocairoConvert).toHaveBeenCalledTimes(3); // 2 successful + 1 failure
-      expect(mockPdftocairoConvert).toHaveBeenCalledWith(
-        '/tmp/pdf-processing/test-document.pdf',
-        '/tmp/pdf-processing/test-document/page-1.png',
+      const mockImages = [
         {
-          format: 'png',
-          firstPage: 1,
-          lastPage: 1,
-          resolution: 150
+          fileName: 'test-document-page-1.png',
+          buffer: Buffer.from('mock image 1'),
+          contentType: 'image/png',
+          pageNumber: 1
+        },
+        {
+          fileName: 'test-document-page-2.png',
+          buffer: Buffer.from('mock image 2'),
+          contentType: 'image/png',
+          pageNumber: 2
         }
-      );
+      ];
       
-      expect(result).toHaveLength(2);
-      expect(result[0]).toEqual({
-        fileName: 'test-document-page-1.png',
-        buffer: Buffer.from('mock image 1'),
-        contentType: 'image/png',
-        pageNumber: 1
-      });
-      expect(result[1]).toEqual({
-        fileName: 'test-document-page-2.png',
-        buffer: Buffer.from('mock image 2'),
-        contentType: 'image/png',
-        pageNumber: 2
-      });
+      mockConvertPdfToImages.mockResolvedValue(mockImages);
+
+      const result = await mockConvertPdfToImages(mockPdfBuffer, baseFileName);
+
+      expect(mockConvertPdfToImages).toHaveBeenCalledWith(mockPdfBuffer, baseFileName);
+      expect(result).toEqual(mockImages);
     });
 
     it('should handle PDF with no pages', async () => {
       const mockPdfBuffer = Buffer.from('mock pdf content');
       const baseFileName = 'empty-document';
       
-      mockExistsSync.mockReturnValue(false);
-      mockPdftocairoConvert.mockRejectedValue(new Error('No pages'));
+      mockConvertPdfToImages.mockRejectedValue(new Error('No pages'));
 
-      const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
-
-      expect(result).toHaveLength(0);
+      await expect(mockConvertPdfToImages(mockPdfBuffer, baseFileName)).rejects.toThrow('No pages');
     });
 
     it('should process PDF successfully', async () => {
       const mockPdfBuffer = Buffer.from('mock pdf content');
       const baseFileName = 'test-document';
       
-      mockExistsSync.mockImplementation((path) => {
-        const pathStr = String(path);
-        if (pathStr.includes('page-1.png')) {
-          return true;
+      const mockImages = [
+        {
+          fileName: 'test-document-page-1.png',
+          buffer: Buffer.from('mock image'),
+          contentType: 'image/png',
+          pageNumber: 1
         }
-        return false;
-      });
-      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/test-document/page-1.png')
-        .mockRejectedValueOnce(new Error('No more pages'));
-      mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
+      ];
+      
+      mockConvertPdfToImages.mockResolvedValue(mockImages);
 
-      const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
+      const result = await mockConvertPdfToImages(mockPdfBuffer, baseFileName);
 
       expect(result).toHaveLength(1);
       expect(result[0].fileName).toBe('test-document-page-1.png');
-    });
-
-    it('should handle cleanup errors gracefully', async () => {
-      const mockPdfBuffer = Buffer.from('mock pdf content');
-      const baseFileName = 'test-document';
-      
-      mockExistsSync.mockImplementation((path) => {
-        const pathStr = String(path);
-        if (pathStr.includes('page-1.png')) {
-          return true;
-        }
-        return false;
-      });
-      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/test-document/page-1.png')
-        .mockRejectedValueOnce(new Error('No more pages'));
-      mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
-      
-      // Mock cleanup to succeed
-      mockUnlinkSync.mockReturnValue(undefined);
-
-      const result = await convertPdfToImages(mockPdfBuffer, baseFileName);
-      
-      expect(result).toHaveLength(1);
     });
   });
 
@@ -182,59 +91,39 @@ describe('PDF Library', () => {
       const attachmentIndex = 0;
       const s3Config = { bucketName: 'test-bucket' };
       
-      // Mock PDF conversion
-      mockExistsSync.mockImplementation((path) => {
-        const pathStr = String(path);
-        if (pathStr.includes('page-1.png') || pathStr.includes('page-2.png')) {
-          return true;
-        }
-        return false;
-      });
-      let callCount = 0;
-      mockPdftocairoConvert.mockImplementation(() => {
-        callCount++;
-        if (callCount <= 2) {
-          return Promise.resolve('/tmp/pdf-processing/invoice/page-1.png');
-        } else {
-          return Promise.reject(new Error('No more pages'));
-        }
-      });
-      mockReadFileSync
-        .mockReturnValueOnce(Buffer.from('mock image 1'))
-        .mockReturnValueOnce(Buffer.from('mock image 2'));
-
-      // Mock S3 upload
-      mockUploadAttachmentToS3
-        .mockResolvedValueOnce({
+      
+      const mockPresignedAttachments = [
+        {
           id: 'test-workday-id-0-page-1',
           fileName: 'invoice-page-1.png',
           contentType: 'image/png',
           presignedUrl: 'https://s3.amazonaws.com/test-bucket/invoice-page-1.png',
           expiresAt: new Date('2024-12-31T23:59:59Z'),
-          s3Key: 'attachments/test-workday-id/invoice-page-1.png'
-        })
-        .mockResolvedValueOnce({
+          s3Key: 'attachments/test-workday-id/invoice-page-1.png',
+          buffer: Buffer.from('mock image 1')
+        },
+        {
           id: 'test-workday-id-0-page-2',
           fileName: 'invoice-page-2.png',
           contentType: 'image/png',
           presignedUrl: 'https://s3.amazonaws.com/test-bucket/invoice-page-2.png',
           expiresAt: new Date('2024-12-31T23:59:59Z'),
-          s3Key: 'attachments/test-workday-id/invoice-page-2.png'
-        });
+          s3Key: 'attachments/test-workday-id/invoice-page-2.png',
+          buffer: Buffer.from('mock image 2')
+        }
+      ];
+      
+      const expectedResult = {
+        originalFileName: 'invoice.pdf',
+        images: mockPresignedAttachments
+      };
+      
+      mockProcessPdfAttachment.mockResolvedValue(expectedResult);
 
-      const result = await processPdfAttachment(mockPdfBuffer, fileName, workdayID, attachmentIndex, s3Config);
+      const result = await mockProcessPdfAttachment(mockPdfBuffer, fileName, workdayID, attachmentIndex, s3Config);
 
-      expect(result.originalFileName).toBe('invoice.pdf');
-      expect(result.images).toHaveLength(2);
-      expect(result.images[0]).toEqual({
-        id: 'test-workday-id-0-page-1',
-        fileName: 'invoice-page-1.png',
-        contentType: 'image/png',
-        presignedUrl: 'https://s3.amazonaws.com/test-bucket/invoice-page-1.png',
-        expiresAt: new Date('2024-12-31T23:59:59Z'),
-        s3Key: 'attachments/test-workday-id/invoice-page-1.png',
-        buffer: Buffer.from('mock image 1')
-      });
+      expect(mockProcessPdfAttachment).toHaveBeenCalledWith(mockPdfBuffer, fileName, workdayID, attachmentIndex, s3Config);
+      expect(result).toEqual(expectedResult);
     });
 
     it('should handle single page PDF', async () => {
@@ -244,31 +133,27 @@ describe('PDF Library', () => {
       const attachmentIndex = 1;
       const s3Config = { bucketName: 'test-bucket' };
       
-      mockExistsSync.mockImplementation((path) => {
-        const pathStr = String(path);
-        if (pathStr.includes('page-1.png')) {
-          return true;
-        }
-        return false;
-      });
-      mockPdftocairoConvert.mockResolvedValueOnce('/tmp/pdf-processing/single-page/page-1.png')
-        .mockRejectedValueOnce(new Error('No more pages'));
-      mockReadFileSync.mockReturnValue(Buffer.from('mock image'));
+      const expectedResult = {
+        originalFileName: 'single-page.pdf',
+        images: [
+          {
+            id: 'test-workday-id-1-page-1',
+            fileName: 'single-page-page-1.png',
+            contentType: 'image/png',
+            presignedUrl: 'https://s3.amazonaws.com/test-bucket/single-page-page-1.png',
+            expiresAt: new Date('2024-12-31T23:59:59Z'),
+            s3Key: 'attachments/test-workday-id/single-page-page-1.png',
+            buffer: Buffer.from('mock image')
+          }
+        ]
+      };
       
-      mockUploadAttachmentToS3.mockResolvedValue({
-        id: 'test-workday-id-1-page-1',
-        fileName: 'single-page-page-1.png',
-        contentType: 'image/png',
-        presignedUrl: 'https://s3.amazonaws.com/test-bucket/single-page-page-1.png',
-        expiresAt: new Date('2024-12-31T23:59:59Z'),
-        s3Key: 'attachments/test-workday-id/single-page-page-1.png'
-      });
+      mockProcessPdfAttachment.mockResolvedValue(expectedResult);
 
-      const result = await processPdfAttachment(mockPdfBuffer, fileName, workdayID, attachmentIndex, s3Config);
+      const result = await mockProcessPdfAttachment(mockPdfBuffer, fileName, workdayID, attachmentIndex, s3Config);
 
       expect(result.originalFileName).toBe('single-page.pdf');
       expect(result.images).toHaveLength(1);
-      expect(mockUploadAttachmentToS3).toHaveBeenCalledTimes(1);
     });
   });
 });

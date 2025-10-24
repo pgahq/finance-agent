@@ -1,10 +1,12 @@
-import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync, rmSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync, rmSync, readdir } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { DownloadedAttachment, PresignedAttachment } from './types.js';
 
-// Import node-pdftocairo with type assertion
-import pdftocairo from 'node-pdftocairo';
+const execFileAsync = promisify(execFile);
+const readdirAsync = promisify(readdir);
 
 export interface ProcessedImage {
   fileName: string;
@@ -38,53 +40,51 @@ export async function convertPdfToImages(pdfBuffer: Buffer, baseFileName: string
       mkdirSync(outputDir, { recursive: true });
     }
     
-    // Convert PDF to images using node-pdftocairo
-    // We need to convert each page individually
-    const processedImages: ProcessedImage[] = [];
+    // Use pdftocairo directly to convert all pages at once
+    const outputPrefix = join(outputDir, 'page');
     
-    // First, let's try to get the number of pages by converting the first page
-    let pageNumber = 1;
-    let hasMorePages = true;
-    
-    while (hasMorePages) {
-      const outputPath = join(outputDir, `page-${pageNumber}.png`);
+    try {
+      console.log(`Converting PDF to images using pdftocairo: ${baseFileName}`);
       
-      try {
-        await pdftocairo.convert(tempPdfPath, outputPath, {
-          format: 'png',
-          firstPage: pageNumber,
-          lastPage: pageNumber,
-          resolution: 150 // DPI
+      // Call pdftocairo to convert all pages to PNGs
+      await execFileAsync('/opt/bin/pdftocairo', ['-png', tempPdfPath, outputPrefix]);
+      
+      // Find all output PNGs (Poppler outputs page-1.png, page-2.png, ...)
+      const files = await readdirAsync(outputDir);
+      const pngFiles = files.filter(f => f.match(/^page-\d+\.png$/)).sort((a, b) => {
+        // Sort by page number
+        const aNum = parseInt(a.match(/(\d+)/)![1], 10);
+        const bNum = parseInt(b.match(/(\d+)/)![1], 10);
+        return aNum - bNum;
+      });
+      
+      console.log(`Found ${pngFiles.length} pages in PDF: ${baseFileName}`);
+      
+      // Process each PNG file
+      const processedImages: ProcessedImage[] = [];
+      for (let i = 0; i < pngFiles.length; i++) {
+        const file = pngFiles[i];
+        const filePath = join(outputDir, file);
+        const imageBuffer = readFileSync(filePath);
+        
+        processedImages.push({
+          fileName: `${baseFileName}-page-${i + 1}.png`,
+          buffer: imageBuffer,
+          contentType: 'image/png',
+          pageNumber: i + 1
         });
         
-        // Check if the file was created and has content
-        if (existsSync(outputPath)) {
-          const imageBuffer = readFileSync(outputPath);
-          
-          if (imageBuffer.length > 0) {
-            processedImages.push({
-              fileName: `${baseFileName}-page-${pageNumber}.png`,
-              buffer: imageBuffer,
-              contentType: 'image/png',
-              pageNumber: pageNumber
-            });
-            
-            // Clean up individual image file
-            unlinkSync(outputPath);
-            pageNumber++;
-          } else {
-            hasMorePages = false;
-          }
-        } else {
-          hasMorePages = false;
-        }
-      } catch (error) {
-        // If conversion fails, we've reached the end of the document
-        hasMorePages = false;
+        // Clean up individual image file
+        unlinkSync(filePath);
       }
+      
+      console.log(`PDF conversion completed. Processed ${processedImages.length} pages.`);
+      return processedImages;
+      
+    } catch (error) {
+      console.error(`Failed to convert PDF using pdftocairo:`, error instanceof Error ? error.message : String(error));
+      throw error;
     }
-    
-    return processedImages;
     
   } finally {
     // Clean up temporary files
