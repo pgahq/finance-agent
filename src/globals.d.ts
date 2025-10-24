@@ -24,15 +24,15 @@ declare module 'strong-soap' {
   export const soap: SoapClient;
 }
 
-declare module 'pdf-poppler' {
+declare module 'node-pdftocairo' {
   interface ConvertOptions {
-    format: string;
-    out_dir: string;
-    out_prefix: string;
-    page: number | null;
+    format?: string;
+    firstPage?: number;
+    lastPage?: number;
+    resolution?: number;
   }
 
-  function convert(pdfPath: string, options: ConvertOptions): Promise<string[]>;
-  export = { convert };
+  function convert(pdfPath: string, outputPath: string, options?: ConvertOptions): Promise<string>;
+  export default { convert };
 }
 

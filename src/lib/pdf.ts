@@ -1,17 +1,10 @@
-import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, existsSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { DownloadedAttachment, PresignedAttachment } from './types.js';
 
 // Import node-pdftocairo with type assertion
-const pdftocairo = require('node-pdftocairo') as {
-  convert: (pdfPath: string, outputPath: string, options?: {
-    format?: string;
-    firstPage?: number;
-    lastPage?: number;
-    resolution?: number;
-  }) => Promise<string>;
-};
+import pdftocairo from 'node-pdftocairo';
 
 export interface ProcessedImage {
   fileName: string;
@@ -66,7 +59,7 @@ export async function convertPdfToImages(pdfBuffer: Buffer, baseFileName: string
         
         // Check if the file was created and has content
         if (existsSync(outputPath)) {
-          const imageBuffer = require('fs').readFileSync(outputPath);
+          const imageBuffer = readFileSync(outputPath);
           
           if (imageBuffer.length > 0) {
             processedImages.push({
@@ -100,7 +93,7 @@ export async function convertPdfToImages(pdfBuffer: Buffer, baseFileName: string
         unlinkSync(tempPdfPath);
       }
       if (existsSync(outputDir)) {
-        require('fs').rmSync(outputDir, { recursive: true, force: true });
+        rmSync(outputDir, { recursive: true, force: true });
       }
     } catch (error) {
       console.warn('Failed to clean up temporary files:', error);
