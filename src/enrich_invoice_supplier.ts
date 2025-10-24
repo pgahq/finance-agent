@@ -1,8 +1,8 @@
-import { withBatchHandler, withRecordHandler } from './lib/actions.js';
+import { withBatchHandler, withRecordHandler, type ProcessingContext } from './lib/actions.js';
 import { debug } from '@pga/logger';
-import { executeWorkdayQuery, getAttachmentContent, type WorkdayConfig } from './lib/workday.js';
+import { getSupplierInvoiceWithAttachments } from './lib/workday.js';
 import { getAiResponse } from './lib/ai.js';
-import type { SupplierIdentificationResult, InvoiceData } from './lib/types.js';
+import type { SupplierIdentificationResult, InvoiceData, PresignedAttachment } from './lib/types.js';
 import { z } from 'zod';
 
 // Zod schema for supplier identification result
@@ -30,52 +30,24 @@ export const batchHandler = withBatchHandler(QUERY)(`finance-agent-EnrichInvoice
 
 export const dataProcessor = withRecordHandler<InvoiceData>(processAction);
 
-async function processAction({ workdayConfig, data: invoiceData }: { workdayConfig: WorkdayConfig; dbConnection: any; data: InvoiceData }): Promise<void> {
+async function processAction(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
   debug('Enriching invoice supplier with AI and Workday data');
   
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
-  // Get detailed invoice data using Workday ID
-  const detailedQuery = `
-    SELECT 
-      workdayID, 
-      invoiceNumber, 
-      invoiceStatus, 
-      OCRStatus, 
-      OCRSupplierInvoice, 
-      company1, 
-      supplier, 
-      suppliersInvoiceNumber, 
-      controlTotalAmount, 
-      purchaseOrders, 
-      allAttachmentsForBusinessDocument 
-    FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) 
-    WHERE workdayID = "${invoiceData.workdayID}"
-  `;
-
-  const detailedResponse = await executeWorkdayQuery(workdayConfig, detailedQuery);
+  // Get detailed invoice data with attachments using SOAP API
+  const { invoice: detailedInvoice, presignedAttachments } = await getSupplierInvoiceWithAttachments(
+    context, 
+    invoiceData.workdayID
+  );
   
-  if (!detailedResponse || typeof detailedResponse !== 'object' || !('data' in detailedResponse) || !Array.isArray((detailedResponse as any).data)) {
-    throw new Error('Expected detailed query response format: {total: number, data: array}');
-  }
-  
-  const detailedResults = (detailedResponse as any).data;
-  const detailedInvoice = detailedResults[0] as any;
+  debug('detailedInvoice from SOAP', detailedInvoice);
+  debug(`Successfully processed ${presignedAttachments.length} attachments`);
 
-  debug('detailedInvoice', detailedInvoice);
-
-  // Get attachment content via separate API call if attachments are available
-  if (detailedInvoice.allAttachmentsForBusinessDocument) {
-    await getAttachmentContent(workdayConfig, detailedInvoice.allAttachmentsForBusinessDocument);
-  } else {
-    debug('No attachments found for this invoice');
-  }
-
-  // Check if supplier is missing
-  if (!detailedInvoice.supplier || detailedInvoice.supplier === '') {
+  // Check if supplier is missing (using the original invoice data from the batch query)
+  if (!invoiceData.supplier || !invoiceData.supplier.descriptor) {
     debug('Missing supplier - identifying supplier');
-    const attachmentData = detailedInvoice.allAttachmentsForBusinessDocument || [];
-    const supplierResult = await identifySupplier(detailedInvoice, attachmentData);
+    const supplierResult = await identifySupplier(detailedInvoice, presignedAttachments);
     debug('Supplier result:', supplierResult);
 
     if (supplierResult.confidence > 0.8) {
@@ -94,7 +66,7 @@ async function processAction({ workdayConfig, data: invoiceData }: { workdayConf
 
 async function identifySupplier(
   invoice: any,
-  attachmentData: any
+  presignedAttachments: PresignedAttachment[]
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.invoiceNumber);
   
@@ -107,7 +79,12 @@ async function identifySupplier(
       email: extractEmailFromInvoice(invoice),
       invoiceNumber: invoice.invoiceNumber,
       amount: invoice.controlTotalAmount,
-      attachmentData: attachmentData
+      attachments: presignedAttachments.map(att => ({
+        fileName: att.fileName,
+        contentType: att.contentType,
+        presignedUrl: att.presignedUrl,
+        expiresAt: att.expiresAt
+      }))
     };
     
     // Call AI to identify the supplier using RAG
@@ -116,11 +93,14 @@ async function identifySupplier(
 
       You have access to a findSuppliers tool that can search our supplier database using semantic similarity. Use this tool to find relevant suppliers based on the invoice data, then analyze the results to identify the best match.
 
+      The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
+
       Consider the following when matching:
       - Company name similarity
       - Address information
       - Contact details (phone, email)
       - Business context and industry
+      - Document content from attachments (if available)
       - Any other relevant details from the invoice
 
       Use the findSuppliers tool to search for suppliers, then provide your analysis and recommendation.`,
@@ -128,7 +108,7 @@ async function identifySupplier(
       messages: [
         { 
           role: 'user', 
-          content: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis.` 
+          content: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis. If attachments are available, you can access them via the provided presigned URLs to analyze the document content.` 
         }
       ]
     });

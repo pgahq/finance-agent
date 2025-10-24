@@ -21,6 +21,19 @@ jest.mock('../lib/workday.js', () => ({
     clientSecret: 'test-client-secret',
     refreshToken: 'test-refresh-token'
   }),
+  getWorkdaySoapConfig: jest.fn().mockReturnValue({
+    domain: 'test.workday.com',
+    tenant: 'test-tenant',
+    username: 'test-user',
+    password: 'test-password'
+  }),
+  getSupplierInvoiceWithAttachments: jest.fn().mockResolvedValue({
+    invoice: {
+      Invoice_ID: 'test-invoice-id',
+      Attachment_Data: []
+    },
+    presignedAttachments: []
+  }),
   executeWorkdayQuery: jest.fn().mockResolvedValue({
     total: 1,
     data: [{
@@ -30,8 +43,7 @@ jest.mock('../lib/workday.js', () => ({
       supplier: null,
       allAttachmentsForBusinessDocument: []
     }]
-  }),
-  getAttachmentContent: jest.fn().mockResolvedValue([])
+  })
 }));
 
 jest.mock('../lib/database.js', () => ({

@@ -1,4 +1,4 @@
-import { withBulkHandler } from './lib/actions.js';
+import { withBulkHandler, type ProcessingContext } from './lib/actions.js';
 import { debug } from '@pga/logger';
 import { createSupplierContent, createEmbedding } from './lib/rag.js';
 import { bulkInsertDocuments, bulkUpdateDocuments, bulkDeleteDocuments, getDocumentsByType } from './lib/database.js';
@@ -14,7 +14,7 @@ const QUERY = `
   FROM suppliers1 (dataSourceFilter = defaultFilter)
 `;
 
-async function processAction({ data, dbConnection }: { data: unknown; dbConnection: any }): Promise<void> {
+async function processAction(context: ProcessingContext, data: unknown): Promise<void> {
   debug('Starting incremental supplier sync');
 
   // Data is already the array from executeQuery
@@ -34,7 +34,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
 
   // Get existing suppliers from database
   debug('Fetching existing suppliers from database...');
-  const existingSuppliers = await getDocumentsByType(dbConnection, 'supplier');
+  const existingSuppliers = await getDocumentsByType(context.dbConnection, 'supplier');
   const existingSupplierMap = new Map(
     existingSuppliers.map(s => [s.workday_id, s])
   );
@@ -99,7 +99,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
     // Step 1: Bulk delete removed suppliers
     if (deletedSuppliers.length > 0) {
       debug(`Bulk deleting ${deletedSuppliers.length} removed suppliers...`);
-      const deletedCount = await bulkDeleteDocuments(dbConnection, deletedSuppliers, 'supplier');
+      const deletedCount = await bulkDeleteDocuments(context.dbConnection, deletedSuppliers, 'supplier');
       successCount += deletedCount;
       debug(`Deleted ${deletedCount} suppliers`);
     }
@@ -144,7 +144,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
         }
         
         if (newSupplierDocuments.length > 0) {
-          await bulkInsertDocuments(dbConnection, newSupplierDocuments);
+          await bulkInsertDocuments(context.dbConnection, newSupplierDocuments);
           successCount += newSupplierDocuments.length;
         }
         
@@ -192,7 +192,7 @@ async function processAction({ data, dbConnection }: { data: unknown; dbConnecti
         }
         
         if (updatedSupplierDocuments.length > 0) {
-          await bulkUpdateDocuments(dbConnection, updatedSupplierDocuments);
+          await bulkUpdateDocuments(context.dbConnection, updatedSupplierDocuments);
           successCount += updatedSupplierDocuments.length;
         }
         

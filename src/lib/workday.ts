@@ -1,4 +1,14 @@
 import { debug } from '@pga/logger';
+import path from 'path';
+import type { 
+  WorkdaySoapConfig, 
+  SupplierInvoiceSoapResponse,
+  PresignedAttachment,
+  DownloadedAttachment
+} from './types.js';
+
+// Import strong-soap for SOAP client
+const strong = require('strong-soap').soap;
 
 export interface WorkdayConfig {
   domain: string;
@@ -14,6 +24,13 @@ export const getWorkdayConfig = (env: NodeJS.ProcessEnv): WorkdayConfig => ({
   clientId: env.WORKDAY_CLIENT_ID!,
   clientSecret: env.WORKDAY_CLIENT_SECRET!,
   refreshToken: env.WORKDAY_REFRESH_TOKEN!,
+});
+
+export const getWorkdaySoapConfig = (env: NodeJS.ProcessEnv): WorkdaySoapConfig => ({
+  domain: env.WORKDAY_DOMAIN!,
+  tenant: env.WORKDAY_TENANT!,
+  username: env.WORKDAY_USER!,
+  password: env.WORKDAY_PASSWORD!,
 });
 
 const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clientSecret: string }): string => {
@@ -157,21 +174,115 @@ export async function executeWorkdayQuery(
   };
 }
 
-export async function getAttachmentContent(_config: WorkdayConfig, attachments: any[]): Promise<any[]> {
-  if (!attachments || attachments.length === 0) {
-    return [];
+// SOAP API Functions
+export async function getSupplierInvoiceWithAttachments(
+  context: { workdaySoapConfig: WorkdaySoapConfig; s3Config: { bucketName: string } },
+  workdayID: string
+): Promise<{
+  invoice: any;
+  presignedAttachments: PresignedAttachment[];
+}> {
+  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
+  const wsdlPath = path.join(__dirname, '..', 'soap', 'Resource_Management.wsdl');
+
+  debug('Creating Workday SOAP client for invoice retrieval');
+  debug(`WSDL path: ${wsdlPath}`);
+  debug(`WorkdayID: ${workdayID}`);
+
+  // First, get the SOAP response
+  const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
+    strong.createClient(wsdlPath, {}, (err: any, client: any) => {
+      if (err) {
+        debug('Failed to create SOAP client:', err);
+        return reject(err);
+      }
+
+      client.setSecurity(new strong.WSSecurity(username, context.workdaySoapConfig.password, { 
+        passwordType: 'PasswordText', 
+        mustUnderstand: true 
+      }));
+
+      const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
+      client.setEndpoint(endpoint);
+
+      const request = {
+        Get_Supplier_Invoices_Request: {
+          Request_References: {
+            Supplier_Invoice_Reference: {
+              ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
+            }
+          },
+          Response_Group: {
+            Include_Reference: true,
+            Include_Supplier_Invoice_Data: true
+          }
+        }
+      };
+
+      debug('Requesting Supplier Invoice with attachments from Workday:', request);
+      client.Get_Supplier_Invoices(request, (err: any, result: any) => {
+        if (err) {
+          debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
+          return reject(err);
+        }
+        debug('Workday SOAP response received');
+        resolve(result);
+      });
+    });
+  });
+
+  // Extract invoice data
+  const invoices = soapResponse?.Get_Supplier_Invoices_Response?.Response_Data?.Supplier_Invoice || [];
+  if (invoices.length === 0) {
+    throw new Error(`No invoice found for workdayID: ${workdayID}`);
+  }
+  
+  const invoiceRecord = invoices[0];
+  const invoice = invoiceRecord?.Supplier_Invoice_Data || {};
+  
+  debug('Invoice data from SOAP', invoice);
+
+  // Process attachments: upload to S3 and generate presigned URLs
+  const presignedAttachments: PresignedAttachment[] = [];
+  const attachmentData = invoice.Attachment_Data || [];
+  
+  if (attachmentData.length > 0) {
+    debug(`Processing ${attachmentData.length} attachments for invoice`);
+    
+    for (const attachment of attachmentData) {
+      try {
+        // Convert base64 content to buffer
+        const buffer = Buffer.from(attachment.File_Content || '', 'base64');
+        
+        const downloadedAttachment: DownloadedAttachment = {
+          id: `${workdayID}-${attachmentData.indexOf(attachment)}`,
+          fileName: attachment.$attributes?.Filename || `attachment-${attachmentData.indexOf(attachment)}`,
+          contentType: attachment.$attributes?.Content_Type || 'application/octet-stream',
+          buffer,
+          size: buffer.length
+        };
+
+        // Upload to S3 and get presigned URL
+        const { uploadAttachmentToS3 } = await import('./s3.js');
+        const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
+        presignedAttachments.push(presignedAttachment);
+        debug(`Successfully processed attachment: ${downloadedAttachment.fileName}`);
+        
+      } catch (attachmentError) {
+        debug(`Error processing attachment ${attachment.$attributes?.Filename}:`, attachmentError);
+        // Continue with other attachments even if one fails
+      }
+    }
+    
+    debug(`Successfully processed ${presignedAttachments.length} attachments`);
+  } else {
+    debug('No attachments found for this invoice');
   }
 
-  // For now, return attachment metadata
-  // TODO: Implement actual base64 content retrieval via RaaS or SOAP API
-  // This would require using the Bearer token for authentication
-  return attachments.map(attachment => ({
-    id: attachment.id,
-    fileName: attachment.fileName,
-    contentType: attachment.contentType,
-    // Note: Base64 content would need to be retrieved via separate API call
-    // This requires either RaaS report or SOAP API integration
-  }));
+  return {
+    invoice,
+    presignedAttachments
+  };
 }
 
 

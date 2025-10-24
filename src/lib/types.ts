@@ -66,6 +66,10 @@ export interface InvoiceData {
     descriptor: string;
     id: string;
   };
+  supplier?: {
+    descriptor: string;
+    id: string;
+  };
 }
 
 export interface CompanyIdentificationResult {
@@ -89,4 +93,56 @@ export interface WorkdayQueryResultDetail {
   bulk?: boolean;
   timestamp: string;
   requestId: string;
+}
+
+// Attachment Types
+export interface AttachmentContent {
+  id: string;
+  fileName: string;
+  contentType: string;
+  fileContent: string; // base64 encoded
+}
+
+export interface DownloadedAttachment {
+  id: string;
+  fileName: string;
+  contentType: string;
+  buffer: Buffer;
+  size: number;
+}
+
+export interface PresignedAttachment {
+  id: string;
+  fileName: string;
+  contentType: string;
+  presignedUrl: string;
+  expiresAt: Date;
+  s3Key: string;
+}
+
+// SOAP API Types
+export interface WorkdaySoapConfig {
+  domain: string;
+  tenant: string;
+  username: string;
+  password: string;
+}
+
+export interface SupplierInvoiceSoapResponse {
+  Get_Supplier_Invoices_Response: {
+    Response_Data: {
+      Supplier_Invoice: Array<{
+        Supplier_Invoice_Data: {
+          Invoice_ID: string;
+          Attachment_Data?: Array<{
+            $attributes: {
+              Filename: string;
+              Content_Type: string;
+            };
+            File_Content: string; // base64
+          }>;
+        };
+      }>;
+    };
+  };
 }

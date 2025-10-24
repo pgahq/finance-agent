@@ -5,26 +5,31 @@
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { getS3Config, type S3Config } from './s3.js';
-import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
+import { getWorkdayConfig, getWorkdaySoapConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
+import type { WorkdaySoapConfig } from './types.js';
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
-async function setupEnvironment(): Promise<{
+export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
+  workdaySoapConfig: WorkdaySoapConfig;
   s3Config: S3Config;
   dbConnection: DatabaseConnection;
-}> {
+}
+
+async function setupContext(): Promise<ProcessingContext> {
   process.env = await loadEnv();
   
   return {
     workdayConfig: getWorkdayConfig(process.env),
+    workdaySoapConfig: getWorkdaySoapConfig(process.env),
     s3Config: getS3Config(process.env),
     dbConnection: await getDatabaseConnection(process.env)
   };
 }
 
-const executeQuery = async (workdayConfig: WorkdayConfig, query: string) => {
-  const queryResponse = await executeWorkdayQuery(workdayConfig, query);
+const executeQuery = async (context: ProcessingContext, query: string) => {
+  const queryResponse = await executeWorkdayQuery(context.workdayConfig, query);
   
   if (!queryResponse?.data || !Array.isArray(queryResponse.data)) {
     throw new Error('Expected query response format: {total: number, data: array}');
@@ -34,24 +39,24 @@ const executeQuery = async (workdayConfig: WorkdayConfig, query: string) => {
 };
 
 export const withBulkHandler = <T = unknown>(query: string) =>
-  (processAction: (params: { workdayConfig: WorkdayConfig; s3Config: S3Config; dbConnection: DatabaseConnection; data: T }) => Promise<void>) =>
+  (processAction: (context: ProcessingContext, data: T) => Promise<void>) =>
     async () => {
-      const { workdayConfig, s3Config, dbConnection } = await setupEnvironment();
+      const context = await setupContext();
       
       debug(`Executing bulk query: ${query}`);
-      const data = await executeQuery(workdayConfig, query);
+      const data = await executeQuery(context, query);
       
       debug(`Processing ${data.length} results in bulk`);
-      await processAction({ workdayConfig, s3Config, dbConnection: dbConnection!, data: data as T });
+      await processAction(context, data as T);
     };
 
 export const withBatchHandler = (query: string) =>
   (processorFunctionName: string) =>
     async () => {
-      const { workdayConfig } = await setupEnvironment();
+      const context = await setupContext();
       
       debug(`Executing query for batch processing: ${query}`);
-      const results = await executeQuery(workdayConfig, query);
+      const results = await executeQuery(context, query);
       
       debug(`Query returned ${results.length} results, invoking processors in parallel`);
       
@@ -69,10 +74,10 @@ export const withBatchHandler = (query: string) =>
     };
 
 export const withRecordHandler = <T = unknown>(
-  processAction: (params: { workdayConfig: WorkdayConfig; s3Config: S3Config; dbConnection: DatabaseConnection; data: T }) => Promise<void>
+  processAction: (context: ProcessingContext, data: T) => Promise<void>
 ) => async (event: { data: any }) => {
-  const { workdayConfig, s3Config, dbConnection } = await setupEnvironment();
+  const context = await setupContext();
   
   debug(`Processing individual record with ID: ${event.data?.workdayID || 'unknown'}`);
-  await processAction({ workdayConfig, s3Config, dbConnection, data: event.data as T });
+  await processAction(context, event.data as T);
 };
