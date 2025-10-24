@@ -15,7 +15,7 @@ export async function getAiResponse({
   model = 'gpt-4o'
 }: {
   prompt: string;
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | Array<{ type: 'text' | 'image'; text?: string; image?: string | URL }> }>;
   schema?: z.ZodSchema<any>;
   model?: string;
 }): Promise<unknown> {

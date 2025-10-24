@@ -36,18 +36,18 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
   // Get detailed invoice data with attachments using SOAP API
-  const { invoice: detailedInvoice, presignedAttachments } = await getSupplierInvoiceWithAttachments(
+  const { invoice: detailedInvoice, presignedAttachments: processedAttachments } = await getSupplierInvoiceWithAttachments(
     context, 
     invoiceData.workdayID
   );
   
   debug('detailedInvoice from SOAP', detailedInvoice);
-  debug(`Successfully processed ${presignedAttachments.length} attachments`);
+  debug(`Successfully processed ${processedAttachments.length} attachments`);
 
   // Check if supplier is missing (using the original invoice data from the batch query)
   if (!invoiceData.supplier || !invoiceData.supplier.descriptor) {
     debug('Missing supplier - identifying supplier');
-    const supplierResult = await identifySupplier(detailedInvoice, presignedAttachments);
+    const supplierResult = await identifySupplier(detailedInvoice, processedAttachments);
     debug('Supplier result:', supplierResult);
 
     if (supplierResult.confidence > 0.8) {
@@ -66,7 +66,7 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
 
 async function identifySupplier(
   invoice: any,
-  presignedAttachments: PresignedAttachment[]
+  processedAttachments: PresignedAttachment[]
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.invoiceNumber);
   
@@ -79,11 +79,10 @@ async function identifySupplier(
       email: extractEmailFromInvoice(invoice),
       invoiceNumber: invoice.invoiceNumber,
       amount: invoice.controlTotalAmount,
-      attachments: presignedAttachments.map(att => ({
+      attachments: processedAttachments.map(att => ({
         fileName: att.fileName,
         contentType: att.contentType,
-        presignedUrl: att.presignedUrl,
-        expiresAt: att.expiresAt
+        presignedUrl: att.presignedUrl
       }))
     };
     
@@ -108,7 +107,18 @@ async function identifySupplier(
       messages: [
         { 
           role: 'user', 
-          content: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis. If attachments are available, you can access them via the provided presigned URLs to analyze the document content.` 
+          content: [
+            {
+              type: 'text',
+              text: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier.`
+            },
+            ...processedAttachments
+              .filter(att => att.contentType.startsWith('image/'))
+              .map(att => ({
+                type: 'image' as const,
+                image: new URL(att.presignedUrl)
+              }))
+          ]
         }
       ]
     });

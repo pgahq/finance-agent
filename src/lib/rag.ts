@@ -44,19 +44,6 @@ export function createSupplierContent(supplier: any): string {
   return content;
 }
 
-// Create document content for invoices
-export function createInvoiceContent(invoice: any): string {
-  const content = [
-    `Invoice Number: ${invoice.invoiceNumber}`,
-    `Company: ${invoice.companyName}`,
-    invoice.supplierName ? `Supplier: ${invoice.supplierName}` : null,
-    invoice.amount ? `Amount: $${invoice.amount}` : null,
-    invoice.date ? `Date: ${invoice.date}` : null,
-    invoice.description ? `Description: ${invoice.description}` : null
-  ].filter(Boolean).join('\n');
-  
-  return content;
-}
 
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;

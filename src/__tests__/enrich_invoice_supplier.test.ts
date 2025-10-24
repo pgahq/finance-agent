@@ -72,19 +72,6 @@ jest.mock('../lib/s3.js', () => ({
     bucketName: 'test-bucket',
     region: 'us-east-1'
   }),
-  getJsonFromS3: jest.fn().mockResolvedValue({
-    cachedAt: '2024-01-01T00:00:00Z',
-    totalCount: 1,
-    suppliers: [{
-      supplierId: 'supplier-1',
-      supplierName: 'Test Supplier',
-      lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-      supplierStatus: 'Active',
-      allPhoneNumbers: ['555-1234'],
-      allEmailAddresses: ['test@supplier.com'],
-      allAddresses: ['123 Test St']
-    }]
-  })
 }));
 
 describe('enrich_invoice_supplier', () => {

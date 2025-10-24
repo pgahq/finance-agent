@@ -1,17 +1,4 @@
 // Core Domain Types
-export interface CachedSupplier {
-  supplierId: string;
-  supplierName: string;
-  allPhoneNumbers?: string[];
-  allEmailAddresses?: string[];
-  allAddresses?: string[];
-}
-
-export interface SupplierCacheData {
-  cachedAt: string;
-  totalCount: number;
-  suppliers: CachedSupplier[];
-}
 
 // AI Result Types
 export interface SupplierIdentificationResult {
@@ -21,14 +8,6 @@ export interface SupplierIdentificationResult {
   reasoning: string;
 }
 
-export interface BatchSupplierIdentificationResult {
-  supplierId: string;
-  supplierName: string;
-  confidence: number;
-  reasoning: string;
-  batchIndex: number;
-  totalBatches: number;
-}
 
 
 // Data types for actions
@@ -72,12 +51,6 @@ export interface InvoiceData {
   };
 }
 
-export interface CompanyIdentificationResult {
-  companyId: string;
-  companyName: string;
-  confidence: number;
-  reasoning: string;
-}
 
 // Event Types
 export interface ScheduleEvent {
@@ -96,12 +69,6 @@ export interface WorkdayQueryResultDetail {
 }
 
 // Attachment Types
-export interface AttachmentContent {
-  id: string;
-  fileName: string;
-  contentType: string;
-  fileContent: string; // base64 encoded
-}
 
 export interface DownloadedAttachment {
   id: string;
@@ -118,6 +85,7 @@ export interface PresignedAttachment {
   presignedUrl: string;
   expiresAt: Date;
   s3Key: string;
+  buffer?: Buffer; // Optional buffer for AI processing
 }
 
 // SOAP API Types

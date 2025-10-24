@@ -268,8 +268,8 @@ export async function getSupplierInvoiceWithAttachments(
   
   debug('Invoice data from SOAP', invoice);
 
-  // Process attachments: upload to S3 and generate presigned URLs
-  const presignedAttachments: PresignedAttachment[] = [];
+  // Process attachments: convert PDFs to images and upload to S3
+  const processedAttachments: PresignedAttachment[] = [];
   const attachmentData = invoice.Attachment_Data;
   
   if (attachmentData) {
@@ -282,20 +282,44 @@ export async function getSupplierInvoiceWithAttachments(
       try {
         // Convert base64 content to buffer
         const buffer = Buffer.from(attachment.File_Content || '', 'base64');
+        const contentType = attachment.$attributes?.Content_Type || 'application/octet-stream';
+        const fileName = attachment.$attributes?.Filename || `attachment-${i}`;
         
-        const downloadedAttachment: DownloadedAttachment = {
-          id: `${workdayID}-${i}`,
-          fileName: attachment.$attributes?.Filename || `attachment-${i}`,
-          contentType: attachment.$attributes?.Content_Type || 'application/octet-stream',
-          buffer,
-          size: buffer.length
-        };
+        // Check if it's a PDF and convert to images
+        if (contentType === 'application/pdf') {
+          debug(`Converting PDF to images: ${fileName}`);
+          const { processPdfAttachment } = await import('./pdf.js');
+          const processedPdf = await processPdfAttachment(buffer, fileName, workdayID, i, context.s3Config);
+          
+          // Add all converted images to processed attachments
+          processedAttachments.push(...processedPdf.images);
+          
+          debug(`Successfully processed PDF ${fileName} with ${processedPdf.images.length} pages`);
+        } else {
+          // Handle non-PDF attachments (images, etc.)
+          const downloadedAttachment: DownloadedAttachment = {
+            id: `${workdayID}-${i}`,
+            fileName: fileName,
+            contentType: contentType,
+            buffer: buffer,
+            size: buffer.length
+          };
 
-        // Upload to S3 and get presigned URL
-        const { uploadAttachmentToS3 } = await import('./s3.js');
-        const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
-        presignedAttachments.push(presignedAttachment);
-        debug(`Successfully processed attachment: ${downloadedAttachment.fileName}`);
+          const { uploadAttachmentToS3 } = await import('./s3.js');
+          const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
+          
+          processedAttachments.push({
+            id: presignedAttachment.id,
+            fileName: fileName,
+            contentType: contentType,
+            presignedUrl: presignedAttachment.presignedUrl,
+            expiresAt: presignedAttachment.expiresAt,
+            s3Key: presignedAttachment.s3Key,
+            buffer: buffer
+          });
+          
+          debug(`Successfully processed attachment: ${fileName}`);
+        }
         
       } catch (attachmentError) {
         debug(`Error processing attachment ${attachment.$attributes?.Filename}:`, attachmentError);
@@ -303,14 +327,14 @@ export async function getSupplierInvoiceWithAttachments(
       }
     }
     
-    debug(`Successfully processed ${presignedAttachments.length} attachments`);
+    debug(`Successfully processed ${processedAttachments.length} attachments`);
   } else {
     debug('No attachments found for this invoice');
   }
 
   return {
     invoice,
-    presignedAttachments
+    presignedAttachments: processedAttachments
   };
 }
 
