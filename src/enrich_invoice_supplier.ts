@@ -62,6 +62,8 @@ async function processAction({ workdayConfig, data: invoiceData }: { workdayConf
   const detailedResults = (detailedResponse as any).data;
   const detailedInvoice = detailedResults[0] as any;
 
+  debug('detailedInvoice', detailedInvoice);
+
   // Get attachment content via separate API call if attachments are available
   if (detailedInvoice.allAttachmentsForBusinessDocument) {
     await getAttachmentContent(workdayConfig, detailedInvoice.allAttachmentsForBusinessDocument);
