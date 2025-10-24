@@ -190,7 +190,7 @@ export async function getSupplierInvoiceWithAttachments(
   presignedAttachments: PresignedAttachment[];
 }> {
   const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
-  const wsdlPath = path.join(__dirname, '..', 'soap', 'Resource_Management.wsdl');
+  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   debug('Creating Workday SOAP client for invoice retrieval');
   debug(`WSDL path: ${wsdlPath}`);
