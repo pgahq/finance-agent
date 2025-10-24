@@ -195,6 +195,15 @@ export async function getSupplierInvoiceWithAttachments(
   debug('Creating Workday SOAP client for invoice retrieval');
   debug(`WSDL path: ${wsdlPath}`);
   debug(`WorkdayID: ${workdayID}`);
+  debug(`Username: ${username}`);
+  debug(`Password length: ${context.workdaySoapConfig.password?.length || 0}`);
+  debug(`Domain: ${context.workdaySoapConfig.domain}`);
+  debug(`Tenant: ${context.workdaySoapConfig.tenant}`);
+
+  // Validate required SOAP configuration
+  if (!context.workdaySoapConfig.password) {
+    throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
+  }
 
   // Get the strong-soap module
   const strongSoap = await getStrongSoap();
