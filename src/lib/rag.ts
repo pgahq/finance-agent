@@ -71,8 +71,6 @@ export interface RAGResult {
  * This function can be used by other Lambda functions to retrieve relevant documents
  */
 export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
-  debug('Starting RAG document query');
-  
   try {
     const {
       query,
@@ -85,13 +83,8 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
       throw new Error('Query parameter is required and cannot be empty');
     }
 
-    debug(`RAG Query: "${query}"`);
-    debug(`Document type filter: ${documentType || 'all'}`);
-    debug(`Limit: ${limit}, Similarity threshold: ${similarityThreshold}`);
-
     // Create embedding for the query
     const queryEmbedding = await createEmbedding(query);
-    debug(`Created query embedding with ${queryEmbedding.length} dimensions`);
 
     // Get database connection
     const db = await getDatabaseConnection(process.env);
@@ -106,8 +99,6 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
         limit
       );
       
-      debug(`Found ${results.length} similar documents`);
-      
       // Filter by similarity threshold and transform results
       const ragResults: RAGResult[] = results
         .filter(row => parseFloat(row.similarity) >= similarityThreshold)
@@ -119,11 +110,22 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
           similarity: parseFloat(row.similarity)
         }));
 
-      // Log results summary
+      // Consolidated RAG results log
       if (ragResults.length > 0) {
+        debug(`RAG Query: "${query}"`);
+        debug(`Query executed successfully, returned ${results.length} rows`);
         debug(`Top similarity scores: ${ragResults.map(r => r.similarity.toFixed(3)).join(', ')}`);
+        
+        // Show excerpt of first few results
+        const excerpt = ragResults.slice(0, 3).map(r => ({
+          workday_id: r.workday_id,
+          type: r.type,
+          similarity: r.similarity.toFixed(3),
+          contentPreview: r.content.substring(0, 100) + '...'
+        }));
+        debug(`First few results:`, excerpt);
       } else {
-        debug('No documents found above similarity threshold');
+        debug(`RAG Query: "${query}" - No documents found above similarity threshold`);
       }
 
       return ragResults;
@@ -158,8 +160,6 @@ export const findSuppliersTool = tool({
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
-    debug(`Find Suppliers Tool: Searching for "${query}"`);
-    
     try {
       const results = await queryDocuments({
         query,

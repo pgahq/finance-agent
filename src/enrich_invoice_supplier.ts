@@ -41,7 +41,6 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
     invoiceData.workdayID
   );
   
-  debug('detailedInvoice from SOAP', detailedInvoice);
   debug(`Successfully processed ${processedAttachments.length} attachments`);
 
   // Check if supplier is missing (using the original invoice data from the batch query)

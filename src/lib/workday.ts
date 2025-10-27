@@ -238,27 +238,20 @@ export async function getSupplierInvoiceWithAttachments(
         }
       };
 
-      debug('Requesting Supplier Invoice with attachments from Workday:', request);
+      debug('Requesting Supplier Invoice with attachments from Workday');
       client.Get_Supplier_Invoices(request, (err: any, result: any) => {
         if (err) {
           debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
           return reject(err);
         }
         debug('Workday SOAP response received');
-        debug('Full SOAP response structure:', JSON.stringify(result, null, 2));
         resolve(result);
       });
     });
   });
 
   // Extract invoice data
-  debug('Parsing SOAP response for invoice data');
-  debug('soapResponse keys:', Object.keys(soapResponse || {}));
-  debug('Response_Data:', soapResponse?.Response_Data);
-  
   const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
-  debug('Found supplier invoice:', !!supplierInvoice);
-  debug('Supplier invoice structure:', JSON.stringify(supplierInvoice, null, 2));
   
   if (!supplierInvoice) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
@@ -275,7 +268,6 @@ export async function getSupplierInvoiceWithAttachments(
   if (attachmentData) {
     // Handle both single attachment object and array of attachments
     const attachments = Array.isArray(attachmentData) ? attachmentData : [attachmentData];
-    debug(`Processing ${attachments.length} attachments for invoice`);
     
     for (let i = 0; i < attachments.length; i++) {
       const attachment = attachments[i];
@@ -287,14 +279,11 @@ export async function getSupplierInvoiceWithAttachments(
         
         // Check if it's a PDF and convert to images
         if (contentType === 'application/pdf') {
-          debug(`Converting PDF to images: ${fileName}`);
           const { processPdfAttachment } = await import('./pdf.js');
           const processedPdf = await processPdfAttachment(buffer, fileName, workdayID, i, context.s3Config);
           
           // Add all converted images to processed attachments
           processedAttachments.push(...processedPdf.images);
-          
-          debug(`Successfully processed PDF ${fileName} with ${processedPdf.images.length} pages`);
         } else {
           // Handle non-PDF attachments (images, etc.)
           const downloadedAttachment: DownloadedAttachment = {
@@ -317,8 +306,6 @@ export async function getSupplierInvoiceWithAttachments(
             s3Key: presignedAttachment.s3Key,
             buffer: buffer
           });
-          
-          debug(`Successfully processed attachment: ${fileName}`);
         }
         
       } catch (attachmentError) {
@@ -327,7 +314,14 @@ export async function getSupplierInvoiceWithAttachments(
       }
     }
     
-    debug(`Successfully processed ${processedAttachments.length} attachments`);
+    // Consolidated attachment processing log with presigned URLs
+    const attachmentSummary = processedAttachments.map(att => ({
+      fileName: att.fileName,
+      contentType: att.contentType,
+      presignedUrl: att.presignedUrl
+    }));
+    
+    debug(`Processed ${processedAttachments.length} attachments:`, attachmentSummary);
   } else {
     debug('No attachments found for this invoice');
   }

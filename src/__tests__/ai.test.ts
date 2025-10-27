@@ -4,7 +4,8 @@ import { getAiResponse } from '../lib/ai.js';
 jest.mock('ai', () => ({
   generateText: jest.fn(),
   tool: jest.fn(),
-  stepCountIs: jest.fn()
+  stepCountIs: jest.fn(),
+  zodSchema: jest.fn()
 }));
 
 jest.mock('@ai-sdk/openai', () => ({
@@ -23,6 +24,7 @@ describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
   const mockOpenai = require('@ai-sdk/openai').openai;
   const mockStepCountIs = require('ai').stepCountIs;
+  const mockZodSchema = require('ai').zodSchema;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -36,6 +38,7 @@ describe('AI utilities', () => {
     
     mockOpenai.mockReturnValue('mocked-openai-model');
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
+    mockZodSchema.mockReturnValue('mocked-zod-schema');
   });
 
   describe('getAiResponse', () => {
@@ -57,12 +60,7 @@ describe('AI utilities', () => {
         }
       });
 
-      expect(result).toEqual({
-        supplierId: 'test-id',
-        supplierName: 'Test Supplier',
-        confidence: 0.9,
-        reasoning: 'Test reasoning'
-      });
+      expect(result).toEqual('{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}');
     });
 
     it('should add system prompt if not present', async () => {
@@ -81,6 +79,54 @@ describe('AI utilities', () => {
         tools: {
           findSuppliers: expect.any(Object)
         }
+      });
+    });
+
+    it('should return structured output when schema is provided', async () => {
+      const mockSchema = {
+        parse: jest.fn().mockReturnValue({
+          supplierId: 'test-id',
+          supplierName: 'Test Supplier',
+          confidence: 0.9,
+          reasoning: 'Test reasoning'
+        })
+      } as any;
+
+      // Mock result with structured output
+      mockGenerateText.mockResolvedValue({
+        text: 'Some text response',
+        object: {
+          supplierId: 'test-id',
+          supplierName: 'Test Supplier',
+          confidence: 0.9,
+          reasoning: 'Test reasoning'
+        },
+        toolResults: []
+      });
+
+      const result = await getAiResponse({
+        prompt: 'Test prompt',
+        schema: mockSchema,
+        messages: [{ role: 'user', content: 'Test message' }]
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledWith({
+        model: 'mocked-openai-model',
+        messages: [{ role: 'user', content: 'Test message' }],
+        system: 'Test prompt',
+        stopWhen: 'mocked-step-count-is',
+        temperature: 0.2,
+        tools: {
+          findSuppliers: expect.any(Object)
+        },
+        experimental_output: 'mocked-zod-schema'
+      });
+
+      expect(result).toEqual({
+        supplierId: 'test-id',
+        supplierName: 'Test Supplier',
+        confidence: 0.9,
+        reasoning: 'Test reasoning'
       });
     });
 

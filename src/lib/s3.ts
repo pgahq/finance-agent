@@ -29,8 +29,6 @@ export async function putBinaryToS3(
   metadata?: Record<string, string>
 ): Promise<void> {
   try {
-    debug(`Putting binary file to S3: s3://${config.bucketName}/${key}`);
-    
     const command = new PutObjectCommand({
       Bucket: config.bucketName,
       Key: key,
@@ -40,8 +38,6 @@ export async function putBinaryToS3(
     });
     
     await s3Client.send(command);
-    
-    debug(`Successfully stored binary file in S3: ${key}`);
   } catch (error: any) {
     debug(`Error putting binary file to S3: ${error.message}`);
     throw error;
@@ -54,8 +50,6 @@ export async function getPresignedUrl(
   expiresIn: number = 3600 // 1 hour default
 ): Promise<string> {
   try {
-    debug(`Generating presigned URL for S3 object: ${key}`);
-    
     const command = new GetObjectCommand({
       Bucket: config.bucketName,
       Key: key
@@ -63,7 +57,6 @@ export async function getPresignedUrl(
     
     const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn });
     
-    debug(`Successfully generated presigned URL for: ${key}`);
     return presignedUrl;
   } catch (error: any) {
     debug(`Error generating presigned URL: ${error.message}`);

@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText, stepCountIs } from 'ai';
+import { generateText, stepCountIs, zodSchema } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool } from './rag.js';
 
@@ -31,31 +31,21 @@ export async function getAiResponse({
       }
     };
 
-    // Add structured output if schema is provided
+    // Add structured output using experimental_output if schema is provided
     if (schema) {
-      generateTextOptions.response_format = {
-        type: 'json_schema',
-        json_schema: {
-          name: 'response',
-          schema: schema,
-          strict: true
-        }
-      };
+      generateTextOptions.experimental_output = zodSchema(schema);
     }
 
     const result = await generateText(generateTextOptions);
-    debug(`AI Response: ${result}`);
+    debug(`AI Response:`, result);
     
-    let parsedResult: unknown;
-    
-    try {
-      parsedResult = JSON.parse(result.text);
-    } catch (parseError) {
-      debug(`JSON parse error: ${parseError}`);
-      throw new Error('Failed to parse OpenAI response as JSON');
+    // Return the structured output directly
+    if (schema && 'object' in result) {
+      return (result as any).object;
     }
     
-    return parsedResult;
+    // Fallback to text if no structured output
+    return result.text;
   } catch (error) {
     debug(`AI call error: ${error}`);
     throw error;
