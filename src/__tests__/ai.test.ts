@@ -5,7 +5,9 @@ jest.mock('ai', () => ({
   generateText: jest.fn(),
   tool: jest.fn(),
   stepCountIs: jest.fn(),
-  zodSchema: jest.fn()
+  Output: {
+    object: jest.fn()
+  }
 }));
 
 jest.mock('@ai-sdk/openai', () => ({
@@ -24,7 +26,7 @@ describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
   const mockOpenai = require('@ai-sdk/openai').openai;
   const mockStepCountIs = require('ai').stepCountIs;
-  const mockZodSchema = require('ai').zodSchema;
+  const mockOutputObject = require('ai').Output.object;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -38,7 +40,7 @@ describe('AI utilities', () => {
     
     mockOpenai.mockReturnValue('mocked-openai-model');
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
-    mockZodSchema.mockReturnValue('mocked-zod-schema');
+    mockOutputObject.mockReturnValue('mocked-output-object');
   });
 
   describe('getAiResponse', () => {
@@ -95,7 +97,7 @@ describe('AI utilities', () => {
       // Mock result with structured output
       mockGenerateText.mockResolvedValue({
         text: 'Some text response',
-        object: {
+        experimental_output: {
           supplierId: 'test-id',
           supplierName: 'Test Supplier',
           confidence: 0.9,
@@ -119,7 +121,7 @@ describe('AI utilities', () => {
         tools: {
           findSuppliers: expect.any(Object)
         },
-        experimental_output: 'mocked-zod-schema'
+        experimental_output: 'mocked-output-object'
       });
 
       expect(result).toEqual({

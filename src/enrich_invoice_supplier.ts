@@ -2,16 +2,8 @@ import { withBatchHandler, withRecordHandler, type ProcessingContext } from './l
 import { debug } from '@pga/logger';
 import { getSupplierInvoiceWithAttachments } from './lib/workday.js';
 import { getAiResponse } from './lib/ai.js';
-import type { SupplierIdentificationResult, InvoiceData, PresignedAttachment } from './lib/types.js';
-import { z } from 'zod';
-
-// Zod schema for supplier identification result
-const SupplierIdentificationSchema = z.object({
-  supplierId: z.string().describe('The unique identifier of the supplier'),
-  supplierName: z.string().describe('The name of the supplier'),
-  confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1'),
-  reasoning: z.string().describe('Explanation of the reasoning behind the identification')
-});
+import type { InvoiceData, PresignedAttachment } from './lib/types.js';
+import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
 
 const QUERY = `
   SELECT 
@@ -49,14 +41,31 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
     const supplierResult = await identifySupplier(detailedInvoice, processedAttachments);
     debug('Supplier result:', supplierResult);
 
-    if (supplierResult.confidence > 0.8) {
-      debug('High confidence supplier identification - updating invoice');
-      // TODO: Update Workday with identified supplier
-      // await updateInvoiceSupplier(config, detailedInvoice.id, supplierResult);
-    } else {
-      debug('Low confidence supplier identification - flagging for manual review');
-      // TODO: Flag for manual review
-      // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
+    // Handle different scenarios based on the new schema
+    switch (supplierResult.status) {
+      case 'found':
+        debug('Supplier found in Workday - updating invoice');
+        // TODO: Update Workday with identified supplier
+        // await updateInvoiceSupplier(config, detailedInvoice.id, supplierResult.resolvedSupplier);
+        break;
+        
+      case 'not_found':
+        debug('Supplier not found - registering new supplier');
+        // TODO: Register new supplier with extracted information
+        // await registerNewSupplier(config, supplierResult.extractedSupplierInformation);
+        break;
+        
+      case 'ambiguous':
+        debug('Ambiguous supplier identification - flagging for manual review');
+        // TODO: Flag for manual review with potential duplicates
+        // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
+        break;
+        
+      case 'error':
+        debug('Error in supplier identification - flagging for manual review');
+        // TODO: Flag for manual review due to error
+        // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
+        break;
     }
   } else {
     debug('Supplier already present - no enrichment needed');
@@ -87,21 +96,7 @@ async function identifySupplier(
     
     // Call AI to identify the supplier using RAG
     const result = await getAiResponse({
-      prompt: `You are an expert at matching invoices to suppliers. Your task is to identify the most likely supplier for the given invoice.
-
-      You have access to a findSuppliers tool that can search our supplier database using semantic similarity. Use this tool to find relevant suppliers based on the invoice data, then analyze the results to identify the best match.
-
-      The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
-
-      Consider the following when matching:
-      - Company name similarity
-      - Address information
-      - Contact details (phone, email)
-      - Business context and industry
-      - Document content from attachments (if available)
-      - Any other relevant details from the invoice
-
-      Use the findSuppliers tool to search for suppliers, then provide your analysis and recommendation.`,
+      prompt: supplierIdentificationPrompt,
       schema: SupplierIdentificationSchema,
       messages: [
         { 
@@ -127,10 +122,23 @@ async function identifySupplier(
   } catch (error) {
     debug('Error in supplier identification:', error);
     return {
-      supplierId: '',
-      supplierName: 'None',
-      confidence: 0,
-      reasoning: `Error in supplier identification: ${error}`
+      status: 'error' as const,
+      resolvedSupplier: undefined,
+      extractedSupplierInformation: {
+        supplierName: 'Unknown',
+        address: undefined,
+        phone: undefined,
+        email: undefined,
+        taxId: undefined,
+        website: undefined,
+        industry: undefined,
+        contactPerson: undefined
+      },
+      potentialDuplicateSuppliers: undefined,
+      recommendation: {
+        action: 'manual_review' as const,
+        reason: `Error in supplier identification: ${error}`
+      }
     };
   }
 }
