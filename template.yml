@@ -123,7 +123,7 @@ Resources:
     Properties:
       LayerName: !Sub "${AWS::StackName}-poppler-layer"
       Description: "Poppler binaries for PDF processing"
-      ContentUri: layers/poppler/
+      ContentUri: layers/poppler/release-x86_64.zip
       CompatibleRuntimes:
         - nodejs20.x
       CompatibleArchitectures:
