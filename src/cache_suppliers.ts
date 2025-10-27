@@ -2,6 +2,7 @@ import { withBulkHandler, type ProcessingContext } from './lib/actions.js';
 import { debug } from '@pga/logger';
 import { createSupplierContent, createEmbedding } from './lib/rag.js';
 import { bulkInsertDocuments, bulkUpdateDocuments, bulkDeleteDocuments, getDocumentsByType } from './lib/database.js';
+import { notifyResult } from './lib/slack.js';
 
 const QUERY = `
   SELECT 
@@ -15,87 +16,88 @@ const QUERY = `
 `;
 
 async function processAction(context: ProcessingContext, data: unknown): Promise<void> {
+  const startTime = Date.now();
   debug('Starting incremental supplier sync');
 
-  // Data is already the array from executeQuery
-  const suppliers = data as any[];
-
-  // Check if we have data results
-  if (!suppliers || suppliers.length === 0) {
-    debug('No supplier data received - skipping sync');
-    return;
-  }
-
-  debug(`Processing ${suppliers.length} suppliers from Workday query`);
-
-  // Filter to Active suppliers only
-  const activeSuppliers = suppliers.filter((supplier: any) => supplier.supplierStatus.descriptor === 'Active');
-  debug(`Filtered to ${activeSuppliers.length} Active suppliers (${((activeSuppliers.length / suppliers.length) * 100).toFixed(1)}% of total)`);
-
-  // Get existing suppliers from database
-  debug('Fetching existing suppliers from database...');
-  const existingSuppliers = await getDocumentsByType(context.dbConnection, 'supplier');
-  const existingSupplierMap = new Map(
-    existingSuppliers.map(s => [s.workday_id, s])
-  );
-
-  // Create maps for efficient lookups
-  const workdaySupplierMap = new Map(
-    activeSuppliers.map((supplier: any) => [
-      supplier.supplier.id,
-      {
-        supplierId: supplier.supplier.id,
-        supplierName: supplier.supplier.descriptor,
-        lastUpdatedDateTime: supplier.lastUpdatedDateTime,
-        allPhoneNumbers: supplier.allPhoneNumbers?.length > 0 
-          ? supplier.allPhoneNumbers.map((p: any) => p.descriptor) 
-          : undefined,
-        allEmailAddresses: supplier.allEmailAddresses?.length > 0 
-          ? supplier.allEmailAddresses.map((e: any) => e.descriptor) 
-          : undefined,
-        allAddresses: supplier.allAddresses?.length > 0 
-          ? supplier.allAddresses.map((a: any) => a.descriptor) 
-          : undefined
-      }
-    ])
-  );
-
-  // Identify changes
-  const newSuppliers: string[] = [];
-  const updatedSuppliers: string[] = [];
-  const unchangedSuppliers: string[] = [];
-  const deletedSuppliers: string[] = [];
-
-  // Check each Workday supplier
-  for (const [supplierId, workdaySupplier] of workdaySupplierMap) {
-    const existingSupplier = existingSupplierMap.get(supplierId);
-    
-    if (!existingSupplier) {
-      newSuppliers.push(supplierId);
-    } else {
-      const existingLastUpdated = existingSupplier.metadata?.lastUpdatedDateTime;
-      if (existingLastUpdated !== workdaySupplier.lastUpdatedDateTime) {
-        updatedSuppliers.push(supplierId);
-      } else {
-        unchangedSuppliers.push(supplierId);
-      }
-    }
-  }
-
-  // Check for deleted suppliers (in DB but not in Workday)
-  for (const [supplierId] of existingSupplierMap) {
-    if (!workdaySupplierMap.has(supplierId)) {
-      deletedSuppliers.push(supplierId);
-    }
-  }
-
-  debug(`Sync analysis: ${newSuppliers.length} new, ${updatedSuppliers.length} updated, ${unchangedSuppliers.length} unchanged, ${deletedSuppliers.length} deleted`);
-
-  // Process changes using bulk operations
-  let successCount = 0;
-  let errorCount = 0;
-
   try {
+    // Data is already the array from executeQuery
+    const suppliers = data as any[];
+
+    // Check if we have data results
+    if (!suppliers || suppliers.length === 0) {
+      debug('No supplier data received - skipping sync');
+      return;
+    }
+
+    debug(`Processing ${suppliers.length} suppliers from Workday query`);
+
+    // Filter to Active suppliers only
+    const activeSuppliers = suppliers.filter((supplier: any) => supplier.supplierStatus.descriptor === 'Active');
+    debug(`Filtered to ${activeSuppliers.length} Active suppliers (${((activeSuppliers.length / suppliers.length) * 100).toFixed(1)}% of total)`);
+
+    // Get existing suppliers from database
+    debug('Fetching existing suppliers from database...');
+    const existingSuppliers = await getDocumentsByType(context.dbConnection, 'supplier');
+    const existingSupplierMap = new Map(
+      existingSuppliers.map(s => [s.workday_id, s])
+    );
+
+    // Create maps for efficient lookups
+    const workdaySupplierMap = new Map(
+      activeSuppliers.map((supplier: any) => [
+        supplier.supplier.id,
+        {
+          supplierId: supplier.supplier.id,
+          supplierName: supplier.supplier.descriptor,
+          lastUpdatedDateTime: supplier.lastUpdatedDateTime,
+          allPhoneNumbers: supplier.allPhoneNumbers?.length > 0 
+            ? supplier.allPhoneNumbers.map((p: any) => p.descriptor) 
+            : undefined,
+          allEmailAddresses: supplier.allEmailAddresses?.length > 0 
+            ? supplier.allEmailAddresses.map((e: any) => e.descriptor) 
+            : undefined,
+          allAddresses: supplier.allAddresses?.length > 0 
+            ? supplier.allAddresses.map((a: any) => a.descriptor) 
+            : undefined
+        }
+      ])
+    );
+
+    // Identify changes
+    const newSuppliers: string[] = [];
+    const updatedSuppliers: string[] = [];
+    const unchangedSuppliers: string[] = [];
+    const deletedSuppliers: string[] = [];
+
+    // Check each Workday supplier
+    for (const [supplierId, workdaySupplier] of workdaySupplierMap) {
+      const existingSupplier = existingSupplierMap.get(supplierId);
+      
+      if (!existingSupplier) {
+        newSuppliers.push(supplierId);
+      } else {
+        const existingLastUpdated = existingSupplier.metadata?.lastUpdatedDateTime;
+        if (existingLastUpdated !== workdaySupplier.lastUpdatedDateTime) {
+          updatedSuppliers.push(supplierId);
+        } else {
+          unchangedSuppliers.push(supplierId);
+        }
+      }
+    }
+
+    // Check for deleted suppliers (in DB but not in Workday)
+    for (const [supplierId] of existingSupplierMap) {
+      if (!workdaySupplierMap.has(supplierId)) {
+        deletedSuppliers.push(supplierId);
+      }
+    }
+
+    debug(`Sync analysis: ${newSuppliers.length} new, ${updatedSuppliers.length} updated, ${unchangedSuppliers.length} unchanged, ${deletedSuppliers.length} deleted`);
+
+    // Process changes using bulk operations
+    let successCount = 0;
+    let errorCount = 0;
+
     // Step 1: Bulk delete removed suppliers
     if (deletedSuppliers.length > 0) {
       debug(`Bulk deleting ${deletedSuppliers.length} removed suppliers...`);
@@ -200,11 +202,48 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
       }
     }
 
+    const processingTime = Date.now() - startTime;
     debug(`Bulk sync complete: ${successCount} operations successful, ${errorCount} errors`);
     debug(`Skipped ${unchangedSuppliers.length} unchanged suppliers`);
     
+    // Send Slack notification
+    const status = errorCount > 0 ? 'error' : 'success';
+    const details = {
+      syncStats: {
+        total: suppliers.length,
+        new: newSuppliers.length,
+        updated: updatedSuppliers.length,
+        deleted: deletedSuppliers.length,
+        unchanged: unchangedSuppliers.length,
+        errors: errorCount,
+        processingTime
+      }
+    };
+
+    await notifyResult(
+      'cache_suppliers',
+      status,
+      processingTime,
+      details,
+      undefined,
+      `${suppliers.length} suppliers`
+    );
+    
   } catch (error) {
+    const processingTime = Date.now() - startTime;
     debug('Error during bulk sync operations:', error);
+    
+    // Send error notification to Slack
+    await notifyResult(
+      'cache_suppliers',
+      'error',
+      processingTime,
+      {
+        processingTime: `${processingTime}ms`
+      },
+      error
+    );
+    
     throw error;
   }
 }
