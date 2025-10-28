@@ -6,6 +6,9 @@ jest.mock('ai', () => ({
   generateObject: jest.fn(),
   tool: jest.fn(),
   stepCountIs: jest.fn(),
+  NoObjectGeneratedError: {
+    isInstance: jest.fn()
+  },
   Output: {
     object: jest.fn()
   }
@@ -26,6 +29,7 @@ jest.mock('../lib/rag.js', () => ({
 describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
   const mockGenerateObject = require('ai').generateObject;
+  const mockNoObjectGeneratedError = require('ai').NoObjectGeneratedError;
   const mockOpenai = require('@ai-sdk/openai').openai;
   const mockStepCountIs = require('ai').stepCountIs;
   const mockOutputObject = require('ai').Output.object;
@@ -43,6 +47,7 @@ describe('AI utilities', () => {
     mockOpenai.mockReturnValue('mocked-openai-model');
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
     mockOutputObject.mockReturnValue('mocked-output-object');
+    mockNoObjectGeneratedError.isInstance.mockReturnValue(false);
   });
 
   describe('getAiResponse', () => {
@@ -135,16 +140,7 @@ describe('AI utilities', () => {
       // Verify Step 2: generateObject was called
       expect(mockGenerateObject).toHaveBeenCalledWith({
         model: 'mocked-openai-model',
-        messages: [
-          {
-            role: 'system',
-            content: 'Convert the provided text into structured JSON that matches the schema. Return only valid JSON data.'
-          },
-          {
-            role: 'user',
-            content: 'Convert this text into structured JSON:\n\nJSON response with supplier data'
-          }
-        ],
+        prompt: 'Convert this text into structured JSON:\n\nJSON response with supplier data',
         schema: mockSchema,
         temperature: 0.1
       });

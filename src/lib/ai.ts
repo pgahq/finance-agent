@@ -69,12 +69,12 @@ export async function getAiResponse({
   } catch (error) {
     debug(`AI call error: ${error}`);
     if (NoObjectGeneratedError.isInstance(error)) {
-      console.log('NoObjectGeneratedError');
-      console.log('Cause:', error.cause);
-      console.log('Text:', error.text);
-      console.log('Response:', error.response);
-      console.log('Usage:', error.usage);
-      console.log('Finish Reason:', error.finishReason);
+      debug(`NoObjectGeneratedError: ${error}`);
+      debug('Cause:', error.cause);
+      debug('Text:', error.text);
+      debug('Response:', error.response);
+      debug('Usage:', error.usage);
+      debug('Finish Reason:', error.finishReason);
     }
     throw error;
   }
