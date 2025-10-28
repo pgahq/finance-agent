@@ -163,7 +163,7 @@ async function identifySupplier(
     debug('Error in supplier identification:', error);
     return {
       status: 'error' as const,
-      resolvedSupplier: undefined,
+      resolvedSupplier: null,
       extractedSupplierInformation: {
         supplierName: 'Unknown',
         address: undefined,
@@ -174,7 +174,7 @@ async function identifySupplier(
         industry: undefined,
         contactPerson: undefined
       },
-      potentialDuplicateSuppliers: undefined,
+      potentialDuplicateSuppliers: null,
       recommendation: {
         action: 'manual_review' as const,
         reason: `Error in supplier identification: ${error}`

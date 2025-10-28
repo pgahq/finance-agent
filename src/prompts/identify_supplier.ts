@@ -11,7 +11,7 @@ export const SupplierIdentificationSchema = z.object({
     supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
     confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
     reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
-  }).optional().describe('The supplier found in Workday that best matches the invoice. Only populated when status is "found" or "ambiguous"'),
+  }).nullable().describe('The supplier found in Workday that best matches the invoice. Only populated when status is "found" or "ambiguous"'),
   
   // Extracted supplier information from the invoice (always populated)
   extractedSupplierInformation: z.object({
@@ -31,7 +31,7 @@ export const SupplierIdentificationSchema = z.object({
     supplierName: z.string().describe('The name of the potential duplicate supplier'),
     confidence: z.number().min(0).max(1).describe('Confidence score for this potential match'),
     reason: z.string().describe('Explanation of why this supplier is a potential match')
-  })).optional().describe('List of potential duplicate suppliers found in Workday. Only populated when status is "ambiguous" and multiple matches exist'),
+  })).nullable().describe('List of potential duplicate suppliers found in Workday. Only populated when status is "ambiguous" and multiple matches exist'),
   
   // What action should be taken
   recommendation: z.object({
