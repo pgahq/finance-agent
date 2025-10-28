@@ -216,7 +216,7 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: rate(1 day)
+            Schedule: cron(0 12 * * ? *)
 
   # Enrich Invoice Supplier - Query executor
   EnrichInvoiceSupplierFunction:
@@ -235,7 +235,7 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: rate(1 day)
+            Schedule: cron(0 13 * * ? *)
 
   # Enrich Invoice Supplier Processor - Individual record processing
   EnrichInvoiceSupplierProcessor:
