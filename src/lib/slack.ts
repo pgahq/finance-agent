@@ -39,15 +39,19 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
       ? blocks[0].text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
       : 'Slack notification';
     
+    const payload = {
+      text: fallbackText, // Fallback for notifications
+      blocks
+    };
+    
+    debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
+    
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        text: fallbackText, // Fallback for notifications
-        blocks
-      })
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
