@@ -13,7 +13,7 @@ interface SlackSectionBlock {
 
 interface SlackContextBlock {
   type: 'context';
-  text: SlackTextElement;
+  elements: SlackTextElement[];
 }
 
 interface SlackDividerBlock {
@@ -106,10 +106,12 @@ export async function notifyResult(
     const jsonString = JSON.stringify(detailsData, null, 2);
     blocks.push({
       type: 'context',
-      text: {
-        type: 'mrkdwn',
-        text: `\`\`\`${jsonString}\`\`\``
-      }
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `\`\`\`${jsonString}\`\`\``
+        }
+      ]
     });
   }
 
