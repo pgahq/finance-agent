@@ -50,7 +50,7 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
       const status = supplierResult.status === 'error' ? 'error' : 'success';
       const details = {
         workdayId: invoiceData.workdayID,
-        invoiceNumber: detailedInvoice.invoiceNumber || 'Unknown',
+        invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
         result: supplierResult
       };
 
@@ -60,7 +60,7 @@ async function processAction(context: ProcessingContext, invoiceData: InvoiceDat
         processingTime,
         details,
         status === 'error' ? supplierResult : undefined,
-        `invoice: \`${detailedInvoice.invoiceNumber || 'Unknown'}\``
+        `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
       );
 
       // Handle different scenarios based on the new schema
@@ -116,7 +116,7 @@ async function identifySupplier(
   invoice: any,
   processedAttachments: PresignedAttachment[]
 ): Promise<SupplierIdentificationResult> {
-  debug('Identifying supplier for invoice:', invoice.invoiceNumber);
+  debug('Identifying supplier for invoice:', invoice.Invoice_Number);
   
   try {
     // Prepare invoice data for AI analysis
@@ -125,7 +125,7 @@ async function identifySupplier(
       address: extractAddressFromInvoice(invoice),
       phone: extractPhoneFromInvoice(invoice),
       email: extractEmailFromInvoice(invoice),
-      invoiceNumber: invoice.invoiceNumber,
+      invoiceNumber: invoice.Invoice_Number,
       amount: invoice.controlTotalAmount,
       attachments: processedAttachments.map(att => ({
         fileName: att.fileName,

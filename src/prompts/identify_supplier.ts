@@ -64,6 +64,24 @@ The invoice may include attachment files (PDFs, images, etc.) with presigned URL
 - **status: "not_found"** - When no suppliers match the invoice information
 - **status: "error"** - When there's an error in processing
 
+## Duplicate Detection Criteria:
+
+Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT similarity criteria:
+
+**High Priority Matches (confidence > 0.7):**
+- Exact or very similar company name (e.g., "ABC Corp" vs "ABC Corporation")
+- Same address (exact match or same street/zip)
+- Same phone number or email domain
+
+**Medium Priority Matches (confidence 0.5-0.7):**
+- Similar company name with minor variations (e.g., "ABC Inc" vs "ABC LLC")
+- Same city/state with similar business type
+
+**DO NOT include matches based solely on:**
+- Same business type/industry without name similarity
+- Same state without other matching criteria
+- Generic business categories (e.g., "golf club" vs "country club" without name similarity)
+
 ## Output Examples:
 
 ### Example 1: Clear Match (No Duplicates)

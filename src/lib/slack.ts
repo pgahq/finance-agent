@@ -3,7 +3,7 @@ import { debug } from '@pga/logger';
 /**
  * Send a message to Slack using webhook
  */
-async function sendSlackMessage(message: string): Promise<void> {
+async function sendSlackMessage(message: string, blocks: any[] = []): Promise<void> {
   try {
     const webhookUrl = process.env.SLACK_WEBHOOK_URL;
     
@@ -18,7 +18,8 @@ async function sendSlackMessage(message: string): Promise<void> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        text: message
+        text: message,
+        blocks
       })
     });
 
@@ -59,12 +60,20 @@ export async function notifyResult(
   
   message += '\n';
 
-  // Add JSON details
+  let blocks: any[] = [];
   if (details || error) {
     const detailsData = error ? { error, details } : details;
     const jsonString = JSON.stringify(detailsData, null, 2);
-    message += `\`\`\`json\n${jsonString}\n\`\`\``;
+    blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `\`\`\`json\n${jsonString}\n\`\`\``
+        }
+      }
+    ];
   }
 
-  await sendSlackMessage(message);
+  await sendSlackMessage(message, blocks);
 }
