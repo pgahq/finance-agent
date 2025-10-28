@@ -1,9 +1,31 @@
 import { debug } from '@pga/logger';
 
+// TypeScript types for Slack blocks
+interface SlackTextElement {
+  type: 'mrkdwn' | 'plain_text';
+  text: string;
+}
+
+interface SlackSectionBlock {
+  type: 'section';
+  text: SlackTextElement;
+}
+
+interface SlackContextBlock {
+  type: 'context';
+  text: SlackTextElement;
+}
+
+interface SlackDividerBlock {
+  type: 'divider';
+}
+
+type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
+
 /**
- * Send a message to Slack using webhook
+ * Send a message to Slack using blocks
  */
-async function sendSlackMessage(message: string, blocks: any[] = []): Promise<void> {
+async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
   try {
     const webhookUrl = process.env.SLACK_WEBHOOK_URL;
     
@@ -12,13 +34,18 @@ async function sendSlackMessage(message: string, blocks: any[] = []): Promise<vo
       return;
     }
     
+    // Create fallback text from the first section block for notifications
+    const fallbackText = blocks.length > 0 && blocks[0].type === 'section' 
+      ? blocks[0].text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
+      : 'Slack notification';
+    
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        text: message,
+        text: fallbackText, // Fallback for notifications
         blocks
       })
     });
@@ -52,28 +79,35 @@ export async function notifyResult(
   const timeText = processingTime ? `${(processingTime / 1000).toFixed(2)}s` : 'unknown time';
   
   // Build the main message
-  let message = `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
   
   if (context) {
-    message += ` for ${context}`;
+    mainMessage += ` for ${context}`;
   }
-  
-  message += '\n';
 
-  let blocks: any[] = [];
+  // Build blocks array
+  const blocks: SlackBlock[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: mainMessage
+      }
+    }
+  ];
+
+  // Add details/error as context block if present
   if (details || error) {
     const detailsData = error ? { error, details } : details;
     const jsonString = JSON.stringify(detailsData, null, 2);
-    blocks = [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `\`\`\`json\n${jsonString}\n\`\`\``
-        }
+    blocks.push({
+      type: 'context',
+      text: {
+        type: 'mrkdwn',
+        text: `\`\`\`${jsonString}\`\`\``
       }
-    ];
+    });
   }
 
-  await sendSlackMessage(message, blocks);
+  await sendSlackMessage(blocks);
 }
