@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText, stepCountIs, Output } from 'ai';
+import { generateText, generateObject, stepCountIs } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool } from './rag.js';
 
@@ -12,7 +12,7 @@ export async function getAiResponse({
   prompt,
   messages,
   schema,
-  model = 'gpt-4o'
+  model = 'gpt-4.1-2025-04-14'
 }: {
   prompt: string;
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | Array<{ type: 'text' | 'image'; text?: string; image?: string | URL }> }>;
@@ -20,10 +20,28 @@ export async function getAiResponse({
   model?: string;
 }): Promise<unknown> {
   try {
+    // Step 1: Generate text with tools (if needed)
+    let systemPrompt = prompt;
+    
+    // If schema is provided, append schema information to encourage JSON format
+    if (schema) {
+      try {
+        const schemaShape = (schema as any)._def?.shape?.();
+        if (schemaShape) {
+          systemPrompt += '\n\n## Output Format\nPlease provide your response in JSON format that matches this structure:\n' + 
+            JSON.stringify(schemaShape, null, 2) + 
+            '\n\nFocus on providing accurate data in this JSON structure.';
+        }
+      } catch (error) {
+        // If we can't extract schema shape, just add a general JSON instruction
+        systemPrompt += '\n\n## Output Format\nPlease provide your response in JSON format.';
+      }
+    }
+    
     const generateTextOptions: any = {
       model: openai(model),
       messages,
-      system: prompt,
+      system: systemPrompt,
       stopWhen: stepCountIs(10),
       temperature: 0.2,
       tools: {
@@ -31,22 +49,32 @@ export async function getAiResponse({
       }
     };
 
-    // Add structured output using experimental_output if schema is provided
-    if (schema) {
-      generateTextOptions.experimental_output = Output.object({
-        schema: schema
-      });
+    const textResult = await generateText(generateTextOptions);
+
+    // If no schema is provided, return the text result
+    if (!schema) {
+      return textResult.text;
     }
 
-    const result = await generateText(generateTextOptions);
-    debug(`AI Response:`, result);
-    
-    if (schema && 'experimental_output' in result) {
-      return (result as any).experimental_output;
-    }
-    
-    // Fallback to text if no structured output
-    return result.text;
+    // Step 2: Convert to structured output using a fast model
+    const structuredResult = await generateObject({
+      model: openai('gpt-4.1-mini-2025-04-14'),
+      messages: [
+        {
+          role: 'system',
+          content: 'Convert the provided text into structured JSON that matches the schema. Return only valid JSON data.'
+        },
+        {
+          role: 'user',
+          content: `Convert this text into structured JSON:\n\n${textResult.text}`
+        }
+      ],
+      schema: schema,
+      temperature: 0.1 // Low temperature for consistent structured output
+    });
+
+    return structuredResult.object;
+
   } catch (error) {
     debug(`AI call error: ${error}`);
     throw error;
