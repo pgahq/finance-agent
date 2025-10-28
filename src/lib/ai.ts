@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText, generateObject, stepCountIs } from 'ai';
+import { generateText, generateObject, stepCountIs, NoObjectGeneratedError } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool } from './rag.js';
 
@@ -57,26 +57,25 @@ export async function getAiResponse({
     }
 
     // Step 2: Convert to structured output using a fast model
-    const structuredResult = await generateObject({
-      model: openai('gpt-4.1-mini-2025-04-14'),
-      messages: [
-        {
-          role: 'system',
-          content: 'Convert the provided text into structured JSON that matches the schema. Return only valid JSON data.'
-        },
-        {
-          role: 'user',
-          content: `Convert this text into structured JSON:\n\n${textResult.text}`
-        }
-      ],
+    const { object } = await generateObject({
+      model: openai('gpt-4.1-2025-04-14'),
+      prompt: `Convert this text into structured JSON:\n\n${textResult.text}`,
       schema: schema,
       temperature: 0.1 // Low temperature for consistent structured output
     });
 
-    return structuredResult.object;
+    return object;
 
   } catch (error) {
     debug(`AI call error: ${error}`);
+    if (NoObjectGeneratedError.isInstance(error)) {
+      console.log('NoObjectGeneratedError');
+      console.log('Cause:', error.cause);
+      console.log('Text:', error.text);
+      console.log('Response:', error.response);
+      console.log('Usage:', error.usage);
+      console.log('Finish Reason:', error.finishReason);
+    }
     throw error;
   }
 }
