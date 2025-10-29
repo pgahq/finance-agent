@@ -1,8 +1,8 @@
 import { debug } from '@pga/logger';
 import { deleteAllDocumentsByType } from './lib/database.js';
-import { executeWorkdayQuery, getWorkdayConfig } from './lib/workday.js';
+import { executeWorkdayQuery } from './lib/workday.js';
 import { notifyResult } from './lib/slack.js';
-import { withQueryHandler } from './lib/handlers.js';
+import { withQueryHandler, withHandler, type ProcessingContext } from './lib/handlers.js';
 
 const QUERY = `
   SELECT 
@@ -19,23 +19,19 @@ const QUERY = `
 
 const PAGE_SIZE = 500; // Process suppliers in batches to avoid timeouts
 
-export async function handler(): Promise<void> {
+export const handler = withHandler(async (context: ProcessingContext, _event) => {
   const startTime = Date.now();
   debug('Starting full supplier refresh - deleting all existing suppliers');
   
   try {
     // Step 1: Delete all existing suppliers
     debug('Deleting all existing suppliers from database...');
-    const { getDatabaseConnection } = await import('./lib/database.js');
-    const dbConnection = await getDatabaseConnection(process.env);
-    const deletedCount = await deleteAllDocumentsByType(dbConnection, 'supplier');
-    await dbConnection.close();
+    const deletedCount = await deleteAllDocumentsByType(context.dbConnection, 'supplier');
     debug(`Deleted ${deletedCount} existing suppliers`);
     
     // Step 2: Get total count from Workday
     debug('Getting total supplier count from Workday...');
-    const config = getWorkdayConfig(process.env);
-    const totalResult = await executeWorkdayQuery(config, QUERY);
+    const totalResult = await executeWorkdayQuery(context.workdayConfig, QUERY);
     const totalSuppliers = totalResult.total || 0;
     
     if (totalSuppliers === 0) {
@@ -102,5 +98,5 @@ export async function handler(): Promise<void> {
     
     throw error;
   }
-}
+});
 

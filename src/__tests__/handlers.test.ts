@@ -1,4 +1,4 @@
-import { withQueryHandler, withProcessorHandler } from '../lib/handlers.js';
+import { withQueryHandler, withProcessorHandler, withHandler } from '../lib/handlers.js';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -186,6 +186,43 @@ describe('handlers', () => {
         expect.any(Object),
         [],
         event
+      );
+    });
+  });
+
+  describe('withHandler', () => {
+    it('should provide context to handler function', async () => {
+      const mockHandlerFunction = jest.fn().mockResolvedValue(undefined);
+      const handler = withHandler(mockHandlerFunction);
+      
+      const event = { test: 'data' };
+      await handler(event);
+      
+      expect(mockHandlerFunction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workdayConfig: expect.any(Object),
+          workdaySoapConfig: expect.any(Object),
+          s3Config: expect.any(Object),
+          dbConnection: expect.any(Object)
+        }),
+        event
+      );
+    });
+
+    it('should handle empty event', async () => {
+      const mockHandlerFunction = jest.fn().mockResolvedValue(undefined);
+      const handler = withHandler(mockHandlerFunction);
+      
+      await handler();
+      
+      expect(mockHandlerFunction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workdayConfig: expect.any(Object),
+          workdaySoapConfig: expect.any(Object),
+          s3Config: expect.any(Object),
+          dbConnection: expect.any(Object)
+        }),
+        {}
       );
     });
   });

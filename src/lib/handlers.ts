@@ -39,6 +39,19 @@ const executeQuery = async (context: ProcessingContext, query: string) => {
 };
 
 /**
+ * General Handler - Provides context setup for any handler function
+ * 
+ * @param handlerFunction - The function that handles the request with context
+ * @returns A handler function with environment setup
+ */
+export const withHandler = (
+  handlerFunction: (context: ProcessingContext, event?: any) => Promise<void>
+) => async (event: any = {}) => {
+  const context = await setupContext();
+  await handlerFunction(context, event);
+};
+
+/**
  * Query Handler - Executes Workday queries and distributes results to processors
  * 
  * @param query - The Workday query string to execute

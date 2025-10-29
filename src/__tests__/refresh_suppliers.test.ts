@@ -43,7 +43,27 @@ jest.mock('../lib/slack.js', () => ({
 }));
 
 jest.mock('../lib/handlers.js', () => ({
-  withQueryHandler: jest.fn().mockReturnValue(() => jest.fn().mockResolvedValue(undefined))
+  withQueryHandler: jest.fn().mockReturnValue(() => jest.fn().mockResolvedValue(undefined)),
+  withHandler: jest.fn().mockImplementation((fn) => {
+    return async () => {
+      const mockContext = {
+        workdayConfig: {
+          domain: 'test.workday.com',
+          tenant: 'test-tenant',
+          clientId: 'test-client-id',
+          clientSecret: 'test-client-secret',
+          refreshToken: 'test-refresh-token'
+        },
+        workdaySoapConfig: {},
+        s3Config: { bucketName: 'test-bucket' },
+        dbConnection: {
+          query: jest.fn().mockResolvedValue([]),
+          close: jest.fn().mockResolvedValue({})
+        }
+      };
+      return fn(mockContext);
+    };
+  })
 }));
 
 describe('refresh_suppliers', () => {
