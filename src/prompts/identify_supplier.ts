@@ -7,7 +7,8 @@ export const SupplierIdentificationSchema = z.object({
   
   // The resolved supplier (if found in Workday)
   resolvedSupplier: z.object({
-    supplierId: z.string().describe('The unique Workday identifier of the supplier'),
+    workdayId: z.string().describe('The unique Workday identifier (WID) of the supplier'),
+    supplierId: z.string().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
     supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
     confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
     reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
@@ -27,7 +28,8 @@ export const SupplierIdentificationSchema = z.object({
   
   // Potential duplicate suppliers (when status is 'ambiguous')
   potentialDuplicateSuppliers: z.array(z.object({
-    supplierId: z.string().describe('The unique Workday identifier of the potential duplicate supplier'),
+    workdayId: z.string().describe('The unique Workday identifier (WID) of the potential duplicate supplier'),
+    supplierId: z.string().describe('The human-readable Supplier ID of the potential duplicate supplier'),
     supplierName: z.string().describe('The name of the potential duplicate supplier'),
     confidence: z.number().min(0).max(1).describe('Confidence score for this potential match'),
     reason: z.string().describe('Explanation of why this supplier is a potential match')
@@ -89,7 +91,8 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 {
   "status": "found",
   "resolvedSupplier": {
-    "supplierId": "12345",
+    "workdayId": "12345",
+    "supplierId": "SUP-12345",
     "supplierName": "ABC Corp",
     "confidence": 0.95,
     "reason": "Exact match on company name and address"
@@ -113,7 +116,8 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 {
   "status": "ambiguous",
   "resolvedSupplier": {
-    "supplierId": "12345",
+    "workdayId": "12345",
+    "supplierId": "SUP-12345",
     "supplierName": "ABC Corp",
     "confidence": 0.85,
     "reason": "Best match based on company name and address"
@@ -125,13 +129,15 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
   },
   "potentialDuplicateSuppliers": [
     {
-      "supplierId": "67890",
+      "workdayId": "67890",
+      "supplierId": "SUP-67890",
       "supplierName": "ABC Corporation",
       "confidence": 0.82,
       "reason": "Similar name but different address"
     },
     {
-      "supplierId": "11111",
+      "workdayId": "11111",
+      "supplierId": "SUP-11111",
       "supplierName": "ABC Corp LLC",
       "confidence": 0.78,
       "reason": "Same name but different legal entity"

@@ -2,6 +2,7 @@
 
 // AI Result Types
 export interface SupplierIdentificationResult {
+  workdayId: string;
   supplierId: string;
   supplierName: string;
   confidence: number;
@@ -32,6 +33,10 @@ export interface SupplierData {
       id: string;
     }>;
     allAddresses?: Array<{
+      descriptor: string;
+      id: string;
+    }>;
+    allAlternateNames?: Array<{
       descriptor: string;
       id: string;
     }>;

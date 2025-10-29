@@ -35,6 +35,7 @@ export async function createEmbedding(text: string): Promise<number[]> {
 export function createSupplierContent(supplier: any): string {
   const content = [
     `Company Name: ${supplier.supplierName}`,
+    supplier.allAlternateNames?.length > 0 ? `Alternate Names: ${supplier.allAlternateNames.join(', ')}` : null,
     supplier.allPhoneNumbers?.length > 0 ? `Phone: ${supplier.allPhoneNumbers.join(', ')}` : null,
     supplier.allEmailAddresses?.length > 0 ? `Email: ${supplier.allEmailAddresses.join(', ')}` : null,
     supplier.allAddresses?.length > 0 ? `Address: ${supplier.allAddresses.join(', ')}` : null,
@@ -147,6 +148,7 @@ export const findSuppliersTool = tool({
   
   This tool is optimized for finding suppliers by:
   - Company names (e.g., "Acme Corp", "Microsoft")
+  - Alternate names or DBA names (e.g., "Doing Business As" names)
   - Partial company names (e.g., "Acme", "Micro")
   - Addresses or parts of addresses (e.g., "123 Main St", "New York", "NY 10001")
   - Email addresses (e.g., "contact@acme.com", "support@microsoft.com")
@@ -174,6 +176,7 @@ export const findSuppliersTool = tool({
         success: true,
         results: results.map(result => ({
           workdayId: result.workday_id,
+          supplierId: result.metadata?.supplierId,
           type: result.type,
           content: result.content,
           metadata: result.metadata,

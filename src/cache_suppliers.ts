@@ -7,11 +7,13 @@ import { notifyResult } from './lib/slack.js';
 const QUERY = `
   SELECT 
     supplier, 
+    supplierID,
     lastUpdatedDateTime, 
     supplierStatus, 
     allPhoneNumbers, 
     allEmailAddresses, 
-    allAddresses 
+    allAddresses,
+    payeeAlternateNames
   FROM suppliers1 (dataSourceFilter = defaultFilter)
 `;
 
@@ -47,7 +49,8 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
       activeSuppliers.map((supplier: any) => [
         supplier.supplier.id,
         {
-          supplierId: supplier.supplier.id,
+          workdayId: supplier.supplier.id,
+          supplierId: supplier.supplierID || supplier.supplier.id,
           supplierName: supplier.supplier.descriptor,
           lastUpdatedDateTime: supplier.lastUpdatedDateTime,
           allPhoneNumbers: supplier.allPhoneNumbers?.length > 0 
@@ -58,6 +61,9 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
             : undefined,
           allAddresses: supplier.allAddresses?.length > 0 
             ? supplier.allAddresses.map((a: any) => a.descriptor) 
+            : undefined,
+          allAlternateNames: supplier.payeeAlternateNames?.length > 0 
+            ? supplier.payeeAlternateNames.map((n: any) => n.descriptor) 
             : undefined
         }
       ])
@@ -125,15 +131,15 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
             const supplier = workdaySupplierMap.get(supplierId)!;
             const content = createSupplierContent(supplier);
             const metadata = {
+              workdayId: supplier.workdayId,
               supplierId: supplier.supplierId,
               supplierName: supplier.supplierName,
-              workdayId: supplier.supplierId,
               lastUpdatedDateTime: supplier.lastUpdatedDateTime
             };
             
             const embedding = await createEmbedding(content);
             newSupplierDocuments.push({
-              workdayId: supplier.supplierId,
+              workdayId: supplier.workdayId,
               type: 'supplier' as const,
               content,
               metadata,
@@ -173,15 +179,15 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
             const supplier = workdaySupplierMap.get(supplierId)!;
             const content = createSupplierContent(supplier);
             const metadata = {
+              workdayId: supplier.workdayId,
               supplierId: supplier.supplierId,
               supplierName: supplier.supplierName,
-              workdayId: supplier.supplierId,
               lastUpdatedDateTime: supplier.lastUpdatedDateTime
             };
             
             const embedding = await createEmbedding(content);
             updatedSupplierDocuments.push({
-              workdayId: supplier.supplierId,
+              workdayId: supplier.workdayId,
               type: 'supplier' as const,
               content,
               metadata,
