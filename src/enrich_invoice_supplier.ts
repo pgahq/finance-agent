@@ -1,4 +1,4 @@
-import { withBatchHandler, withRecordHandler, type ProcessingContext } from './lib/actions.js';
+import { withQueryHandler, withProcessorHandler } from './lib/handlers.js';
 import { debug } from '@pga/logger';
 import { getSupplierInvoiceWithAttachments } from './lib/workday.js';
 import { getAiResponse } from './lib/ai.js';
@@ -19,11 +19,21 @@ const QUERY = `
 `;
 
 
-export const batchHandler = withBatchHandler(QUERY)(`finance-agent-EnrichInvoiceSupplierProcessor`);
+// Query function - scheduled daily
+export const handler = withQueryHandler(QUERY)({
+  processorFunctionName: 'EnrichInvoiceSupplierProcessor',
+  pageSize: 1 // One invoice per invocation
+});
 
-export const dataProcessor = withRecordHandler<InvoiceData>(processAction);
+// Processor function - invoked by query function
+export const processor = withProcessorHandler(async (context, invoices, _event) => {
+  // Process single invoice (invoices will be array with one item)
+  for (const invoice of invoices) {
+    await processInvoice(context, invoice as InvoiceData);
+  }
+});
 
-async function processAction(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
+async function processInvoice(context: any, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
   debug('Enriching invoice supplier with AI and Workday data');
   

@@ -199,7 +199,7 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Cache Suppliers - Bulk processing
+  # Cache Suppliers - Query handler
   CacheSuppliersFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -218,12 +218,44 @@ Resources:
           Properties:
             Schedule: cron(0 12 * * ? *)
 
-  # Enrich Invoice Supplier - Query executor
+  # Cache Suppliers Processor - Data processing
+  CacheSuppliersProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheSuppliersProcessor"
+      Handler: dist/cache_suppliers.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900  # 15 minutes for processing
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Refresh Suppliers - Full rebuild with pagination
+  RefreshSuppliersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-RefreshSuppliers"
+      Handler: dist/refresh_suppliers.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300  # 5 minutes for orchestration only
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Enrich Invoice Supplier - Query handler
   EnrichInvoiceSupplierFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
-      Handler: dist/enrich_invoice_supplier.batchHandler
+      Handler: dist/enrich_invoice_supplier.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       VpcConfig:
         SecurityGroupIds:
@@ -242,8 +274,10 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
-      Handler: dist/enrich_invoice_supplier.dataProcessor
+      Handler: dist/enrich_invoice_supplier.processor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300  # 5 minutes for single invoice
+      MemorySize: 1024
       Layers:
         - !Ref PopplerLayer
       VpcConfig:

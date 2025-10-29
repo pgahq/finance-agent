@@ -1,7 +1,7 @@
-import { withBulkHandler, type ProcessingContext } from './lib/actions.js';
+import { withQueryHandler, withProcessorHandler } from './lib/handlers.js';
 import { debug } from '@pga/logger';
 import { createSupplierContent, createEmbedding } from './lib/rag.js';
-import { bulkInsertDocuments, bulkUpdateDocuments, bulkDeleteDocuments, getDocumentsByType } from './lib/database.js';
+import { bulkInsertDocuments, bulkUpdateDocuments, getDocumentsByType } from './lib/database.js';
 import { notifyResult } from './lib/slack.js';
 
 const QUERY = `
@@ -17,14 +17,19 @@ const QUERY = `
   FROM suppliers1 (dataSourceFilter = defaultFilter)
 `;
 
-async function processAction(context: ProcessingContext, data: unknown): Promise<void> {
+// Query function - scheduled daily
+export const handler = withQueryHandler(QUERY)({
+  processorFunctionName: 'CacheSuppliersProcessor',
+  pageSize: null // Processor executes query directly
+});
+
+// Processor function - invoked by query function or refresh
+export const processor = withProcessorHandler(async (context, suppliers, _event) => {
   const startTime = Date.now();
+  
   debug('Starting incremental supplier sync');
 
   try {
-    // Data is already the array from executeQuery
-    const suppliers = data as any[];
-
     // Check if we have data results
     if (!suppliers || suppliers.length === 0) {
       debug('No supplier data received - skipping sync');
@@ -73,7 +78,6 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
     const newSuppliers: string[] = [];
     const updatedSuppliers: string[] = [];
     const unchangedSuppliers: string[] = [];
-    const deletedSuppliers: string[] = [];
 
     // Check each Workday supplier
     for (const [supplierId, workdaySupplier] of workdaySupplierMap) {
@@ -91,28 +95,13 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
       }
     }
 
-    // Check for deleted suppliers (in DB but not in Workday)
-    for (const [supplierId] of existingSupplierMap) {
-      if (!workdaySupplierMap.has(supplierId)) {
-        deletedSuppliers.push(supplierId);
-      }
-    }
-
-    debug(`Sync analysis: ${newSuppliers.length} new, ${updatedSuppliers.length} updated, ${unchangedSuppliers.length} unchanged, ${deletedSuppliers.length} deleted`);
+    debug(`Sync analysis: ${newSuppliers.length} new, ${updatedSuppliers.length} updated, ${unchangedSuppliers.length} unchanged`);
 
     // Process changes using bulk operations
     let successCount = 0;
     let errorCount = 0;
 
-    // Step 1: Bulk delete removed suppliers
-    if (deletedSuppliers.length > 0) {
-      debug(`Bulk deleting ${deletedSuppliers.length} removed suppliers...`);
-      const deletedCount = await bulkDeleteDocuments(context.dbConnection, deletedSuppliers, 'supplier');
-      successCount += deletedCount;
-      debug(`Deleted ${deletedCount} suppliers`);
-    }
-
-    // Step 2: Prepare new suppliers for bulk insert in batches of 50
+    // Step 1: Prepare new suppliers for bulk insert in batches of 50
     if (newSuppliers.length > 0) {
       debug(`Preparing ${newSuppliers.length} new suppliers for bulk insert in batches of 50...`);
       
@@ -160,7 +149,7 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
       }
     }
 
-    // Step 3: Prepare updated suppliers for bulk update in batches of 50
+    // Step 2: Prepare updated suppliers for bulk update in batches of 50
     if (updatedSuppliers.length > 0) {
       debug(`Preparing ${updatedSuppliers.length} updated suppliers for bulk update in batches of 50...`);
       
@@ -219,7 +208,6 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
         total: suppliers.length,
         new: newSuppliers.length,
         updated: updatedSuppliers.length,
-        deleted: deletedSuppliers.length,
         unchanged: unchangedSuppliers.length,
         errors: errorCount,
         processingTime
@@ -252,6 +240,5 @@ async function processAction(context: ProcessingContext, data: unknown): Promise
     
     throw error;
   }
-}
+});
 
-export const handler = withBulkHandler(QUERY)(processAction);
