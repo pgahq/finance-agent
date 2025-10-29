@@ -21,7 +21,7 @@ const QUERY = `
 
 // Query function - scheduled daily
 export const handler = withQueryHandler(QUERY)({
-  processorFunctionName: 'EnrichInvoiceSupplierProcessor',
+  processorFunctionName: `${process.env.AWS_STACK_NAME}-EnrichInvoiceSupplierProcessor`,
   pageSize: 1 // One invoice per invocation
 });
 

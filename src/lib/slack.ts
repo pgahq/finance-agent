@@ -102,7 +102,22 @@ export async function notifyResult(
 
   // Add details/error as context block if present
   if (details || error) {
-    const detailsData = error ? { error, details } : details;
+    let detailsData;
+    if (error) {
+      // Safely serialize error object to avoid circular references
+      const safeError = {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        code: error.code,
+        statusCode: error.statusCode,
+        $metadata: error.$metadata
+      };
+      detailsData = { error: safeError, details };
+    } else {
+      detailsData = details;
+    }
+    
     const jsonString = JSON.stringify(detailsData, null, 2);
     blocks.push({
       type: 'context',

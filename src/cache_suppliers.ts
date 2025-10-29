@@ -19,7 +19,7 @@ const QUERY = `
 
 // Query function - scheduled daily
 export const handler = withQueryHandler(QUERY)({
-  processorFunctionName: 'CacheSuppliersProcessor',
+  processorFunctionName: `${process.env.AWS_STACK_NAME}-CacheSuppliersProcessor`,
   pageSize: null // Processor executes query directly
 });
 

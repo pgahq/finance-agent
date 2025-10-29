@@ -53,7 +53,7 @@ export const handler = withHandler(async (context: ProcessingContext, _event) =>
     
     // Create internal query handler that invokes CacheSuppliersProcessor
     const refreshHandler = withQueryHandler(QUERY)({
-      processorFunctionName: 'CacheSuppliersProcessor',
+      processorFunctionName: `${process.env.AWS_STACK_NAME}-CacheSuppliersProcessor`,
       pageSize: PAGE_SIZE
     });
     
