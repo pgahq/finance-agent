@@ -14,33 +14,122 @@ Globals:
     Runtime: nodejs20.x
     CodeUri: .
     MemorySize: 1024
-    Timeout: 300
+    Timeout: 600
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel
-        WORKDAY_API_URL: ssm:/finance-agent/workday-api-url
+        WORKDAY_DOMAIN: ssm:/finance-agent/workday-domain
         WORKDAY_TENANT: ssm:/finance-agent/workday-tenant
         WORKDAY_USER: ssm:/finance-agent/workday-user
         WORKDAY_PASSWORD: ssm:/finance-agent/workday-password
+        WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
+        WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
+        WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
-        EVENT_BUS_NAME: !Ref FinanceAgentEventBus
+        SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
+        S3_BUCKET_NAME: !Ref FinanceAgentBucket
+        AWS_STACK_NAME: !Ref AWS::StackName
+        DATABASE_SECRET_ARN: !Ref DatabaseSecret
+        DATABASE_CLUSTER_ENDPOINT: !GetAtt FinanceAgentDatabase.Endpoint.Address
+        DATABASE_NAME: finance_agent
 
 Resources:
-  FinanceAgentEventBus:
-    Type: AWS::Events::EventBus
+  FinanceAgentBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      Name: FinanceAgentEventBus
+      BucketName: !Sub finance-agent-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
 
+  # Database Secret for password management
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}-database-secret"
+      Description: "Secret for PostgreSQL RDS user instance"
+      GenerateSecretString:
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\\'
+
+  # Aurora Serverless PostgreSQL Cluster
+  FinanceAgentDatabase:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub "${AWS::StackName}-db-cluster"
+      Engine: aurora-postgresql
+      EngineVersion: 15.4
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1.0
+      DatabaseName: finance_agent
+      MasterUsername: postgres
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}'
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+      DBSubnetGroupName: !Ref FinanceAgentSubnetGroup
+      Port: 5432
+
+  # Aurora Serverless PostgreSQL Instance
+  FinanceAgentDatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref FinanceAgentDatabase
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+
+  # Use existing VPC infrastructure from pgagent stack
+  FinanceAgentSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Finance Agent database
+      SubnetIds:
+        - !ImportValue pgagent-private-subnet-id-1
+        - !ImportValue pgagent-private-subnet-id-2
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Finance Agent Lambda functions
+      VpcId: !ImportValue pgagent-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Finance Agent database
+      VpcId: !ImportValue pgagent-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  # Poppler Layer for PDF processing
   PopplerLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
-      LayerName: poppler
-      Description: Poppler PDF utilities for Lambda
+      LayerName: !Sub "${AWS::StackName}-poppler-layer"
+      Description: "Poppler binaries for PDF processing"
       ContentUri: layers/poppler/release-x86_64.zip
       CompatibleRuntimes:
         - nodejs20.x
       CompatibleArchitectures:
         - x86_64
+      RetentionPolicy: Delete
 
   FinanceAgentLambdaRole:
     Type: AWS::IAM::Role
@@ -63,6 +152,13 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - arn:aws:ssm:*:*:parameter/finance-agent/*
+                  - arn:aws:ssm:*:*:parameter/ap-ingest-service/workday-isu-user
+                  - arn:aws:ssm:*:*:parameter/ap-ingest-service/workday-isu-password
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecret
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -71,59 +167,123 @@ Resources:
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
               - Effect: Allow
                 Action:
-                  - events:PutEvents
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
                 Resource:
-                  - !GetAtt FinanceAgentEventBus.Arn
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}/*
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
 
-  WqlToEventFunction:
+  # RAG Documents - Query Retrieval
+  RetrievalFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/wqlToEvent.handler
+      FunctionName: !Sub "${AWS::StackName}-Retrieval"
+      Handler: dist/query_documents.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Cache Suppliers - Query handler
+  CacheSuppliersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheSuppliers"
+      Handler: dist/cache_suppliers.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
       Events:
-        EnrichInvoicesSchedule:
+        Schedule:
           Type: Schedule
           Properties:
-            Schedule: rate(1 day)
-            Description: Query Workday for OCR invoices needing enrichment
-            Input:
-              action: enrich_invoice
-              query: >
-                SELECT
-                  invoiceNumber,
-                  invoiceStatus as Status,
-                  company1,
-                  supplier,
-                  suppliersInvoiceNumber,
-                  invoiceDate,
-                  controlTotalAmount,
-                  purchaseOrders,
-                  passedSupplierInvoiceAutoSubmitRules,
-                  passedSupplierInvoiceValidations,
-                  supplierInvoiceDocumentAutoSubmitted,
-                  allAttachmentsForBusinessDocument as Attachments
-                FROM supplierInvoices
-                WHERE OCRSupplierInvoice is not empty
-                  AND invoiceStatus.statusName = "Draft"
-                  AND (
-                    supplier is empty
-                    OR company1.companyName = "Default OCR Company"
-                  )
-                ORDER BY invoiceDate DESC, invoiceNumber DESC
+            Schedule: cron(0 12 * * ? *)
 
-  # Action: enrich_invoice
-  EnrichInvoiceAction:
+  # Cache Suppliers Processor - Data processing
+  CacheSuppliersProcessor:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: dist/actions/enrich_invoice.handler
+      FunctionName: !Sub "${AWS::StackName}-CacheSuppliersProcessor"
+      Handler: dist/cache_suppliers.processor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900  # 15 minutes for processing
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Refresh Suppliers - Full rebuild with pagination
+  RefreshSuppliersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-RefreshSuppliers"
+      Handler: dist/refresh_suppliers.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300  # 5 minutes for orchestration only
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Enrich Invoice Supplier - Query handler
+  EnrichInvoiceSupplierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
+      Handler: dist/enrich_invoice_supplier.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 13 * * ? *)
+
+  # Enrich Invoice Supplier Processor - Individual record processing
+  EnrichInvoiceSupplierProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
+      Handler: dist/enrich_invoice_supplier.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300  # 5 minutes for single invoice
+      MemorySize: 1024
       Layers:
         - !Ref PopplerLayer
-      Events:
-        Trigger:
-          Type: EventBridgeRule
-          Properties:
-            EventBusName: !Ref FinanceAgentEventBus
-            Pattern:
-              detail:
-                action: [enrich_invoice]
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+  
