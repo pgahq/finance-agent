@@ -83,7 +83,6 @@ graph TB
     PROC --> DB
     PROC --> S3
 ```
-
 ### Workday API Usage
 
 **WQL (Workday Query Language)**
@@ -260,3 +259,218 @@ Deployment is automated via CircleCI:
 ## 📄 License
 
 TBD
+
+### Process Flows
+
+#### RAG Pipeline
+
+The RAG (Retrieval-Augmented Generation) pipeline enables semantic search for supplier matching:
+
+```mermaid
+flowchart TD
+    START[Start RAG Query] --> CREATE_EMB[Create Query Embedding<br/>OpenAI text-embedding-3-small]
+    CREATE_EMB --> HYBRID_SEARCH[Hybrid Search<br/>PostgreSQL + pgvector]
+    
+    HYBRID_SEARCH --> SEMANTIC[Semantic Similarity<br/>Vector cosine distance]
+    HYBRID_SEARCH --> TEXT_MATCH[Exact Text Match<br/>LIKE query boost]
+    
+    SEMANTIC --> COMBINE[Combine Results<br/>Boost exact matches to 1.0]
+    TEXT_MATCH --> COMBINE
+    
+    COMBINE --> FILTER[Filter by Threshold<br/>Default: 0.3 similarity]
+    FILTER --> SORT[Sort by Similarity<br/>DESC]
+    SORT --> LIMIT[Limit Results<br/>Default: 100]
+    LIMIT --> RETURN[Return RAG Results]
+    
+    subgraph "Document Storage"
+        SUPPLIER_DATA[Supplier Data<br/>from Workday] --> CREATE_CONTENT[Create Content<br/>Name, Address, Phone, Email]
+        CREATE_CONTENT --> CREATE_DOC_EMB[Create Document Embedding]
+        CREATE_DOC_EMB --> STORE[(PostgreSQL<br/>with pgvector)]
+    end
+    
+    STORE -.-> HYBRID_SEARCH
+    
+    style CREATE_EMB fill:#e1f5ff
+    style HYBRID_SEARCH fill:#fff4e1
+    style STORE fill:#e8f5e9
+```
+
+#### Enrich Invoices Process
+
+The invoice enrichment process identifies missing suppliers using AI and RAG:
+
+```mermaid
+flowchart TD
+    START[Scheduled Trigger<br/>8:00 AM Central] --> QUERY_HANDLER[Query Handler<br/>WQL Query]
+    
+    QUERY_HANDLER --> WQL[Workday WQL<br/>Find invoices missing suppliers]
+    WQL --> FILTER[Filter Results<br/>OCRSupplierInvoice not empty<br/>supplier is empty<br/>isCanceled = false]
+    
+    FILTER --> PAGE[Page Results<br/>1 invoice per invocation]
+    PAGE --> INVOKE_PROC[Invoke Processor<br/>EnrichInvoiceSupplierProcessor]
+    
+    INVOKE_PROC --> GET_DETAILS[Get Invoice Details<br/>Workday SOAP API]
+    GET_DETAILS --> GET_ATTACH[Get Attachments<br/>PDF documents]
+    
+    GET_ATTACH --> PROCESS_PDF[Process PDFs<br/>Split multi-page PDFs<br/>Convert to images]
+    PROCESS_PDF --> UPLOAD_S3[Upload to S3<br/>Generate presigned URLs]
+    
+    UPLOAD_S3 --> EXTRACT_DATA[Extract Invoice Data<br/>Company name, address<br/>phone, email, invoice number]
+    
+    EXTRACT_DATA --> AI_ANALYSIS[AI Analysis<br/>GPT-4 with RAG tool]
+    
+    AI_ANALYSIS --> RAG_SEARCH[RAG Search<br/>findSuppliers tool]
+    RAG_SEARCH --> VECTOR_DB[(Vector Database<br/>Semantic search)]
+    VECTOR_DB --> RAG_RESULTS[RAG Results<br/>Similar suppliers]
+    
+    RAG_RESULTS --> AI_DECIDE[AI Decision<br/>Analyze invoice + images<br/>Match with RAG results]
+    
+    AI_DECIDE --> RESULT{Result Type}
+    
+    RESULT -->|High Confidence| FOUND[Found<br/>Supplier identified]
+    RESULT -->|Multiple Matches| AMBIGUOUS[Ambiguous<br/>Flag for review]
+    RESULT -->|No Match| NOT_FOUND[Not Found<br/>Extract supplier info]
+    RESULT -->|Error| ERROR[Error<br/>Flag for review]
+    
+    FOUND --> NOTIFY[Slack Notification<br/>Success with details]
+    AMBIGUOUS --> NOTIFY
+    NOT_FOUND --> NOTIFY
+    ERROR --> NOTIFY
+    
+    NOTIFY --> END[End]
+    
+    style AI_ANALYSIS fill:#e1f5ff
+    style RAG_SEARCH fill:#fff4e1
+    style VECTOR_DB fill:#e8f5e9
+```
+
+#### PDF Processing Pipeline
+
+The PDF processing pipeline converts invoice PDFs into images for AI vision analysis:
+
+```mermaid
+flowchart TD
+    START[Receive PDF Attachment<br/>from Workday SOAP] --> CHECK_TYPE{Attachment Type?}
+    
+    CHECK_TYPE -->|PDF| PDF_PATH[Create Temp Directory<br/>/tmp/pdf-processing]
+    CHECK_TYPE -->|Image/Other| DIRECT_UPLOAD[Upload Directly to S3]
+    
+    PDF_PATH --> WRITE_TEMP[Write PDF Buffer<br/>to Temporary File]
+    WRITE_TEMP --> CREATE_OUTPUT[Create Output Directory<br/>for page images]
+    
+    CREATE_OUTPUT --> PDFTOCAIRO[Execute pdftocairo<br/>Convert PDF to PNG<br/>All pages at once]
+    
+    PDFTOCAIRO --> FIND_PAGES[Find Generated PNGs<br/>page-1.png, page-2.png, ...]
+    FIND_PAGES --> SORT_PAGES[Sort by Page Number<br/>Ascending order]
+    
+    SORT_PAGES --> LOOP{More Pages?}
+    
+    LOOP -->|Yes| READ_PAGE[Read PNG File<br/>into Buffer]
+    READ_PAGE --> CREATE_IMAGE[Create ProcessedImage<br/>fileName, buffer, contentType<br/>pageNumber]
+    
+    CREATE_IMAGE --> UPLOAD_S3[Upload to S3<br/>Generate S3 Key<br/>workdayID/attachmentIndex/page-N]
+    
+    UPLOAD_S3 --> GEN_PRESIGNED[Generate Presigned URL<br/>Expires in 1 hour]
+    GEN_PRESIGNED --> ADD_TO_LIST[Add to PresignedAttachment List]
+    
+    ADD_TO_LIST --> CLEANUP_PAGE[Delete Temp PNG File]
+    CLEANUP_PAGE --> LOOP
+    
+    LOOP -->|No| CLEANUP_TEMP[Cleanup Temp Files<br/>Delete PDF and directories]
+    
+    DIRECT_UPLOAD --> GEN_PRESIGNED_DIRECT[Generate Presigned URL]
+    GEN_PRESIGNED_DIRECT --> ADD_TO_LIST
+    
+    CLEANUP_TEMP --> RETURN[Return Processed Attachments<br/>Array of PresignedAttachment]
+    ADD_TO_LIST --> RETURN
+    
+    RETURN --> END[End<br/>Ready for AI Vision Analysis]
+    
+    style PDFTOCAIRO fill:#fff4e1
+    style UPLOAD_S3 fill:#e8f5e9
+    style GEN_PRESIGNED fill:#e1f5ff
+```
+
+#### Refresh Suppliers Process
+
+The refresh process performs a full rebuild of the supplier database:
+
+```mermaid
+flowchart TD
+    START[Manual Trigger<br/>Refresh Suppliers] --> DELETE[Delete All Suppliers<br/>deleteAllDocumentsByType]
+    
+    DELETE --> GET_COUNT[Get Total Count<br/>Workday WQL Query]
+    GET_COUNT --> CALC_PAGES[Calculate Pages<br/>500 suppliers per batch]
+    
+    CALC_PAGES --> CREATE_HANDLER[Create Internal Handler<br/>withQueryHandler]
+    
+    CREATE_HANDLER --> LOOP{More Batches?}
+    
+    LOOP -->|Yes| QUERY_BATCH[Query Batch<br/>500 suppliers via WQL]
+    QUERY_BATCH --> INVOKE_CACHE[Invoke Cache Processor<br/>CacheSuppliersProcessor]
+    
+    INVOKE_CACHE --> PROCESS_BATCH[Process Batch]
+    
+    PROCESS_BATCH --> FILTER_ACTIVE[Filter Active Suppliers<br/>Only Active status]
+    FILTER_ACTIVE --> CREATE_CONTENT[Create Supplier Content<br/>Name, alternate names<br/>phone, email, address]
+    
+    CREATE_CONTENT --> CREATE_EMB[Create Embeddings<br/>OpenAI text-embedding-3-small]
+    CREATE_EMB --> BULK_INSERT[Bulk Insert<br/>50 suppliers per batch]
+    
+    BULK_INSERT --> STORE[(PostgreSQL<br/>with embeddings)]
+    
+    STORE --> LOOP
+    
+    LOOP -->|No| NOTIFY[Slack Notification<br/>Total suppliers processed<br/>Total batches]
+    
+    NOTIFY --> END[End]
+    
+    style DELETE fill:#ffebee
+    style CREATE_EMB fill:#e1f5ff
+    style STORE fill:#e8f5e9
+```
+
+#### Cache Suppliers Process
+
+The daily supplier sync process incrementally updates the supplier database:
+
+```mermaid
+flowchart TD
+    START[Scheduled Trigger<br/>7:00 AM Central] --> QUERY_HANDLER[Query Handler<br/>WQL Query]
+    
+    QUERY_HANDLER --> WQL[Workday WQL<br/>Query all suppliers]
+    WQL --> GET_EXISTING[Get Existing Suppliers<br/>from PostgreSQL]
+    
+    GET_EXISTING --> COMPARE[Compare Suppliers<br/>by workday_id]
+    
+    COMPARE --> NEW[New Suppliers<br/>Not in database]
+    COMPARE --> UPDATED[Updated Suppliers<br/>lastUpdatedDateTime changed]
+    COMPARE --> UNCHANGED[Unchanged Suppliers<br/>Skip processing]
+    
+    NEW --> FILTER_NEW[Filter Active Only]
+    FILTER_NEW --> PREP_NEW[Prepare New Suppliers<br/>Create content + embeddings]
+    
+    UPDATED --> FILTER_UPD[Filter Active Only]
+    FILTER_UPD --> PREP_UPD[Prepare Updated Suppliers<br/>Create content + embeddings]
+    
+    PREP_NEW --> BATCH_NEW[Batch Process<br/>50 suppliers per batch]
+    PREP_UPD --> BATCH_UPD[Batch Process<br/>50 suppliers per batch]
+    
+    BATCH_NEW --> CREATE_EMB_NEW[Create Embeddings<br/>OpenAI API]
+    BATCH_UPD --> CREATE_EMB_UPD[Create Embeddings<br/>OpenAI API]
+    
+    CREATE_EMB_NEW --> BULK_INSERT[Bulk Insert<br/>PostgreSQL]
+    CREATE_EMB_UPD --> BULK_UPDATE[Bulk Update<br/>PostgreSQL]
+    
+    BULK_INSERT --> STORE[(PostgreSQL<br/>with pgvector)]
+    BULK_UPDATE --> STORE
+    
+    STORE --> STATS[Calculate Stats<br/>New, Updated, Unchanged]
+    STATS --> NOTIFY[Slack Notification<br/>Sync statistics]
+    
+    NOTIFY --> END[End]
+    
+    style CREATE_EMB_NEW fill:#e1f5ff
+    style CREATE_EMB_UPD fill:#e1f5ff
+    style STORE fill:#e8f5e9
+```
