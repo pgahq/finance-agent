@@ -62,7 +62,7 @@ Resources:
     Properties:
       DBClusterIdentifier: !Sub "${AWS::StackName}-db-cluster"
       Engine: aurora-postgresql
-      EngineVersion: 15.4
+      EngineVersion: 15.6
       ServerlessV2ScalingConfiguration:
         MinCapacity: 0.5
         MaxCapacity: 1.0
