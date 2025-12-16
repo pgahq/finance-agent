@@ -113,10 +113,10 @@ workflows:
           filters:
             branches:
               only: development
-      # - deploy-to-prod:
-      #     context: chatbot-production
-      #     requires:
-      #       - build
-      #     filters:
-      #       branches:
-      #         only: main
+      - deploy-to-prod:
+          context: chatbot-production
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
