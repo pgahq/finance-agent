@@ -1,4 +1,4 @@
-import { getWorkdayConfig, getWorkdaySoapConfig, executeWorkdayQuery, getSupplierInvoiceWithAttachments } from '../lib/workday.js';
+import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, getWorkdaySoapConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -473,6 +473,237 @@ describe('Workday utilities', () => {
         Invoice_ID: 'INV-001'
       });
       expect(result.presignedAttachments).toEqual([]);
+    });
+  });
+
+  describe('updateSupplierInvoiceSupplier', () => {
+    const mockContext = {
+      workdaySoapConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        username: 'test-user',
+        password: 'test-password'
+      }
+    };
+
+    const mockInvoiceWorkdayID = 'invoice-wid';
+    const mockSupplierWorkdayID = 'supplier-wid';
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'cwd', {
+        value: jest.fn(() => '/test/path'),
+        writable: true
+      });
+    });
+
+    it('should throw error when password is missing', async () => {
+      const contextWithoutPassword = {
+        ...mockContext,
+        workdaySoapConfig: {
+          ...mockContext.workdaySoapConfig,
+          password: undefined as any
+        }
+      };
+
+      await expect(updateSupplierInvoiceSupplier(contextWithoutPassword, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+        .rejects.toThrow('Workday SOAP password is not configured');
+    });
+
+    it('should throw error when invoice not found', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockResponse = {
+        Response_Data: {}
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockResponse);
+      });
+
+      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+        .rejects.toThrow(`No invoice found for workdayID: ${mockInvoiceWorkdayID}`);
+    });
+
+    it('should handle SOAP update error', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      // Mock successful getSupplierInvoice
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(new Error('Update failed'), null);
+      });
+
+      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+        .rejects.toThrow('Update failed');
+    });
+
+    it('should update supplier successfully', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      // Mock successful getSupplierInvoice
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Payment_Terms_Reference: { ID: 'payment-terms-wid' }
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const mockSubmitResponse = {
+        Response_Data: { success: true }
+      };
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockSubmitResponse);
+      });
+
+      const result = await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain(mockInvoiceWorkdayID);
+      expect(result.message).toContain(mockSupplierWorkdayID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Reference: expect.objectContaining({
+              ID: expect.arrayContaining([
+                expect.objectContaining({
+                  $attributes: { type: 'WID' },
+                  $value: mockInvoiceWorkdayID
+                })
+              ])
+            }),
+            Supplier_Invoice_Data: expect.objectContaining({
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Invoice_Number: '12345',
+              Control_Amount_Total: '100.00',
+              Supplier_Reference: expect.objectContaining({
+                ID: expect.arrayContaining([
+                  expect.objectContaining({
+                    $attributes: { type: 'WID' },
+                    $value: mockSupplierWorkdayID
+                  })
+                ])
+              })
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it('should preserve optional fields when present', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Payment_Terms_Reference: { ID: 'payment-terms-wid' },
+              Due_Date_Override: '2024-02-01',
+              Default_Tax_Option_Reference: { ID: 'tax-option-wid' }
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Payment_Terms_Reference: { ID: 'payment-terms-wid' },
+              Due_Date_Override: '2024-02-01',
+              Default_Tax_Option_Reference: { ID: 'tax-option-wid' }
+            })
+          })
+        }),
+        expect.any(Function)
+      );
     });
   });
 

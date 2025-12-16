@@ -1,10 +1,10 @@
-import { withQueryHandler, withProcessorHandler } from './lib/handlers.js';
 import { debug } from '@pga/logger';
-import { getSupplierInvoiceWithAttachments } from './lib/workday.js';
 import { getAiResponse } from './lib/ai.js';
-import type { InvoiceData, PresignedAttachment } from './lib/types.js';
-import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
+import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
+import type { InvoiceData, PresignedAttachment } from './lib/types.js';
+import { getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier } from './lib/workday.js';
+import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
 
 const QUERY = `
   SELECT 
@@ -32,20 +32,19 @@ export const processor = withProcessorHandler(async (context, invoices, _event) 
     await processInvoice(context, invoice as InvoiceData);
   }
 });
-
 async function processInvoice(context: any, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
   debug('Enriching invoice supplier with AI and Workday data');
-  
+
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
   try {
     // Get detailed invoice data with attachments using SOAP API
     const { invoice: detailedInvoice, presignedAttachments: processedAttachments } = await getSupplierInvoiceWithAttachments(
-      context, 
+      context,
       invoiceData.workdayID
     );
-    
+
     debug(`Successfully processed ${processedAttachments.length} attachments`);
 
     // Check if supplier is missing (using the original invoice data from the batch query)
@@ -76,23 +75,21 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       // Handle different scenarios based on the new schema
       switch (supplierResult.status) {
         case 'found':
-          debug('Supplier found in Workday - updating invoice');
-          // TODO: Update Workday with identified supplier
-          // await updateInvoiceSupplier(config, detailedInvoice.id, supplierResult.resolvedSupplier);
+          await handleFoundSupplier(context, detailedInvoice, supplierResult);
           break;
-          
+
         case 'not_found':
           debug('Supplier not found - registering new supplier');
           // TODO: Register new supplier with extracted information
           // await registerNewSupplier(config, supplierResult.extractedSupplierInformation);
           break;
-          
+
         case 'ambiguous':
           debug('Ambiguous supplier identification - flagging for manual review');
           // TODO: Flag for manual review with potential duplicates
           // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
           break;
-          
+
         case 'error':
           debug('Error in supplier identification - flagging for manual review');
           // TODO: Flag for manual review due to error
@@ -105,7 +102,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error in supplier enrichment process:', error);
-    
+
     // Send error notification to Slack
     await notifyResult(
       'enrich_invoice_supplier',
@@ -117,17 +114,37 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       },
       error
     );
-    
+
     throw error;
   }
 }
+
+async function handleFoundSupplier(
+  context: any,
+  detailedInvoice: any,
+  supplierResult: SupplierIdentificationResult
+): Promise<void> {
+  debug('Supplier found in Workday - updating invoice');
+  const foundSupplierWorkdayID = supplierResult.resolvedSupplier?.workdayId;
+
+  if (foundSupplierWorkdayID) {
+    await updateSupplierInvoiceSupplier(
+      context,
+      detailedInvoice.id,
+      foundSupplierWorkdayID
+    );
+  } else {
+    debug('No valid supplier Workday ID found - cannot update invoice');
+  }
+}
+
 
 async function identifySupplier(
   invoice: any,
   processedAttachments: PresignedAttachment[]
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.Invoice_Number);
-  
+
   try {
     // Prepare invoice data for AI analysis
     const invoiceData = {
@@ -143,14 +160,14 @@ async function identifySupplier(
         presignedUrl: att.presignedUrl
       }))
     };
-    
+
     // Call AI to identify the supplier using RAG
     const result = await getAiResponse({
       prompt: supplierIdentificationPrompt,
       schema: SupplierIdentificationSchema,
       messages: [
-        { 
-          role: 'user', 
+        {
+          role: 'user',
           content: [
             {
               type: 'text',
@@ -166,9 +183,9 @@ async function identifySupplier(
         }
       ]
     });
-    
+
     return result as SupplierIdentificationResult;
-    
+
   } catch (error) {
     debug('Error in supplier identification:', error);
     return {
