@@ -245,7 +245,7 @@ describe('Workday utilities', () => {
       await executeWorkdayQuery(mockConfig, mockQuery);
 
       // Check token request
-      expect(global.fetch).toHaveBeenNthCalledWith(1, 
+      expect(global.fetch).toHaveBeenNthCalledWith(1,
         'https://test.workday.com/ccx/oauth2/test-tenant/token',
         expect.objectContaining({
           method: 'POST',
@@ -257,7 +257,7 @@ describe('Workday utilities', () => {
       );
 
       // Check query request
-      expect(global.fetch).toHaveBeenNthCalledWith(2, 
+      expect(global.fetch).toHaveBeenNthCalledWith(2,
         expect.stringContaining('https://test.workday.com/api/wql/v1/test-tenant/data?query='),
         expect.objectContaining({
           method: 'GET',
@@ -663,6 +663,67 @@ describe('Workday utilities', () => {
         expect.any(Function)
       );
     });
+
+    it('should include work queue tag when environment variable is set', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_WORK_QUEUE_TAG_WID = 'test-work-queue-tag-wid';
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Worktag_Reference: [
+                {
+                  ID: [
+                    {
+                      $attributes: { type: 'Work_Queue_Tag_ID' },
+                      $value: 'test-work-queue-tag-wid'
+                    }
+                  ]
+                }
+              ]
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
   });
 
 });
