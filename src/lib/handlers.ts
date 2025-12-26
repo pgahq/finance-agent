@@ -5,24 +5,21 @@
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { getS3Config, type S3Config } from './s3.js';
-import { getWorkdayConfig, getWorkdaySoapConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
-import type { WorkdaySoapConfig } from './types.js';
+import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
 export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
-  workdaySoapConfig: WorkdaySoapConfig;
   s3Config: S3Config;
   dbConnection: DatabaseConnection;
 }
 
 async function setupContext(): Promise<ProcessingContext> {
   process.env = await loadEnv();
-  
+
   return {
     workdayConfig: getWorkdayConfig(process.env),
-    workdaySoapConfig: getWorkdaySoapConfig(process.env),
     s3Config: getS3Config(process.env),
     dbConnection: await getDatabaseConnection(process.env)
   };

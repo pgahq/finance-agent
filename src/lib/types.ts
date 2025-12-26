@@ -94,13 +94,6 @@ export interface PresignedAttachment {
 }
 
 // SOAP API Types
-export interface WorkdaySoapConfig {
-  domain: string;
-  tenant: string;
-  username: string;
-  password: string;
-}
-
 export interface SupplierInvoiceSoapResponse {
   $attributes?: any;
   Request_References?: any;
