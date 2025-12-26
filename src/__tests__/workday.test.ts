@@ -1,4 +1,4 @@
-import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, getWorkdaySoapConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
+import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -15,7 +15,7 @@ global.fetch = jest.fn();
 jest.mock('strong-soap', () => ({
   soap: {
     createClient: jest.fn(),
-    WSSecurity: jest.fn()
+    BearerSecurity: jest.fn()
   }
 }));
 
@@ -76,36 +76,6 @@ describe('Workday utilities', () => {
       expect(config.clientId).toBeUndefined();
       expect(config.clientSecret).toBeUndefined();
       expect(config.refreshToken).toBeUndefined();
-    });
-  });
-
-  describe('getWorkdaySoapConfig', () => {
-    it('should extract SOAP configuration from environment variables', () => {
-      const mockEnv = {
-        WORKDAY_DOMAIN: 'test.workday.com',
-        WORKDAY_TENANT: 'test-tenant',
-        WORKDAY_USER: 'test-user',
-        WORKDAY_PASSWORD: 'test-password',
-      };
-
-      const config = getWorkdaySoapConfig(mockEnv);
-
-      expect(config).toEqual({
-        domain: 'test.workday.com',
-        tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password',
-      });
-    });
-
-    it('should handle missing environment variables', () => {
-      const mockEnv = {};
-
-      const config = getWorkdaySoapConfig(mockEnv);
-      expect(config.domain).toBeUndefined();
-      expect(config.tenant).toBeUndefined();
-      expect(config.username).toBeUndefined();
-      expect(config.password).toBeUndefined();
     });
   });
 
@@ -302,11 +272,12 @@ describe('Workday utilities', () => {
 
   describe('getSupplierInvoiceWithAttachments', () => {
     const mockContext = {
-      workdaySoapConfig: {
+      workdayConfig: {
         domain: 'test.workday.com',
         tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password'
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
       },
       s3Config: {
         bucketName: 'test-bucket'
@@ -321,19 +292,12 @@ describe('Workday utilities', () => {
         value: jest.fn(() => '/test/path'),
         writable: true
       });
-    });
 
-    it('should throw error when password is missing', async () => {
-      const contextWithoutPassword = {
-        ...mockContext,
-        workdaySoapConfig: {
-          ...mockContext.workdaySoapConfig,
-          password: undefined as any
-        }
-      };
-
-      await expect(getSupplierInvoiceWithAttachments(contextWithoutPassword, mockWorkdayID))
-        .rejects.toThrow('Workday SOAP password is not configured');
+      // Mock fetch for OAuth token
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
     });
 
     it('should handle SOAP client creation error', async () => {
@@ -478,11 +442,12 @@ describe('Workday utilities', () => {
 
   describe('updateSupplierInvoiceSupplier', () => {
     const mockContext = {
-      workdaySoapConfig: {
+      workdayConfig: {
         domain: 'test.workday.com',
         tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password'
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
       }
     };
 
@@ -494,19 +459,12 @@ describe('Workday utilities', () => {
         value: jest.fn(() => '/test/path'),
         writable: true
       });
-    });
 
-    it('should throw error when password is missing', async () => {
-      const contextWithoutPassword = {
-        ...mockContext,
-        workdaySoapConfig: {
-          ...mockContext.workdaySoapConfig,
-          password: undefined as any
-        }
-      };
-
-      await expect(updateSupplierInvoiceSupplier(contextWithoutPassword, mockInvoiceWorkdayID, mockSupplierID))
-        .rejects.toThrow('Workday SOAP password is not configured');
+      // Mock fetch for OAuth token
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
     });
 
     it('should throw error when invoice not found', async () => {

@@ -1,5 +1,5 @@
 import * as dotenv from 'dotenv';
-import { getSupplierInvoice, getWorkdaySoapConfig } from './lib/workday.js';
+import { getSupplierInvoice, getWorkdayConfig } from './lib/workday.js';
 
 dotenv.config();
 
@@ -19,8 +19,8 @@ async function main() {
     console.log('='.repeat(50));
     console.log('');
 
-    const workdaySoapConfig = getWorkdaySoapConfig(process.env);
-    const context = { workdaySoapConfig };
+    const workdayConfig = getWorkdayConfig(process.env);
+    const context = { workdayConfig };
 
     const invoice = await getSupplierInvoice(context, workdayID);
 

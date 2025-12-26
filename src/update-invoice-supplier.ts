@@ -7,7 +7,7 @@
  */
 
 import * as dotenv from 'dotenv';
-import { getWorkdaySoapConfig, updateSupplierInvoiceSupplier } from './lib/workday.js';
+import { getWorkdayConfig, updateSupplierInvoiceSupplier } from './lib/workday.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -32,8 +32,8 @@ async function main() {
     console.log(`🏢 Supplier Workday ID: ${supplierWorkdayID}`);
     console.log('');
 
-    const workdaySoapConfig = getWorkdaySoapConfig(process.env);
-    const context = { workdaySoapConfig };
+    const workdayConfig = getWorkdayConfig(process.env);
+    const context = { workdayConfig };
 
     console.log('⏳ Updating invoice supplier...');
     console.log('');

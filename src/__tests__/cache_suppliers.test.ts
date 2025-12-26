@@ -40,12 +40,6 @@ jest.mock('../lib/workday.js', () => ({
     clientSecret: 'test-client-secret',
     refreshToken: 'test-refresh-token'
   }),
-  getWorkdaySoapConfig: jest.fn().mockReturnValue({
-    domain: 'test.workday.com',
-    tenant: 'test-tenant',
-    username: 'test-user',
-    password: 'test-password'
-  }),
   executeWorkdayQuery: jest.fn()
 }));
 
