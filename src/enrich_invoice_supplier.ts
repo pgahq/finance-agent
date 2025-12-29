@@ -125,13 +125,13 @@ async function handleFoundSupplier(
   supplierResult: SupplierIdentificationResult
 ): Promise<void> {
   debug('Supplier found in Workday - updating invoice');
-  const foundSupplierWorkdayID = supplierResult.resolvedSupplier?.workdayId;
+  const foundSupplierID = supplierResult.resolvedSupplier?.supplierId;
 
-  if (foundSupplierWorkdayID) {
+  if (foundSupplierID) {
     await updateSupplierInvoiceSupplier(
       context,
       detailedInvoice.id,
-      foundSupplierWorkdayID
+      foundSupplierID
     );
   } else {
     debug('No valid supplier Workday ID found - cannot update invoice');

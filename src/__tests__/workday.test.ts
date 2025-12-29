@@ -487,7 +487,7 @@ describe('Workday utilities', () => {
     };
 
     const mockInvoiceWorkdayID = 'invoice-wid';
-    const mockSupplierWorkdayID = 'supplier-wid';
+    const mockSupplierID = 'SUP-123';
 
     beforeEach(() => {
       Object.defineProperty(process, 'cwd', {
@@ -505,7 +505,7 @@ describe('Workday utilities', () => {
         }
       };
 
-      await expect(updateSupplierInvoiceSupplier(contextWithoutPassword, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+      await expect(updateSupplierInvoiceSupplier(contextWithoutPassword, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow('Workday SOAP password is not configured');
     });
 
@@ -529,7 +529,7 @@ describe('Workday utilities', () => {
         callback(null, mockResponse);
       });
 
-      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow(`No invoice found for workdayID: ${mockInvoiceWorkdayID}`);
     });
 
@@ -569,7 +569,7 @@ describe('Workday utilities', () => {
         callback(new Error('Update failed'), null);
       });
 
-      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID))
+      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow('Update failed');
     });
 
@@ -614,11 +614,11 @@ describe('Workday utilities', () => {
         callback(null, mockSubmitResponse);
       });
 
-      const result = await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID);
+      const result = await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(result.success).toBe(true);
       expect(result.message).toContain(mockInvoiceWorkdayID);
-      expect(result.message).toContain(mockSupplierWorkdayID);
+      expect(result.message).toContain(mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -640,8 +640,8 @@ describe('Workday utilities', () => {
               Supplier_Reference: expect.objectContaining({
                 ID: expect.arrayContaining([
                   expect.objectContaining({
-                    $attributes: { type: 'WID' },
-                    $value: mockSupplierWorkdayID
+                    $attributes: { type: 'Supplier_ID' },
+                    $value: mockSupplierID
                   })
                 ])
               })
@@ -690,7 +690,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierWorkdayID);
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({

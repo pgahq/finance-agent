@@ -182,35 +182,19 @@ export async function executeWorkdayQuery(
   };
 }
 
-// SOAP API Functions
-export async function getSupplierInvoiceWithAttachments(
-  context: { workdaySoapConfig: WorkdaySoapConfig; s3Config: { bucketName: string } },
-  workdayID: string
-): Promise<{
-  invoice: any;
-  presignedAttachments: PresignedAttachment[];
-}> {
+async function buildClient(
+  context: { workdaySoapConfig: WorkdaySoapConfig }
+): Promise<any> {
   const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
-  debug('Creating Workday SOAP client for invoice retrieval');
-  debug(`WSDL path: ${wsdlPath}`);
-  debug(`WorkdayID: ${workdayID}`);
-  debug(`Username: ${username}`);
-  debug(`Password length: ${context.workdaySoapConfig.password?.length || 0}`);
-  debug(`Domain: ${context.workdaySoapConfig.domain}`);
-  debug(`Tenant: ${context.workdaySoapConfig.tenant}`);
-
-  // Validate required SOAP configuration
   if (!context.workdaySoapConfig.password) {
     throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
   }
 
-  // Get the strong-soap module
   const strongSoap = await getStrongSoap();
 
-  // First, get the SOAP response
-  const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
       if (err) {
         debug('Failed to create SOAP client:', err);
@@ -225,29 +209,48 @@ export async function getSupplierInvoiceWithAttachments(
       const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
       client.setEndpoint(endpoint);
 
-      const request = {
-        Get_Supplier_Invoices_Request: {
-          Request_References: {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
-            }
-          },
-          Response_Group: {
-            Include_Reference: true,
-            Include_Attachment_Data: true
-          }
-        }
-      };
+      resolve(client);
+    });
+  });
+}
 
-      debug('Requesting Supplier Invoice with attachments from Workday');
-      client.Get_Supplier_Invoices(request, (err: any, result: any) => {
-        if (err) {
-          debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
-          return reject(err);
+export async function getSupplierInvoiceWithAttachments(
+  context: { workdaySoapConfig: WorkdaySoapConfig; s3Config: { bucketName: string } },
+  workdayID: string
+): Promise<{
+  invoice: any;
+  presignedAttachments: PresignedAttachment[];
+}> {
+  debug('Creating Workday SOAP client for invoice retrieval');
+  debug(`WorkdayID: ${workdayID}`);
+  debug(`Domain: ${context.workdaySoapConfig.domain}`);
+  debug(`Tenant: ${context.workdaySoapConfig.tenant}`);
+
+  const client = await buildClient(context);
+
+  const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
+    const request = {
+      Get_Supplier_Invoices_Request: {
+        Request_References: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
+          }
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: true
         }
-        debug('Workday SOAP response received');
-        resolve(result);
-      });
+      }
+    };
+
+    debug('Requesting Supplier Invoice with attachments from Workday');
+    client.Get_Supplier_Invoices(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
+        return reject(err);
+      }
+      debug('Workday SOAP response received');
+      resolve(result);
     });
   });
 
@@ -338,57 +341,34 @@ export async function getSupplierInvoice(
   context: { workdaySoapConfig: WorkdaySoapConfig },
   workdayID: string
 ): Promise<any> {
-  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
-  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
-
   debug('Fetching Supplier Invoice via SOAP (without attachments)');
-  debug(`WSDL path: ${wsdlPath}`);
   debug(`WorkdayID: ${workdayID}`);
 
-  if (!context.workdaySoapConfig.password) {
-    throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
-  }
-
-  const strongSoap = await getStrongSoap();
+  const client = await buildClient(context);
 
   const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
-    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+    const request = {
+      Get_Supplier_Invoices_Request: {
+        Request_References: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
+          }
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: false
+        }
+      }
+    };
+
+    debug('Requesting Supplier Invoice from Workday');
+    client.Get_Supplier_Invoices(request, (err: any, result: any) => {
       if (err) {
-        debug('Failed to create SOAP client:', err);
+        debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
         return reject(err);
       }
-
-      client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, {
-        passwordType: 'PasswordText',
-        mustUnderstand: true
-      }));
-
-      const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
-      client.setEndpoint(endpoint);
-
-      const request = {
-        Get_Supplier_Invoices_Request: {
-          Request_References: {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
-            }
-          },
-          Response_Group: {
-            Include_Reference: true,
-            Include_Attachment_Data: false
-          }
-        }
-      };
-
-      debug('Requesting Supplier Invoice from Workday');
-      client.Get_Supplier_Invoices(request, (err: any, result: any) => {
-        if (err) {
-          debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP response received');
-        resolve(result);
-      });
+      debug('Workday SOAP response received');
+      resolve(result);
     });
   });
 
@@ -408,22 +388,15 @@ export async function getSupplierInvoice(
 export async function updateSupplierInvoiceSupplier(
   context: { workdaySoapConfig: WorkdaySoapConfig },
   invoiceWorkdayID: string,
-  supplierWorkdayID: string
+  supplierID: string
 ): Promise<{ success: boolean; message?: string }> {
   const startTime = Date.now();
-  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
-  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   debug('Updating Supplier Invoice supplier via SOAP');
-  debug(`WSDL path: ${wsdlPath}`);
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
-  debug(`Supplier WorkdayID: ${supplierWorkdayID}`);
+  debug(`Supplier ID: ${supplierID}`);
 
   try {
-    if (!context.workdaySoapConfig.password) {
-      throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
-    }
-
     debug('Fetching current invoice data');
     const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
@@ -431,56 +404,41 @@ export async function updateSupplierInvoiceSupplier(
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
     }
 
-    const strongSoap = await getStrongSoap();
+    const client = await buildClient(context);
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
-      strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+      const request = {
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+          },
+          Supplier_Invoice_Data: {
+            Company_Reference: currentInvoice.Company_Reference,
+            Currency_Reference: currentInvoice.Currency_Reference,
+            Invoice_Date: currentInvoice.Invoice_Date,
+
+            Supplier_Reference: {
+              ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }]
+            },
+
+            Invoice_Number: currentInvoice.Invoice_Number,
+            Control_Amount_Total: currentInvoice.Control_Amount_Total,
+
+            ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+            ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference })
+          }
+        }
+      };
+
+      debug('Submitting updated Supplier Invoice to Workday');
+      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
         if (err) {
-          debug('Failed to create SOAP client:', err);
+          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
           return reject(err);
         }
-
-        client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, {
-          passwordType: 'PasswordText',
-          mustUnderstand: true
-        }));
-
-        const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
-        client.setEndpoint(endpoint);
-
-        const request = {
-          Submit_Supplier_Invoice_Request: {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-            },
-            Supplier_Invoice_Data: {
-              Company_Reference: currentInvoice.Company_Reference,
-              Currency_Reference: currentInvoice.Currency_Reference,
-              Invoice_Date: currentInvoice.Invoice_Date,
-
-              Supplier_Reference: {
-                ID: [{ $attributes: { type: 'WID' }, $value: supplierWorkdayID }]
-              },
-
-              Invoice_Number: currentInvoice.Invoice_Number,
-              Control_Amount_Total: currentInvoice.Control_Amount_Total,
-
-              ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
-              ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-              ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference })
-            }
-          }
-        };
-
-        debug('Submitting updated Supplier Invoice to Workday');
-        client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-          if (err) {
-            debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-            return reject(err);
-          }
-          debug('Workday SOAP update response received');
-          resolve(result);
-        });
+        debug('Workday SOAP update response received');
+        resolve(result);
       });
     });
 
@@ -494,7 +452,7 @@ export async function updateSupplierInvoiceSupplier(
       processingTime,
       {
         invoiceWorkdayID,
-        supplierWorkdayID,
+        supplierID,
         invoiceNumber: currentInvoice.Invoice_Number
       },
       undefined,
@@ -503,7 +461,7 @@ export async function updateSupplierInvoiceSupplier(
 
     return {
       success: true,
-      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWorkdayID}`
+      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
     };
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -514,7 +472,7 @@ export async function updateSupplierInvoiceSupplier(
       processingTime,
       {
         invoiceWorkdayID,
-        supplierWorkdayID
+        supplierID
       },
       error,
       `invoice: \`${invoiceWorkdayID}\``
