@@ -238,6 +238,7 @@ export async function getSupplierInvoiceWithAttachments(
         return reject(err);
       }
       debug('Workday SOAP response received');
+      debug('Full SOAP response:', JSON.stringify(result, null, 2));
       resolve(result);
     });
   });
