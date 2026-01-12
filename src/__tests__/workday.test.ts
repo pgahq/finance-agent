@@ -1,4 +1,4 @@
-import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, getWorkdaySoapConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
+import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -15,7 +15,7 @@ global.fetch = jest.fn();
 jest.mock('strong-soap', () => ({
   soap: {
     createClient: jest.fn(),
-    WSSecurity: jest.fn()
+    BearerSecurity: jest.fn()
   }
 }));
 
@@ -76,36 +76,6 @@ describe('Workday utilities', () => {
       expect(config.clientId).toBeUndefined();
       expect(config.clientSecret).toBeUndefined();
       expect(config.refreshToken).toBeUndefined();
-    });
-  });
-
-  describe('getWorkdaySoapConfig', () => {
-    it('should extract SOAP configuration from environment variables', () => {
-      const mockEnv = {
-        WORKDAY_DOMAIN: 'test.workday.com',
-        WORKDAY_TENANT: 'test-tenant',
-        WORKDAY_USER: 'test-user',
-        WORKDAY_PASSWORD: 'test-password',
-      };
-
-      const config = getWorkdaySoapConfig(mockEnv);
-
-      expect(config).toEqual({
-        domain: 'test.workday.com',
-        tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password',
-      });
-    });
-
-    it('should handle missing environment variables', () => {
-      const mockEnv = {};
-
-      const config = getWorkdaySoapConfig(mockEnv);
-      expect(config.domain).toBeUndefined();
-      expect(config.tenant).toBeUndefined();
-      expect(config.username).toBeUndefined();
-      expect(config.password).toBeUndefined();
     });
   });
 
@@ -275,7 +245,7 @@ describe('Workday utilities', () => {
       await executeWorkdayQuery(mockConfig, mockQuery);
 
       // Check token request
-      expect(global.fetch).toHaveBeenNthCalledWith(1, 
+      expect(global.fetch).toHaveBeenNthCalledWith(1,
         'https://test.workday.com/ccx/oauth2/test-tenant/token',
         expect.objectContaining({
           method: 'POST',
@@ -287,7 +257,7 @@ describe('Workday utilities', () => {
       );
 
       // Check query request
-      expect(global.fetch).toHaveBeenNthCalledWith(2, 
+      expect(global.fetch).toHaveBeenNthCalledWith(2,
         expect.stringContaining('https://test.workday.com/api/wql/v1/test-tenant/data?query='),
         expect.objectContaining({
           method: 'GET',
@@ -302,11 +272,12 @@ describe('Workday utilities', () => {
 
   describe('getSupplierInvoiceWithAttachments', () => {
     const mockContext = {
-      workdaySoapConfig: {
+      workdayConfig: {
         domain: 'test.workday.com',
         tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password'
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
       },
       s3Config: {
         bucketName: 'test-bucket'
@@ -321,19 +292,12 @@ describe('Workday utilities', () => {
         value: jest.fn(() => '/test/path'),
         writable: true
       });
-    });
 
-    it('should throw error when password is missing', async () => {
-      const contextWithoutPassword = {
-        ...mockContext,
-        workdaySoapConfig: {
-          ...mockContext.workdaySoapConfig,
-          password: undefined as any
-        }
-      };
-
-      await expect(getSupplierInvoiceWithAttachments(contextWithoutPassword, mockWorkdayID))
-        .rejects.toThrow('Workday SOAP password is not configured');
+      // Mock fetch for OAuth token
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
     });
 
     it('should handle SOAP client creation error', async () => {
@@ -478,11 +442,12 @@ describe('Workday utilities', () => {
 
   describe('updateSupplierInvoiceSupplier', () => {
     const mockContext = {
-      workdaySoapConfig: {
+      workdayConfig: {
         domain: 'test.workday.com',
         tenant: 'test-tenant',
-        username: 'test-user',
-        password: 'test-password'
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
       }
     };
 
@@ -494,19 +459,12 @@ describe('Workday utilities', () => {
         value: jest.fn(() => '/test/path'),
         writable: true
       });
-    });
 
-    it('should throw error when password is missing', async () => {
-      const contextWithoutPassword = {
-        ...mockContext,
-        workdaySoapConfig: {
-          ...mockContext.workdaySoapConfig,
-          password: undefined as any
-        }
-      };
-
-      await expect(updateSupplierInvoiceSupplier(contextWithoutPassword, mockInvoiceWorkdayID, mockSupplierID))
-        .rejects.toThrow('Workday SOAP password is not configured');
+      // Mock fetch for OAuth token
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
     });
 
     it('should throw error when invoice not found', async () => {
@@ -705,6 +663,67 @@ describe('Workday utilities', () => {
         expect.any(Function)
       );
     });
+
+    it('should include work queue tag when environment variable is set', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_WORK_QUEUE_TAG_WID = 'test-work-queue-tag-wid';
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Worktag_Reference: [
+                {
+                  ID: [
+                    {
+                      $attributes: { type: 'Work_Queue_Tag_ID' },
+                      $value: 'test-work-queue-tag-wid'
+                    }
+                  ]
+                }
+              ]
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
   });
 
 });

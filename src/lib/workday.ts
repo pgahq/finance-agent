@@ -4,8 +4,7 @@ import { notifyResult } from './slack.js';
 import type {
   DownloadedAttachment,
   PresignedAttachment,
-  SupplierInvoiceSoapResponse,
-  WorkdaySoapConfig
+  SupplierInvoiceSoapResponse
 } from './types.js';
 
 // Import strong-soap for SOAP client using dynamic import
@@ -32,13 +31,6 @@ export const getWorkdayConfig = (env: NodeJS.ProcessEnv): WorkdayConfig => ({
   clientId: env.WORKDAY_CLIENT_ID!,
   clientSecret: env.WORKDAY_CLIENT_SECRET!,
   refreshToken: env.WORKDAY_REFRESH_TOKEN!,
-});
-
-export const getWorkdaySoapConfig = (env: NodeJS.ProcessEnv): WorkdaySoapConfig => ({
-  domain: env.WORKDAY_DOMAIN!,
-  tenant: env.WORKDAY_TENANT!,
-  username: env.WORKDAY_USER!,
-  password: env.WORKDAY_PASSWORD!,
 });
 
 const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clientSecret: string }): string => {
@@ -183,14 +175,12 @@ export async function executeWorkdayQuery(
 }
 
 async function buildClient(
-  context: { workdaySoapConfig: WorkdaySoapConfig }
+  context: { workdayConfig: WorkdayConfig }
 ): Promise<any> {
-  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
-  if (!context.workdaySoapConfig.password) {
-    throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
-  }
+  // Get OAuth access token
+  const accessToken = await getAccessToken(context.workdayConfig);
 
   const strongSoap = await getStrongSoap();
 
@@ -201,12 +191,10 @@ async function buildClient(
         return reject(err);
       }
 
-      client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, {
-        passwordType: 'PasswordText',
-        mustUnderstand: true
-      }));
+      // Use OAuth bearer token authentication
+      client.setSecurity(new strongSoap.BearerSecurity(accessToken));
 
-      const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
+      const endpoint = `https://${context.workdayConfig.domain}/ccx/service/${context.workdayConfig.tenant}/Resource_Management/v44.1`;
       client.setEndpoint(endpoint);
 
       resolve(client);
@@ -215,7 +203,7 @@ async function buildClient(
 }
 
 export async function getSupplierInvoiceWithAttachments(
-  context: { workdaySoapConfig: WorkdaySoapConfig; s3Config: { bucketName: string } },
+  context: { workdayConfig: WorkdayConfig; s3Config: { bucketName: string } },
   workdayID: string
 ): Promise<{
   invoice: any;
@@ -223,8 +211,8 @@ export async function getSupplierInvoiceWithAttachments(
 }> {
   debug('Creating Workday SOAP client for invoice retrieval');
   debug(`WorkdayID: ${workdayID}`);
-  debug(`Domain: ${context.workdaySoapConfig.domain}`);
-  debug(`Tenant: ${context.workdaySoapConfig.tenant}`);
+  debug(`Domain: ${context.workdayConfig.domain}`);
+  debug(`Tenant: ${context.workdayConfig.tenant}`);
 
   const client = await buildClient(context);
 
@@ -338,7 +326,7 @@ export async function getSupplierInvoiceWithAttachments(
 
 // Get an invoice without attachments (just for testing/simple queries)
 export async function getSupplierInvoice(
-  context: { workdaySoapConfig: WorkdaySoapConfig },
+  context: { workdayConfig: WorkdayConfig },
   workdayID: string
 ): Promise<any> {
   debug('Fetching Supplier Invoice via SOAP (without attachments)');
@@ -386,7 +374,7 @@ export async function getSupplierInvoice(
 }
 
 export async function updateSupplierInvoiceSupplier(
-  context: { workdaySoapConfig: WorkdaySoapConfig },
+  context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   supplierID: string
 ): Promise<{ success: boolean; message?: string }> {
@@ -405,6 +393,15 @@ export async function updateSupplierInvoiceSupplier(
     }
 
     const client = await buildClient(context);
+
+    const workQueueTagID = process.env.WORKDAY_WORK_QUEUE_TAG_WID;
+    const worktagReferences = workQueueTagID
+      ? [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: workQueueTagID }] }]
+      : undefined;
+
+    if (workQueueTagID) {
+      debug(`Adding work queue tag: ${workQueueTagID}`);
+    }
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
@@ -426,7 +423,8 @@ export async function updateSupplierInvoiceSupplier(
 
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference })
+            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+            ...(worktagReferences && { Worktag_Reference: worktagReferences })
           }
         }
       };

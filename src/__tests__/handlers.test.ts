@@ -1,4 +1,4 @@
-import { withQueryHandler, withProcessorHandler, withHandler } from '../lib/handlers.js';
+import { withHandler, withProcessorHandler, withQueryHandler } from '../lib/handlers.js';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -23,12 +23,6 @@ jest.mock('../lib/workday.js', () => ({
     clientId: 'test-client-id',
     clientSecret: 'test-client-secret',
     refreshToken: 'test-refresh-token'
-  }),
-  getWorkdaySoapConfig: jest.fn().mockReturnValue({
-    domain: 'test.workday.com',
-    tenant: 'test-tenant',
-    username: 'test-user',
-    password: 'test-password'
   }),
   executeWorkdayQuery: jest.fn().mockResolvedValue({
     total: 2,
@@ -69,7 +63,7 @@ describe('handlers', () => {
     it('should create a query handler that invokes processor when pageSize is null', async () => {
       const query = 'SELECT * FROM test';
       const processorFunctionName = 'TestProcessor';
-      
+
       const queryHandler = withQueryHandler(query)({
         processorFunctionName,
         pageSize: null
@@ -92,7 +86,7 @@ describe('handlers', () => {
       const query = 'SELECT * FROM test';
       const processorFunctionName = 'TestProcessor';
       const pageSize = 1;
-      
+
       const queryHandler = withQueryHandler(query)({
         processorFunctionName,
         pageSize
@@ -114,7 +108,7 @@ describe('handlers', () => {
 
       const query = 'SELECT * FROM test';
       const processorFunctionName = 'TestProcessor';
-      
+
       const queryHandler = withQueryHandler(query)({
         processorFunctionName,
         pageSize: 1
@@ -141,7 +135,6 @@ describe('handlers', () => {
       expect(mockProcessAction).toHaveBeenCalledWith(
         expect.objectContaining({
           workdayConfig: expect.any(Object),
-          workdaySoapConfig: expect.any(Object),
           s3Config: expect.any(Object),
           dbConnection: expect.any(Object)
         }),
@@ -163,7 +156,6 @@ describe('handlers', () => {
       expect(mockProcessAction).toHaveBeenCalledWith(
         expect.objectContaining({
           workdayConfig: expect.any(Object),
-          workdaySoapConfig: expect.any(Object),
           s3Config: expect.any(Object),
           dbConnection: expect.any(Object)
         }),
@@ -194,14 +186,13 @@ describe('handlers', () => {
     it('should provide context to handler function', async () => {
       const mockHandlerFunction = jest.fn().mockResolvedValue(undefined);
       const handler = withHandler(mockHandlerFunction);
-      
+
       const event = { test: 'data' };
       await handler(event);
-      
+
       expect(mockHandlerFunction).toHaveBeenCalledWith(
         expect.objectContaining({
           workdayConfig: expect.any(Object),
-          workdaySoapConfig: expect.any(Object),
           s3Config: expect.any(Object),
           dbConnection: expect.any(Object)
         }),
@@ -212,13 +203,12 @@ describe('handlers', () => {
     it('should handle empty event', async () => {
       const mockHandlerFunction = jest.fn().mockResolvedValue(undefined);
       const handler = withHandler(mockHandlerFunction);
-      
+
       await handler();
-      
+
       expect(mockHandlerFunction).toHaveBeenCalledWith(
         expect.objectContaining({
           workdayConfig: expect.any(Object),
-          workdaySoapConfig: expect.any(Object),
           s3Config: expect.any(Object),
           dbConnection: expect.any(Object)
         }),

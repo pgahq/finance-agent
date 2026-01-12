@@ -10,8 +10,9 @@ I created this just to be able to run some specific SOAP actions locally without
    ```bash
    WORKDAY_DOMAIN=your-domain.workday.com
    WORKDAY_TENANT=your-tenant-name
-   WORKDAY_USER=your-integration-username
-   WORKDAY_PASSWORD=your-integration-password
+   WORKDAY_CLIENT_ID=your-oauth-client-id
+   WORKDAY_CLIENT_SECRET=your-oauth-client-secret
+   WORKDAY_REFRESH_TOKEN=your-oauth-refresh-token
    ```
 
 2. Make sure the project is built (so the WSDL file is in the dist folder):
@@ -46,20 +47,22 @@ npx tsx src/update-invoice-supplier.ts <invoiceWorkdayID> <supplierWorkdayID>
 ### Get Supplier Invoice Script
 
 1. Loads configuration from your `.env` file
-2. Creates a Workday SOAP client using the `strong-soap` library
-3. Authenticates using WS-Security with username/password
-4. Sends a `Get_Supplier_Invoices` request for the specified Workday ID
-5. Returns the invoice data **without** fetching or processing attachments
-6. Displays the invoice data in JSON format
+2. Generates an OAuth access token using your client credentials and refresh token
+3. Creates a Workday SOAP client using the `strong-soap` library
+4. Authenticates using OAuth 2.0 bearer token
+5. Sends a `Get_Supplier_Invoices` request for the specified Workday ID
+6. Returns the invoice data **without** fetching or processing attachments
+7. Displays the invoice data in JSON format
 
 ### Update Invoice Supplier Script
 
 1. Loads configuration from your `.env` file
-2. Creates a Workday SOAP client using the `strong-soap` library
-3. Authenticates using WS-Security with username/password
-4. Sends a `Submit_Supplier_Invoice` request with the new supplier reference
-5. Updates the invoice's supplier field in Workday
-6. Returns success confirmation
+2. Generates an OAuth access token using your client credentials and refresh token
+3. Creates a Workday SOAP client using the `strong-soap` library
+4. Authenticates using OAuth 2.0 bearer token
+5. Sends a `Submit_Supplier_Invoice` request with the new supplier reference
+6. Updates the invoice's supplier field in Workday
+7. Returns success confirmation
 
 ## Expected Output
 
@@ -113,9 +116,10 @@ Result: Successfully updated invoice 79dde6884d3e90d6f3036e70178f2a22 with suppl
 
 ### Authentication Errors
 
-- Verify your `WORKDAY_USER` and `WORKDAY_PASSWORD` in `.env`
-- Ensure the user has proper permissions for Resource Management API
-- For the update script, ensure the user has write permissions to submit supplier invoices
+- Verify your `WORKDAY_CLIENT_ID`, `WORKDAY_CLIENT_SECRET`, and `WORKDAY_REFRESH_TOKEN` in `.env`
+- Ensure your OAuth client has proper permissions for Resource Management API
+- For the update script, ensure your OAuth client has write permissions to submit supplier invoices
+- If you get token errors, your refresh token may have expired - generate a new one in Workday
 
 ### WSDL Not Found
 
