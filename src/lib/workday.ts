@@ -244,13 +244,18 @@ export async function getSupplierInvoiceWithAttachments(
   });
 
   // Extract invoice data
-  const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
+  const supplierInvoiceArray = soapResponse?.Response_Data?.Supplier_Invoice;
 
-  if (!supplierInvoice) {
+  if (!supplierInvoiceArray || !Array.isArray(supplierInvoiceArray) || supplierInvoiceArray.length === 0) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
   }
 
-  const invoice = supplierInvoice?.Supplier_Invoice_Data || {};
+  const supplierInvoice = supplierInvoiceArray[0];
+
+  const invoiceDataArray = supplierInvoice?.Supplier_Invoice_Data;
+  const invoice = (Array.isArray(invoiceDataArray) && invoiceDataArray.length > 0)
+    ? invoiceDataArray[0]
+    : {};
 
   debug('Invoice data from SOAP', invoice);
 
