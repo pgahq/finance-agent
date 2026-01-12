@@ -394,6 +394,15 @@ export async function updateSupplierInvoiceSupplier(
 
     const client = await buildClient(context);
 
+    const workQueueTagID = process.env.WORKDAY_WORK_QUEUE_TAG_WID;
+    const worktagReferences = workQueueTagID
+      ? [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: workQueueTagID }] }]
+      : undefined;
+
+    if (workQueueTagID) {
+      debug(`Adding work queue tag: ${workQueueTagID}`);
+    }
+
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
         Submit_Supplier_Invoice_Request: {
@@ -414,7 +423,8 @@ export async function updateSupplierInvoiceSupplier(
 
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference })
+            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+            ...(worktagReferences && { Worktag_Reference: worktagReferences })
           }
         }
       };
