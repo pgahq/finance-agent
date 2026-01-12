@@ -1,10 +1,11 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import type { 
-  WorkdaySoapConfig, 
-  SupplierInvoiceSoapResponse,
+import { notifyResult } from './slack.js';
+import type {
+  DownloadedAttachment,
   PresignedAttachment,
-  DownloadedAttachment
+  SupplierInvoiceSoapResponse,
+  WorkdaySoapConfig
 } from './types.js';
 
 // Import strong-soap for SOAP client using dynamic import
@@ -53,9 +54,9 @@ const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
   params.append('refresh_token', config.refreshToken);
 
   const tokenUrl = `https://${config.domain}/ccx/oauth2/${config.tenant}/token`;
-  
+
   debug('Requesting access token using refresh token grant');
-  
+
   const response = await fetch(tokenUrl, {
     method: 'POST',
     headers,
@@ -69,7 +70,7 @@ const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
 
   const tokenResponse = await response.json() as { access_token?: string };
   const accessToken = tokenResponse.access_token;
-  
+
   if (!accessToken) {
     throw new Error('Unable to generate bearer token!');
   }
@@ -116,7 +117,7 @@ async function fetchRemainingPages(
 ): Promise<unknown[]> {
   const maxLimit = 10000;
   const remainingCount = totalCount - initialData.length;
-  
+
   if (remainingCount <= 0) {
     return [];
   }
@@ -128,13 +129,13 @@ async function fetchRemainingPages(
   for (let page = 0; page < additionalPages; page++) {
     const offset = maxLimit + (page * maxLimit);
     const limit = Math.min(maxLimit, totalCount - offset);
-    
+
     const pageRequest = fetchWorkdayPage(config, accessToken, wqlQuery, limit, offset);
     pageRequests.push(pageRequest);
   }
 
   const pageResults = await Promise.all(pageRequests);
-  
+
   // Combine all data from additional pages
   const additionalData: unknown[] = [];
   for (const pageResult of pageResults) {
@@ -159,7 +160,7 @@ export async function executeWorkdayQuery(
   const initialResult = await fetchWorkdayPage(config, accessToken, wqlQuery, 10000, 0);
   const totalCount = initialResult.total || 0;
   const initialData = initialResult.data || [];
-  
+
   debug(`Total records available: ${totalCount}, got ${initialData.length} in initial request`);
 
   // If we got all records in the initial request, return it
@@ -169,10 +170,10 @@ export async function executeWorkdayQuery(
 
   // Fetch remaining pages in parallel
   const additionalData = await fetchRemainingPages(config, accessToken, wqlQuery, totalCount, initialData);
-  
+
   // Combine all data
   const allData = [...initialData, ...additionalData];
-  
+
   debug(`Successfully fetched ${allData.length} records total`);
 
   return {
@@ -181,7 +182,38 @@ export async function executeWorkdayQuery(
   };
 }
 
-// SOAP API Functions
+async function buildClient(
+  context: { workdaySoapConfig: WorkdaySoapConfig }
+): Promise<any> {
+  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
+  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
+
+  if (!context.workdaySoapConfig.password) {
+    throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
+  }
+
+  const strongSoap = await getStrongSoap();
+
+  return new Promise((resolve, reject) => {
+    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+      if (err) {
+        debug('Failed to create SOAP client:', err);
+        return reject(err);
+      }
+
+      client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, {
+        passwordType: 'PasswordText',
+        mustUnderstand: true
+      }));
+
+      const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
+      client.setEndpoint(endpoint);
+
+      resolve(client);
+    });
+  });
+}
+
 export async function getSupplierInvoiceWithAttachments(
   context: { workdaySoapConfig: WorkdaySoapConfig; s3Config: { bucketName: string } },
   workdayID: string
@@ -189,86 +221,58 @@ export async function getSupplierInvoiceWithAttachments(
   invoice: any;
   presignedAttachments: PresignedAttachment[];
 }> {
-  const username = `${context.workdaySoapConfig.username}@${context.workdaySoapConfig.tenant}`;
-  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
-
   debug('Creating Workday SOAP client for invoice retrieval');
-  debug(`WSDL path: ${wsdlPath}`);
   debug(`WorkdayID: ${workdayID}`);
-  debug(`Username: ${username}`);
-  debug(`Password length: ${context.workdaySoapConfig.password?.length || 0}`);
   debug(`Domain: ${context.workdaySoapConfig.domain}`);
   debug(`Tenant: ${context.workdaySoapConfig.tenant}`);
 
-  // Validate required SOAP configuration
-  if (!context.workdaySoapConfig.password) {
-    throw new Error('Workday SOAP password is not configured. Please check WORKDAY_PASSWORD environment variable.');
-  }
+  const client = await buildClient(context);
 
-  // Get the strong-soap module
-  const strongSoap = await getStrongSoap();
-  
-  // First, get the SOAP response
   const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
-    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+    const request = {
+      Get_Supplier_Invoices_Request: {
+        Request_References: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
+          }
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: true
+        }
+      }
+    };
+
+    debug('Requesting Supplier Invoice with attachments from Workday');
+    client.Get_Supplier_Invoices(request, (err: any, result: any) => {
       if (err) {
-        debug('Failed to create SOAP client:', err);
+        debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
         return reject(err);
       }
-
-      client.setSecurity(new strongSoap.WSSecurity(username, context.workdaySoapConfig.password, { 
-        passwordType: 'PasswordText', 
-        mustUnderstand: true 
-      }));
-
-      const endpoint = `https://${context.workdaySoapConfig.domain}/ccx/service/${context.workdaySoapConfig.tenant}/Resource_Management/v44.1`;
-      client.setEndpoint(endpoint);
-
-      const request = {
-        Get_Supplier_Invoices_Request: {
-          Request_References: {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
-            }
-          },
-          Response_Group: {
-            Include_Reference: true,
-            Include_Attachment_Data: true
-          }
-        }
-      };
-
-      debug('Requesting Supplier Invoice with attachments from Workday');
-      client.Get_Supplier_Invoices(request, (err: any, result: any) => {
-        if (err) {
-          debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP response received');
-        resolve(result);
-      });
+      debug('Workday SOAP response received');
+      resolve(result);
     });
   });
 
   // Extract invoice data
   const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
-  
+
   if (!supplierInvoice) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
   }
-  
+
   const invoice = supplierInvoice?.Supplier_Invoice_Data || {};
-  
+
   debug('Invoice data from SOAP', invoice);
 
   // Process attachments: convert PDFs to images and upload to S3
   const processedAttachments: PresignedAttachment[] = [];
   const attachmentData = invoice.Attachment_Data;
-  
+
   if (attachmentData) {
     // Handle both single attachment object and array of attachments
     const attachments = Array.isArray(attachmentData) ? attachmentData : [attachmentData];
-    
+
     for (let i = 0; i < attachments.length; i++) {
       const attachment = attachments[i];
       try {
@@ -276,12 +280,12 @@ export async function getSupplierInvoiceWithAttachments(
         const buffer = Buffer.from(attachment.File_Content || '', 'base64');
         const contentType = attachment.$attributes?.Content_Type || 'application/octet-stream';
         const fileName = attachment.$attributes?.Filename || `attachment-${i}`;
-        
+
         // Check if it's a PDF and convert to images
         if (contentType === 'application/pdf') {
           const { processPdfAttachment } = await import('./pdf.js');
           const processedPdf = await processPdfAttachment(buffer, fileName, workdayID, i, context.s3Config);
-          
+
           // Add all converted images to processed attachments
           processedAttachments.push(...processedPdf.images);
         } else {
@@ -296,7 +300,7 @@ export async function getSupplierInvoiceWithAttachments(
 
           const { uploadAttachmentToS3 } = await import('./s3.js');
           const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
-          
+
           processedAttachments.push({
             id: presignedAttachment.id,
             fileName: fileName,
@@ -307,20 +311,20 @@ export async function getSupplierInvoiceWithAttachments(
             buffer: buffer
           });
         }
-        
+
       } catch (attachmentError) {
         debug(`Error processing attachment ${attachment.$attributes?.Filename}:`, attachmentError);
         // Continue with other attachments even if one fails
       }
     }
-    
+
     // Consolidated attachment processing log with presigned URLs
     const attachmentSummary = processedAttachments.map(att => ({
       fileName: att.fileName,
       contentType: att.contentType,
       presignedUrl: att.presignedUrl
     }));
-    
+
     debug(`Processed ${processedAttachments.length} attachments:`, attachmentSummary);
   } else {
     debug('No attachments found for this invoice');
@@ -330,6 +334,152 @@ export async function getSupplierInvoiceWithAttachments(
     invoice,
     presignedAttachments: processedAttachments
   };
+}
+
+// Get an invoice without attachments (just for testing/simple queries)
+export async function getSupplierInvoice(
+  context: { workdaySoapConfig: WorkdaySoapConfig },
+  workdayID: string
+): Promise<any> {
+  debug('Fetching Supplier Invoice via SOAP (without attachments)');
+  debug(`WorkdayID: ${workdayID}`);
+
+  const client = await buildClient(context);
+
+  const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
+    const request = {
+      Get_Supplier_Invoices_Request: {
+        Request_References: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: workdayID }]
+          }
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: false
+        }
+      }
+    };
+
+    debug('Requesting Supplier Invoice from Workday');
+    client.Get_Supplier_Invoices(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Supplier_Invoices):', err);
+        return reject(err);
+      }
+      debug('Workday SOAP response received');
+      resolve(result);
+    });
+  });
+
+  const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
+
+  if (!supplierInvoice) {
+    throw new Error(`No invoice found for workdayID: ${workdayID}`);
+  }
+
+  const invoice = supplierInvoice?.Supplier_Invoice_Data || {};
+
+  debug('Invoice data from SOAP', invoice);
+
+  return invoice;
+}
+
+export async function updateSupplierInvoiceSupplier(
+  context: { workdaySoapConfig: WorkdaySoapConfig },
+  invoiceWorkdayID: string,
+  supplierID: string
+): Promise<{ success: boolean; message?: string }> {
+  const startTime = Date.now();
+
+  debug('Updating Supplier Invoice supplier via SOAP');
+  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
+  debug(`Supplier ID: ${supplierID}`);
+
+  try {
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+
+    if (!currentInvoice) {
+      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
+    }
+
+    const client = await buildClient(context);
+
+    const updateResponse = await new Promise<any>((resolve, reject) => {
+      const request = {
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+          },
+          Supplier_Invoice_Data: {
+            Company_Reference: currentInvoice.Company_Reference,
+            Currency_Reference: currentInvoice.Currency_Reference,
+            Invoice_Date: currentInvoice.Invoice_Date,
+
+            Supplier_Reference: {
+              ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }]
+            },
+
+            Invoice_Number: currentInvoice.Invoice_Number,
+            Control_Amount_Total: currentInvoice.Control_Amount_Total,
+
+            ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+            ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference })
+          }
+        }
+      };
+
+      debug('Submitting updated Supplier Invoice to Workday');
+      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
+        if (err) {
+          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+          return reject(err);
+        }
+        debug('Workday SOAP update response received');
+        resolve(result);
+      });
+    });
+
+    debug('Supplier invoice updated successfully', updateResponse);
+
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'update_supplier_invoice',
+      'success',
+      processingTime,
+      {
+        invoiceWorkdayID,
+        supplierID,
+        invoiceNumber: currentInvoice.Invoice_Number
+      },
+      undefined,
+      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
+    );
+
+    return {
+      success: true,
+      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
+    };
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'update_supplier_invoice',
+      'error',
+      processingTime,
+      {
+        invoiceWorkdayID,
+        supplierID
+      },
+      error,
+      `invoice: \`${invoiceWorkdayID}\``
+    );
+
+    throw error;
+  }
 }
 
 
