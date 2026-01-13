@@ -486,4 +486,106 @@ export async function updateSupplierInvoiceSupplier(
   }
 }
 
+export async function addNoSupplierTagToInvoice(
+  context: { workdayConfig: WorkdayConfig },
+  invoiceWorkdayID: string
+): Promise<{ success: boolean; message?: string }> {
+  const startTime = Date.now();
+
+  debug('Adding no-supplier work queue tag to invoice via SOAP');
+  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
+
+  try {
+    const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
+
+    if (!noSupplierTagID) {
+      throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
+    }
+
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+
+    if (!currentInvoice) {
+      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
+    }
+
+    const client = await buildClient(context);
+
+    const worktagReferences = [
+      { ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: noSupplierTagID }] }
+    ];
+
+    debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
+
+    const updateResponse = await new Promise<any>((resolve, reject) => {
+      const request = {
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+          },
+          Supplier_Invoice_Data: {
+            Company_Reference: currentInvoice.Company_Reference,
+            Currency_Reference: currentInvoice.Currency_Reference,
+            Invoice_Date: currentInvoice.Invoice_Date,
+            Invoice_Number: currentInvoice.Invoice_Number,
+            Control_Amount_Total: currentInvoice.Control_Amount_Total,
+
+            ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+            ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+            Worktag_Reference: worktagReferences
+          }
+        }
+      };
+
+      debug('Submitting updated Supplier Invoice to Workday with no-supplier tag');
+      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
+        if (err) {
+          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+          return reject(err);
+        }
+        debug('Workday SOAP update response received');
+        resolve(result);
+      });
+    });
+
+    debug('No-supplier tag added successfully', updateResponse);
+
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'add_no_supplier_tag',
+      'success',
+      processingTime,
+      {
+        invoiceWorkdayID,
+        invoiceNumber: currentInvoice.Invoice_Number,
+        tagAdded: 'no-supplier'
+      },
+      undefined,
+      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
+    );
+
+    return {
+      success: true,
+      message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
+    };
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'add_no_supplier_tag',
+      'error',
+      processingTime,
+      {
+        invoiceWorkdayID
+      },
+      error,
+      `invoice: \`${invoiceWorkdayID}\``
+    );
+
+    throw error;
+  }
+}
+
 

@@ -3,7 +3,7 @@ import { getAiResponse } from './lib/ai.js';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment } from './lib/types.js';
-import { getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier } from './lib/workday.js';
+import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier } from './lib/workday.js';
 import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
 
 const QUERY = `
@@ -79,9 +79,8 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           break;
 
         case 'not_found':
-          debug('Supplier not found - registering new supplier');
-          // TODO: Register new supplier with extracted information
-          // await registerNewSupplier(config, supplierResult.extractedSupplierInformation);
+          debug('Supplier not found - adding no-supplier work queue tag');
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID);
           break;
 
         case 'ambiguous':

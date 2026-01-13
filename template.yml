@@ -26,6 +26,7 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: ssm:/finance-agent/workday-agent-modified-tag-wid
+        WORKDAY_AGENT_NO_SUPPLIER_TAG_WID: ssm:/finance-agent/workday-agent-no-supplier-tag-wid
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
