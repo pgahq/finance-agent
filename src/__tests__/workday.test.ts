@@ -707,7 +707,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      process.env.WORKDAY_WORK_QUEUE_TAG_WID = 'test-work-queue-tag-wid';
+      process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'test-work-queue-tag-wid';
 
       await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 

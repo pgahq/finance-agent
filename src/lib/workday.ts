@@ -400,13 +400,13 @@ export async function updateSupplierInvoiceSupplier(
 
     const client = await buildClient(context);
 
-    const workQueueTagID = process.env.WORKDAY_WORK_QUEUE_TAG_WID;
-    const worktagReferences = workQueueTagID
-      ? [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: workQueueTagID }] }]
+    const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+    const worktagReferences = agentModifiedTagID
+      ? [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: agentModifiedTagID }] }]
       : undefined;
 
-    if (workQueueTagID) {
-      debug(`Adding work queue tag: ${workQueueTagID}`);
+    if (agentModifiedTagID) {
+      debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
     }
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
