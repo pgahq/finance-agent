@@ -367,21 +367,25 @@ describe('Workday utilities', () => {
         callback(null, mockClient);
       });
 
-      // Mock response with invoice and attachment
+      // Mock response with invoice and attachment (OAuth structure with arrays)
       const mockResponse = {
         Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_ID: 'INV-001',
-              Attachment_Data: {
-                $attributes: {
-                  Filename: 'test.pdf',
-                  Content_Type: 'application/pdf'
-                },
-                File_Content: 'JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9Db2x'
-              }
+          Supplier_Invoice: [
+            {
+              Supplier_Invoice_Data: [
+                {
+                  Invoice_ID: 'INV-001',
+                  Attachment_Data: {
+                    $attributes: {
+                      Filename: 'test.pdf',
+                      Content_Type: 'application/pdf'
+                    },
+                    File_Content: 'JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9Db2x'
+                  }
+                }
+              ]
             }
-          }
+          ]
         }
       };
 
@@ -416,14 +420,18 @@ describe('Workday utilities', () => {
         callback(null, mockClient);
       });
 
-      // Mock response with invoice but no attachments
+      // Mock response with invoice but no attachments (OAuth structure with arrays)
       const mockResponse = {
         Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_ID: 'INV-001'
+          Supplier_Invoice: [
+            {
+              Supplier_Invoice_Data: [
+                {
+                  Invoice_ID: 'INV-001'
+                }
+              ]
             }
-          }
+          ]
         }
       };
 
