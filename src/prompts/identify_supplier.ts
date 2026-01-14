@@ -14,9 +14,9 @@ export const SupplierIdentificationSchema = z.object({
     reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
   }).nullable().describe('The supplier found in Workday that best matches the invoice. Only populated when status is "found" or "ambiguous"'),
   
-  // Extracted supplier information from the invoice (always populated)
+  // Extracted supplier information from the invoice (populated when data is available)
   extractedSupplierInformation: z.object({
-    supplierName: z.string().describe('The supplier name as it appears on the invoice'),
+    supplierName: z.string().optional().describe('The supplier name as it appears on the invoice'),
     address: z.string().optional().describe('The supplier address from the invoice'),
     phone: z.string().optional().describe('The supplier phone number from the invoice'),
     email: z.string().optional().describe('The supplier email address from the invoice'),

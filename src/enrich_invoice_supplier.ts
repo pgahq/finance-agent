@@ -190,16 +190,7 @@ async function identifySupplier(
     return {
       status: 'error' as const,
       resolvedSupplier: null,
-      extractedSupplierInformation: {
-        supplierName: 'Unknown',
-        address: undefined,
-        phone: undefined,
-        email: undefined,
-        taxId: undefined,
-        website: undefined,
-        industry: undefined,
-        contactPerson: undefined
-      },
+      extractedSupplierInformation: {},
       potentialDuplicateSuppliers: null,
       recommendation: {
         action: 'manual_review' as const,
