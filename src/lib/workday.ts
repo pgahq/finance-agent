@@ -402,12 +402,11 @@ export async function updateSupplierInvoiceSupplier(
 
     const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
 
-    const existingTags = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference || [];
     const workQueueTags = agentModifiedTagID
-      ? [...(Array.isArray(existingTags) ? existingTags : [existingTags]), {
+      ? [{
         ID: [{ $attributes: { type: 'WID' }, $value: agentModifiedTagID }]
       }]
-      : existingTags;
+      : undefined;
 
     if (agentModifiedTagID) {
       debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
@@ -435,9 +434,11 @@ export async function updateSupplierInvoiceSupplier(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            Work_Queue_Information_Data: {
-              Work_Queue_Tags_Reference: workQueueTags
-            }
+            ...(workQueueTags && {
+              Work_Queue_Information_Data: {
+                Work_Queue_Tags_Reference: workQueueTags
+              }
+            })
           }
         }
       };
@@ -518,8 +519,7 @@ export async function addNoSupplierTagToInvoice(
 
     const client = await buildClient(context);
 
-    const existingTags = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference || [];
-    const workQueueTags = [...(Array.isArray(existingTags) ? existingTags : [existingTags]), {
+    const workQueueTags = [{
       ID: [{ $attributes: { type: 'WID' }, $value: noSupplierTagID }]
     }];
 
@@ -542,9 +542,11 @@ export async function addNoSupplierTagToInvoice(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            Work_Queue_Information_Data: {
-              Work_Queue_Tags_Reference: workQueueTags
-            }
+            ...(workQueueTags && {
+              Work_Queue_Information_Data: {
+                Work_Queue_Tags_Reference: workQueueTags
+              }
+            })
           }
         }
       };
