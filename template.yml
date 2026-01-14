@@ -20,8 +20,6 @@ Globals:
         LOG_LEVEL: !Ref LogLevel
         WORKDAY_DOMAIN: ssm:/finance-agent/workday-domain
         WORKDAY_TENANT: ssm:/finance-agent/workday-tenant
-        WORKDAY_USER: ssm:/finance-agent/workday-user
-        WORKDAY_PASSWORD: ssm:/finance-agent/workday-password
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
