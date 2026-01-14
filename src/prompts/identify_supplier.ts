@@ -59,10 +59,23 @@ The invoice may include attachment files (PDFs, images, etc.) with presigned URL
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
 
+## Confidence Score Guidelines:
+
+Calculate confidence scores based on the number and quality of matching fields:
+
+- **0.95-1.0**: Exact match on company name + exact match on 2+ contact fields (address, phone, email)
+- **0.85-0.94**: Exact match on company name + exact match on 1 contact field (address, phone, or email)
+- **0.75-0.84**: Very similar company name (minor variations) + at least 1 matching contact field
+- **0.65-0.74**: Similar company name + partial address/location match
+- **0.50-0.64**: Company name similarity only, no other matching fields
+- **Below 0.50**: Weak or speculative match
+
+**Key principle**: Multiple matching data points should yield HIGH confidence. If you match on company name + phone + address, confidence should be 0.9+, not 0.7.
+
 ## Decision Logic:
 
 - **status: "found"** - When you find exactly one high-confidence match (confidence > 0.8)
-- **status: "ambiguous"** - When you find multiple potential matches or low-confidence matches
+- **status: "ambiguous"** - When you find multiple potential matches that are reasonably close in confidence (e.g., two suppliers both scoring 0.75+)
 - **status: "not_found"** - When no suppliers match the invoice information
 - **status: "error"** - When there's an error in processing
 
@@ -70,19 +83,20 @@ The invoice may include attachment files (PDFs, images, etc.) with presigned URL
 
 Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT similarity criteria:
 
-**High Priority Matches (confidence > 0.7):**
-- Exact or very similar company name (e.g., "ABC Corp" vs "ABC Corporation")
-- Same address (exact match or same street/zip)
-- Same phone number or email domain
+**Strong Potential Duplicates (confidence 0.8-1.0):**
+- Exact or very similar company name (e.g., "ABC Corp" vs "ABC Corporation") + matching contact field(s)
+- Same phone number or email + similar company name
+- Same exact address + similar company name
 
-**Medium Priority Matches (confidence 0.5-0.7):**
-- Similar company name with minor variations (e.g., "ABC Inc" vs "ABC LLC")
-- Same city/state with similar business type
+**Moderate Potential Duplicates (confidence 0.65-0.79):**
+- Similar company name with minor variations (e.g., "ABC Inc" vs "ABC LLC") + same city/state
+- Similar name + partial address match (same street or zip code)
 
 **DO NOT include matches based solely on:**
 - Same business type/industry without name similarity
 - Same state without other matching criteria
 - Generic business categories (e.g., "golf club" vs "country club" without name similarity)
+- Low confidence matches (< 0.65) - these are not worth flagging as potential duplicates
 
 ## Output Examples:
 
