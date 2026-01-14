@@ -401,9 +401,13 @@ export async function updateSupplierInvoiceSupplier(
     const client = await buildClient(context);
 
     const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-    const worktagReferences = agentModifiedTagID
-      ? [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: agentModifiedTagID }] }]
-      : undefined;
+
+    const existingTags = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference || [];
+    const workQueueTags = agentModifiedTagID
+      ? [...(Array.isArray(existingTags) ? existingTags : [existingTags]), {
+        ID: [{ $attributes: { type: 'WID' }, $value: agentModifiedTagID }]
+      }]
+      : existingTags;
 
     if (agentModifiedTagID) {
       debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
@@ -430,7 +434,10 @@ export async function updateSupplierInvoiceSupplier(
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
-            ...(worktagReferences && { Worktag_Reference: worktagReferences })
+
+            Work_Queue_Information_Data: {
+              Work_Queue_Tags_Reference: workQueueTags
+            }
           }
         }
       };
@@ -511,9 +518,10 @@ export async function addNoSupplierTagToInvoice(
 
     const client = await buildClient(context);
 
-    const worktagReferences = [
-      { ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: noSupplierTagID }] }
-    ];
+    const existingTags = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference || [];
+    const workQueueTags = [...(Array.isArray(existingTags) ? existingTags : [existingTags]), {
+      ID: [{ $attributes: { type: 'WID' }, $value: noSupplierTagID }]
+    }];
 
     debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
 
@@ -533,7 +541,10 @@ export async function addNoSupplierTagToInvoice(
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
-            Worktag_Reference: worktagReferences
+
+            Work_Queue_Information_Data: {
+              Work_Queue_Tags_Reference: workQueueTags
+            }
           }
         }
       };

@@ -715,16 +715,18 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
             Supplier_Invoice_Data: expect.objectContaining({
-              Worktag_Reference: [
-                {
-                  ID: [
-                    {
-                      $attributes: { type: 'Work_Queue_Tag_ID' },
-                      $value: 'test-work-queue-tag-wid'
-                    }
-                  ]
-                }
-              ]
+              Work_Queue_Information_Data: expect.objectContaining({
+                Work_Queue_Tags_Reference: expect.arrayContaining([
+                  expect.objectContaining({
+                    ID: expect.arrayContaining([
+                      expect.objectContaining({
+                        $attributes: { type: 'WID' },
+                        $value: 'test-work-queue-tag-wid'
+                      })
+                    ])
+                  })
+                ])
+              })
             })
           })
         }),
@@ -804,16 +806,18 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
             Supplier_Invoice_Data: expect.objectContaining({
-              Worktag_Reference: [
-                {
-                  ID: [
-                    {
-                      $attributes: { type: 'Work_Queue_Tag_ID' },
-                      $value: 'test-no-supplier-tag-wid'
-                    }
-                  ]
-                }
-              ]
+              Work_Queue_Information_Data: expect.objectContaining({
+                Work_Queue_Tags_Reference: expect.arrayContaining([
+                  expect.objectContaining({
+                    ID: expect.arrayContaining([
+                      expect.objectContaining({
+                        $attributes: { type: 'WID' },
+                        $value: 'test-no-supplier-tag-wid'
+                      })
+                    ])
+                  })
+                ])
+              })
             })
           })
         }),
