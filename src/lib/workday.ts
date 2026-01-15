@@ -442,9 +442,10 @@ export async function updateSupplierInvoiceSupplier(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            ...(workQueueTags && {
+            ...((currentInvoice.Work_Queue_Information_Data || workQueueTags) && {
               Work_Queue_Information_Data: {
-                Work_Queue_Tags_Reference: workQueueTags
+                ...(currentInvoice.Work_Queue_Information_Data || {}),
+                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags })
               }
             })
           }
