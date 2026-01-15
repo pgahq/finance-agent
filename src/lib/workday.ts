@@ -398,6 +398,14 @@ export async function updateSupplierInvoiceSupplier(
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
     }
 
+    debug('Current invoice data retrieved - has required fields:', {
+      hasCompanyReference: !!currentInvoice.Company_Reference,
+      hasCurrencyReference: !!currentInvoice.Currency_Reference,
+      hasInvoiceDate: !!currentInvoice.Invoice_Date,
+      hasInvoiceNumber: !!currentInvoice.Invoice_Number,
+      hasControlAmount: !!currentInvoice.Control_Amount_Total
+    });
+
     const client = await buildClient(context);
 
     const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
