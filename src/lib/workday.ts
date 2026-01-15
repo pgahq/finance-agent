@@ -514,9 +514,14 @@ export async function addNoSupplierTagToInvoice(
 
   try {
     const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
+    const defaultSupplierID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
 
     if (!noSupplierTagID) {
       throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
+    }
+
+    if (!defaultSupplierID) {
+      throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
     }
 
     debug('Fetching current invoice data');
@@ -533,6 +538,7 @@ export async function addNoSupplierTagToInvoice(
     }];
 
     debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
+    debug(`Using default supplier ID: ${defaultSupplierID}`);
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
@@ -544,6 +550,11 @@ export async function addNoSupplierTagToInvoice(
             Company_Reference: currentInvoice.Company_Reference,
             Currency_Reference: currentInvoice.Currency_Reference,
             Invoice_Date: currentInvoice.Invoice_Date,
+
+            Supplier_Reference: {
+              ID: [{ $attributes: { type: 'Supplier_ID' }, $value: defaultSupplierID }]
+            },
+
             Invoice_Number: currentInvoice.Invoice_Number,
             Control_Amount_Total: currentInvoice.Control_Amount_Total,
 
@@ -551,9 +562,10 @@ export async function addNoSupplierTagToInvoice(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            ...(workQueueTags && {
+            ...((currentInvoice.Work_Queue_Information_Data || workQueueTags) && {
               Work_Queue_Information_Data: {
-                Work_Queue_Tags_Reference: workQueueTags
+                ...(currentInvoice.Work_Queue_Information_Data || {}),
+                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags })
               }
             })
           }

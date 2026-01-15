@@ -797,6 +797,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
+      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
 
       const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
       const result = await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID);
@@ -806,6 +807,14 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
             Supplier_Invoice_Data: expect.objectContaining({
+              Supplier_Reference: expect.objectContaining({
+                ID: expect.arrayContaining([
+                  expect.objectContaining({
+                    $attributes: { type: 'Supplier_ID' },
+                    $value: 'S-0001'
+                  })
+                ])
+              }),
               Work_Queue_Information_Data: expect.objectContaining({
                 Work_Queue_Tags_Reference: expect.arrayContaining([
                   expect.objectContaining({
@@ -842,6 +851,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
+      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
 
       const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
 
