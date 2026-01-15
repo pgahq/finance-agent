@@ -75,7 +75,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       // Handle different scenarios based on the new schema
       switch (supplierResult.status) {
         case 'found':
-          await handleFoundSupplier(context, detailedInvoice, supplierResult);
+          await handleFoundSupplier(context, invoiceData.workdayID, supplierResult);
           break;
 
         case 'not_found':
@@ -120,7 +120,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
 async function handleFoundSupplier(
   context: any,
-  detailedInvoice: any,
+  invoiceWorkdayID: string,
   supplierResult: SupplierIdentificationResult
 ): Promise<void> {
   debug('Supplier found in Workday - updating invoice');
@@ -129,7 +129,7 @@ async function handleFoundSupplier(
   if (foundSupplierID) {
     await updateSupplierInvoiceSupplier(
       context,
-      detailedInvoice.id,
+      invoiceWorkdayID,
       foundSupplierID
     );
   } else {
