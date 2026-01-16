@@ -572,10 +572,14 @@ export async function addNoSupplierTagToInvoice(
         }
       };
 
+      debug('SOAP Request object for no-supplier tag:', JSON.stringify(request, null, 2));
       debug('Submitting updated Supplier Invoice to Workday with no-supplier tag');
       client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
         if (err) {
           debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+          if (client.lastRequest) {
+            debug('Last SOAP Request XML:', client.lastRequest);
+          }
           return reject(err);
         }
         debug('Workday SOAP update response received');
