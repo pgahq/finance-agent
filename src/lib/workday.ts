@@ -366,13 +366,21 @@ export async function getSupplierInvoice(
     });
   });
 
-  const supplierInvoice = soapResponse?.Response_Data?.Supplier_Invoice;
+  const supplierInvoiceRaw = soapResponse?.Response_Data?.Supplier_Invoice;
 
-  if (!supplierInvoice) {
+  if (!supplierInvoiceRaw) {
     throw new Error(`No invoice found for workdayID: ${workdayID}`);
   }
 
-  const invoice = supplierInvoice?.Supplier_Invoice_Data || {};
+  const supplierInvoice = Array.isArray(supplierInvoiceRaw)
+    ? supplierInvoiceRaw[0]
+    : supplierInvoiceRaw;
+
+  const invoiceDataRaw = supplierInvoice?.Supplier_Invoice_Data;
+
+  const invoice = Array.isArray(invoiceDataRaw)
+    ? (invoiceDataRaw.length > 0 ? invoiceDataRaw[0] : {})
+    : (invoiceDataRaw || {});
 
   debug('Invoice data from SOAP', invoice);
 
@@ -530,6 +538,8 @@ export async function addNoSupplierTagToInvoice(
     if (!currentInvoice) {
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
     }
+
+    debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
 
     const client = await buildClient(context);
 
