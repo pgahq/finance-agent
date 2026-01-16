@@ -16,14 +16,14 @@ export const SupplierIdentificationSchema = z.object({
   
   // Extracted supplier information from the invoice (populated when data is available)
   extractedSupplierInformation: z.object({
-    supplierName: z.string().optional().describe('The supplier name as it appears on the invoice'),
-    address: z.string().optional().describe('The supplier address from the invoice'),
-    phone: z.string().optional().describe('The supplier phone number from the invoice'),
-    email: z.string().optional().describe('The supplier email address from the invoice'),
-    taxId: z.string().optional().describe('The supplier tax ID or EIN from the invoice'),
-    website: z.string().optional().describe('The supplier website from the invoice'),
-    industry: z.string().optional().describe('The supplier industry or business type if identifiable'),
-    contactPerson: z.string().optional().describe('The contact person name if mentioned on the invoice')
+    supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
+    address: z.string().nullish().describe('The supplier address from the invoice'),
+    phone: z.string().nullish().describe('The supplier phone number from the invoice'),
+    email: z.string().nullish().describe('The supplier email address from the invoice'),
+    taxId: z.string().nullish().describe('The supplier tax ID or EIN from the invoice'),
+    website: z.string().nullish().describe('The supplier website from the invoice'),
+    industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
+    contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice')
   }).describe('All supplier information extracted from the invoice document'),
   
   // Potential duplicate suppliers (when status is 'ambiguous')
@@ -192,5 +192,6 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 - **Be conservative with confidence scores** - only use "found" status for high-confidence matches
 - **Include potential duplicates** when multiple matches exist
 - **Provide clear reasoning** for all decisions
+- **Omit fields with no data**: In the \`extractedSupplierInformation\` object, only include fields where you actually found data. Do NOT include fields with null values - simply omit them from the response
 
 Remember: The goal is to help AP staff make informed decisions about supplier identification and potential duplicate management.`;
