@@ -80,7 +80,8 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID);
+          const notFoundMemo = `AI Agent Could not find automatically add a supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundMemo);
           break;
 
         case 'ambiguous':
@@ -102,7 +103,6 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
     const processingTime = Date.now() - startTime;
     debug('Error in supplier enrichment process:', error);
 
-    // Send error notification to Slack
     await notifyResult(
       'enrich_invoice_supplier',
       'error',
@@ -127,10 +127,13 @@ async function handleFoundSupplier(
   const foundSupplierID = supplierResult.resolvedSupplier?.supplierId;
 
   if (foundSupplierID) {
+    const memo = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+
     await updateSupplierInvoiceSupplier(
       context,
       invoiceWorkdayID,
-      foundSupplierID
+      foundSupplierID,
+      memo
     );
   } else {
     debug('No valid supplier Workday ID found - cannot update invoice');
