@@ -390,7 +390,8 @@ export async function getSupplierInvoice(
 export async function updateSupplierInvoiceSupplier(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
-  supplierID: string
+  supplierID: string,
+  memo?: string
 ): Promise<{ success: boolean; message?: string }> {
   const startTime = Date.now();
 
@@ -449,6 +450,8 @@ export async function updateSupplierInvoiceSupplier(
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+
+            ...(memo && { Memo: memo }),
 
             ...(workQueueTags && {
               Work_Queue_Information_Data: {
@@ -512,7 +515,8 @@ export async function updateSupplierInvoiceSupplier(
 
 export async function addNoSupplierTagToInvoice(
   context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string
+  invoiceWorkdayID: string,
+  memo?: string
 ): Promise<{ success: boolean; message?: string }> {
   const startTime = Date.now();
 
@@ -570,6 +574,8 @@ export async function addNoSupplierTagToInvoice(
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+
+            ...(memo && { Memo: memo }),
 
             ...(workQueueTags && {
               Work_Queue_Information_Data: {
