@@ -391,7 +391,7 @@ export async function updateSupplierInvoiceSupplier(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   supplierID: string,
-  memo?: string
+  notes?: string
 ): Promise<{ success: boolean; message?: string }> {
   const startTime = Date.now();
 
@@ -451,11 +451,10 @@ export async function updateSupplierInvoiceSupplier(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            ...(memo && { Memo: memo }),
-
-            ...(workQueueTags && {
+            ...((workQueueTags || notes) && {
               Work_Queue_Information_Data: {
-                Work_Queue_Tags_Reference: workQueueTags
+                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
+                ...(notes && { Work_Queue_Notes: notes })
               }
             })
           }
@@ -516,7 +515,7 @@ export async function updateSupplierInvoiceSupplier(
 export async function addNoSupplierTagToInvoice(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
-  memo?: string
+  notes?: string
 ): Promise<{ success: boolean; message?: string }> {
   const startTime = Date.now();
 
@@ -575,11 +574,10 @@ export async function addNoSupplierTagToInvoice(
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
             ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
-            ...(memo && { Memo: memo }),
-
-            ...(workQueueTags && {
+            ...((workQueueTags || notes) && {
               Work_Queue_Information_Data: {
-                Work_Queue_Tags_Reference: workQueueTags
+                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
+                ...(notes && { Work_Queue_Notes: notes })
               }
             })
           }
