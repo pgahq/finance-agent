@@ -81,7 +81,8 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
           const notFoundNotes = `AI Agent Could not find automatically add a supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes);
+          const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           break;
 
         case 'ambiguous':
@@ -128,12 +129,14 @@ async function handleFoundSupplier(
 
   if (foundSupplierID) {
     const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+    const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
 
     await updateSupplierInvoiceSupplier(
       context,
       invoiceWorkdayID,
       foundSupplierID,
-      notes
+      notes,
+      memo
     );
   } else {
     debug('No valid supplier Workday ID found - cannot update invoice');

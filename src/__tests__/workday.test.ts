@@ -734,6 +734,103 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('should include memo when provided', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const testNotes = 'AI Agent found matching supplier';
+      const testMemo = 'Office supplies for March 2024';
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID, testNotes, testMemo);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Memo: testMemo,
+              Work_Queue_Information_Data: expect.objectContaining({
+                Work_Queue_Notes: testNotes
+              })
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it('should not include memo when not provided', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
+    });
+
   });
 
   describe('addNoSupplierTagToInvoice', () => {
@@ -857,6 +954,113 @@ describe('Workday utilities', () => {
 
       await expect(addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID))
         .rejects.toThrow('No invoice found for workdayID');
+    });
+
+    it('should include memo and notes when provided', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockInvoiceResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: 'INV-123',
+              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
+              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
+              Invoice_Date: '2025-01-01',
+              Control_Amount_Total: 1000
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockInvoiceResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
+      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
+
+      const testNotes = 'AI Agent could not find supplier';
+      const testMemo = 'Manufacturing equipment repair services';
+
+      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
+      const result = await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID, testNotes, testMemo);
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Memo: testMemo,
+              Work_Queue_Information_Data: expect.objectContaining({
+                Work_Queue_Notes: testNotes,
+                Work_Queue_Tags_Reference: expect.any(Array)
+              })
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it('should not include memo when not provided', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockInvoiceResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: 'INV-123',
+              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
+              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
+              Invoice_Date: '2025-01-01',
+              Control_Amount_Total: 1000
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockInvoiceResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
+      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
+
+      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
+      await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
     });
   });
 
