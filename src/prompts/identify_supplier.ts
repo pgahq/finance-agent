@@ -4,7 +4,7 @@ import { z } from 'zod';
 export const SupplierIdentificationSchema = z.object({
   // Overall status of the identification process
   status: z.enum(['found', 'not_found', 'ambiguous', 'error']).describe('The overall result of the supplier identification process'),
-  
+
   // The resolved supplier (if found in Workday)
   resolvedSupplier: z.object({
     workdayId: z.string().describe('The unique Workday identifier (WID) of the supplier'),
@@ -13,7 +13,7 @@ export const SupplierIdentificationSchema = z.object({
     confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
     reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
   }).nullable().describe('The supplier found in Workday that best matches the invoice. Only populated when status is "found" or "ambiguous"'),
-  
+
   // Extracted supplier information from the invoice (populated when data is available)
   extractedSupplierInformation: z.object({
     supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
@@ -23,9 +23,10 @@ export const SupplierIdentificationSchema = z.object({
     taxId: z.string().nullish().describe('The supplier tax ID or EIN from the invoice'),
     website: z.string().nullish().describe('The supplier website from the invoice'),
     industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
-    contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice')
+    contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice'),
+    memo: z.string().nullish().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
   }).describe('All supplier information extracted from the invoice document'),
-  
+
   // Potential duplicate suppliers (when status is 'ambiguous')
   potentialDuplicateSuppliers: z.array(z.object({
     workdayId: z.string().describe('The unique Workday identifier (WID) of the potential duplicate supplier'),
@@ -34,7 +35,7 @@ export const SupplierIdentificationSchema = z.object({
     confidence: z.number().min(0).max(1).describe('Confidence score for this potential match'),
     reason: z.string().describe('Explanation of why this supplier is a potential match')
   })).nullable().describe('List of potential duplicate suppliers found in Workday. Only populated when status is "ambiguous" and multiple matches exist'),
-  
+
   // What action should be taken
   recommendation: z.object({
     action: z.enum(['update_invoice', 'register_supplier', 'manual_review', 'no_action']).describe('The recommended action to take'),
@@ -54,7 +55,9 @@ The invoice may include attachment files (PDFs, images, etc.) with presigned URL
 
 ## Analysis Process:
 
-1. **Extract Information**: Always extract all available supplier information from the invoice and attachments
+1. **Extract Information**: Always extract all available supplier information from the invoice and attachments, including:
+   - Supplier contact details (name, address, phone, email)
+   - A terse 1-sentence memo summarizing what the invoice is for (e.g., "Office supplies for Q1 2024"). If no relevant information is found or if it is not clear what the invoice is for, leave the memo empty.
 2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
@@ -115,7 +118,8 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
     "supplierName": "ABC Corp",
     "address": "123 Main St, City, State",
     "phone": "555-1234",
-    "email": "billing@abc.com"
+    "email": "billing@abc.com",
+    "memo": "Office supplies and stationery for March 2024"
   },
   "potentialDuplicateSuppliers": null,
   "recommendation": {
@@ -139,7 +143,8 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
   "extractedSupplierInformation": {
     "supplierName": "ABC Corp",
     "address": "123 Main St, City, State",
-    "phone": "555-1234"
+    "phone": "555-1234",
+    "memo": "Annual software license renewal"
   },
   "potentialDuplicateSuppliers": [
     {
@@ -173,7 +178,8 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
     "supplierName": "XYZ Industries",
     "address": "456 Oak Ave, City, State",
     "phone": "555-5678",
-    "email": "billing@xyz.com"
+    "email": "billing@xyz.com",
+    "memo": "Manufacturing equipment repair services"
   },
   "potentialDuplicateSuppliers": null,
   "recommendation": {
@@ -186,6 +192,7 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 ## Important Guidelines:
 
 - **Always extract supplier information** from the invoice, even if no match is found
+- **Extract a memo**: Try to write a terse 1-sentence summary of what the invoice is for based on line items, descriptions, or context (e.g., "Office supplies for Q1 2024", "Legal consulting services for merger transaction", "Monthly cloud hosting subscription")
 - **Use the findSuppliers tool** to search for potential matches
 - **Consider multiple factors**: company name, address, phone, email, industry context
 - **Analyze attachments** for additional supplier information
