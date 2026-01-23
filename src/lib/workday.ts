@@ -448,7 +448,7 @@ export async function updateSupplierInvoiceSupplier(
             Invoice_Number: currentInvoice.Invoice_Number,
             Control_Amount_Total: currentInvoice.Control_Amount_Total,
 
-            ...(memo && { Memo: memo }),
+            ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
 
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
@@ -574,7 +574,7 @@ export async function addNoSupplierTagToInvoice(
             Invoice_Number: currentInvoice.Invoice_Number,
             Control_Amount_Total: currentInvoice.Control_Amount_Total,
 
-            ...(memo && { Memo: memo }),
+            ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
 
             ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
             ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),

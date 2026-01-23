@@ -831,6 +831,58 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
     });
 
+    it('should preserve existing memo when invoice already has one', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingMemo = 'Existing memo from user';
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Memo: existingMemo
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const aiMemo = 'AI extracted memo';
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID, undefined, aiMemo);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Memo: existingMemo
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
   });
 
   describe('addNoSupplierTagToInvoice', () => {
@@ -1061,6 +1113,62 @@ describe('Workday utilities', () => {
       await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID);
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
+    });
+
+    it('should preserve existing memo when invoice already has one', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingMemo = 'Existing user memo';
+      const mockInvoiceResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: 'INV-123',
+              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
+              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
+              Invoice_Date: '2025-01-01',
+              Control_Amount_Total: 1000,
+              Memo: existingMemo
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockInvoiceResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
+      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
+
+      const aiMemo = 'AI extracted memo';
+      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
+      await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID, undefined, aiMemo);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Memo: existingMemo
+            })
+          })
+        }),
+        expect.any(Function)
+      );
     });
   });
 
