@@ -720,7 +720,7 @@ describe('Workday utilities', () => {
                   expect.objectContaining({
                     ID: expect.arrayContaining([
                       expect.objectContaining({
-                        $attributes: { type: 'WID' },
+                        $attributes: { type: 'Work_Queue_Tag_ID' },
                         $value: 'test-work-queue-tag-wid'
                       })
                     ])
@@ -917,7 +917,7 @@ describe('Workday utilities', () => {
                   expect.objectContaining({
                     ID: expect.arrayContaining([
                       expect.objectContaining({
-                        $attributes: { type: 'WID' },
+                        $attributes: { type: 'Work_Queue_Tag_ID' },
                         $value: 'test-no-supplier-tag-wid'
                       })
                     ])

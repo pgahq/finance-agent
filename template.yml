@@ -23,8 +23,8 @@ Globals:
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
-        WORKDAY_AGENT_MODIFIED_TAG_WID: ssm:/finance-agent/workday-agent-modified-tag-wid
-        WORKDAY_AGENT_NO_SUPPLIER_TAG_WID: ssm:/finance-agent/workday-agent-no-supplier-tag-wid
+        WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
+        WORKDAY_AGENT_NO_SUPPLIER_TAG_WID: FINAGENT-no-supplier
         WORKDAY_DEFAULT_SUPPLIER_ID: ssm:/finance-agent/workday-default-supplier-id
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
@@ -69,7 +69,7 @@ Resources:
         MaxCapacity: 1.0
       DatabaseName: finance_agent
       MasterUsername: postgres
-      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}'
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:::}}"
       VpcSecurityGroupIds:
         - !Ref DatabaseSecurityGroup
       DBSubnetGroupName: !Ref FinanceAgentSubnetGroup
@@ -136,7 +136,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -145,7 +145,7 @@ Resources:
       Policies:
         - PolicyName: FinanceAgentLambdaPolicy
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
@@ -226,7 +226,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CacheSuppliersProcessor"
       Handler: dist/cache_suppliers.processor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Timeout: 900  # 15 minutes for processing
+      Timeout: 900 # 15 minutes for processing
       MemorySize: 1024
       VpcConfig:
         SecurityGroupIds:
@@ -242,7 +242,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-RefreshSuppliers"
       Handler: dist/refresh_suppliers.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Timeout: 300  # 5 minutes for orchestration only
+      Timeout: 300 # 5 minutes for orchestration only
       MemorySize: 1024
       VpcConfig:
         SecurityGroupIds:
@@ -277,7 +277,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
       Handler: dist/enrich_invoice_supplier.processor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Timeout: 300  # 5 minutes for single invoice
+      Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
       Layers:
         - !Ref PopplerLayer
@@ -287,4 +287,3 @@ Resources:
         SubnetIds:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
-  
