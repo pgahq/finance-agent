@@ -422,7 +422,7 @@ export async function updateSupplierInvoiceSupplier(
 
     const workQueueTags = agentModifiedTagID
       ? [{
-        ID: [{ $attributes: { type: 'WID' }, $value: agentModifiedTagID }]
+        ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: agentModifiedTagID }]
       }]
       : undefined;
 
@@ -550,7 +550,7 @@ export async function addNoSupplierTagToInvoice(
     const client = await buildClient(context);
 
     const workQueueTags = [{
-      ID: [{ $attributes: { type: 'WID' }, $value: noSupplierTagID }]
+      ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: noSupplierTagID }]
     }];
 
     debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
