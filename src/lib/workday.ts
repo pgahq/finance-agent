@@ -202,6 +202,56 @@ async function buildClient(
   });
 }
 
+interface WorkQueueTag {
+  ID: Array<{ $attributes: { type: string }; $value: string }>;
+}
+
+interface buildSubmitInvoiceDataOptions {
+  currentInvoice: any;
+  supplierID?: string;
+  workQueueTags?: WorkQueueTag[];
+  notes?: string;
+  memo?: string;
+}
+
+function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
+  const { currentInvoice, supplierID, workQueueTags, notes, memo } = options;
+
+  const supplierRef = supplierID
+    ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
+    : currentInvoice.Supplier_Reference;
+
+  return {
+    Company_Reference: currentInvoice.Company_Reference,
+    Currency_Reference: currentInvoice.Currency_Reference,
+    Invoice_Date: currentInvoice.Invoice_Date,
+
+    ...(supplierRef && { Supplier_Reference: supplierRef }),
+
+    Invoice_Number: currentInvoice.Invoice_Number,
+    Control_Amount_Total: currentInvoice.Control_Amount_Total,
+
+    ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
+
+    ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+    ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+    ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
+
+    ...((workQueueTags || notes) && {
+      Work_Queue_Information_Data: {
+        ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
+        ...(notes && { Work_Queue_Notes: notes })
+      }
+    })
+  };
+}
+
+function createWorkQueueTag(tagId: string): WorkQueueTag {
+  return {
+    ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: tagId }]
+  };
+}
+
 export async function getSupplierInvoiceWithAttachments(
   context: { workdayConfig: WorkdayConfig; s3Config: { bucketName: string } },
   workdayID: string
@@ -419,16 +469,19 @@ export async function updateSupplierInvoiceSupplier(
     const client = await buildClient(context);
 
     const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-
-    const workQueueTags = agentModifiedTagID
-      ? [{
-        ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: agentModifiedTagID }]
-      }]
-      : undefined;
+    const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
 
     if (agentModifiedTagID) {
       debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
     }
+
+    const invoiceData = buildSubmitInvoiceData({
+      currentInvoice,
+      supplierID,
+      workQueueTags,
+      notes,
+      memo
+    });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
@@ -436,31 +489,7 @@ export async function updateSupplierInvoiceSupplier(
           Supplier_Invoice_Reference: {
             ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
           },
-          Supplier_Invoice_Data: {
-            Company_Reference: currentInvoice.Company_Reference,
-            Currency_Reference: currentInvoice.Currency_Reference,
-            Invoice_Date: currentInvoice.Invoice_Date,
-
-            Supplier_Reference: {
-              ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }]
-            },
-
-            Invoice_Number: currentInvoice.Invoice_Number,
-            Control_Amount_Total: currentInvoice.Control_Amount_Total,
-
-            ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
-
-            ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
-            ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
-
-            ...((workQueueTags || notes) && {
-              Work_Queue_Information_Data: {
-                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
-                ...(notes && { Work_Queue_Notes: notes })
-              }
-            })
-          }
+          Supplier_Invoice_Data: invoiceData
         }
       };
 
@@ -549,12 +578,18 @@ export async function addNoSupplierTagToInvoice(
 
     const client = await buildClient(context);
 
-    const workQueueTags = [{
-      ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: noSupplierTagID }]
-    }];
+    const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
 
     debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
     debug(`Using default supplier ID: ${defaultSupplierID}`);
+
+    const invoiceData = buildSubmitInvoiceData({
+      currentInvoice,
+      supplierID: defaultSupplierID,
+      workQueueTags,
+      notes,
+      memo
+    });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
@@ -562,31 +597,7 @@ export async function addNoSupplierTagToInvoice(
           Supplier_Invoice_Reference: {
             ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
           },
-          Supplier_Invoice_Data: {
-            Company_Reference: currentInvoice.Company_Reference,
-            Currency_Reference: currentInvoice.Currency_Reference,
-            Invoice_Date: currentInvoice.Invoice_Date,
-
-            Supplier_Reference: {
-              ID: [{ $attributes: { type: 'Supplier_ID' }, $value: defaultSupplierID }]
-            },
-
-            Invoice_Number: currentInvoice.Invoice_Number,
-            Control_Amount_Total: currentInvoice.Control_Amount_Total,
-
-            ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
-
-            ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
-            ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-            ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
-
-            ...((workQueueTags || notes) && {
-              Work_Queue_Information_Data: {
-                ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
-                ...(notes && { Work_Queue_Notes: notes })
-              }
-            })
-          }
+          Supplier_Invoice_Data: invoiceData
         }
       };
 
@@ -631,6 +642,104 @@ export async function addNoSupplierTagToInvoice(
 
     await notifyResult(
       'add_no_supplier_tag',
+      'error',
+      processingTime,
+      {
+        invoiceWorkdayID
+      },
+      error,
+      `invoice: \`${invoiceWorkdayID}\``
+    );
+
+    throw error;
+  }
+}
+
+export async function updateVerifySupplierInvoiceData(
+  context: { workdayConfig: WorkdayConfig },
+  invoiceWorkdayID: string,
+  notes?: string,
+  memo?: string | undefined
+): Promise<{ success: boolean; message?: string }> {
+  const startTime = Date.now();
+
+  debug('Updating Supplier Invoice data (notes/memo) via SOAP');
+  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
+
+  try {
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+
+    if (!currentInvoice) {
+      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
+    }
+
+    debug('Current invoice data retrieved for update');
+
+    const client = await buildClient(context);
+
+    const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+    const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+
+    if (agentModifiedTagID) {
+      debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
+    }
+
+    const invoiceData = buildSubmitInvoiceData({
+      currentInvoice,
+      workQueueTags,
+      notes,
+      memo
+    });
+
+    const updateResponse = await new Promise<any>((resolve, reject) => {
+      const request = {
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+          },
+          Supplier_Invoice_Data: invoiceData
+        }
+      };
+
+      debug('Submitting updated Supplier Invoice to Workday');
+      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
+        if (err) {
+          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+          return reject(err);
+        }
+        debug('Workday SOAP update response received');
+        resolve(result);
+      });
+    });
+
+    debug('Supplier invoice data updated successfully', updateResponse);
+
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'update_supplier_invoice_data',
+      'success',
+      processingTime,
+      {
+        invoiceWorkdayID,
+        invoiceNumber: currentInvoice.Invoice_Number,
+        hasNotes: !!notes,
+        hasMemo: !!memo
+      },
+      undefined,
+      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
+    );
+
+    return {
+      success: true,
+      message: `Successfully updated invoice ${invoiceWorkdayID} with notes/memo`
+    };
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    await notifyResult(
+      'update_supplier_invoice_data',
       'error',
       processingTime,
       {

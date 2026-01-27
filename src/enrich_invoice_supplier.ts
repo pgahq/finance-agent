@@ -3,18 +3,20 @@ import { getAiResponse } from './lib/ai.js';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment } from './lib/types.js';
-import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier } from './lib/workday.js';
+import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
 import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
+import { invoiceDataVerificationPrompt, InvoiceDataVerificationSchema, type InvoiceDataVerificationResult } from './prompts/verify_invoice_data.js';
 
 const QUERY = `
-  SELECT 
-    workdayID, 
-    invoiceStatusAsText, 
-    OCRSupplierInvoice, 
-    supplier 
-  FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter) 
-  WHERE OCRSupplierInvoice is not empty 
-    AND supplier is empty 
+  SELECT
+    workdayID,
+    invoiceStatusAsText,
+    OCRSupplierInvoice,
+    supplier
+  FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
+  WHERE OCRSupplierInvoice is not empty
+    AND invoiceStatusAsText = 'Draft'
+    AND workQueueTags not in ('FINAGENT-invoice-modified', 'FINAGENT-no-supplier')
     AND isCanceled = false
 `;
 
@@ -98,7 +100,30 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           break;
       }
     } else {
-      debug('Supplier already present - no enrichment needed');
+      debug('Supplier present - verifying invoice data');
+      const verificationResult = await verifyInvoiceData(detailedInvoice, processedAttachments, invoiceData.supplier!);
+      debug('Verification result:', verificationResult);
+
+      const processingTime = Date.now() - startTime;
+
+      // Send Slack notification
+      const details = {
+        workdayId: invoiceData.workdayID,
+        invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
+        existingSupplier: invoiceData.supplier?.descriptor,
+        result: verificationResult
+      };
+
+      await notifyResult(
+        'verify_invoice_data',
+        'success',
+        processingTime,
+        details,
+        undefined,
+        `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
+      );
+
+      await handleVerificationResult(context, invoiceData.workdayID, verificationResult);
     }
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -143,6 +168,105 @@ async function handleFoundSupplier(
   }
 }
 
+
+async function verifyInvoiceData(
+  invoice: any,
+  processedAttachments: PresignedAttachment[],
+  existingSupplier: { descriptor: string; id: string }
+): Promise<InvoiceDataVerificationResult> {
+  debug('Verifying invoice data for invoice:', invoice.Invoice_Number);
+
+  try {
+    const invoiceData = {
+      existingSupplier: {
+        name: existingSupplier.descriptor,
+        id: existingSupplier.id
+      },
+      companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
+      address: extractAddressFromInvoice(invoice),
+      phone: extractPhoneFromInvoice(invoice),
+      email: extractEmailFromInvoice(invoice),
+      invoiceNumber: invoice.Invoice_Number,
+      amount: invoice.controlTotalAmount,
+      attachments: processedAttachments.map(att => ({
+        fileName: att.fileName,
+        contentType: att.contentType,
+        presignedUrl: att.presignedUrl
+      }))
+    };
+
+    const result = await getAiResponse({
+      prompt: invoiceDataVerificationPrompt,
+      schema: InvoiceDataVerificationSchema,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Please verify if the existing supplier on this invoice is correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier information from the invoice attachments and compare it with the existing supplier. Use the findSuppliers tool if you think the supplier might be different.`
+            },
+            ...processedAttachments
+              .filter(att => att.contentType.startsWith('image/'))
+              .map(att => ({
+                type: 'image' as const,
+                image: new URL(att.presignedUrl)
+              }))
+          ]
+        }
+      ]
+    });
+
+    return result as InvoiceDataVerificationResult;
+
+  } catch (error) {
+    debug('Error in invoice data verification:', error);
+    return {
+      verificationStatus: 'uncertain' as const,
+      confidence: 0,
+      extractedSupplierInformation: {},
+      recommendedSupplier: null,
+      verificationReason: `Error in verification: ${error}`
+    };
+  }
+}
+
+async function handleVerificationResult(
+  context: any,
+  invoiceWorkdayID: string,
+  verificationResult: InvoiceDataVerificationResult
+): Promise<void> {
+  const memo = verificationResult.extractedSupplierInformation?.memo || undefined;
+
+  switch (verificationResult.verificationStatus) {
+    case 'matching':
+      {
+        debug('Supplier verified as matching - updating invoice with memo');
+        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}`;
+        await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
+        debug('No memo extracted - skipping update');
+        break;
+      }
+
+    case 'different':
+      debug('Supplier verification found different supplier - adding revision note');
+      const recommendedSupplier = verificationResult.recommendedSupplier;
+      const notes = recommendedSupplier
+        ? `AI Agent recommends supplier revision. Recommended supplier: ${recommendedSupplier.supplierName} (${recommendedSupplier.supplierId}).
+        Confidence: ${(recommendedSupplier.confidence * 100).toFixed(0)}%.
+        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}`
+        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}`;
+      await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
+      break;
+
+    case 'uncertain':
+      {
+        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}`;
+        await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
+        break;
+      }
+  }
+}
 
 async function identifySupplier(
   invoice: any,
