@@ -119,6 +119,60 @@ describe('handlers', () => {
       const { InvokeCommand } = require('@aws-sdk/client-lambda');
       expect(InvokeCommand).not.toHaveBeenCalled();
     });
+
+    it('should resolve query from a function before executing', async () => {
+      const { executeWorkdayQuery } = require('../lib/workday.js');
+      executeWorkdayQuery.mockResolvedValue({
+        total: 1,
+        data: [{ id: '1', name: 'Item 1' }]
+      });
+
+      const resolvedQuery = 'SELECT * FROM dynamic';
+      const queryFn = jest.fn().mockResolvedValue(resolvedQuery);
+      const processorFunctionName = 'TestProcessor';
+
+      const queryHandler = withQueryHandler(queryFn)({
+        processorFunctionName,
+        pageSize: 1
+      });
+
+      await queryHandler();
+
+      expect(queryFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workdayConfig: expect.any(Object),
+          s3Config: expect.any(Object),
+          dbConnection: expect.any(Object)
+        })
+      );
+      expect(executeWorkdayQuery).toHaveBeenCalledWith(
+        expect.any(Object),
+        resolvedQuery
+      );
+    });
+
+    it('should pass resolved query string to processor when pageSize is null and query is a function', async () => {
+      const resolvedQuery = 'SELECT * FROM dynamic_null';
+      const queryFn = jest.fn().mockResolvedValue(resolvedQuery);
+      const processorFunctionName = 'TestProcessor';
+
+      const queryHandler = withQueryHandler(queryFn)({
+        processorFunctionName,
+        pageSize: null
+      });
+
+      await queryHandler();
+
+      const { InvokeCommand } = require('@aws-sdk/client-lambda');
+      expect(queryFn).toHaveBeenCalled();
+      expect(InvokeCommand).toHaveBeenCalledWith({
+        FunctionName: processorFunctionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({
+          query: resolvedQuery,
+        })
+      });
+    });
   });
 
   describe('withProcessorHandler', () => {

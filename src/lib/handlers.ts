@@ -54,39 +54,40 @@ export const withHandler = (
  * @param query - The Workday query string to execute
  * @returns A function that takes configuration and returns a handler
  */
-export const withQueryHandler = (query: string) => 
+export const withQueryHandler = (query: string | ((context: ProcessingContext) => Promise<string>)) =>
   (config: { processorFunctionName: string; pageSize?: number | null }) =>
     async (_event: any = {}) => {
       const context = await setupContext();
-      
+      const resolvedQuery = typeof query === 'function' ? await query(context) : query;
+
       if (config.pageSize === null) {
         // Don't execute query - let processor handle it
         debug(`Invoking ${config.processorFunctionName} to execute query directly`);
-        
+
         const lambda = new LambdaClient({ region: process.env.AWS_REGION });
         await lambda.send(new InvokeCommand({
           FunctionName: config.processorFunctionName,
           InvocationType: 'Event',
           Payload: JSON.stringify({
-            query,
+            query: resolvedQuery,
             // No data payload
           })
         }));
       } else {
         // Execute query and paginate
         debug(`Executing query and paginating with pageSize: ${config.pageSize}`);
-        const allData = await executeQuery(context, query);
-        
+        const allData = await executeQuery(context, resolvedQuery);
+
         const pageSize = config.pageSize || allData.length;
         const totalPages = Math.ceil(allData.length / pageSize);
-        
+
         const lambda = new LambdaClient({ region: process.env.AWS_REGION });
-        
+
         for (let page = 0; page < totalPages; page++) {
           const startIndex = page * pageSize;
           const endIndex = Math.min(startIndex + pageSize, allData.length);
           const pageData = allData.slice(startIndex, endIndex);
-          
+
           await lambda.send(new InvokeCommand({
             FunctionName: config.processorFunctionName,
             InvocationType: 'Event',

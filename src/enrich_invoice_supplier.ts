@@ -3,11 +3,19 @@ import { getAiResponse } from './lib/ai.js';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment } from './lib/types.js';
-import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
+import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
 import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
 import { invoiceDataVerificationPrompt, InvoiceDataVerificationSchema, type InvoiceDataVerificationResult } from './prompts/verify_invoice_data.js';
 
-const QUERY = `
+const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
+const NO_SUPPLIER_TAG_REF_ID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_REF_ID || 'FINAGENT-no-supplier';
+
+async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
+  const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID, NO_SUPPLIER_TAG_REF_ID]);
+
+  const widList = wids.map(wid => `'${wid}'`).join(', ');
+
+  return `
   SELECT
     workdayID,
     invoiceStatusAsText,
@@ -16,13 +24,14 @@ const QUERY = `
   FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
   WHERE OCRSupplierInvoice is not empty
     AND invoiceStatusAsText = 'Draft'
-    AND workQueueTags not in ('FINAGENT-invoice-modified', 'FINAGENT-no-supplier')
+    AND workQueueTags not in (${widList})
     AND isCanceled = false
 `;
+}
 
 
 // Query function - scheduled daily
-export const handler = withQueryHandler(QUERY)({
+export const handler = withQueryHandler(buildQuery)({
   processorFunctionName: `${process.env.AWS_STACK_NAME}-EnrichInvoiceSupplierProcessor`,
   pageSize: 1 // One invoice per invocation
 });
