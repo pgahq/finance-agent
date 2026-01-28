@@ -437,6 +437,60 @@ export async function getSupplierInvoice(
   return invoice;
 }
 
+export async function getWorkQueueTagWIDs(
+  context: { workdayConfig: WorkdayConfig },
+  tagReferenceIDs: string[]
+): Promise<string[]> {
+  debug('Fetching work queue tag WIDs for reference IDs:', tagReferenceIDs);
+
+  const client = await buildClient(context);
+
+  const response = await new Promise<any>((resolve, reject) => {
+    const request = {
+      Get_Supplier_Invoice_Work_Queue_Tags_Request: {
+        Request_References: {
+          Supplier_Invoice_Work_Queue_Tag_Reference: tagReferenceIDs.map(tagReferenceID => ({
+            ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: tagReferenceID }]
+          }))
+        },
+        Response_Group: {
+          Include_Reference: true
+        }
+      }
+    };
+
+    debug('Requesting work queue tags from Workday');
+    client.Get_Supplier_Invoice_Work_Queue_Tags(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Supplier_Invoice_Work_Queue_Tags):', err);
+        return reject(err);
+      }
+      debug('Workday SOAP response received for work queue tags');
+      resolve(result);
+    });
+  });
+
+  const tags = response?.Response_Data?.Supplier_Invoice_Work_Queue_Tag;
+  if (!tags || !Array.isArray(tags)) {
+    throw new Error(`No work queue tags found for reference IDs: ${tagReferenceIDs.join(', ')}`);
+  }
+
+  const wids: string[] = [];
+  for (const tag of tags) {
+    const reference = tag?.Supplier_Invoice_Work_Queue_Tag_Reference;
+    const ids = reference?.ID;
+    if (Array.isArray(ids)) {
+      const widEntry = ids.find((id: any) => id.$attributes?.type === 'WID');
+      if (widEntry?.$value) {
+        wids.push(widEntry.$value);
+      }
+    }
+  }
+
+  debug('Resolved work queue tag WIDs:', wids);
+  return wids;
+}
+
 export async function updateSupplierInvoiceSupplier(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
