@@ -959,7 +959,7 @@ describe('Workday utilities', () => {
               Supplier_Reference: expect.objectContaining({
                 ID: expect.arrayContaining([
                   expect.objectContaining({
-                    $attributes: { type: 'Supplier_ID' },
+                    $attributes: { type: 'Supplier_Reference_ID' },
                     $value: 'S-0001'
                   })
                 ])

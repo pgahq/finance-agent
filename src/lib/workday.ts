@@ -212,14 +212,17 @@ interface buildSubmitInvoiceDataOptions {
   workQueueTags?: WorkQueueTag[];
   notes?: string;
   memo?: string;
+  defaultSupplierRefId?: string;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierID, workQueueTags, notes, memo } = options;
+  const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
 
-  const supplierRef = supplierID
-    ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
-    : currentInvoice.Supplier_Reference;
+  const supplierRef = defaultSupplierRefId
+    ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: defaultSupplierRefId }] }
+    : supplierID
+      ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
+      : currentInvoice.Supplier_Reference;
 
   return {
     Company_Reference: currentInvoice.Company_Reference,
@@ -639,17 +642,17 @@ export async function addNoSupplierTagToInvoice(
 
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
-      supplierID: defaultSupplierID,
       workQueueTags,
       notes,
-      memo
+      memo,
+      defaultSupplierRefId: defaultSupplierID,
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
       const request = {
         Submit_Supplier_Invoice_Request: {
           Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: invoiceWorkdayID }]
+            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
           },
           Supplier_Invoice_Data: invoiceData
         }
