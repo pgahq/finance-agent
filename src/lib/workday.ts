@@ -649,7 +649,7 @@ export async function addNoSupplierTagToInvoice(
       const request = {
         Submit_Supplier_Invoice_Request: {
           Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+            ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: invoiceWorkdayID }]
           },
           Supplier_Invoice_Data: invoiceData
         }
