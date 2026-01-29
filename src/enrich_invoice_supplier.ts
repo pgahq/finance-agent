@@ -91,7 +91,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
-          const notFoundNotes = `AI Agent Could not find automatically add a supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           break;
