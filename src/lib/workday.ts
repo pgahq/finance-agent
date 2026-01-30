@@ -320,6 +320,14 @@ export async function getSupplierInvoiceWithAttachments(
     // Handle both single attachment object and array of attachments
     const attachments = Array.isArray(attachmentData) ? attachmentData : [attachmentData];
 
+    debug(`Raw attachment data for invoice ${workdayID}:`, attachments.map((att: any, i: number) => ({
+      index: i,
+      fileName: att.$attributes?.Filename,
+      contentType: att.$attributes?.Content_Type,
+      content: att.File_Content,
+      contentLength: att.File_Content?.length || 0
+    })));
+
     for (let i = 0; i < attachments.length; i++) {
       const attachment = attachments[i];
       try {
