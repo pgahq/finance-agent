@@ -440,6 +440,54 @@ export async function getSupplierInvoice(
   return invoice;
 }
 
+export interface InboundEmailData {
+  emailFrom?: string;
+  subject?: string;
+  plainTextBody?: string;
+}
+
+export async function getInboundEmailsForOCRInvoices(
+  config: WorkdayConfig
+): Promise<Map<string, InboundEmailData>> {
+  const now = new Date();
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const toSecond = now.toISOString().split('T')[0];
+  const fromSecond = ninetyDaysAgo.toISOString().split('T')[0];
+
+  const query = `
+    SELECT emailFrom, subject, plainTextBody, supplierInvoices
+    FROM inboundEmailInDateRange(dataSourceFilter = inboundEmailDateRangeFilterOCR, fromSecond = "${fromSecond}", toSecond = "${toSecond}")
+    WHERE hasSupplierInvoice = true
+  `;
+
+  debug('Fetching inbound emails for OCR invoices');
+  const result = await executeWorkdayQuery(config, query);
+
+  const emailMap = new Map<string, InboundEmailData>();
+
+  if (result.data && Array.isArray(result.data)) {
+    for (const row of result.data as any[]) {
+      const emailData: InboundEmailData = {
+        emailFrom: row.emailFrom,
+        subject: row.subject,
+        plainTextBody: row.plainTextBody,
+      };
+
+      const invoices = row.supplierInvoices;
+      if (Array.isArray(invoices)) {
+        for (const inv of invoices) {
+          emailMap.set(inv.id, emailData);
+        }
+      } else if (invoices?.id) {
+        emailMap.set(invoices.id, emailData);
+      }
+    }
+  }
+
+  debug(`Built email map with ${emailMap.size} invoice-to-email mappings`);
+  return emailMap;
+}
+
 export async function getWorkQueueTagWIDs(
   context: { workdayConfig: WorkdayConfig },
   tagReferenceIDs: string[]
