@@ -1,9 +1,10 @@
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { getAiResponse } from './lib/ai.js';
-import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
+import { withHandler, withProcessorHandler } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment } from './lib/types.js';
-import { addNoSupplierTagToInvoice, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
+import { addNoSupplierTagToInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
 import { supplierIdentificationPrompt, SupplierIdentificationSchema, type SupplierIdentificationResult } from './prompts/identify_supplier.js';
 import { invoiceDataVerificationPrompt, InvoiceDataVerificationSchema, type InvoiceDataVerificationResult } from './prompts/verify_invoice_data.js';
 
@@ -31,9 +32,39 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
 
 
 // Query function - scheduled daily
-export const handler = withQueryHandler(buildQuery)({
-  processorFunctionName: `${process.env.AWS_STACK_NAME}-EnrichInvoiceSupplierProcessor`,
-  pageSize: 1 // One invoice per invocation
+export const handler = withHandler(async (context) => {
+  const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceSupplierProcessor`;
+
+  const [invoiceQuery, emailMap] = await Promise.all([
+    buildQuery(context).then(query => executeWorkdayQuery(context.workdayConfig, query)),
+    getInboundEmailsForOCRInvoices(context.workdayConfig),
+  ]);
+
+  const allData = invoiceQuery.data;
+  if (!allData || !Array.isArray(allData) || allData.length === 0) {
+    debug('No invoices found to process');
+    return;
+  }
+
+  debug(`Found ${allData.length} invoices, ${emailMap.size} email mappings`);
+
+  const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+
+  for (const invoice of allData) {
+    const inv = invoice as any;
+    const emailContext = emailMap.get(inv.workdayID) || undefined;
+    const enrichedInvoice = { ...inv, emailContext };
+
+    await lambda.send(new InvokeCommand({
+      FunctionName: processorFunctionName,
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [enrichedInvoice],
+        page: 1,
+        totalPages: 1
+      })
+    }));
+  }
 });
 
 // Processor function - invoked by query function
@@ -61,7 +92,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
     // Check if supplier is missing (using the original invoice data from the batch query)
     if (!invoiceData.supplier || !invoiceData.supplier.descriptor) {
       debug('Missing supplier - identifying supplier');
-      const supplierResult = await identifySupplier(detailedInvoice, processedAttachments);
+      const supplierResult = await identifySupplier(detailedInvoice, processedAttachments, invoiceData.emailContext);
       debug('Supplier result:', supplierResult);
 
       const processingTime = Date.now() - startTime;
@@ -110,7 +141,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       }
     } else {
       debug('Supplier present - verifying invoice data');
-      const verificationResult = await verifyInvoiceData(detailedInvoice, processedAttachments, invoiceData.supplier!);
+      const verificationResult = await verifyInvoiceData(detailedInvoice, processedAttachments, invoiceData.supplier!, invoiceData.emailContext);
       debug('Verification result:', verificationResult);
 
       const processingTime = Date.now() - startTime;
@@ -181,7 +212,8 @@ async function handleFoundSupplier(
 async function verifyInvoiceData(
   invoice: any,
   processedAttachments: PresignedAttachment[],
-  existingSupplier: { descriptor: string; id: string }
+  existingSupplier: { descriptor: string; id: string },
+  emailContext?: InvoiceData['emailContext']
 ): Promise<InvoiceDataVerificationResult> {
   debug('Verifying invoice data for invoice:', invoice.Invoice_Number);
 
@@ -201,8 +233,13 @@ async function verifyInvoiceData(
         fileName: att.fileName,
         contentType: att.contentType,
         presignedUrl: att.presignedUrl
-      }))
+      })),
+      emailContext
     };
+
+    const emailContextText = emailContext
+      ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}`
+      : '';
 
     const result = await getAiResponse({
       prompt: invoiceDataVerificationPrompt,
@@ -213,7 +250,7 @@ async function verifyInvoiceData(
           content: [
             {
               type: 'text',
-              text: `Please verify if the existing supplier on this invoice is correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier information from the invoice attachments and compare it with the existing supplier. Use the findSuppliers tool if you think the supplier might be different.`
+              text: `Please verify if the existing supplier on this invoice is correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier information from the invoice attachments and compare it with the existing supplier. Use the findSuppliers tool if you think the supplier might be different.${emailContextText}`
             },
             ...processedAttachments
               .filter(att => att.contentType.startsWith('image/'))
@@ -279,7 +316,8 @@ async function handleVerificationResult(
 
 async function identifySupplier(
   invoice: any,
-  processedAttachments: PresignedAttachment[]
+  processedAttachments: PresignedAttachment[],
+  emailContext?: InvoiceData['emailContext']
 ): Promise<SupplierIdentificationResult> {
   debug('Identifying supplier for invoice:', invoice.Invoice_Number);
 
@@ -296,8 +334,13 @@ async function identifySupplier(
         fileName: att.fileName,
         contentType: att.contentType,
         presignedUrl: att.presignedUrl
-      }))
+      })),
+      emailContext
     };
+
+    const emailContextText = emailContext
+      ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}`
+      : '';
 
     // Call AI to identify the supplier using RAG
     const result = await getAiResponse({
@@ -309,7 +352,7 @@ async function identifySupplier(
           content: [
             {
               type: 'text',
-              text: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier.`
+              text: `Please identify the supplier for this invoice:\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nUse the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier.${emailContextText}`
             },
             ...processedAttachments
               .filter(att => att.contentType.startsWith('image/'))
