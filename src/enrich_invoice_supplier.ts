@@ -122,7 +122,8 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
-          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+          const notFoundEmailSummary = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
+          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${notFoundEmailSummary}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           break;
@@ -193,7 +194,8 @@ async function handleFoundSupplier(
   const foundSupplierID = supplierResult.resolvedSupplier?.supplierId;
 
   if (foundSupplierID) {
-    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}`;
+    const emailSummarySection = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
+    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummarySection}`;
     const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
 
     await updateSupplierInvoiceSupplier(
@@ -283,12 +285,13 @@ async function handleVerificationResult(
   verificationResult: InvoiceDataVerificationResult
 ): Promise<void> {
   const memo = verificationResult.extractedSupplierInformation?.memo || undefined;
+  const emailSummarySection = verificationResult.emailSummary ? `\n\nEmail Summary: ${verificationResult.emailSummary}` : '';
 
   switch (verificationResult.verificationStatus) {
     case 'matching':
       {
         debug('Supplier verified as matching - updating invoice with memo');
-        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}`;
+        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
         debug('No memo extracted - skipping update');
         break;
@@ -300,14 +303,14 @@ async function handleVerificationResult(
       const notes = recommendedSupplier
         ? `AI Agent recommends supplier revision. Recommended supplier: ${recommendedSupplier.supplierName} (${recommendedSupplier.supplierId}).
         Confidence: ${(recommendedSupplier.confidence * 100).toFixed(0)}%.
-        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}`
-        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}`;
+        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}${emailSummarySection}`
+        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}${emailSummarySection}`;
       await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
       break;
 
     case 'uncertain':
       {
-        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}`;
+        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
         break;
       }

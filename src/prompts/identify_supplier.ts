@@ -40,7 +40,10 @@ export const SupplierIdentificationSchema = z.object({
   recommendation: z.object({
     action: z.enum(['update_invoice', 'register_supplier', 'manual_review', 'no_action']).describe('The recommended action to take'),
     reason: z.string().describe('Detailed explanation of why this action is recommended')
-  }).describe('The recommended next action based on the identification results')
+  }).describe('The recommended next action based on the identification results'),
+
+  // Email summary (only when email context is provided)
+  emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
 });
 
 // TypeScript type for the schema
@@ -200,5 +203,15 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 - **Include potential duplicates** when multiple matches exist
 - **Provide clear reasoning** for all decisions
 - **Omit fields with no data**: In the \`extractedSupplierInformation\` object, only include fields where you actually found data. Do NOT include fields with null values - simply omit them from the response
+
+## Email Context:
+
+If email context is provided (emailFrom, subject, plainTextBody), you should:
+1. **Use the email as additional context** for supplier identification - the sender email domain or content may help identify the supplier
+2. **Generate an emailSummary** (1-4 sentences) that captures the key information from the email, including:
+   - Who sent it and why
+   - Any references to the supplier, invoice, or transaction
+   - Relevant context that would help AP staff understand the invoice
+3. If no email context is provided, omit the emailSummary field entirely
 
 Remember: The goal is to help AP staff make informed decisions about supplier identification and potential duplicate management.`;
