@@ -115,6 +115,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       );
 
       // Handle different scenarios based on the new schema
+      const emailSummary = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
       switch (supplierResult.status) {
         case 'found':
           await handleFoundSupplier(context, invoiceData.workdayID, supplierResult);
@@ -122,22 +123,24 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
-          const notFoundEmailSummary = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
-          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${notFoundEmailSummary}`;
+          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           break;
 
         case 'ambiguous':
           debug('Ambiguous supplier identification - flagging for manual review');
-          // TODO: Flag for manual review with potential duplicates
-          // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
+          debug('Supplier not found - adding no-supplier work queue tag');
+          const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
+          const ambiguousMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
           break;
 
         case 'error':
           debug('Error in supplier identification - flagging for manual review');
-          // TODO: Flag for manual review due to error
-          // await flagForManualReview(config, detailedInvoice.id, 'supplier', supplierResult);
+          const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
+          const errorMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, errorMemo);
           break;
       }
     } else {
