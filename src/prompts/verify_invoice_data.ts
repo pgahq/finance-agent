@@ -28,7 +28,10 @@ export const InvoiceDataVerificationSchema = z.object({
     reason: z.string().describe('Detailed explanation of why this supplier is recommended instead')
   }).nullable().describe('The recommended correct supplier from Workday. Only populated when verificationStatus is "different"'),
 
-  verificationReason: z.string().describe('Detailed explanation of why the supplier is considered matching, different, or uncertain')
+  verificationReason: z.string().describe('Detailed explanation of why the supplier is considered matching, different, or uncertain'),
+
+  // Email summary (only when email context is provided)
+  emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content, if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
 });
 
 export type InvoiceDataVerificationResult = z.infer<typeof InvoiceDataVerificationSchema>;
@@ -134,5 +137,15 @@ For verification decisions:
 - **Analyze attachments** thoroughly for supplier information
 - **Provide clear reasoning** for your verification decision
 - **Omit fields with no data**: In the \`extractedSupplierInformation\` object, only include fields where you actually found data
+
+## Email Context:
+
+If email context is provided (emailFrom, subject, plainTextBody), you should:
+1. **Use the email as additional context** for verification - the sender email domain or content may help verify the supplier
+2. **Generate an emailSummary** (1-4 sentences) that captures the key information from the email, including:
+   - Who sent it and why
+   - Any references to the supplier, invoice, or transaction
+   - Relevant context that would help AP staff understand the invoice
+3. If no email context is provided, omit the emailSummary field entirely
 
 Remember: The goal is to help AP staff catch incorrect supplier assignments while avoiding false positives that would create unnecessary work.`;
