@@ -53,6 +53,10 @@ export const handler = withHandler(async (context) => {
   for (const invoice of allData) {
     const inv = invoice as any;
     const emailContext = emailMap.get(inv.workdayID) || undefined;
+    debug(`Invoice ${inv.workdayID}: emailContext ${emailContext ? 'found' : 'not found'}`);
+    if (emailContext) {
+      debug(`Email context for ${inv.workdayID}:`, emailContext);
+    }
     const enrichedInvoice = { ...inv, emailContext };
 
     await lambda.send(new InvokeCommand({

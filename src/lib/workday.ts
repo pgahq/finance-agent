@@ -463,6 +463,8 @@ export async function getInboundEmailsForOCRInvoices(
   debug('Fetching inbound emails for OCR invoices');
   const result = await executeWorkdayQuery(config, query);
 
+  debug(`Email query returned ${result.data?.length || 0} rows`);
+
   const emailMap = new Map<string, InboundEmailData>();
 
   if (result.data && Array.isArray(result.data)) {
@@ -473,12 +475,21 @@ export async function getInboundEmailsForOCRInvoices(
         plainTextBody: row.plainTextBody,
       };
 
+      debug('Email row:', {
+        emailFrom: row.emailFrom,
+        subject: row.subject,
+        plainTextBodyLength: row.plainTextBody?.length || 0,
+        supplierInvoices: row.supplierInvoices,
+      });
+
       const invoices = row.supplierInvoices;
       if (Array.isArray(invoices)) {
         for (const inv of invoices) {
+          debug(`Mapping invoice ID ${inv.id} (descriptor: ${inv.descriptor}) to email`);
           emailMap.set(inv.id, emailData);
         }
       } else if (invoices?.id) {
+        debug(`Mapping invoice ID ${invoices.id} (descriptor: ${invoices.descriptor}) to email`);
         emailMap.set(invoices.id, emailData);
       }
     }
