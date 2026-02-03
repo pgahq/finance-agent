@@ -450,8 +450,9 @@ export async function getInboundEmailsForOCRInvoices(
   config: WorkdayConfig
 ): Promise<Map<string, InboundEmailData>> {
   const now = new Date();
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-  const toSecond = now.toISOString().split('T')[0];
+  const toSecond = tomorrow.toISOString().split('T')[0];
   const fromSecond = ninetyDaysAgo.toISOString().split('T')[0];
 
   const query = `
