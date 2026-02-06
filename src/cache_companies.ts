@@ -10,7 +10,7 @@ const QUERY = `
     addressPrimary,
     publicAddresses,
     emailAddresses,
-    phoneNumbers,
+    phoneNumbers
   FROM companies
 `;
 
