@@ -1,15 +1,15 @@
 import { debug } from '@pga/logger';
-import { getDatabaseConnection, searchDocuments } from './database.js';
 import { tool } from 'ai';
 import { z } from 'zod';
+import { getDatabaseConnection, searchDocuments } from './database.js';
 
 // Document types
-export type DocumentType = 'supplier' | 'invoice';
+export type DocumentType = 'supplier' | 'invoice' | 'company';
 
 // Create embedding for text using OpenAI
-export async function createEmbedding(text: string): Promise<number[]> {  
+export async function createEmbedding(text: string): Promise<number[]> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
-  
+
   const response = await fetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
     headers: {
@@ -41,7 +41,20 @@ export function createSupplierContent(supplier: any): string {
     supplier.allAddresses?.length > 0 ? `Address: ${supplier.allAddresses.join(', ')}` : null,
     `Status: ${supplier.supplierStatus}`
   ].filter(Boolean).join('\n');
-  
+
+  return content;
+}
+
+export function createCompanyContent(company: any): string {
+  const content = [
+    `Company Name: ${company.companyName}`,
+    `Company ID: ${company.companyId}`,
+    `Primary Address: ${company.addressPrimary}`,
+    company.publicAddresses?.length > 0 ? `Public Addresses: ${company.publicAddresses.join(', ')}` : null,
+    company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
+    company.phoneNumbers?.length > 0 ? `Phone Numbers: ${company.phoneNumbers.join(', ')}` : null,
+  ].filter(Boolean).join('\n');
+
   return content;
 }
 
@@ -53,7 +66,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice';
+  documentType?: 'supplier' | 'invoice' | 'company';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -89,7 +102,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
 
     // Get database connection
     const db = await getDatabaseConnection(process.env);
-    
+
     try {
       // Use hybrid search that combines semantic similarity with exact text matching
       const results = await searchDocuments(
@@ -99,7 +112,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
         documentType || 'supplier', // Default to supplier if no type specified
         limit
       );
-      
+
       // Filter by similarity threshold and transform results
       const ragResults: RAGResult[] = results
         .filter(row => parseFloat(row.similarity) >= similarityThreshold)
@@ -116,7 +129,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
         debug(`RAG Query: "${query}"`);
         debug(`Query executed successfully, returned ${results.length} rows`);
         debug(`Top similarity scores: ${ragResults.map(r => r.similarity.toFixed(3)).join(', ')}`);
-        
+
         // Show excerpt of first few results
         const excerpt = ragResults.slice(0, 3).map(r => ({
           workday_id: r.workday_id,
@@ -169,9 +182,9 @@ export const findSuppliersTool = tool({
         limit,
         similarityThreshold
       });
-      
+
       debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
-      
+
       return {
         success: true,
         results: results.map(result => ({
@@ -185,6 +198,51 @@ export const findSuppliersTool = tool({
       };
     } catch (error) {
       debug(`Find Suppliers Tool Error: ${error}`);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+});
+
+export const findCompaniesTool = tool({
+  description: `Search for companies using semantic similarity and exact text matching.
+
+  This tool is optimized for finding companies by:
+  - Company names (e.g., "Acme Corp", "Microsoft")
+  - Company IDs (Workday IDs)
+
+  Examples: "Acme Corporation", "Global Modern Services"`,
+  inputSchema: z.object({
+    query: z.string().describe('Search query for companies (company name or ID)'),
+    limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    try {
+      const results = await queryDocuments({
+        query,
+        documentType: 'company',
+        limit,
+        similarityThreshold
+      });
+
+      debug(`Find Companies Tool: Found ${results.length} companies`);
+
+      return {
+        success: true,
+        results: results.map(result => ({
+          workdayId: result.workday_id,
+          companyId: result.metadata?.companyId,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          similarity: result.similarity
+        }))
+      };
+    } catch (error) {
+      debug(`Find Companies Tool Error: ${error}`);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred'
