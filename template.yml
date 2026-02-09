@@ -287,11 +287,11 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-2
 
   # Enrich Invoice Supplier - Query handler
-  EnrichInvoiceSupplierFunction:
+  EnrichInvoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplier"
-      Handler: dist/enrich_invoice_supplier.handler
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoice"
+      Handler: dist/enrich_invoice.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       VpcConfig:
         SecurityGroupIds:
@@ -306,11 +306,11 @@ Resources:
             Schedule: cron(0 13 * * ? *)
 
   # Enrich Invoice Supplier Processor - Individual record processing
-  EnrichInvoiceSupplierProcessor:
+  EnrichInvoiceProcessor:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceSupplierProcessor"
-      Handler: dist/enrich_invoice_supplier.processor
+      FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceProcessor"
+      Handler: dist/enrich_invoice.processor
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024

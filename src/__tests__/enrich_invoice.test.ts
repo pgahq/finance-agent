@@ -1,4 +1,4 @@
-import { processor } from '../enrich_invoice_supplier.js';
+import { processor } from '../enrich_invoice.js';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -68,7 +68,7 @@ jest.mock('../lib/s3.js', () => ({
   }),
 }));
 
-describe('enrich_invoice_supplier', () => {
+describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });

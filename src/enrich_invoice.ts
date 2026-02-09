@@ -33,7 +33,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
 
 // Query function - scheduled daily
 export const handler = withHandler(async (context) => {
-  const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceSupplierProcessor`;
+  const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceProcessor`;
 
   const [invoiceQuery, emailMap] = await Promise.all([
     buildQuery(context).then(query => executeWorkdayQuery(context.workdayConfig, query)),
@@ -110,7 +110,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       };
 
       await notifyResult(
-        'enrich_invoice_supplier',
+        'enrich_invoice',
         status,
         processingTime,
         details,
@@ -178,7 +178,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
     debug('Error in supplier enrichment process:', error);
 
     await notifyResult(
-      'enrich_invoice_supplier',
+      'enrich_invoice',
       'error',
       processingTime,
       {

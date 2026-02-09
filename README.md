@@ -42,40 +42,40 @@ graph TB
         SCHED1[Daily Supplier Sync<br/>7:00 AM Central]
         SCHED2[Daily Invoice Processing<br/>8:00 AM Central]
     end
-    
+
     subgraph "Handler Architecture"
         QUERY[Query Handlers<br/>Execute Workday queries]
         PROC[Processor Handlers<br/>Process data with AI]
     end
-    
+
     subgraph "Core Functions"
         CACHE[Cache Suppliers<br/>Sync supplier data]
         ENRICH[Enrich Invoices<br/>Find invoices needing suppliers]
         REFRESH[Refresh Suppliers<br/>Full database rebuild]
     end
-    
+
     subgraph "Data Sources"
         WQL[Workday WQL<br/>Query invoices & suppliers]
         REST[Workday REST<br/>Get invoice details]
         SOAP[Workday SOAP<br/>Get attachments]
     end
-    
+
     subgraph "AI & Storage"
         AI[OpenAI GPT-4<br/>Supplier identification]
         DB[(PostgreSQL<br/>Supplier database)]
         S3[S3<br/>PDF attachments]
     end
-    
+
     SCHED1 --> CACHE
     SCHED2 --> ENRICH
-    
+
     CACHE --> QUERY
     CACHE --> PROC
     ENRICH --> QUERY
     ENRICH --> PROC
     REFRESH --> QUERY
     REFRESH --> PROC
-    
+
     QUERY --> WQL
     PROC --> REST
     PROC --> SOAP
@@ -83,14 +83,17 @@ graph TB
     PROC --> DB
     PROC --> S3
 ```
+
 ### Workday API Usage
 
 **WQL (Workday Query Language)**
+
 - Queries supplier master data and invoices
 - Used for bulk data retrieval and filtering
 - Scheduled daily for supplier sync and invoice discovery
 
 **SOAP API**
+
 - Retrieves detailed invoice information with PDF attachments
 - Provides structured data exchange for invoice processing
 - Enables access to invoice documents and metadata
@@ -125,7 +128,7 @@ The system uses a modern handler pattern that separates concerns:
 src/
 ├── cache_suppliers.ts              # Daily supplier data sync (handler + processor)
 ├── refresh_suppliers.ts            # Full supplier database rebuild
-├── enrich_invoice_supplier.ts      # Invoice processing with AI (handler + processor)
+├── enrich_invoice.ts      # Invoice processing with AI (handler + processor)
 ├── query_documents.ts              # Document search endpoint
 ├── lib/
 │   ├── handlers.ts                 # Handler architecture (withQueryHandler, withProcessorHandler)
@@ -142,6 +145,7 @@ src/
 ## 🔧 System Architecture
 
 ### Handler Architecture
+
 - **withQueryHandler**: Executes Workday queries with intelligent pagination
 - **withProcessorHandler**: Processes data with AI and updates databases
 - **Separation of Concerns**: Clean separation between query execution and data processing
@@ -149,30 +153,35 @@ src/
 - **Self-Contained Operations**: Refresh operations use internal handlers
 
 ### Vector Database
+
 - PostgreSQL with pgvector for semantic supplier search
 - Stores supplier embeddings for intelligent matching
 - Enables fast similarity search across supplier data
 - Incremental sync keeps data current
 
 ### PDF Processing
+
 - Downloads invoice PDFs from Workday
 - Splits multi-page PDFs into separate images using pdftocairo
 - Uses vision models to extract text and data
 - Generates presigned URLs for document access
 
 ### RAG (Retrieval-Augmented Generation)
+
 - OpenAI embeddings for semantic search
 - Hybrid search combining semantic similarity with exact text matching
 - Configurable similarity thresholds and result limits
 - AI tools for supplier identification
 
 ### Workday Integration
+
 - **WQL**: Bulk data queries for suppliers and invoices
 - **SOAP API**: Detailed invoice information and PDF attachments
 - OAuth authentication with refresh tokens
 - Handles large datasets with intelligent pagination
 
 ### AI Processing
+
 - OpenAI GPT-4 for supplier identification
 - Structured responses with confidence scoring
 - Analyzes invoice content and metadata
@@ -181,11 +190,13 @@ src/
 ## 🧠 AI-Powered Features
 
 ### Supplier Identification
+
 AI analyzes invoice content and matches suppliers by examining metadata, OCR data, and company information using semantic search.
 
 ### Processing Results
+
 - **High Confidence**: Automatic supplier assignment
-- **Ambiguous**: Multiple candidates - flagged for review  
+- **Ambiguous**: Multiple candidates - flagged for review
 - **Not Found**: No suitable match - requires manual processing
 - **Error**: Processing failed - retry or manual intervention
 
@@ -219,6 +230,7 @@ npm run test:coverage      # Run with coverage (74.72% overall)
 ```
 
 ### Test Coverage
+
 - **88 tests passing** across 11 test suites
 - **74.72% overall coverage** with comprehensive test coverage for:
   - Handler architecture (`handlers.ts`: 97.67%)
@@ -232,10 +244,12 @@ Tests cover all core functions including supplier sync, invoice processing, AI i
 ## 🚀 Deployment
 
 Deployment is automated via CircleCI:
+
 - **Development**: Deploys on `development` branch
 - **Production**: Deploys on `main` branch
 
 ### Infrastructure
+
 - AWS Lambda functions with VPC integration
 - Aurora PostgreSQL database with pgvector extension
 - S3 bucket for PDF attachments
@@ -273,11 +287,11 @@ sequenceDiagram
     participant DB as PostgreSQL<br/>+ pgvector
     participant Workday
     participant ContentCreator as Content Creator
-    
+
     Note over Client,DB: Query Flow
     Client->>OpenAI: Create query embedding<br/>(text-embedding-3-small)
     OpenAI-->>Client: Query embedding vector
-    
+
     Client->>DB: Hybrid search query<br/>(embedding + text)
     activate DB
     DB->>DB: Semantic similarity<br/>(vector cosine distance)
@@ -288,7 +302,7 @@ sequenceDiagram
     DB->>DB: Limit results<br/>(default: 100)
     deactivate DB
     DB-->>Client: RAG results
-    
+
     Note over Workday,DB: Document Storage Flow
     Workday->>ContentCreator: Supplier data
     ContentCreator->>ContentCreator: Create content<br/>(Name, Address, Phone, Email)
@@ -314,18 +328,18 @@ sequenceDiagram
     participant AI as GPT-4
     participant RAG as RAG/Vector DB
     participant Slack
-    
+
     Scheduler->>QueryHandler: Trigger query
     QueryHandler->>WorkdayWQL: Query invoices<br/>(missing suppliers, not canceled)
     WorkdayWQL-->>QueryHandler: Invoice list
     QueryHandler->>QueryHandler: Filter & page<br/>(1 invoice per invocation)
     QueryHandler->>Processor: Invoke processor<br/>(with invoice data)
-    
+
     Processor->>WorkdaySOAP: Get invoice details
     WorkdaySOAP-->>Processor: Invoice data
     Processor->>WorkdaySOAP: Get attachments
     WorkdaySOAP-->>Processor: PDF attachments
-    
+
     Processor->>PDFProcessor: Process PDFs
     activate PDFProcessor
     PDFProcessor->>PDFProcessor: Split multi-page PDFs<br/>Convert to images
@@ -333,9 +347,9 @@ sequenceDiagram
     S3-->>PDFProcessor: Presigned URLs
     deactivate PDFProcessor
     PDFProcessor-->>Processor: Processed attachments
-    
+
     Processor->>Processor: Extract invoice data<br/>(company, address, phone, email)
-    
+
     Processor->>AI: Analyze invoice<br/>(with images + RAG tool)
     activate AI
     AI->>RAG: findSuppliers tool<br/>(semantic search)
@@ -343,11 +357,11 @@ sequenceDiagram
     RAG->>RAG: Vector similarity search
     RAG-->>AI: Similar suppliers
     deactivate RAG
-    
+
     AI->>AI: Analyze invoice + images<br/>Match with RAG results
     deactivate AI
     AI-->>Processor: Supplier identification result
-    
+
     alt High Confidence
         Processor->>Processor: Supplier identified
     else Multiple Matches
@@ -357,7 +371,7 @@ sequenceDiagram
     else Error
         Processor->>Processor: Flag for review
     end
-    
+
     Processor->>Slack: Send notification<br/>(with result details)
     Slack-->>Processor: Notification sent
 ```
@@ -372,23 +386,23 @@ sequenceDiagram
     participant FileSystem
     participant pdftocairo
     participant S3
-    
+
     Processor->>Processor: Receive attachment<br/>(from Workday SOAP)
-    
+
     alt PDF Attachment
         Processor->>FileSystem: Create temp directory<br/>(/tmp/pdf-processing)
         Processor->>FileSystem: Write PDF buffer<br/>to temp file
         Processor->>FileSystem: Create output directory
-        
+
         Processor->>pdftocairo: Execute conversion<br/>(PDF to PNG, all pages)
         activate pdftocairo
         pdftocairo->>FileSystem: Generate PNG files<br/>(page-1.png, page-2.png, ...)
         deactivate pdftocairo
-        
+
         Processor->>FileSystem: Find generated PNGs
         FileSystem-->>Processor: PNG file list
         Processor->>Processor: Sort by page number
-        
+
         loop For each page
             Processor->>FileSystem: Read PNG file
             FileSystem-->>Processor: PNG buffer
@@ -399,7 +413,7 @@ sequenceDiagram
             S3-->>Processor: Presigned URL
             Processor->>FileSystem: Delete temp PNG file
         end
-        
+
         Processor->>FileSystem: Cleanup temp files<br/>(PDF + directories)
     else Image/Other Attachment
         Processor->>S3: Upload directly
@@ -407,7 +421,7 @@ sequenceDiagram
         Processor->>S3: Generate presigned URL
         S3-->>Processor: Presigned URL
     end
-    
+
     Processor->>Processor: Return processed attachments<br/>(array of PresignedAttachment)
 ```
 
@@ -424,35 +438,35 @@ sequenceDiagram
     participant CacheProcessor as Cache Processor
     participant OpenAI as OpenAI Embeddings
     participant Slack
-    
+
     Trigger->>RefreshHandler: Start refresh
     RefreshHandler->>DB: Delete all suppliers<br/>(deleteAllDocumentsByType)
     DB-->>RefreshHandler: Deletion complete
-    
+
     RefreshHandler->>WorkdayWQL: Get total count
     WorkdayWQL-->>RefreshHandler: Total suppliers
     RefreshHandler->>RefreshHandler: Calculate pages<br/>(500 per batch)
     RefreshHandler->>RefreshHandler: Create internal handler<br/>(withQueryHandler)
-    
+
     loop For each batch (500 suppliers)
         RefreshHandler->>WorkdayWQL: Query batch
         WorkdayWQL-->>RefreshHandler: Supplier batch
         RefreshHandler->>CacheProcessor: Invoke processor<br/>(with batch data)
-        
+
         activate CacheProcessor
         CacheProcessor->>CacheProcessor: Filter Active suppliers
         CacheProcessor->>CacheProcessor: Create supplier content<br/>(name, alternate names,<br/>phone, email, address)
-        
+
         loop For each supplier (50 per batch)
             CacheProcessor->>OpenAI: Create embedding<br/>(text-embedding-3-small)
             OpenAI-->>CacheProcessor: Embedding vector
         end
-        
+
         CacheProcessor->>DB: Bulk insert<br/>(50 suppliers per batch)
         DB-->>CacheProcessor: Insert complete
         deactivate CacheProcessor
     end
-    
+
     RefreshHandler->>Slack: Send notification<br/>(total suppliers, batches)
     Slack-->>RefreshHandler: Notification sent
 ```
@@ -470,19 +484,19 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant OpenAI as OpenAI Embeddings
     participant Slack
-    
+
     Scheduler->>QueryHandler: Trigger sync
     QueryHandler->>WorkdayWQL: Query all suppliers
     WorkdayWQL-->>QueryHandler: All suppliers
     QueryHandler->>Processor: Invoke processor<br/>(with supplier data)
-    
+
     activate Processor
     Processor->>DB: Get existing suppliers
     DB-->>Processor: Existing suppliers
-    
+
     Processor->>Processor: Compare suppliers<br/>(by workday_id)
     Processor->>Processor: Identify changes:<br/>New, Updated, Unchanged
-    
+
     alt New Suppliers
         Processor->>Processor: Filter Active only
         loop For each new supplier (50 per batch)
@@ -493,7 +507,7 @@ sequenceDiagram
         Processor->>DB: Bulk insert<br/>(50 suppliers per batch)
         DB-->>Processor: Insert complete
     end
-    
+
     alt Updated Suppliers
         Processor->>Processor: Filter Active only
         loop For each updated supplier (50 per batch)
@@ -504,7 +518,7 @@ sequenceDiagram
         Processor->>DB: Bulk update<br/>(50 suppliers per batch)
         DB-->>Processor: Update complete
     end
-    
+
     Processor->>Processor: Calculate statistics<br/>(new, updated, unchanged)
     Processor->>Slack: Send notification<br/>(sync statistics)
     Slack-->>Processor: Notification sent
