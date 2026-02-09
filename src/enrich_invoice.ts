@@ -227,11 +227,16 @@ async function verifyInvoiceData(
   debug('Verifying invoice data for invoice:', invoice.Invoice_Number);
 
   try {
+    const existingCompany = invoice.company1
+      ? { name: invoice.company1.descriptor, id: invoice.company1.id }
+      : undefined;
+
     const invoiceData = {
       existingSupplier: {
         name: existingSupplier.descriptor,
         id: existingSupplier.id
       },
+      existingCompany,
       companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
       address: extractAddressFromInvoice(invoice),
       phone: extractPhoneFromInvoice(invoice),
@@ -250,6 +255,10 @@ async function verifyInvoiceData(
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}`
       : '';
 
+    const existingCompanyText = existingCompany
+      ? `\nExisting Company: ${existingCompany.name} (ID: ${existingCompany.id})`
+      : '';
+
     const result = await getAiResponse({
       prompt: invoiceDataVerificationPrompt,
       schema: InvoiceDataVerificationSchema,
@@ -259,7 +268,7 @@ async function verifyInvoiceData(
           content: [
             {
               type: 'text',
-              text: `Please verify if the existing supplier on this invoice is correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier information from the invoice attachments and compare it with the existing supplier. Use the findSuppliers tool if you think the supplier might be different.${emailContextText}`
+              text: `Please verify if the existing supplier and company on this invoice are correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${emailContextText}`
             },
             ...processedAttachments
               .filter(att => att.contentType.startsWith('image/'))
@@ -281,9 +290,25 @@ async function verifyInvoiceData(
       confidence: 0,
       extractedSupplierInformation: {},
       recommendedSupplier: null,
-      verificationReason: `Error in verification: ${error}`
+      verificationReason: `Error in verification: ${error}`,
+      companyVerificationStatus: 'uncertain' as const,
+      companyConfidence: 0,
+      extractedCompanyInformation: {},
+      recommendedCompany: null,
+      companyVerificationReason: `Error in verification: ${error}`
     };
   }
+}
+
+function formatCompanyVerificationNotes(verificationResult: InvoiceDataVerificationResult): string {
+  let companyNotes = `\n\nCompany Verification: ${verificationResult.companyVerificationStatus} - ${verificationResult.companyVerificationReason}`;
+
+  if (verificationResult.recommendedCompany) {
+    const rc = verificationResult.recommendedCompany;
+    companyNotes += `\nRecommended Company: ${rc.companyName} (${rc.companyId}). Confidence: ${(rc.confidence * 100).toFixed(0)}%. Reason: ${rc.reason}`;
+  }
+
+  return companyNotes;
 }
 
 async function handleVerificationResult(
@@ -293,12 +318,13 @@ async function handleVerificationResult(
 ): Promise<void> {
   const memo = verificationResult.extractedSupplierInformation?.memo || undefined;
   const emailSummarySection = verificationResult.emailSummary ? `\n\nEmail Summary: ${verificationResult.emailSummary}` : '';
+  const companySection = formatCompanyVerificationNotes(verificationResult);
 
   switch (verificationResult.verificationStatus) {
     case 'matching':
       {
         debug('Supplier verified as matching - updating invoice with memo');
-        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}${emailSummarySection}`;
+        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
         debug('No memo extracted - skipping update');
         break;
@@ -310,14 +336,14 @@ async function handleVerificationResult(
       const notes = recommendedSupplier
         ? `AI Agent recommends supplier revision. Recommended supplier: ${recommendedSupplier.supplierName} (${recommendedSupplier.supplierId}).
         Confidence: ${(recommendedSupplier.confidence * 100).toFixed(0)}%.
-        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}${emailSummarySection}`
-        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}${emailSummarySection}`;
+        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}${companySection}${emailSummarySection}`
+        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
       await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
       break;
 
     case 'uncertain':
       {
-        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}${emailSummarySection}`;
+        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
         break;
       }
