@@ -80,8 +80,6 @@ export const processor = withProcessorHandler(async (context, invoices, _event) 
 });
 async function processInvoice(context: any, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
-  debug('Enriching invoice supplier with AI and Workday data');
-
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
   try {
@@ -93,20 +91,29 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
     debug(`Successfully processed ${processedAttachments.length} attachments`);
 
-    // Check if supplier is missing (using the original invoice data from the batch query)
+    let supplierResult: SupplierIdentificationResult | undefined;
     if (!invoiceData.supplier || !invoiceData.supplier.descriptor) {
       debug('Missing supplier - identifying supplier');
-      const supplierResult = await identifySupplier(detailedInvoice, processedAttachments, invoiceData.emailContext);
+      supplierResult = await identifySupplier(detailedInvoice, processedAttachments, invoiceData.emailContext);
       debug('Supplier result:', supplierResult);
+    }
 
-      const processingTime = Date.now() - startTime;
+    const existingSupplier = invoiceData.supplier
 
-      // Send Slack notification
+    debug('Verifying invoice data');
+    const verificationResult = await verifyInvoiceData(detailedInvoice, processedAttachments, existingSupplier, invoiceData.emailContext);
+    debug('Verification result:', verificationResult);
+
+    const processingTime = Date.now() - startTime;
+
+    if (supplierResult) {
+      const companyNotes = formatCompanyVerificationNotes(verificationResult);
       const status = supplierResult.status === 'error' ? 'error' : 'success';
       const details = {
         workdayId: invoiceData.workdayID,
         invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-        result: supplierResult
+        result: supplierResult,
+        companyVerification: verificationResult
       };
 
       await notifyResult(
@@ -118,16 +125,15 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
         `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
       );
 
-      // Handle different scenarios based on the new schema
       const emailSummary = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
       switch (supplierResult.status) {
         case 'found':
-          await handleFoundSupplier(context, invoiceData.workdayID, supplierResult);
+          await handleFoundSupplier(context, invoiceData.workdayID, supplierResult, companyNotes);
           break;
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
-          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
+          const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           break;
@@ -135,26 +141,19 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
         case 'ambiguous':
           debug('Ambiguous supplier identification - flagging for manual review');
           debug('Supplier not found - adding no-supplier work queue tag');
-          const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
+          const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const ambiguousMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
           break;
 
         case 'error':
           debug('Error in supplier identification - flagging for manual review');
-          const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummary}`;
+          const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const errorMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, errorMemo);
           break;
       }
     } else {
-      debug('Supplier present - verifying invoice data');
-      const verificationResult = await verifyInvoiceData(detailedInvoice, processedAttachments, invoiceData.supplier!, invoiceData.emailContext);
-      debug('Verification result:', verificationResult);
-
-      const processingTime = Date.now() - startTime;
-
-      // Send Slack notification
       const details = {
         workdayId: invoiceData.workdayID,
         invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
@@ -195,14 +194,15 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 async function handleFoundSupplier(
   context: any,
   invoiceWorkdayID: string,
-  supplierResult: SupplierIdentificationResult
+  supplierResult: SupplierIdentificationResult,
+  companyNotes: string = ''
 ): Promise<void> {
   debug('Supplier found in Workday - updating invoice');
   const foundSupplierID = supplierResult.resolvedSupplier?.supplierId;
 
   if (foundSupplierID) {
     const emailSummarySection = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
-    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${emailSummarySection}`;
+    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummarySection}`;
     const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
 
     await updateSupplierInvoiceSupplier(
@@ -221,7 +221,7 @@ async function handleFoundSupplier(
 async function verifyInvoiceData(
   invoice: any,
   processedAttachments: PresignedAttachment[],
-  existingSupplier: { descriptor: string; id: string },
+  existingSupplier?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext']
 ): Promise<InvoiceDataVerificationResult> {
   debug('Verifying invoice data for invoice:', invoice.Invoice_Number);
@@ -232,10 +232,9 @@ async function verifyInvoiceData(
       : undefined;
 
     const invoiceData = {
-      existingSupplier: {
-        name: existingSupplier.descriptor,
-        id: existingSupplier.id
-      },
+      existingSupplier: existingSupplier
+        ? { name: existingSupplier.descriptor, id: existingSupplier.id }
+        : undefined,
       existingCompany,
       companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
       address: extractAddressFromInvoice(invoice),
@@ -255,6 +254,10 @@ async function verifyInvoiceData(
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}`
       : '';
 
+    const existingSupplierText = existingSupplier
+      ? `\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})`
+      : '\nExisting Supplier: None (supplier has not been assigned yet)';
+
     const existingCompanyText = existingCompany
       ? `\nExisting Company: ${existingCompany.name} (ID: ${existingCompany.id})`
       : '';
@@ -268,7 +271,7 @@ async function verifyInvoiceData(
           content: [
             {
               type: 'text',
-              text: `Please verify if the existing supplier and company on this invoice are correct:\n\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${emailContextText}`
+              text: `Please verify the supplier and company on this invoice:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\nExtract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${emailContextText}`
             },
             ...processedAttachments
               .filter(att => att.contentType.startsWith('image/'))
