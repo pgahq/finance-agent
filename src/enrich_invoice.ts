@@ -289,26 +289,30 @@ async function verifyInvoiceData(
   } catch (error) {
     debug('Error in invoice data verification:', error);
     return {
-      verificationStatus: 'uncertain' as const,
-      confidence: 0,
-      extractedSupplierInformation: {},
-      recommendedSupplier: null,
-      verificationReason: `Error in verification: ${error}`,
-      companyVerificationStatus: 'uncertain' as const,
-      companyConfidence: 0,
-      extractedCompanyInformation: {},
-      recommendedCompany: null,
-      companyVerificationReason: `Error in verification: ${error}`
+      supplierVerification: {
+        status: 'uncertain' as const,
+        confidence: 0,
+        extractedInformation: {},
+        recommended: null,
+        reason: `Error in verification: ${error}`
+      },
+      companyVerification: {
+        status: 'uncertain' as const,
+        confidence: 0,
+        extractedInformation: {},
+        recommended: null,
+        reason: `Error in verification: ${error}`
+      }
     };
   }
 }
 
 function formatCompanyVerificationNotes(verificationResult: InvoiceDataVerificationResult): string {
-  let companyNotes = `\n\nCompany Verification: ${verificationResult.companyVerificationStatus} - ${verificationResult.companyVerificationReason}`;
+  const cv = verificationResult.companyVerification;
+  let companyNotes = `\n\nCompany Verification: ${cv.status} - ${cv.reason}`;
 
-  if (verificationResult.recommendedCompany) {
-    const rc = verificationResult.recommendedCompany;
-    companyNotes += `\nRecommended Company: ${rc.companyName} (${rc.companyId}). Confidence: ${(rc.confidence * 100).toFixed(0)}%. Reason: ${rc.reason}`;
+  if (cv.recommended) {
+    companyNotes += `\nRecommended Company: ${cv.recommended.companyName} (${cv.recommended.companyId}). Confidence: ${(cv.recommended.confidence * 100).toFixed(0)}%. Reason: ${cv.recommended.reason}`;
   }
 
   return companyNotes;
@@ -319,34 +323,34 @@ async function handleVerificationResult(
   invoiceWorkdayID: string,
   verificationResult: InvoiceDataVerificationResult
 ): Promise<void> {
-  const memo = verificationResult.extractedSupplierInformation?.memo || undefined;
+  const sv = verificationResult.supplierVerification;
+  const memo = sv.extractedInformation?.memo || undefined;
   const emailSummarySection = verificationResult.emailSummary ? `\n\nEmail Summary: ${verificationResult.emailSummary}` : '';
   const companySection = formatCompanyVerificationNotes(verificationResult);
 
-  switch (verificationResult.verificationStatus) {
+  switch (sv.status) {
     case 'matching':
       {
         debug('Supplier verified as matching - updating invoice with memo');
-        const notes = `AI Agent verified supplier is correct. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
+        const notes = `AI Agent verified supplier is correct. ${sv.reason}${companySection}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
-        debug('No memo extracted - skipping update');
         break;
       }
 
     case 'different':
       debug('Supplier verification found different supplier - adding revision note');
-      const recommendedSupplier = verificationResult.recommendedSupplier;
-      const notes = recommendedSupplier
-        ? `AI Agent recommends supplier revision. Recommended supplier: ${recommendedSupplier.supplierName} (${recommendedSupplier.supplierId}).
-        Confidence: ${(recommendedSupplier.confidence * 100).toFixed(0)}%.
-        Reason: ${recommendedSupplier.reason}\n\nVerification details: ${verificationResult.verificationReason}${companySection}${emailSummarySection}`
-        : `AI Agent recommends supplier revision. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
+      const recommended = sv.recommended;
+      const notes = recommended
+        ? `AI Agent recommends supplier revision. Recommended supplier: ${recommended.supplierName} (${recommended.supplierId}).
+        Confidence: ${(recommended.confidence * 100).toFixed(0)}%.
+        Reason: ${recommended.reason}\n\nVerification details: ${sv.reason}${companySection}${emailSummarySection}`
+        : `AI Agent recommends supplier revision. ${sv.reason}${companySection}${emailSummarySection}`;
       await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
       break;
 
     case 'uncertain':
       {
-        const notes = `AI Agent is uncertain that the supplier is correct. ${verificationResult.verificationReason}${companySection}${emailSummarySection}`;
+        const notes = `AI Agent is uncertain that the supplier is correct. ${sv.reason}${companySection}${emailSummarySection}`;
         await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
         break;
       }
