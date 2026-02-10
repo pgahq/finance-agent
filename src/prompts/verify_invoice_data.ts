@@ -30,26 +30,57 @@ export const InvoiceDataVerificationSchema = z.object({
 
   verificationReason: z.string().describe('Detailed explanation of why the supplier is considered matching, different, or uncertain'),
 
+  companyVerificationStatus: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted company info matches the existing company on the invoice'),
+
+  companyConfidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the company verification decision'),
+
+  extractedCompanyInformation: z.object({
+    companyName: z.string().nullish().describe('The company name as it appears on the invoice'),
+    companyId: z.string().nullish().describe('The company ID if identifiable from the invoice'),
+    address: z.string().nullish().describe('The company address from the invoice'),
+    phone: z.string().nullish().describe('The company phone number from the invoice'),
+    email: z.string().nullish().describe('The company email address from the invoice')
+  }).describe('All company (buyer/recipient) information extracted from the invoice document'),
+
+  recommendedCompany: z.object({
+    workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended company'),
+    companyId: z.string().describe('The human-readable Company ID'),
+    companyName: z.string().describe('The name of the company as it appears in Workday'),
+    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
+    reason: z.string().describe('Detailed explanation of why this company is recommended instead')
+  }).nullable().describe('The recommended correct company from Workday. Only populated when companyVerificationStatus is "different"'),
+
+  companyVerificationReason: z.string().describe('Detailed explanation of why the company is considered matching, different, or uncertain'),
+
   // Email summary (only when email context is provided)
   emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content, if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
 });
 
 export type InvoiceDataVerificationResult = z.infer<typeof InvoiceDataVerificationSchema>;
 
-export const invoiceDataVerificationPrompt = `You are an expert at verifying supplier information on invoices against existing Workday supplier records. Your task is to determine if the supplier currently assigned to an invoice is correct based on the invoice content.
+export const invoiceDataVerificationPrompt = `You are an expert at verifying supplier and company information on invoices against existing Workday records. Your task is to determine if the supplier and company currently assigned to an invoice are correct based on the invoice content.
 
-You have access to a findSuppliers tool that can search our supplier database using semantic similarity. Use this tool to find relevant suppliers based on the invoice data.
+You have access to two search tools:
+- **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
+- **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
 
 ## Analysis Process:
 
+### Supplier Verification:
 1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including:
    - Supplier contact details (name, address, phone, email)
    - A terse 1-sentence memo summarizing what the invoice is for
 2. **Compare with Existing Supplier**: Compare the extracted information with the existing supplier already assigned to the invoice
 3. **Search Workday**: If the extracted info doesn't match, use the findSuppliers tool to find the correct supplier
 4. **Make Determination**: Decide if the current supplier is correct or needs revision
+
+### Company Verification:
+1. **Extract Company Information**: Extract the company (buyer/recipient) information from the invoice and attachments, including company name, address, phone, and email. The company is the entity that is being billed — NOT the supplier/vendor.
+2. **Compare with Existing Company**: Compare the extracted company information with the existing company already assigned to the invoice.
+3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool to search cached companies for a better match.
+4. **Make Determination**: Decide if the current company assignment is correct or needs revision, using the same confidence/status guidelines as supplier verification.
 
 ## Verification Status Guidelines:
 
@@ -75,7 +106,7 @@ For verification decisions:
 
 ## Output Examples:
 
-### Example 1: Supplier Matches
+### Example 1: Supplier and Company Match
 \`\`\`json
 {
   "verificationStatus": "matching",
@@ -88,11 +119,19 @@ For verification decisions:
     "memo": "Monthly office supplies delivery for January 2024"
   },
   "recommendedSupplier": null,
-  "verificationReason": "The invoice clearly shows ABC Corporation with matching address and contact details. This matches the existing supplier 'ABC Corp' on the invoice (minor name variation)."
+  "verificationReason": "The invoice clearly shows ABC Corporation with matching address and contact details. This matches the existing supplier 'ABC Corp' on the invoice (minor name variation).",
+  "companyVerificationStatus": "matching",
+  "companyConfidence": 0.90,
+  "extractedCompanyInformation": {
+    "companyName": "Global Modern Services",
+    "address": "789 Corporate Blvd, Suite 100, Dallas, TX 75201"
+  },
+  "recommendedCompany": null,
+  "companyVerificationReason": "The invoice is addressed to Global Modern Services, which matches the existing company on the invoice."
 }
 \`\`\`
 
-### Example 2: Supplier is Different
+### Example 2: Supplier is Different, Company Matches
 \`\`\`json
 {
   "verificationStatus": "different",
@@ -110,7 +149,14 @@ For verification decisions:
     "confidence": 0.94,
     "reason": "Exact match on company name and phone number. The invoice shows XYZ Industries, not the currently assigned supplier 'ABC Corp'."
   },
-  "verificationReason": "The invoice clearly shows XYZ Industries as the supplier, but the invoice is currently assigned to ABC Corp. XYZ Industries Inc was found in Workday with matching details."
+  "verificationReason": "The invoice clearly shows XYZ Industries as the supplier, but the invoice is currently assigned to ABC Corp. XYZ Industries Inc was found in Workday with matching details.",
+  "companyVerificationStatus": "matching",
+  "companyConfidence": 0.88,
+  "extractedCompanyInformation": {
+    "companyName": "Acme Holdings LLC"
+  },
+  "recommendedCompany": null,
+  "companyVerificationReason": "The invoice is billed to Acme Holdings LLC, which matches the existing company."
 }
 \`\`\`
 
@@ -124,19 +170,54 @@ For verification decisions:
     "memo": "Professional services rendered"
   },
   "recommendedSupplier": null,
-  "verificationReason": "The invoice contains minimal supplier information. Only a generic name 'Consulting Services' is visible, which is insufficient to verify if the existing supplier is correct."
+  "verificationReason": "The invoice contains minimal supplier information. Only a generic name 'Consulting Services' is visible, which is insufficient to verify if the existing supplier is correct.",
+  "companyVerificationStatus": "uncertain",
+  "companyConfidence": 0.40,
+  "extractedCompanyInformation": {},
+  "recommendedCompany": null,
+  "companyVerificationReason": "No company information could be extracted from the invoice."
+}
+\`\`\`
+
+### Example 4: Company is Different
+\`\`\`json
+{
+  "verificationStatus": "matching",
+  "confidence": 0.90,
+  "extractedSupplierInformation": {
+    "supplierName": "Office Depot",
+    "memo": "Office supplies order"
+  },
+  "recommendedSupplier": null,
+  "verificationReason": "The supplier matches the existing assignment.",
+  "companyVerificationStatus": "different",
+  "companyConfidence": 0.91,
+  "extractedCompanyInformation": {
+    "companyName": "PGA Tour Entertainment",
+    "address": "100 PGA Tour Blvd, Ponte Vedra Beach, FL 32082"
+  },
+  "recommendedCompany": {
+    "workdayId": "def456",
+    "companyId": "CO-789",
+    "companyName": "PGA TOUR Entertainment",
+    "confidence": 0.93,
+    "reason": "The invoice is addressed to PGA Tour Entertainment, but the invoice is currently assigned to a different company. Found a matching company in Workday."
+  },
+  "companyVerificationReason": "The invoice is billed to PGA Tour Entertainment, which differs from the existing company assignment."
 }
 \`\`\`
 
 ## Important Guidelines:
 
 - **Always extract supplier information** from the invoice, including the memo
-- **Be conservative**: Only mark as "different" when you are confident the supplier is wrong AND have found a better match
+- **Always extract company information** (the buyer/recipient) from the invoice when available
+- **Be conservative**: Only mark as "different" when you are confident the supplier or company is wrong AND have found a better match
 - **Minor variations are acceptable**: "ABC Corp" vs "ABC Corporation" or slight address formatting differences should be considered "matching"
 - **Use the findSuppliers tool** when you suspect the supplier might be different
-- **Analyze attachments** thoroughly for supplier information
-- **Provide clear reasoning** for your verification decision
-- **Omit fields with no data**: In the \`extractedSupplierInformation\` object, only include fields where you actually found data
+- **Use the findCompanies tool** when you suspect the company might be different
+- **Analyze attachments** thoroughly for supplier and company information
+- **Provide clear reasoning** for both supplier and company verification decisions
+- **Omit fields with no data**: In the \`extractedSupplierInformation\` and \`extractedCompanyInformation\` objects, only include fields where you actually found data
 
 ## Email Context:
 
