@@ -2,55 +2,49 @@ import { z } from 'zod';
 
 // Zod schema for invoice data verification result
 export const InvoiceDataVerificationSchema = z.object({
-  // Overall status of the verification
-  verificationStatus: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted supplier info matches the existing supplier on the invoice'),
+  supplierVerification: z.object({
+    status: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted supplier info matches the existing supplier on the invoice'),
+    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the verification decision'),
+    extractedInformation: z.object({
+      supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
+      address: z.string().nullish().describe('The supplier address from the invoice'),
+      phone: z.string().nullish().describe('The supplier phone number from the invoice'),
+      email: z.string().nullish().describe('The supplier email address from the invoice'),
+      taxId: z.string().nullish().describe('The supplier tax ID or EIN from the invoice'),
+      website: z.string().nullish().describe('The supplier website from the invoice'),
+      industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
+      contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice'),
+      memo: z.string().nullish().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
+    }).describe('All supplier information extracted from the invoice document'),
+    recommended: z.object({
+      workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended supplier'),
+      supplierId: z.string().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
+      supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
+      confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
+      reason: z.string().describe('Detailed explanation of why this supplier is recommended instead')
+    }).nullable().describe('The recommended correct supplier from Workday. Only populated when status is "different"'),
+    reason: z.string().describe('Detailed explanation of why the supplier is considered matching, different, or uncertain')
+  }).describe('Supplier verification results'),
 
-  // Confidence in the verification decision
-  confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the verification decision'),
-
-  extractedSupplierInformation: z.object({
-    supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
-    address: z.string().nullish().describe('The supplier address from the invoice'),
-    phone: z.string().nullish().describe('The supplier phone number from the invoice'),
-    email: z.string().nullish().describe('The supplier email address from the invoice'),
-    taxId: z.string().nullish().describe('The supplier tax ID or EIN from the invoice'),
-    website: z.string().nullish().describe('The supplier website from the invoice'),
-    industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
-    contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice'),
-    memo: z.string().nullish().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
-  }).describe('All supplier information extracted from the invoice document'),
-
-  recommendedSupplier: z.object({
-    workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended supplier'),
-    supplierId: z.string().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
-    supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
-    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
-    reason: z.string().describe('Detailed explanation of why this supplier is recommended instead')
-  }).nullable().describe('The recommended correct supplier from Workday. Only populated when verificationStatus is "different"'),
-
-  verificationReason: z.string().describe('Detailed explanation of why the supplier is considered matching, different, or uncertain'),
-
-  companyVerificationStatus: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted company info matches the existing company on the invoice'),
-
-  companyConfidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the company verification decision'),
-
-  extractedCompanyInformation: z.object({
-    companyName: z.string().nullish().describe('The company name as it appears on the invoice'),
-    companyId: z.string().nullish().describe('The company ID if identifiable from the invoice'),
-    address: z.string().nullish().describe('The company address from the invoice'),
-    phone: z.string().nullish().describe('The company phone number from the invoice'),
-    email: z.string().nullish().describe('The company email address from the invoice')
-  }).describe('All company (buyer/recipient) information extracted from the invoice document'),
-
-  recommendedCompany: z.object({
-    workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended company'),
-    companyId: z.string().describe('The human-readable Company ID'),
-    companyName: z.string().describe('The name of the company as it appears in Workday'),
-    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
-    reason: z.string().describe('Detailed explanation of why this company is recommended instead')
-  }).nullable().describe('The recommended correct company from Workday. Only populated when companyVerificationStatus is "different"'),
-
-  companyVerificationReason: z.string().describe('Detailed explanation of why the company is considered matching, different, or uncertain'),
+  companyVerification: z.object({
+    status: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted company info matches the existing company on the invoice'),
+    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the company verification decision'),
+    extractedInformation: z.object({
+      companyName: z.string().nullish().describe('The company name as it appears on the invoice'),
+      companyId: z.string().nullish().describe('The company ID if identifiable from the invoice'),
+      address: z.string().nullish().describe('The company address from the invoice'),
+      phone: z.string().nullish().describe('The company phone number from the invoice'),
+      email: z.string().nullish().describe('The company email address from the invoice')
+    }).describe('All company (buyer/recipient) information extracted from the invoice document'),
+    recommended: z.object({
+      workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended company'),
+      companyId: z.string().describe('The human-readable Company ID'),
+      companyName: z.string().describe('The name of the company as it appears in Workday'),
+      confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
+      reason: z.string().describe('Detailed explanation of why this company is recommended instead')
+    }).nullable().describe('The recommended correct company from Workday. Only populated when status is "different"'),
+    reason: z.string().describe('Detailed explanation of why the company is considered matching, different, or uncertain')
+  }).describe('Company verification results'),
 
   // Email summary (only when email context is provided)
   emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content, if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
@@ -109,101 +103,117 @@ For verification decisions:
 ### Example 1: Supplier and Company Match
 \`\`\`json
 {
-  "verificationStatus": "matching",
-  "confidence": 0.95,
-  "extractedSupplierInformation": {
-    "supplierName": "ABC Corporation",
-    "address": "123 Main Street, New York, NY 10001",
-    "phone": "555-123-4567",
-    "email": "billing@abc.com",
-    "memo": "Monthly office supplies delivery for January 2024"
+  "supplierVerification": {
+    "status": "matching",
+    "confidence": 0.95,
+    "extractedInformation": {
+      "supplierName": "ABC Corporation",
+      "address": "123 Main Street, New York, NY 10001",
+      "phone": "555-123-4567",
+      "email": "billing@abc.com",
+      "memo": "Monthly office supplies delivery for January 2024"
+    },
+    "recommended": null,
+    "reason": "The invoice clearly shows ABC Corporation with matching address and contact details. This matches the existing supplier 'ABC Corp' on the invoice (minor name variation)."
   },
-  "recommendedSupplier": null,
-  "verificationReason": "The invoice clearly shows ABC Corporation with matching address and contact details. This matches the existing supplier 'ABC Corp' on the invoice (minor name variation).",
-  "companyVerificationStatus": "matching",
-  "companyConfidence": 0.90,
-  "extractedCompanyInformation": {
-    "companyName": "Global Modern Services",
-    "address": "789 Corporate Blvd, Suite 100, Dallas, TX 75201"
-  },
-  "recommendedCompany": null,
-  "companyVerificationReason": "The invoice is addressed to Global Modern Services, which matches the existing company on the invoice."
+  "companyVerification": {
+    "status": "matching",
+    "confidence": 0.90,
+    "extractedInformation": {
+      "companyName": "Global Modern Services",
+      "address": "789 Corporate Blvd, Suite 100, Dallas, TX 75201"
+    },
+    "recommended": null,
+    "reason": "The invoice is addressed to Global Modern Services, which matches the existing company on the invoice."
+  }
 }
 \`\`\`
 
 ### Example 2: Supplier is Different, Company Matches
 \`\`\`json
 {
-  "verificationStatus": "different",
-  "confidence": 0.92,
-  "extractedSupplierInformation": {
-    "supplierName": "XYZ Industries",
-    "address": "456 Oak Avenue, Chicago, IL 60601",
-    "phone": "555-987-6543",
-    "memo": "Equipment maintenance services for Q1 2024"
+  "supplierVerification": {
+    "status": "different",
+    "confidence": 0.92,
+    "extractedInformation": {
+      "supplierName": "XYZ Industries",
+      "address": "456 Oak Avenue, Chicago, IL 60601",
+      "phone": "555-987-6543",
+      "memo": "Equipment maintenance services for Q1 2024"
+    },
+    "recommended": {
+      "workdayId": "abc123",
+      "supplierId": "SUP-5678",
+      "supplierName": "XYZ Industries Inc",
+      "confidence": 0.94,
+      "reason": "Exact match on company name and phone number. The invoice shows XYZ Industries, not the currently assigned supplier 'ABC Corp'."
+    },
+    "reason": "The invoice clearly shows XYZ Industries as the supplier, but the invoice is currently assigned to ABC Corp. XYZ Industries Inc was found in Workday with matching details."
   },
-  "recommendedSupplier": {
-    "workdayId": "abc123",
-    "supplierId": "SUP-5678",
-    "supplierName": "XYZ Industries Inc",
-    "confidence": 0.94,
-    "reason": "Exact match on company name and phone number. The invoice shows XYZ Industries, not the currently assigned supplier 'ABC Corp'."
-  },
-  "verificationReason": "The invoice clearly shows XYZ Industries as the supplier, but the invoice is currently assigned to ABC Corp. XYZ Industries Inc was found in Workday with matching details.",
-  "companyVerificationStatus": "matching",
-  "companyConfidence": 0.88,
-  "extractedCompanyInformation": {
-    "companyName": "Acme Holdings LLC"
-  },
-  "recommendedCompany": null,
-  "companyVerificationReason": "The invoice is billed to Acme Holdings LLC, which matches the existing company."
+  "companyVerification": {
+    "status": "matching",
+    "confidence": 0.88,
+    "extractedInformation": {
+      "companyName": "Acme Holdings LLC"
+    },
+    "recommended": null,
+    "reason": "The invoice is billed to Acme Holdings LLC, which matches the existing company."
+  }
 }
 \`\`\`
 
 ### Example 3: Uncertain Verification
 \`\`\`json
 {
-  "verificationStatus": "uncertain",
-  "confidence": 0.45,
-  "extractedSupplierInformation": {
-    "supplierName": "Consulting Services",
-    "memo": "Professional services rendered"
+  "supplierVerification": {
+    "status": "uncertain",
+    "confidence": 0.45,
+    "extractedInformation": {
+      "supplierName": "Consulting Services",
+      "memo": "Professional services rendered"
+    },
+    "recommended": null,
+    "reason": "The invoice contains minimal supplier information. Only a generic name 'Consulting Services' is visible, which is insufficient to verify if the existing supplier is correct."
   },
-  "recommendedSupplier": null,
-  "verificationReason": "The invoice contains minimal supplier information. Only a generic name 'Consulting Services' is visible, which is insufficient to verify if the existing supplier is correct.",
-  "companyVerificationStatus": "uncertain",
-  "companyConfidence": 0.40,
-  "extractedCompanyInformation": {},
-  "recommendedCompany": null,
-  "companyVerificationReason": "No company information could be extracted from the invoice."
+  "companyVerification": {
+    "status": "uncertain",
+    "confidence": 0.40,
+    "extractedInformation": {},
+    "recommended": null,
+    "reason": "No company information could be extracted from the invoice."
+  }
 }
 \`\`\`
 
 ### Example 4: Company is Different
 \`\`\`json
 {
-  "verificationStatus": "matching",
-  "confidence": 0.90,
-  "extractedSupplierInformation": {
-    "supplierName": "Office Depot",
-    "memo": "Office supplies order"
+  "supplierVerification": {
+    "status": "matching",
+    "confidence": 0.90,
+    "extractedInformation": {
+      "supplierName": "Office Depot",
+      "memo": "Office supplies order"
+    },
+    "recommended": null,
+    "reason": "The supplier matches the existing assignment."
   },
-  "recommendedSupplier": null,
-  "verificationReason": "The supplier matches the existing assignment.",
-  "companyVerificationStatus": "different",
-  "companyConfidence": 0.91,
-  "extractedCompanyInformation": {
-    "companyName": "PGA Tour Entertainment",
-    "address": "100 PGA Tour Blvd, Ponte Vedra Beach, FL 32082"
-  },
-  "recommendedCompany": {
-    "workdayId": "def456",
-    "companyId": "CO-789",
-    "companyName": "PGA TOUR Entertainment",
-    "confidence": 0.93,
-    "reason": "The invoice is addressed to PGA Tour Entertainment, but the invoice is currently assigned to a different company. Found a matching company in Workday."
-  },
-  "companyVerificationReason": "The invoice is billed to PGA Tour Entertainment, which differs from the existing company assignment."
+  "companyVerification": {
+    "status": "different",
+    "confidence": 0.91,
+    "extractedInformation": {
+      "companyName": "PGA Tour Entertainment",
+      "address": "100 PGA Tour Blvd, Ponte Vedra Beach, FL 32082"
+    },
+    "recommended": {
+      "workdayId": "def456",
+      "companyId": "CO-789",
+      "companyName": "PGA TOUR Entertainment",
+      "confidence": 0.93,
+      "reason": "The invoice is addressed to PGA Tour Entertainment, but the invoice is currently assigned to a different company. Found a matching company in Workday."
+    },
+    "reason": "The invoice is billed to PGA Tour Entertainment, which differs from the existing company assignment."
+  }
 }
 \`\`\`
 
