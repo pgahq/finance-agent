@@ -26,6 +26,7 @@ Globals:
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
         WORKDAY_AGENT_NO_SUPPLIER_TAG_WID: FINAGENT-no-supplier
         WORKDAY_DEFAULT_SUPPLIER_ID: FINAGENT-default-supplier
+        INVOICE_MOD_ENABLED: 'false'
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
