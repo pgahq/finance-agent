@@ -17,6 +17,10 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
 
   const widList = wids.map(wid => `'${wid}'`).join(', ');
 
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(tomorrow.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fromDate = thirtyDaysAgo.toISOString().split('T')[0];
+
   return `
   SELECT
     workdayID,
@@ -25,9 +29,9 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     supplier
   FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
   WHERE OCRSupplierInvoice is not empty
-    AND invoiceStatusAsText = 'Draft'
     AND workQueueTags not in (${widList})
     AND isCanceled = false
+    AND invoiceDate >= '${fromDate}'
 `;
 }
 
@@ -92,6 +96,14 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 
     debug(`Successfully processed ${processedAttachments.length} attachments`);
 
+    // Only allow supplier/tag modifications on Draft invoices
+    const isDraft = invoiceData.invoiceStatusAsText === 'Draft';
+    const canModifyInvoice = INVOICE_MOD_ENABLED && isDraft;
+
+    if (!isDraft) {
+      debug(`Invoice ${invoiceData.workdayID} is in '${invoiceData.invoiceStatusAsText}' status - will only add notes`);
+    }
+
     let supplierResult: SupplierIdentificationResult | undefined;
     if (!invoiceData.supplier || !invoiceData.supplier.descriptor) {
       debug('Missing supplier - identifying supplier');
@@ -129,14 +141,14 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
       const emailSummary = supplierResult.emailSummary ? `\n\nEmail Summary: ${supplierResult.emailSummary}` : '';
       switch (supplierResult.status) {
         case 'found':
-          await handleFoundSupplier(context, invoiceData.workdayID, supplierResult, companyNotes);
+          await handleFoundSupplier(context, invoiceData.workdayID, supplierResult, companyNotes, canModifyInvoice);
           break;
 
         case 'not_found':
           debug('Supplier not found - adding no-supplier work queue tag');
           const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          if (INVOICE_MOD_ENABLED) {
+          if (canModifyInvoice) {
             await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
           } else {
             debug('Invoice modification disabled - recording recommendation as notes only');
@@ -149,7 +161,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           debug('Supplier not found - adding no-supplier work queue tag');
           const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const ambiguousMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          if (INVOICE_MOD_ENABLED) {
+          if (canModifyInvoice) {
             await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
           } else {
             debug('Invoice modification disabled - recording recommendation as notes only');
@@ -161,7 +173,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           debug('Error in supplier identification - flagging for manual review');
           const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const errorMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          if (INVOICE_MOD_ENABLED) {
+          if (canModifyInvoice) {
             await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, errorMemo);
           } else {
             debug('Invoice modification disabled - recording recommendation as notes only');
@@ -211,7 +223,8 @@ async function handleFoundSupplier(
   context: any,
   invoiceWorkdayID: string,
   supplierResult: SupplierIdentificationResult,
-  companyNotes: string = ''
+  companyNotes: string = '',
+  canModifyInvoice: boolean = INVOICE_MOD_ENABLED
 ): Promise<void> {
   debug('Supplier found in Workday - updating invoice');
   const foundSupplierID = supplierResult.resolvedSupplier?.supplierId;
@@ -221,7 +234,7 @@ async function handleFoundSupplier(
     const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummarySection}`;
     const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
 
-    if (INVOICE_MOD_ENABLED) {
+    if (canModifyInvoice) {
       await updateSupplierInvoiceSupplier(
         context,
         invoiceWorkdayID,
