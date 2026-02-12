@@ -10,6 +10,7 @@ import { invoiceDataVerificationPrompt, InvoiceDataVerificationSchema, type Invo
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const NO_SUPPLIER_TAG_REF_ID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_REF_ID || 'FINAGENT-no-supplier';
+const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID, NO_SUPPLIER_TAG_REF_ID]);
@@ -135,7 +136,12 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           debug('Supplier not found - adding no-supplier work queue tag');
           const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
+          if (INVOICE_MOD_ENABLED) {
+            await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
+          } else {
+            debug('Invoice modification disabled - recording recommendation as notes only');
+            await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, notFoundNotes, memo);
+          }
           break;
 
         case 'ambiguous':
@@ -143,14 +149,24 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
           debug('Supplier not found - adding no-supplier work queue tag');
           const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const ambiguousMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
+          if (INVOICE_MOD_ENABLED) {
+            await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
+          } else {
+            debug('Invoice modification disabled - recording recommendation as notes only');
+            await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, ambiguousNotes, ambiguousMemo);
+          }
           break;
 
         case 'error':
           debug('Error in supplier identification - flagging for manual review');
           const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummary}`;
           const errorMemo = supplierResult.extractedSupplierInformation?.memo || undefined;
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, errorMemo);
+          if (INVOICE_MOD_ENABLED) {
+            await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, errorMemo);
+          } else {
+            debug('Invoice modification disabled - recording recommendation as notes only');
+            await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, errorNotes, errorMemo);
+          }
           break;
       }
     } else {
@@ -205,13 +221,18 @@ async function handleFoundSupplier(
     const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${supplierResult.recommendation.action}\n${supplierResult.recommendation.reason}${companyNotes}${emailSummarySection}`;
     const memo = supplierResult.extractedSupplierInformation?.memo || undefined;
 
-    await updateSupplierInvoiceSupplier(
-      context,
-      invoiceWorkdayID,
-      foundSupplierID,
-      notes,
-      memo
-    );
+    if (INVOICE_MOD_ENABLED) {
+      await updateSupplierInvoiceSupplier(
+        context,
+        invoiceWorkdayID,
+        foundSupplierID,
+        notes,
+        memo
+      );
+    } else {
+      debug('Invoice modification disabled - recording supplier recommendation as notes only');
+      await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
+    }
   } else {
     debug('No valid supplier Workday ID found - cannot update invoice');
   }

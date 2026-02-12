@@ -37,7 +37,10 @@ jest.mock('../lib/workday.js', () => ({
       supplier: null,
       allAttachmentsForBusinessDocument: []
     }]
-  })
+  }),
+  updateSupplierInvoiceSupplier: jest.fn().mockResolvedValue(undefined),
+  addNoSupplierTagToInvoice: jest.fn().mockResolvedValue(undefined),
+  updateVerifySupplierInvoiceData: jest.fn().mockResolvedValue(undefined)
 }));
 
 jest.mock('../lib/database.js', () => ({

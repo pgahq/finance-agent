@@ -8,6 +8,7 @@ import { getS3Config, type S3Config } from './s3.js';
 import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { notifyResult } from './slack.js';
 
 export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
@@ -76,7 +77,14 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
       } else {
         // Execute query and paginate
         debug(`Executing query and paginating with pageSize: ${config.pageSize}`);
-        const allData = await executeQuery(context, resolvedQuery);
+        let allData;
+        try {
+          allData = await executeQuery(context, resolvedQuery);
+        } catch (error) {
+          const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
+          await notifyResult(lambdaName, 'error', undefined, undefined, error);
+          throw error;
+        }
 
         const pageSize = config.pageSize || allData.length;
         const totalPages = Math.ceil(allData.length / pageSize);
@@ -115,7 +123,14 @@ export const withProcessorHandler = <T = unknown>(
   if (event.query) {
     // pageSize: null case - processor executes query itself
     debug(`Executing query directly: ${event.query}`);
-    const data = await executeQuery(context, event.query);
+    let data: unknown[];
+    try {
+      data = await executeQuery(context, event.query);
+    } catch (error) {
+      const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
+      await notifyResult(lambdaName, 'error', undefined, undefined, error);
+      throw error;
+    }
     await processAction(context, data as T[], event);
   } else {
     // pageSize: number case - data comes in payload

@@ -54,6 +54,10 @@ jest.mock('@aws-sdk/client-lambda', () => ({
   InvokeCommand: jest.fn()
 }));
 
+jest.mock('../lib/slack.js', () => ({
+  notifyResult: jest.fn().mockResolvedValue(undefined)
+}));
+
 describe('handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -151,6 +155,27 @@ describe('handlers', () => {
       );
     });
 
+    it('should send Slack notification and re-throw when executeQuery fails with pageSize', async () => {
+      const { executeWorkdayQuery } = require('../lib/workday.js');
+      const { notifyResult } = require('../lib/slack.js');
+      const queryError = new Error('Workday 400: Bad Request');
+      executeWorkdayQuery.mockRejectedValueOnce(queryError);
+
+      process.env.AWS_LAMBDA_FUNCTION_NAME = 'test-query-lambda';
+
+      const query = 'SELECT * FROM test';
+      const processorFunctionName = 'TestProcessor';
+
+      const queryHandler = withQueryHandler(query)({
+        processorFunctionName,
+        pageSize: 10
+      });
+
+      await expect(queryHandler()).rejects.toThrow('Workday 400: Bad Request');
+
+      expect(notifyResult).toHaveBeenCalledWith('test-query-lambda', 'error', undefined, undefined, queryError);
+    });
+
     it('should pass resolved query string to processor when pageSize is null and query is a function', async () => {
       const resolvedQuery = 'SELECT * FROM dynamic_null';
       const queryFn = jest.fn().mockResolvedValue(resolvedQuery);
@@ -233,6 +258,23 @@ describe('handlers', () => {
         [],
         event
       );
+    });
+
+    it('should send Slack notification and re-throw when executeQuery fails', async () => {
+      const { executeWorkdayQuery } = require('../lib/workday.js');
+      const { notifyResult } = require('../lib/slack.js');
+      const queryError = new Error('Workday 400: Bad Request');
+      executeWorkdayQuery.mockRejectedValueOnce(queryError);
+
+      process.env.AWS_LAMBDA_FUNCTION_NAME = 'test-processor-lambda';
+
+      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
+      const processor = withProcessorHandler(mockProcessAction);
+
+      await expect(processor({ query: 'SELECT * FROM test' })).rejects.toThrow('Workday 400: Bad Request');
+
+      expect(notifyResult).toHaveBeenCalledWith('test-processor-lambda', 'error', undefined, undefined, queryError);
+      expect(mockProcessAction).not.toHaveBeenCalled();
     });
   });
 
