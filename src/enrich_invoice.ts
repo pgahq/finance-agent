@@ -30,7 +30,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
   WHERE OCRSupplierInvoice is not empty
     AND workQueueTags not in (${widList})
     AND isCanceled = false
-    AND invoiceDate >= '${fromDate}'
+    AND invoiceReceivedDate >= '${fromDate}'
 `;
 }
 
