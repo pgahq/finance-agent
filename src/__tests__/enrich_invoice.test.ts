@@ -57,14 +57,19 @@ jest.mock('../lib/rag.js', () => ({
 
 jest.mock('../lib/ai.js', () => ({
   getAiResponse: jest.fn().mockResolvedValue({
-    supplierVerification: {
+    supplier: {
       status: 'matching',
       confidence: 0.9,
       extractedInformation: {
         supplierName: 'Test Supplier',
         memo: 'Test invoice'
       },
-      recommended: null,
+      resolvedSupplier: null,
+      potentialDuplicateSuppliers: null,
+      recommendation: {
+        action: 'no_action',
+        reason: 'Supplier matches existing assignment'
+      },
       reason: 'High confidence match'
     },
     companyVerification: {
