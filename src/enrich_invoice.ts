@@ -117,7 +117,6 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
     const memo = result.supplier.extractedInformation?.memo || undefined;
 
     switch (result.supplier.status) {
-      // --- Identification statuses (no existing supplier) ---
       case 'found': {
         const status = 'success';
         await notifyResult(
@@ -212,7 +211,6 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
         break;
       }
 
-      // --- Verification statuses (has existing supplier) ---
       case 'matching': {
         debug('Supplier verified as matching - updating invoice with memo');
         await notifyResult(
