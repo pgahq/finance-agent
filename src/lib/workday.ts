@@ -218,11 +218,13 @@ interface buildSubmitInvoiceDataOptions {
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
 
+  const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
   const supplierRef = defaultSupplierRefId
     ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: defaultSupplierRefId }] }
     : supplierID
       ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
-      : currentInvoice.Supplier_Reference;
+      : currentInvoice.Supplier_Reference
+        ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
 
   return {
     Company_Reference: currentInvoice.Company_Reference,
