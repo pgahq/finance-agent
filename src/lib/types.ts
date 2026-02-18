@@ -98,6 +98,23 @@ export interface PresignedAttachment {
   buffer?: Buffer; // Optional buffer for AI processing
 }
 
+// Detailed invoice returned by getSupplierInvoiceWithAttachments (SOAP response)
+export interface WorkdayReference {
+  descriptor: string;
+  id: string;
+}
+
+export interface WorkdayInvoice {
+  Invoice_Number?: string;
+  controlTotalAmount?: string;
+  company1?: WorkdayReference;
+  OCRSupplierInvoice?: WorkdayReference;
+  allAddresses?: WorkdayReference[];
+  allPhoneNumbers?: WorkdayReference[];
+  allEmailAddresses?: WorkdayReference[];
+  [key: string]: unknown; // allow additional SOAP fields
+}
+
 // SOAP API Types
 export interface SupplierInvoiceSoapResponse {
   $attributes?: any;

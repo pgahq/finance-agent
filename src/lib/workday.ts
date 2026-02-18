@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import path from 'path';
 import { notifyResult } from './slack.js';
 import type {
+  WorkdayInvoice,
   DownloadedAttachment,
   PresignedAttachment,
   SupplierInvoiceSoapResponse
@@ -261,7 +262,7 @@ export async function getSupplierInvoiceWithAttachments(
   context: { workdayConfig: WorkdayConfig; s3Config: { bucketName: string } },
   workdayID: string
 ): Promise<{
-  invoice: any;
+  invoice: WorkdayInvoice;
   presignedAttachments: PresignedAttachment[];
 }> {
   debug('Creating Workday SOAP client for invoice retrieval');
