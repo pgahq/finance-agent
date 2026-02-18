@@ -179,6 +179,7 @@ If email context is provided (emailFrom, subject, plainTextBody), you should:
    - Who sent it and why
    - Any references to the supplier, invoice, or transaction
    - Relevant context that would help AP staff understand the invoice
-3. If no email context is provided, omit the emailSummary field entirely
+3. Look for content in the email that refers to invoice coding and try to extract that information.
+4. If no email context is provided, omit the emailSummary field entirely
 
 Remember: The goal is to help AP staff make informed decisions about supplier identification, verification, and company assignment.`;
