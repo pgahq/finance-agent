@@ -1,9 +1,9 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { getAiResponse } from './lib/ai.js';
-import { withHandler, withProcessorHandler } from './lib/handlers.js';
+import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import { notifyResult } from './lib/slack.js';
-import type { InvoiceData, PresignedAttachment } from './lib/types.js';
+import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import { addNoSupplierTagToInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
@@ -84,7 +84,7 @@ export const processor = withProcessorHandler(async (context, invoices, _event) 
     await processInvoice(context, invoice as InvoiceData);
   }
 });
-async function processInvoice(context: any, invoiceData: InvoiceData): Promise<void> {
+async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
@@ -297,7 +297,7 @@ async function processInvoice(context: any, invoiceData: InvoiceData): Promise<v
 }
 
 async function handleFoundSupplier(
-  context: any,
+  context: ProcessingContext,
   invoiceWorkdayID: string,
   result: InvoiceEnrichmentResult,
   companyNotes: string = '',
@@ -329,7 +329,7 @@ async function handleFoundSupplier(
 }
 
 async function enrichInvoice(
-  invoice: any,
+  invoice: WorkdayInvoice,
   processedAttachments: PresignedAttachment[],
   existingSupplier?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext']
@@ -442,23 +442,23 @@ function formatCompanyVerificationNotes(result: InvoiceEnrichmentResult): string
 }
 
 // Helper functions to extract data from invoice
-function extractAddressFromInvoice(invoice: any): string | undefined {
-  if (invoice.allAddresses?.length > 0) {
-    return invoice.allAddresses.map((addr: any) => addr.descriptor).join(', ');
+function extractAddressFromInvoice(invoice: WorkdayInvoice): string | undefined {
+  if (invoice.allAddresses && invoice.allAddresses.length > 0) {
+    return invoice.allAddresses.map(addr => addr.descriptor).join(', ');
   }
   return undefined;
 }
 
-function extractPhoneFromInvoice(invoice: any): string | undefined {
-  if (invoice.allPhoneNumbers?.length > 0) {
-    return invoice.allPhoneNumbers.map((phone: any) => phone.descriptor).join(', ');
+function extractPhoneFromInvoice(invoice: WorkdayInvoice): string | undefined {
+  if (invoice.allPhoneNumbers && invoice.allPhoneNumbers.length > 0) {
+    return invoice.allPhoneNumbers.map(phone => phone.descriptor).join(', ');
   }
   return undefined;
 }
 
-function extractEmailFromInvoice(invoice: any): string | undefined {
-  if (invoice.allEmailAddresses?.length > 0) {
-    return invoice.allEmailAddresses.map((email: any) => email.descriptor).join(', ');
+function extractEmailFromInvoice(invoice: WorkdayInvoice): string | undefined {
+  if (invoice.allEmailAddresses && invoice.allEmailAddresses.length > 0) {
+    return invoice.allEmailAddresses.map(email => email.descriptor).join(', ');
   }
   return undefined;
 }
