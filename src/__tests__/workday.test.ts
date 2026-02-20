@@ -780,7 +780,7 @@ describe('Workday utilities', () => {
             Supplier_Invoice_Data: expect.objectContaining({
               Memo: testMemo,
               Work_Queue_Information_Data: expect.objectContaining({
-                Work_Queue_Notes: testNotes
+                Work_Queue_Notes: `FINANCE AGENT:\n${testNotes}`
               })
             })
           })
@@ -1059,7 +1059,7 @@ describe('Workday utilities', () => {
             Supplier_Invoice_Data: expect.objectContaining({
               Memo: testMemo,
               Work_Queue_Information_Data: expect.objectContaining({
-                Work_Queue_Notes: testNotes,
+                Work_Queue_Notes: `FINANCE AGENT:\n${testNotes}`,
                 Work_Queue_Tags_Reference: expect.any(Array)
               })
             })
