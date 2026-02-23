@@ -29,6 +29,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
   FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
   WHERE OCRSupplierInvoice is not empty
     AND workQueueTags not in (${widList})
+    AND invoiceStatusAsText = 'Draft'
     AND isCanceled = false
     AND invoiceReceivedDate >= '${fromDate}'
     AND invoiceIsPaid = false

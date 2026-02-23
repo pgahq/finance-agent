@@ -225,28 +225,24 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     : supplierID
       ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
       : currentInvoice.Supplier_Reference
-        ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
+      ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
 
   return {
-    Company_Reference: currentInvoice.Company_Reference,
-    Currency_Reference: currentInvoice.Currency_Reference,
-    Invoice_Date: currentInvoice.Invoice_Date,
+    ...currentInvoice,
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
-    Invoice_Number: currentInvoice.Invoice_Number,
-    Control_Amount_Total: currentInvoice.Control_Amount_Total,
-
     ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
-
-    ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
-    ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-    ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
     ...((workQueueTags || notes) && {
       Work_Queue_Information_Data: {
+        ...(currentInvoice.Work_Queue_Information_Data || {}),
         ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
-        ...(notes && { Work_Queue_Notes: notes })
+        ...(notes && {
+          Work_Queue_Notes: currentInvoice.Work_Queue_Information_Data?.Work_Queue_Notes
+            ? `${currentInvoice.Work_Queue_Information_Data.Work_Queue_Notes}\n\nFINANCE AGENT:\n${notes}`
+            : `FINANCE AGENT:\n${notes}`
+        })
       }
     })
   };

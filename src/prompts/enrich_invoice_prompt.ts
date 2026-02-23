@@ -26,7 +26,7 @@ export const InvoiceEnrichmentSchema = z.object({
       supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
-    }).nullable().describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different"'),
+    }).nullable().default(null).describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different"'),
 
     potentialDuplicateSuppliers: z.array(z.object({
       workdayId: z.string().describe('The unique Workday identifier (WID) of the potential duplicate supplier'),
@@ -34,14 +34,14 @@ export const InvoiceEnrichmentSchema = z.object({
       supplierName: z.string().describe('The name of the potential duplicate supplier'),
       confidence: z.number().min(0).max(1).describe('Confidence score for this potential match'),
       reason: z.string().describe('Explanation of why this supplier is a potential match')
-    })).nullable().describe('List of potential duplicate suppliers. Only populated when status is "ambiguous"'),
+    })).nullable().default(null).describe('List of potential duplicate suppliers. Only populated when status is "ambiguous"'),
 
     recommendation: z.object({
       action: z.enum(['update_invoice', 'register_supplier', 'manual_review', 'no_action']).describe('The recommended action to take'),
       reason: z.string().describe('Detailed explanation of why this action is recommended')
-    }).describe('The recommended next action based on the analysis results'),
+    }).default({ action: 'manual_review', reason: 'No recommendation provided' }).describe('The recommended next action based on the analysis results'),
 
-    reason: z.string().describe('Detailed explanation of the supplier analysis decision')
+    reason: z.string().default('').describe('Detailed explanation of the supplier analysis decision')
   }).describe('Supplier identification or verification results'),
 
   companyVerification: z.object({
