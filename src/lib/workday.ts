@@ -209,7 +209,6 @@ interface WorkQueueTag {
 
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
-  invoiceLines?: any[];
   supplierID?: string;
   workQueueTags?: WorkQueueTag[];
   notes?: string;
@@ -218,7 +217,7 @@ interface buildSubmitInvoiceDataOptions {
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, invoiceLines, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
+  const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
 
   const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
   const supplierRef = defaultSupplierRefId
@@ -250,7 +249,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...(currentInvoice.Currency_Rate_Data && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    ...(invoiceLines && invoiceLines.length > 0 && { Invoice_Line_Replacement_Data: invoiceLines }),
+    ...(currentInvoice.Invoice_Line_Replacement_Data && { Invoice_Line_Replacement_Data: currentInvoice.Invoice_Line_Replacement_Data }),
 
     ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
 
@@ -458,53 +457,6 @@ export async function getSupplierInvoice(
   return invoice;
 }
 
-export async function getSupplierInvoiceLines(
-  context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string
-): Promise<any[]> {
-  debug('Fetching Supplier Invoice Lines via SOAP');
-  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
-
-  const client = await buildClient(context);
-
-  const soapResponse = await new Promise<any>((resolve, reject) => {
-    const request = {
-      Get_Supplier_Invoice_Lines_Request: {
-        Request_Criteria: {
-          Supplier_Invoice_Document_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-          }
-        },
-        Response_Group: {
-          Include_Reference: true
-        }
-      }
-    };
-
-    debug('Requesting Supplier Invoice Lines from Workday');
-    client.Get_Supplier_Invoice_Lines(request, (err: any, result: any) => {
-      if (err) {
-        debug('Error from Workday SOAP (Get_Supplier_Invoice_Lines):', err);
-        return reject(err);
-      }
-      debug('Workday SOAP response received for invoice lines');
-      debug('Full invoice lines response:', JSON.stringify(result, null, 2));
-      resolve(result);
-    });
-  });
-
-  const linesRaw = soapResponse?.Response_Data?.Supplier_Invoice_Line;
-
-  if (!linesRaw) {
-    debug('No invoice lines found');
-    return [];
-  }
-
-  const lines = Array.isArray(linesRaw) ? linesRaw : [linesRaw];
-  debug(`Found ${lines.length} invoice lines`);
-  return lines;
-}
-
 export interface InboundEmailData {
   emailFrom?: string;
   subject?: string;
@@ -633,11 +585,8 @@ export async function updateSupplierInvoiceSupplier(
   debug(`Supplier ID: ${supplierID}`);
 
   try {
-    debug('Fetching current invoice data and lines');
-    const [currentInvoice, invoiceLines] = await Promise.all([
-      getSupplierInvoice(context, invoiceWorkdayID),
-      getSupplierInvoiceLines(context, invoiceWorkdayID)
-    ]);
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
     if (!currentInvoice) {
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
@@ -662,7 +611,6 @@ export async function updateSupplierInvoiceSupplier(
 
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
-      invoiceLines,
       supplierID,
       workQueueTags,
       notes,
@@ -753,11 +701,8 @@ export async function addNoSupplierTagToInvoice(
       throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
     }
 
-    debug('Fetching current invoice data and lines');
-    const [currentInvoice, invoiceLines] = await Promise.all([
-      getSupplierInvoice(context, invoiceWorkdayID),
-      getSupplierInvoiceLines(context, invoiceWorkdayID)
-    ]);
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
     if (!currentInvoice) {
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
@@ -774,7 +719,6 @@ export async function addNoSupplierTagToInvoice(
 
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
-      invoiceLines,
       workQueueTags,
       notes,
       memo,
@@ -857,11 +801,8 @@ export async function updateVerifySupplierInvoiceData(
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
   try {
-    debug('Fetching current invoice data and lines');
-    const [currentInvoice, invoiceLines] = await Promise.all([
-      getSupplierInvoice(context, invoiceWorkdayID),
-      getSupplierInvoiceLines(context, invoiceWorkdayID)
-    ]);
+    debug('Fetching current invoice data');
+    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
     if (!currentInvoice) {
       throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
@@ -880,7 +821,6 @@ export async function updateVerifySupplierInvoiceData(
 
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
-      invoiceLines,
       workQueueTags,
       notes,
       memo
