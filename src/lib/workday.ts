@@ -2,10 +2,10 @@ import { debug } from '@pga/logger';
 import path from 'path';
 import { notifyResult } from './slack.js';
 import type {
-  WorkdayInvoice,
   DownloadedAttachment,
   PresignedAttachment,
-  SupplierInvoiceSoapResponse
+  SupplierInvoiceSoapResponse,
+  WorkdayInvoice
 } from './types.js';
 
 // Import strong-soap for SOAP client using dynamic import
@@ -228,21 +228,43 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
 
   return {
-    ...currentInvoice,
+    Company_Reference: currentInvoice.Company_Reference,
+    Currency_Reference: currentInvoice.Currency_Reference,
+    Invoice_Date: currentInvoice.Invoice_Date,
+    ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
+    Invoice_Number: currentInvoice.Invoice_Number,
+    ...(currentInvoice.Suppliers_Invoice_Number && { Suppliers_Invoice_Number: currentInvoice.Suppliers_Invoice_Number }),
+    Control_Amount_Total: currentInvoice.Control_Amount_Total,
+    ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
+    ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
+    ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
+    ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
+
+    ...(currentInvoice['Ship-To_Address_Reference'] && { 'Ship-To_Address_Reference': currentInvoice['Ship-To_Address_Reference'] }),
+    ...(currentInvoice['Ship-To_Address_ID_Reference'] && { 'Ship-To_Address_ID_Reference': currentInvoice['Ship-To_Address_ID_Reference'] }),
+
+    ...(currentInvoice.On_Hold !== undefined && { On_Hold: currentInvoice.On_Hold }),
+    ...(currentInvoice.Prepaid !== undefined && { Prepaid: currentInvoice.Prepaid }),
+
+    ...(currentInvoice.Currency_Rate_Data && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
+
+    ...(currentInvoice.Invoice_Line_Replacement_Data && {
+      Invoice_Line_Replacement_Data: currentInvoice.Invoice_Line_Replacement_Data
+    }),
+
     ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
+
+    ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+    ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+    ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
     ...((workQueueTags || notes) && {
       Work_Queue_Information_Data: {
-        ...(currentInvoice.Work_Queue_Information_Data || {}),
         ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
-        ...(notes && {
-          Work_Queue_Notes: currentInvoice.Work_Queue_Information_Data?.Work_Queue_Notes
-            ? `${currentInvoice.Work_Queue_Information_Data.Work_Queue_Notes}\n\nFINANCE AGENT:\n${notes}`
-            : `FINANCE AGENT:\n${notes}`
-        })
+        ...(notes && { Work_Queue_Notes: `FINANCE AGENT:\n${notes}` })
       }
     })
   };
