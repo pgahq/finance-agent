@@ -314,7 +314,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -334,7 +335,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -359,7 +361,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -412,7 +415,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -479,7 +483,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -504,6 +509,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -544,6 +550,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -623,6 +630,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -677,6 +685,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -739,6 +748,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -794,6 +804,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -836,6 +847,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -915,6 +927,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -987,7 +1000,8 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
+        Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} }))
       };
 
       const { soap } = require('strong-soap');
@@ -1013,6 +1027,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -1074,6 +1089,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
@@ -1120,6 +1136,7 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Get_Supplier_Invoices: jest.fn(),
+        Get_Supplier_Invoice_Lines: jest.fn((_request: any, callback: any) => callback(null, { Response_Data: {} })),
         Submit_Supplier_Invoice: jest.fn()
       };
 
