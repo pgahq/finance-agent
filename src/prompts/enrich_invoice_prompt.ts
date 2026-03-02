@@ -18,7 +18,7 @@ export const InvoiceEnrichmentSchema = z.object({
       industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice'),
       memo: z.string().nullish().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
-    }).describe('All supplier information extracted from the invoice document'),
+    }).default({}).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
       workdayId: z.string().describe('The unique Workday identifier (WID) of the supplier'),

@@ -27,7 +27,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     AND workQueueTags not in (${widList})
     AND invoiceStatusAsText in ('Draft', 'In Progress')
     AND isCanceled = false
-    AND invoiceDate >= '2025-03-01'
+    AND invoiceDate >= '2026-03-01'
     AND invoiceIsPaid = false
     AND invoiceIsPartiallyPaid = false
   LIMIT 1

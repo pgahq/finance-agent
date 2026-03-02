@@ -883,6 +883,187 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('should include completed invoice lines in submit', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const completedLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Item 1',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] },
+        Worktags_Reference: { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-100' }] },
+        Quantity: '1',
+        Unit_Cost: '100',
+        Extended_Amount: '100'
+      };
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Invoice_Line_Replacement_Data: [completedLine]
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Invoice_Line_Replacement_Data: [completedLine]
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it('should exclude incomplete OCR lines and omit Invoice_Line_Replacement_Data when no completed lines exist', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const incompleteLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'OCR Item',
+        Quantity: '1',
+        Unit_Cost: '100',
+        Extended_Amount: '100'
+        // No Spend_Category_Reference, Item_Reference, or Worktags_Reference
+      };
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Invoice_Line_Replacement_Data: [incompleteLine]
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toBeUndefined();
+    });
+
+    it('should include only completed lines and drop incomplete OCR lines when mixed', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const completedLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Coded Item',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] },
+        Worktags_Reference: { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-100' }] },
+        Quantity: '1',
+        Unit_Cost: '100',
+        Extended_Amount: '100'
+      };
+
+      const incompleteLine = {
+        Supplier_Invoice_Line_ID: 'LINE-2',
+        Item_Description: 'OCR Item',
+        Quantity: '2',
+        Unit_Cost: '50',
+        Extended_Amount: '100'
+        // No Spend_Category_Reference, Item_Reference, or Worktags_Reference
+      };
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '200.00',
+              Invoice_Line_Replacement_Data: [completedLine, incompleteLine]
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Submit_Supplier_Invoice_Request: expect.objectContaining({
+            Supplier_Invoice_Data: expect.objectContaining({
+              Invoice_Line_Replacement_Data: [completedLine]
+            })
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
   });
 
   describe('addNoSupplierTagToInvoice', () => {
