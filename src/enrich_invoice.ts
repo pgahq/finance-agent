@@ -16,10 +16,6 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
 
   const widList = wids.map(wid => `'${wid}'`).join(', ');
 
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  const thirtyDaysAgo = new Date(tomorrow.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const fromDate = thirtyDaysAgo.toISOString().split('T')[0];
-
   return `
   SELECT
     workdayID,
@@ -31,9 +27,10 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     AND workQueueTags not in (${widList})
     AND invoiceStatusAsText in ('Draft', 'In Progress')
     AND isCanceled = false
-    AND invoiceReceivedDate >= '${fromDate}'
+    AND invoiceDate >= '2025-03-01'
     AND invoiceIsPaid = false
     AND invoiceIsPartiallyPaid = false
+  LIMIT 1
 `;
 }
 
