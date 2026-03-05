@@ -106,7 +106,8 @@ describe('AI utilities', () => {
       // Mock Step 1: generateText result
       mockGenerateText.mockResolvedValue({
         text: 'JSON response with supplier data',
-        toolResults: []
+        toolResults: [],
+        response: { messages: [] }
       });
 
       // Mock Step 2: generateObject result
@@ -137,10 +138,14 @@ describe('AI utilities', () => {
         }
       });
 
-      // Verify Step 2: generateObject was called
+      // Verify Step 2: generateObject was called with full conversation history
       expect(mockGenerateObject).toHaveBeenCalledWith({
         model: 'mocked-openai-model',
-        prompt: 'Convert this text into structured JSON:\n\nJSON response with supplier data',
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: 'user' }),
+          expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
+        ]),
+        system: expect.any(String),
         schema: mockSchema,
         temperature: 0.1
       });

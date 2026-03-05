@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText, generateObject, stepCountIs, NoObjectGeneratedError } from 'ai';
+import { generateText, generateObject, stepCountIs, NoObjectGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool } from './rag.js';
 
@@ -15,7 +15,7 @@ export async function getAiResponse({
   model = 'gpt-4.1-2025-04-14'
 }: {
   prompt: string;
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | Array<{ type: 'text' | 'image'; text?: string; image?: string | URL }> }>;
+  messages: ModelMessage[];
   schema?: z.ZodSchema<any>;
   model?: string;
 }): Promise<unknown> {
@@ -57,12 +57,17 @@ export async function getAiResponse({
       return textResult.text;
     }
 
-    // Step 2: Convert to structured output using a fast model
+    // Step 2: Convert to structured output, passing full conversation history including tool results
     const { object } = await generateObject({
       model: openai('gpt-4.1-2025-04-14'),
-      prompt: `Convert this text into structured JSON:\n\n${textResult.text}`,
+      messages: [
+        ...messages,
+        ...textResult.response.messages,
+        { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
+      ],
+      system: prompt,
       schema: schema,
-      temperature: 0.1 // Low temperature for consistent structured output
+      temperature: 0.1
     });
 
     return object;
