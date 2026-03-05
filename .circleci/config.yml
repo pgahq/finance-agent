@@ -99,7 +99,7 @@ jobs:
   deploy-to-prod:
     <<: *deploy_container_config
     environment:
-      LOG_LEVEL: WARN
+      LOG_LEVEL: DEBUG
 
 workflows:
   version: 2
