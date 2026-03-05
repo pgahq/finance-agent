@@ -250,9 +250,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.Currency_Rate_Data && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
     ...(currentInvoice.Invoice_Line_Replacement_Data && (() => {
-      const completedLines = currentInvoice.Invoice_Line_Replacement_Data.filter(
-        (line: any) => (line.Spend_Category_Reference || line.Item_Reference) && line.Worktags_Reference
-      );
+      const completedLines = currentInvoice.Invoice_Line_Replacement_Data
+        .filter((line: any) => (line.Spend_Category_Reference || line.Item_Reference) && line.Worktags_Reference)
+        .map(({ Tax_Data, ...line }: any) => line);
       return completedLines.length > 0 ? { Invoice_Line_Replacement_Data: completedLines } : {};
     })()),
 
