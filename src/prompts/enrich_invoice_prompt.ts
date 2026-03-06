@@ -5,8 +5,8 @@ export const InvoiceEnrichmentSchema = z.object({
   supplier: z.object({
     // Identification statuses: found, not_found, ambiguous, error
     // Verification statuses: matching, different, uncertain
-    status: z.enum(['found', 'not_found', 'ambiguous', 'matching', 'different', 'uncertain', 'error']).describe('The result of supplier analysis. Use found/not_found/ambiguous/error when identifying a supplier (no existing supplier). Use matching/different/uncertain when verifying an existing supplier.'),
-    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1'),
+    status: z.enum(['found', 'not_found', 'ambiguous', 'matching', 'different', 'uncertain', 'error']).default('error').describe('The result of supplier analysis. Use found/not_found/ambiguous/error when identifying a supplier (no existing supplier). Use matching/different/uncertain when verifying an existing supplier.'),
+    confidence: z.number().min(0).max(1).default(0).describe('Confidence score between 0 and 1'),
 
     extractedInformation: z.object({
       supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
@@ -21,8 +21,8 @@ export const InvoiceEnrichmentSchema = z.object({
     }).default({}).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
-      workdayId: z.string().describe('The unique Workday identifier (WID) of the supplier'),
-      supplierId: z.string().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
+      workdayId: z.string().nullable().describe('The unique Workday identifier (WID) of the supplier'),
+      supplierId: z.string().nullable().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
       supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
@@ -53,15 +53,15 @@ export const InvoiceEnrichmentSchema = z.object({
       address: z.string().nullish().describe('The company address from the invoice'),
       phone: z.string().nullish().describe('The company phone number from the invoice'),
       email: z.string().nullish().describe('The company email address from the invoice')
-    }).describe('All company (buyer/recipient) information extracted from the invoice document'),
+    }).default({}).describe('All company (buyer/recipient) information extracted from the invoice document'),
     recommended: z.object({
-      workdayId: z.string().describe('The unique Workday identifier (WID) of the recommended company'),
-      companyId: z.string().describe('The human-readable Company ID'),
+      workdayId: z.string().nullable().describe('The unique Workday identifier (WID) of the recommended company'),
+      companyId: z.string().nullable().describe('The human-readable Company ID'),
       companyName: z.string().describe('The name of the company as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this company is recommended instead')
-    }).nullable().describe('The recommended correct company from Workday. Only populated when status is "different"'),
-    reason: z.string().describe('Detailed explanation of why the company is considered matching, different, or uncertain')
+    }).nullable().default(null).describe('The recommended correct company from Workday. Only populated when status is "different"'),
+    reason: z.string().default('').describe('Detailed explanation of why the company is considered matching, different, or uncertain')
   }).describe('Company verification results'),
 
   emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
