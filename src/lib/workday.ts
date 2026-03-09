@@ -264,8 +264,17 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...((workQueueTags || notes) && {
       Work_Queue_Information_Data: {
-        ...(workQueueTags && { Work_Queue_Tags_Reference: workQueueTags }),
-        ...(notes && { Work_Queue_Notes: `FINANCE AGENT:\n${notes}` })
+        ...(workQueueTags && (() => {
+          const existingTags: WorkQueueTag[] = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? [];
+          const existingWids = new Set(existingTags.flatMap(t => t.ID.map(id => id.$value)));
+          const newTags = workQueueTags.filter(t => !existingWids.has(t.ID[0].$value));
+          return { Work_Queue_Tags_Reference: [...existingTags, ...newTags] };
+        })()),
+        ...(notes && (() => {
+          const existingNotes = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Notes;
+          const newNotes = existingNotes ? `${existingNotes}\n\nFINANCE AGENT:\n${notes}` : `FINANCE AGENT:\n${notes}`;
+          return { Work_Queue_Notes: newNotes };
+        })())
       }
     })
   };
