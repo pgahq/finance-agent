@@ -21,7 +21,8 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     workdayID,
     invoiceStatusAsText,
     OCRSupplierInvoice,
-    supplier
+    supplier,
+    company1
   FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
   WHERE OCRSupplierInvoice is not empty
     AND workQueueTags not in (${widList})
@@ -107,8 +108,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       ? { descriptor: invoiceData.supplier.descriptor, id: invoiceData.supplier.id }
       : undefined;
 
+    const existingCompany = invoiceData.company1?.descriptor
+      ? { descriptor: invoiceData.company1.descriptor, id: invoiceData.company1.id }
+      : undefined;
+
     debug(existingSupplier ? 'Enriching invoice with existing supplier' : 'Enriching invoice - no supplier assigned');
-    const result = await enrichInvoice(detailedInvoice, processedAttachments, existingSupplier, invoiceData.emailContext);
+    const result = await enrichInvoice(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
     debug('Enrichment result:', result);
 
     const processingTime = Date.now() - startTime;
@@ -330,21 +335,22 @@ async function enrichInvoice(
   invoice: WorkdayInvoice,
   processedAttachments: PresignedAttachment[],
   existingSupplier?: { descriptor: string; id: string },
+  existingCompany?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext']
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
   try {
-    const existingCompany = invoice.company1
-      ? { name: invoice.company1.descriptor, id: invoice.company1.id }
+    const company = existingCompany
+      ? { name: existingCompany.descriptor, id: existingCompany.id }
       : undefined;
 
     const invoiceData = {
       existingSupplier: existingSupplier
         ? { name: existingSupplier.descriptor, id: existingSupplier.id }
         : undefined,
-      existingCompany,
-      companyName: invoice.company1?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
+      existingCompany: company,
+      companyName: existingCompany?.descriptor || invoice.OCRSupplierInvoice?.descriptor,
       address: extractAddressFromInvoice(invoice),
       phone: extractPhoneFromInvoice(invoice),
       email: extractEmailFromInvoice(invoice),
@@ -366,8 +372,8 @@ async function enrichInvoice(
       ? `\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})`
       : '\nExisting Supplier: None (supplier has not been assigned yet)';
 
-    const existingCompanyText = existingCompany
-      ? `\nExisting Company: ${existingCompany.name} (ID: ${existingCompany.id})`
+    const existingCompanyText = company
+      ? `\nExisting Company: ${company.name} (ID: ${company.id})`
       : '';
 
     const taskDescription = existingSupplier

@@ -54,6 +54,10 @@ export interface InvoiceData {
     descriptor: string;
     id: string;
   };
+  company1?: {
+    descriptor: string;
+    id: string;
+  };
   emailContext?: {
     emailFrom?: string;
     subject?: string;
