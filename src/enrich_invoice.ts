@@ -16,6 +16,10 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
 
   const widList = wids.map(wid => `'${wid}'`).join(', ');
 
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().split('T')[0];
+
   return `
   SELECT
     workdayID,
@@ -28,7 +32,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     AND workQueueTags not in (${widList})
     AND invoiceStatusAsText = 'Draft'
     AND isCanceled = false
-    AND invoiceDate >= '2026-03-01'
+    AND invoiceReceivedDate = '${yesterdayStr}'
     AND invoiceIsPaid = false
     AND invoiceIsPartiallyPaid = false
   LIMIT 5
