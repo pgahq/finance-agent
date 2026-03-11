@@ -228,6 +228,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
 
   return {
+    Submit: false,
     Company_Reference: currentInvoice.Company_Reference,
     Currency_Reference: currentInvoice.Currency_Reference,
     Invoice_Date: currentInvoice.Invoice_Date,
