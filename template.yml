@@ -304,7 +304,7 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: cron(0 13 * * ? *)
+            Schedule: cron(0 * * * *)
 
   # Enrich Invoice Supplier Processor - Individual record processing
   EnrichInvoiceProcessor:
