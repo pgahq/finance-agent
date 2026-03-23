@@ -201,6 +201,41 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
+  # Cache Cost Centers - Query handler
+  CacheCostCentersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheCostCenters"
+      Handler: dist/cache_cost_centers.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(59 11 * * ? *)
+
+  # Cache Cost Centers Processor - Data processing
+  CacheCostCentersProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheCostCentersProcessor"
+      Handler: dist/cache_cost_centers.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
   # Cache Companies - Query handler
   CacheCompaniesFunction:
     Type: AWS::Serverless::Function
@@ -304,7 +339,7 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: cron(0 * * * *)
+            Schedule: cron(0 * * * ? *)
 
   # Enrich Invoice Supplier Processor - Individual record processing
   EnrichInvoiceProcessor:
