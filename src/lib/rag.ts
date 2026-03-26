@@ -2,9 +2,7 @@ import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { getDatabaseConnection, searchDocuments } from './database.js';
-
-// Document types
-export type DocumentType = 'supplier' | 'invoice' | 'company';
+export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI
 export async function createEmbedding(text: string): Promise<number[]> {
@@ -48,7 +46,6 @@ export function createSupplierContent(supplier: any): string {
 export function createCompanyContent(company: any): string {
   const content = [
     `Company Name: ${company.companyName}`,
-    `Company ID: ${company.companyId}`,
     `Primary Address: ${company.addressPrimary}`,
     company.publicAddresses?.length > 0 ? `Public Addresses: ${company.publicAddresses.join(', ')}` : null,
     company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
@@ -58,6 +55,15 @@ export function createCompanyContent(company: any): string {
   return content;
 }
 
+
+export function createCostCenterContent(costCenter: any): string {
+  const content = [
+    `Cost Center Name: ${costCenter.name}`,
+    `Cost Center Code: ${costCenter.code}`,
+  ].filter(Boolean).join('\n');
+
+  return content;
+}
 
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
@@ -234,7 +240,6 @@ export const findCompaniesTool = tool({
         success: true,
         results: results.map(result => ({
           workdayId: result.workday_id,
-          companyId: result.metadata?.companyId,
           type: result.type,
           content: result.content,
           metadata: result.metadata,
