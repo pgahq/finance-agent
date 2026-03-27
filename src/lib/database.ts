@@ -11,11 +11,13 @@ export interface DatabaseConfig {
   password: string;
 }
 
+export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center';
+
 // Document interface
 export interface Document {
   id: string;
   workday_id: string;
-  type: 'supplier' | 'invoice' | 'company';
+  type: DocumentType;
   content: string;
   metadata: Record<string, any>;
   embedding: number[];
@@ -33,7 +35,7 @@ export const CREATE_DOCUMENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workday_id VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center')),
     content TEXT NOT NULL,
     metadata JSONB,
     embedding VECTOR(1536),
@@ -163,7 +165,7 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
 export async function insertDocument(
   db: DatabaseConnection,
   workdayId: string,
-  type: 'supplier' | 'invoice' | 'company',
+  type: DocumentType,
   content: string,
   metadata: Record<string, any>,
   embedding: number[]
@@ -184,7 +186,7 @@ export async function insertDocument(
 export async function updateDocument(
   db: DatabaseConnection,
   workdayId: string,
-  type: 'supplier' | 'invoice' | 'company',
+  type: DocumentType,
   content: string,
   metadata: Record<string, any>,
   embedding: number[]
@@ -206,7 +208,7 @@ export async function updateDocument(
 export async function deleteDocument(
   db: DatabaseConnection,
   workdayId: string,
-  type: 'supplier' | 'invoice' | 'company'
+  type: DocumentType
 ): Promise<void> {
   try {
     await db.query(`
@@ -223,7 +225,7 @@ export async function deleteDocument(
 
 export async function deleteAllDocumentsByType(
   db: DatabaseConnection,
-  type: 'supplier' | 'invoice' | 'company'
+  type: DocumentType
 ): Promise<number> {
   try {
     const result = await db.query(`
@@ -242,7 +244,7 @@ export async function deleteAllDocumentsByType(
 
 export async function getDocumentsByType(
   db: DatabaseConnection,
-  type: 'supplier' | 'invoice' | 'company'
+  type: DocumentType
 ): Promise<Array<{ workday_id: string; metadata: any; created_at: Date }>> {
   try {
     const results = await db.query(`
@@ -264,7 +266,7 @@ export async function bulkInsertDocuments(
   db: DatabaseConnection,
   documents: Array<{
     workdayId: string;
-    type: 'supplier' | 'invoice' | 'company';
+    type: DocumentType;
     content: string;
     metadata: Record<string, any>;
     embedding: number[];
@@ -303,7 +305,7 @@ export async function bulkUpdateDocuments(
   db: DatabaseConnection,
   documents: Array<{
     workdayId: string;
-    type: 'supplier' | 'invoice' | 'company';
+    type: DocumentType;
     content: string;
     metadata: Record<string, any>;
     embedding: number[];
@@ -336,7 +338,7 @@ export async function bulkUpdateDocuments(
 export async function bulkDeleteDocuments(
   db: DatabaseConnection,
   workdayIds: string[],
-  type: 'supplier' | 'invoice' | 'company'
+  type: DocumentType
 ): Promise<number> {
   if (workdayIds.length === 0) return 0;
 
@@ -358,7 +360,7 @@ export async function bulkDeleteDocuments(
 export async function searchSimilarDocuments(
   db: DatabaseConnection,
   queryEmbedding: number[],
-  documentType: 'supplier' | 'invoice' | 'company',
+  documentType: DocumentType,
   limit: number = 5
 ): Promise<any[]> {
   try {
@@ -392,7 +394,7 @@ export async function searchDocuments(
   db: DatabaseConnection,
   queryEmbedding: number[],
   queryText: string,
-  documentType: 'supplier' | 'invoice' | 'company',
+  documentType: DocumentType,
   limit: number = 5
 ): Promise<any[]> {
   try {
