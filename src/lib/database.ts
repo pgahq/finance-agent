@@ -51,6 +51,12 @@ export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
 ];
 
+// Migrations to run on every cold start (idempotent)
+export const MIGRATIONS = [
+  `ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`,
+  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center'))`,
+];
+
 // Enable pgvector extension
 export const ENABLE_PGVECTOR = `CREATE EXTENSION IF NOT EXISTS vector;`;
 
@@ -125,6 +131,11 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       // Create indexes
       for (const indexSql of CREATE_INDEXES) {
         await pool.query(indexSql);
+      }
+
+      // Run migrations
+      for (const migrationSql of MIGRATIONS) {
+        await pool.query(migrationSql);
       }
 
     } catch (error) {
