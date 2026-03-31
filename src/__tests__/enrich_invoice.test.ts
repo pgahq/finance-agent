@@ -82,6 +82,24 @@ jest.mock('../lib/ai.js', () => ({
   })
 }));
 
+jest.mock('../lib/invoice_validation_failures.js', () => ({
+  getInvoiceValidationFailuresConfig: jest.fn().mockReturnValue(undefined),
+  isInvoiceMarkedForSkip: jest.fn().mockResolvedValue(false),
+  isWorkdayValidationError: jest.fn((error: unknown) => {
+    if (typeof error === 'string') {
+      return /validation/i.test(error);
+    }
+
+    if (error instanceof Error) {
+      return /validation/i.test(error.message);
+    }
+
+    const message = (error as { message?: string } | undefined)?.message;
+    return typeof message === 'string' && /validation/i.test(message);
+  }),
+  recordInvoiceValidationFailure: jest.fn().mockResolvedValue(undefined)
+}));
+
 jest.mock('../lib/s3.js', () => ({
   getS3Config: jest.fn().mockReturnValue({
     bucketName: 'test-bucket',
@@ -92,6 +110,9 @@ jest.mock('../lib/s3.js', () => ({
 describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const validationFailures = require('../lib/invoice_validation_failures.js');
+    validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);
+    validationFailures.recordInvoiceValidationFailure.mockResolvedValue(undefined);
   });
 
   it('should process supplier enrichment event with new format', async () => {
@@ -174,6 +195,70 @@ describe('enrich_invoice', () => {
     };
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
+  });
+
+  it('should skip processing invoices already marked in the validation skip registry', async () => {
+    const { getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+    const { isInvoiceMarkedForSkip } = require('../lib/invoice_validation_failures.js');
+
+    isInvoiceMarkedForSkip.mockResolvedValue(true);
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+    expect(getSupplierInvoiceWithAttachments).not.toHaveBeenCalled();
+  });
+
+  it('should record validation failures and avoid rethrowing them', async () => {
+    const { updateVerifySupplierInvoiceData } = require('../lib/workday.js');
+    const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
+
+    const validationError = new Error('Validation_Fault: spend category is required');
+    updateVerifySupplierInvoiceData.mockRejectedValue(validationError);
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+    expect(recordInvoiceValidationFailure).toHaveBeenCalledWith(undefined, 'test-invoice-id', validationError);
+  });
+
+  it('should continue throwing non-validation processing errors', async () => {
+    const { updateVerifySupplierInvoiceData } = require('../lib/workday.js');
+    const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
+
+    updateVerifySupplierInvoiceData.mockRejectedValue(new Error('Update failed'));
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).rejects.toThrow('Update failed');
+    expect(recordInvoiceValidationFailure).not.toHaveBeenCalled();
   });
 
   it('should handle batching with hardcoded configuration', () => {

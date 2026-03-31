@@ -48,6 +48,18 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpirationInDays: 30
 
+  InvoiceValidationFailuresTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-invoice-validation-failures"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: invoiceWorkdayID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: invoiceWorkdayID
+          KeyType: HASH
+
   # Database Secret for password management
   DatabaseSecret:
     Type: AWS::SecretsManager::Secret
@@ -180,6 +192,65 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"
+
+  EnrichInvoiceProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EnrichInvoiceProcessorPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource:
+                  - arn:aws:ssm:*:*:parameter/finance-agent/*
+                  - arn:aws:ssm:*:*:parameter/ap-ingest-service/workday-isu-user
+                  - arn:aws:ssm:*:*:parameter/ap-ingest-service/workday-isu-password
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecret
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}/*
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt InvoiceValidationFailuresTable.Arn
               - Effect: Allow
                 Action:
                   - ec2:CreateNetworkInterface
@@ -347,9 +418,12 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-EnrichInvoiceProcessor"
       Handler: dist/enrich_invoice.processor
-      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
+      Environment:
+        Variables:
+          INVOICE_VALIDATION_FAILURES_TABLE_NAME: !Ref InvoiceValidationFailuresTable
       Layers:
         - !Ref PopplerLayer
       VpcConfig:

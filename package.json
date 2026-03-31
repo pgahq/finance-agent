@@ -37,8 +37,10 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.53",
+    "@aws-sdk/client-dynamodb": "^3.1020.0",
     "@aws-sdk/client-lambda": "^3.914.0",
     "@aws-sdk/client-secrets-manager": "^3.914.0",
+    "@aws-sdk/lib-dynamodb": "^3.1020.0",
     "@aws-sdk/s3-request-presigner": "^3.598.0",
     "@pga/lambda-env": "^0.0.11",
     "@pga/logger": "^0.1.10",
