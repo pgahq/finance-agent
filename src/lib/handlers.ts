@@ -4,6 +4,7 @@
 
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
+import { getInvoiceValidationFailuresConfig, type InvoiceValidationFailuresConfig } from './invoice_validation_failures.js';
 import { getS3Config, type S3Config } from './s3.js';
 import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
@@ -14,6 +15,7 @@ export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
   s3Config: S3Config;
   dbConnection: DatabaseConnection;
+  invoiceValidationFailuresConfig?: InvoiceValidationFailuresConfig;
 }
 
 async function setupContext(): Promise<ProcessingContext> {
@@ -22,7 +24,8 @@ async function setupContext(): Promise<ProcessingContext> {
   return {
     workdayConfig: getWorkdayConfig(process.env),
     s3Config: getS3Config(process.env),
-    dbConnection: await getDatabaseConnection(process.env)
+    dbConnection: await getDatabaseConnection(process.env),
+    invoiceValidationFailuresConfig: getInvoiceValidationFailuresConfig(process.env)
   };
 }
 

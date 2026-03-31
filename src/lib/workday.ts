@@ -809,97 +809,62 @@ export async function updateVerifySupplierInvoiceData(
   notes?: string,
   memo?: string | undefined
 ): Promise<{ success: boolean; message?: string }> {
-  const startTime = Date.now();
-
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
-  try {
-    debug('Fetching current invoice data');
-    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+  debug('Fetching current invoice data');
+  const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
-    if (!currentInvoice) {
-      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
-    }
-
-    debug('Current invoice data retrieved for update');
-
-    const client = await buildClient(context);
-
-    const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-    const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
-
-    if (agentModifiedTagID) {
-      debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
-    }
-
-    const invoiceData = buildSubmitInvoiceData({
-      currentInvoice,
-      workQueueTags,
-      notes,
-      memo
-    });
-
-    const updateResponse = await new Promise<any>((resolve, reject) => {
-      const request = {
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-          },
-          Supplier_Invoice_Data: invoiceData
-        }
-      };
-
-      debug('Submitting updated Supplier Invoice to Workday');
-      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-        debug('Submit_Supplier_Invoice XML:', client.lastRequest);
-        if (err) {
-          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP update response received');
-        resolve(result);
-      });
-    });
-
-    debug('Supplier invoice data updated successfully', updateResponse);
-
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'update_supplier_invoice_data',
-      'success',
-      processingTime,
-      {
-        invoiceWorkdayID,
-        invoiceNumber: currentInvoice.Invoice_Number,
-        hasNotes: !!notes,
-        hasMemo: !!memo
-      },
-      undefined,
-      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
-    );
-
-    return {
-      success: true,
-      message: `Successfully updated invoice ${invoiceWorkdayID} with notes/memo`
-    };
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'update_supplier_invoice_data',
-      'error',
-      processingTime,
-      {
-        invoiceWorkdayID
-      },
-      error,
-      `invoice: \`${invoiceWorkdayID}\``
-    );
-
-    throw error;
+  if (!currentInvoice) {
+    throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
   }
+
+  debug('Current invoice data retrieved for update');
+
+  const client = await buildClient(context);
+
+  const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+
+  if (agentModifiedTagID) {
+    debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
+  }
+
+  const invoiceData = buildSubmitInvoiceData({
+    currentInvoice,
+    workQueueTags,
+    notes,
+    memo
+  });
+
+  const updateResponse = await new Promise<any>((resolve, reject) => {
+    const request = {
+      Submit_Supplier_Invoice_Request: {
+        Supplier_Invoice_Reference: {
+          ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+        },
+        Supplier_Invoice_Data: invoiceData
+      }
+    };
+
+    debug('Submitting updated Supplier Invoice to Workday');
+    client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
+      debug('Submit_Supplier_Invoice XML:', client.lastRequest);
+      if (err) {
+        debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+        return reject(err);
+      }
+      debug('Workday SOAP update response received');
+      resolve(result);
+    });
+  });
+
+  debug('Supplier invoice data updated successfully', updateResponse);
+
+  return {
+    success: true,
+    message: `Successfully updated invoice ${invoiceWorkdayID} with notes/memo`
+  };
 }
 
 

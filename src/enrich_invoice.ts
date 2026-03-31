@@ -2,6 +2,7 @@ import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { getAiResponse } from './lib/ai.js';
 import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import { addNoSupplierTagToInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
@@ -89,6 +90,12 @@ export const processor = withProcessorHandler(async (context, invoices, _event) 
 });
 async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
+
+  if (await isInvoiceMarkedForSkip(context.invoiceValidationFailuresConfig, invoiceData.workdayID)) {
+    debug(`Skipping invoice ${invoiceData.workdayID} because it is already marked in the validation skip registry`);
+    return;
+  }
+
   debug(`Processing invoice with workdayID: ${invoiceData.workdayID}`);
 
   try {
@@ -298,6 +305,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       },
       error
     );
+
+    if (isWorkdayValidationError(error)) {
+      debug(`Validation failure detected for invoice ${invoiceData.workdayID} - recording in skip registry`);
+      await recordInvoiceValidationFailure(context.invoiceValidationFailuresConfig, invoiceData.workdayID, error);
+      return;
+    }
 
     throw error;
   }
