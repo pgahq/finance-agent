@@ -134,10 +134,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     switch (result.supplier.status) {
       case 'found': {
-        const status = 'success';
+        await handleFoundSupplier(context, invoiceData.workdayID, result, companyNotes, canModifyInvoice);
         await notifyResult(
           'enrich_invoice',
-          status,
+          'success',
           processingTime,
           {
             workdayId: invoiceData.workdayID,
@@ -148,7 +148,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        await handleFoundSupplier(context, invoiceData.workdayID, result, companyNotes, canModifyInvoice);
         break;
       }
 
