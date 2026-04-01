@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { notifyResult } from './slack.js';
+
 import type {
   DownloadedAttachment,
   PresignedAttachment,
@@ -593,8 +593,6 @@ export async function updateSupplierInvoiceSupplier(
   notes?: string,
   memo?: string | undefined
 ): Promise<{ success: boolean; message?: string }> {
-  const startTime = Date.now();
-
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier ID: ${supplierID}`);
@@ -656,40 +654,11 @@ export async function updateSupplierInvoiceSupplier(
 
     debug('Supplier invoice updated successfully', updateResponse);
 
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'update_supplier_invoice',
-      'success',
-      processingTime,
-      {
-        invoiceWorkdayID,
-        supplierID,
-        invoiceNumber: currentInvoice.Invoice_Number
-      },
-      undefined,
-      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
-    );
-
     return {
       success: true,
       message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
     };
   } catch (error) {
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'update_supplier_invoice',
-      'error',
-      processingTime,
-      {
-        invoiceWorkdayID,
-        supplierID
-      },
-      error,
-      `invoice: \`${invoiceWorkdayID}\``
-    );
-
     throw error;
   }
 }
@@ -700,8 +669,6 @@ export async function addNoSupplierTagToInvoice(
   notes?: string,
   memo?: string | undefined
 ): Promise<{ success: boolean; message?: string }> {
-  const startTime = Date.now();
-
   debug('Adding no-supplier work queue tag to invoice via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
@@ -766,39 +733,11 @@ export async function addNoSupplierTagToInvoice(
 
     debug('No-supplier tag added successfully', updateResponse);
 
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'add_no_supplier_tag',
-      'success',
-      processingTime,
-      {
-        invoiceWorkdayID,
-        invoiceNumber: currentInvoice.Invoice_Number,
-        tagAdded: 'no-supplier'
-      },
-      undefined,
-      `invoice: \`${currentInvoice.Invoice_Number || invoiceWorkdayID}\``
-    );
-
     return {
       success: true,
       message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
     };
   } catch (error) {
-    const processingTime = Date.now() - startTime;
-
-    await notifyResult(
-      'add_no_supplier_tag',
-      'error',
-      processingTime,
-      {
-        invoiceWorkdayID
-      },
-      error,
-      `invoice: \`${invoiceWorkdayID}\``
-    );
-
     throw error;
   }
 }
