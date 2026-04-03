@@ -64,7 +64,9 @@ export const InvoiceEnrichmentSchema = z.object({
     reason: z.string().default('').describe('Detailed explanation of why the company is considered matching, different, or uncertain')
   }).describe('Company verification results'),
 
-  emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.')
+  emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.'),
+
+  extractedAmountDue: z.string().nullish().describe('The amount due or invoice total as read from the invoice attachment. Omit if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").')
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
@@ -170,6 +172,12 @@ Always verify the company (buyer/recipient) assignment:
 - **Minor variations are acceptable**: "ABC Corp" vs "ABC Corporation" should be considered matching
 - **Provide clear reasoning** for all decisions
 - **Omit fields with no data**: In extracted information objects, only include fields where you actually found data. Do NOT include fields with null values — simply omit them from the response
+
+## Part 3: Amount Due
+
+Read the invoice attachment and extract the amount due or invoice total as it appears on the document. Populate \`extractedAmountDue\` with this value (e.g. "$8,573.40"). If no amount can be found, omit the field.
+
+---
 
 ## Email Context:
 
