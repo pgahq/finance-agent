@@ -130,6 +130,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const processingTime = Date.now() - startTime;
     const companyNotes = formatCompanyVerificationNotes(result);
     const amountNotes = formatAmountVerificationNotes(result);
+    const costCenterNotes = formatCostCenterNotes(result);
     const emailSummary = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
     const memo = result.supplier.extractedInformation?.memo || undefined;
 
@@ -167,7 +168,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
         } else {
@@ -192,7 +193,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, memo);
         } else {
@@ -217,7 +218,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           result.supplier,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
           await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, memo);
         } else {
@@ -242,7 +243,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const matchingNotes = `AI Agent verified supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        const matchingNotes = `AI Agent verified supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, matchingNotes, memo);
         break;
       }
@@ -266,8 +267,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         const differentNotes = recommended
           ? `AI Agent recommends supplier revision. Recommended supplier: ${recommended.supplierName} (${recommended.supplierId}).
         Confidence: ${(recommended.confidence * 100).toFixed(0)}%.
-        Reason: ${recommended.reason}\n\nVerification details: ${result.supplier.reason}${companyNotes}${amountNotes}${emailSummary}`
-          : `AI Agent recommends supplier revision. ${result.supplier.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        Reason: ${recommended.reason}\n\nVerification details: ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`
+          : `AI Agent recommends supplier revision. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, differentNotes, memo);
         break;
       }
@@ -286,7 +287,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const uncertainNotes = `AI Agent is uncertain that the supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${emailSummary}`;
+        const uncertainNotes = `AI Agent is uncertain that the supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
         await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, uncertainNotes, memo);
         break;
       }
@@ -329,7 +330,8 @@ async function handleFoundSupplier(
   if (foundSupplierID) {
     const emailSummarySection = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
     const amountSection = formatAmountVerificationNotes(result);
-    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountSection}${emailSummarySection}`;
+    const costCenterSection = formatCostCenterNotes(result);
+    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountSection}${costCenterSection}${emailSummarySection}`;
     const memo = result.supplier.extractedInformation?.memo || undefined;
 
     if (canModifyInvoice) {
@@ -374,6 +376,7 @@ async function enrichInvoice(
       email: extractEmailFromInvoice(invoice),
       invoiceNumber: invoice.Invoice_Number,
       amount: invoice.controlTotalAmount,
+      assignedCostCenters: extractCostCentersFromInvoice(invoice),
       attachments: processedAttachments.map(att => ({
         fileName: att.fileName,
         contentType: att.contentType,
@@ -399,8 +402,8 @@ async function enrichInvoice(
       : 'Please identify the supplier and verify the company on this invoice';
 
     const taskInstructions = existingSupplier
-      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.'
-      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed.';
+      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.'
+      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.';
 
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
@@ -452,6 +455,17 @@ async function enrichInvoice(
   }
 }
 
+function formatCostCenterNotes(result: InvoiceEnrichmentResult): string {
+  const cc = result.costCenterVerification;
+  if (!cc) return '';
+  let notes = `\n\nCost Center: ${cc.notes}`;
+  if (cc.suggestedCostCenters?.length) {
+    const names = cc.suggestedCostCenters.map(s => `${s.name}${s.code ? ` (${s.code})` : ''}`).join(', ');
+    notes += ` Suggested: ${names}`;
+  }
+  return notes;
+}
+
 function formatAmountVerificationNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedAmountDue) return '';
   return `\n\nAmount Due (from document): ${result.extractedAmountDue}`;
@@ -488,4 +502,15 @@ function extractEmailFromInvoice(invoice: WorkdayInvoice): string | undefined {
     return invoice.allEmailAddresses.map(email => email.descriptor).join(', ');
   }
   return undefined;
+}
+
+function extractCostCentersFromInvoice(invoice: WorkdayInvoice): string[] {
+  const results: string[] = [];
+  JSON.stringify(invoice, (_, value) => {
+    if (value?.$attributes?.type === 'Cost_Center_Reference_ID') {
+      results.push(value.$value);
+    }
+    return value;
+  });
+  return [...new Set(results)];
 }

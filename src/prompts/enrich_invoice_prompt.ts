@@ -66,16 +66,28 @@ export const InvoiceEnrichmentSchema = z.object({
 
   emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.'),
 
-  extractedAmountDue: z.string().nullish().describe('The amount due or invoice total as read from the invoice attachment. Omit if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").')
+  extractedAmountDue: z.string().nullish().describe('The amount due or invoice total as read from the invoice attachment. Omit if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
+
+  costCenterVerification: z.object({
+    emailCostCenter: z.string().nullish().describe('The cost center code or name extracted from the email body, if any was mentioned'),
+    invoiceCostCenters: z.array(z.string()).nullish().describe('The cost center(s) currently assigned to the invoice lines in Workday'),
+    suggestedCostCenters: z.array(z.object({
+      workdayId: z.string().nullable(),
+      code: z.string().nullable(),
+      name: z.string()
+    })).nullable().describe('Suggested cost centers from Workday if the email references ones that differ from what is assigned, or if no cost centers are assigned. Only populate after using findCostCenters to confirm they exist in Workday.'),
+    notes: z.string().describe('Summary of findings: whether the email cost center code matches the assigned one, any discrepancy, or if no cost center was mentioned in the email')
+  }).nullish().describe('Cost center verification based on email content vs invoice line worktags. Only populate if email context was provided.')
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
 
 export const invoiceEnrichmentPrompt = `You are an expert at matching invoices to suppliers and verifying company information in a Workday system. Your task is to analyze an invoice, identify or verify the supplier, and verify the company assignment.
 
-You have access to two search tools:
+You have access to three search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
+- **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
 
@@ -176,6 +188,20 @@ Always verify the company (buyer/recipient) assignment:
 ## Part 3: Amount Due
 
 Read the invoice attachment and extract the amount due or invoice total as it appears on the document. Populate \`extractedAmountDue\` with this value (e.g. "$8,573.40"). If no amount can be found, omit the field.
+
+---
+
+## Part 4: Cost Center Verification
+
+If email context is provided, check whether the email mentions a cost center code or name:
+
+1. **Extract from email**: Scan the email body for any cost center references (e.g. codes like "72200" or names like "Marketing Communications"). Populate \`costCenterVerification.emailCostCenter\` with what was found (comma-separated if multiple).
+2. **Compare with invoice lines**: The invoiceData includes \`assignedCostCenters\` — the cost center(s) currently on the invoice lines in Workday (there may be multiple). Populate \`costCenterVerification.invoiceCostCenters\` with these.
+3. **If there is a mismatch or no cost center is assigned**:
+   - Use \`findCostCenters\` to search for each cost center mentioned in the email and confirm they exist in Workday
+   - Populate \`costCenterVerification.suggestedCostCenters\` with the matches found
+4. **Populate \`costCenterVerification.notes\`** with a brief summary: whether they match, what was found in the email, and any recommendation.
+5. If no email context is provided, omit \`costCenterVerification\` entirely.
 
 ---
 
