@@ -2,7 +2,7 @@ import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
 import { generateText, generateObject, stepCountIs, NoObjectGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { findSuppliersTool, findCompaniesTool } from './rag.js';
+import { findSuppliersTool, findCompaniesTool, findCostCentersTool } from './rag.js';
 
 // Set OpenAI API key globally
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
@@ -46,7 +46,8 @@ export async function getAiResponse({
       temperature: 0.2,
       tools: {
         findSuppliers: findSuppliersTool,
-        findCompanies: findCompaniesTool
+        findCompanies: findCompaniesTool,
+        findCostCenters: findCostCentersTool
       }
     };
 

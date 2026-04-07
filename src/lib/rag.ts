@@ -72,7 +72,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -204,6 +204,51 @@ export const findSuppliersTool = tool({
       };
     } catch (error) {
       debug(`Find Suppliers Tool Error: ${error}`);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+});
+
+export const findCostCentersTool = tool({
+  description: `Search for cost centers using semantic similarity and exact text matching.
+
+  Use this tool to look up cost centers by:
+  - Cost center name (e.g., "Marketing Communications", "Engineering")
+  - Cost center code (e.g., "72200")
+  - Partial name or code
+
+  Examples: "72200", "Marketing", "Engineering Operations"`,
+  inputSchema: z.object({
+    query: z.string().describe('Search query for cost centers (name or code)'),
+    limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    try {
+      const results = await queryDocuments({
+        query,
+        documentType: 'cost_center',
+        limit,
+        similarityThreshold
+      });
+
+      debug(`Find Cost Centers Tool: Found ${results.length} cost centers`);
+
+      return {
+        success: true,
+        results: results.map(result => ({
+          workdayId: result.workday_id,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          similarity: result.similarity
+        }))
+      };
+    } catch (error) {
+      debug(`Find Cost Centers Tool Error: ${error}`);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred'
