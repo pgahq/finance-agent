@@ -175,7 +175,86 @@ export async function executeWorkdayQuery(
   };
 }
 
-async function buildClient(
+async function buildFinancialManagementClient(
+  context: { workdayConfig: WorkdayConfig }
+): Promise<any> {
+  const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Financial_Management.wsdl');
+  const accessToken = await getAccessToken(context.workdayConfig);
+  const strongSoap = await getStrongSoap();
+
+  return new Promise((resolve, reject) => {
+    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+      if (err) return reject(err);
+      client.setSecurity(new strongSoap.BearerSecurity(accessToken));
+      const endpoint = `https://${context.workdayConfig.domain}/ccx/service/${context.workdayConfig.tenant}/Financial_Management/v46.0`;
+      client.setEndpoint(endpoint);
+      resolve(client);
+    });
+  });
+}
+
+export interface ParsedValidationRule {
+  ruleId: string;
+  classification: string;
+  conditionRuleId: string;
+  description: string;
+  comment?: string;
+  suppliers?: string[];
+  spendCategories?: string[];
+  costCenters?: string[];
+}
+
+function extractIdsByType(obj: any, type: string): string[] {
+  const results: string[] = [];
+  JSON.stringify(obj, (_, value) => {
+    if (value?.$attributes?.type === type) results.push(value.$value);
+    return value;
+  });
+  return [...new Set(results)];
+}
+
+function parseValidationRules(rules: any[]): ParsedValidationRule[] {
+  return rules
+    .map(r => r.Custom_Validation_Rule_Data)
+    .filter(data => data?.Custom_Validation_Rule_for_Transaction === 'Supplier Invoice')
+    .flatMap(data =>
+      [data.Custom_Validation_Data].flatMap(vd => vd ?? [])
+        .map(vd => vd.Condition_Rule_Data)
+        .filter(crd => crd?.Rule_Description)
+        .map(crd => ({
+          ruleId: data.Custom_Validation_Rule_ID,
+          classification: data.Custom_Validation_Rule_Classification,
+          conditionRuleId: crd.Condition_Rule_ID,
+          description: crd.Rule_Description,
+          comment: crd.Comment || undefined,
+          suppliers: extractIdsByType(crd, 'Supplier_Reference_ID'),
+          spendCategories: extractIdsByType(crd, 'Spend_Category_ID'),
+          costCenters: extractIdsByType(crd, 'Cost_Center_Reference_ID'),
+        }))
+    );
+}
+
+export async function getCustomValidationRules(
+  context: { workdayConfig: WorkdayConfig }
+): Promise<ParsedValidationRule[]> {
+  const client = await buildFinancialManagementClient(context);
+  const response = await new Promise<any>((resolve, reject) => {
+    client.Get_Custom_Validation_Rules({
+      Get_Custom_Validation_Rules_Request: {
+        Response_Filter: { Page: 1, Count: 999 }
+      }
+    }, (err: any, result: any) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
+
+  const rules = [response?.Response_Data?.Custom_Validation_Rule].flatMap(r => r ?? []);
+  debug(`Fetched ${rules.length} total validation rules, parsing Supplier Invoice rules`);
+  return parseValidationRules(rules);
+}
+
+async function buildResourceManagementClient(
   context: { workdayConfig: WorkdayConfig }
 ): Promise<any> {
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
@@ -299,7 +378,7 @@ export async function getSupplierInvoiceWithAttachments(
   debug(`Domain: ${context.workdayConfig.domain}`);
   debug(`Tenant: ${context.workdayConfig.tenant}`);
 
-  const client = await buildClient(context);
+  const client = await buildResourceManagementClient(context);
 
   const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
     const request = {
@@ -423,7 +502,7 @@ export async function getSupplierInvoice(
   debug('Fetching Supplier Invoice via SOAP (without attachments)');
   debug(`WorkdayID: ${workdayID}`);
 
-  const client = await buildClient(context);
+  const client = await buildResourceManagementClient(context);
 
   const soapResponse = await new Promise<SupplierInvoiceSoapResponse>((resolve, reject) => {
     const request = {
@@ -538,7 +617,7 @@ export async function getWorkQueueTagWIDs(
 ): Promise<string[]> {
   debug('Fetching work queue tag WIDs for reference IDs:', tagReferenceIDs);
 
-  const client = await buildClient(context);
+  const client = await buildResourceManagementClient(context);
 
   const response = await new Promise<any>((resolve, reject) => {
     const request = {
@@ -613,7 +692,7 @@ export async function updateSupplierInvoiceSupplier(
       hasControlAmount: !!currentInvoice.Control_Amount_Total
     });
 
-    const client = await buildClient(context);
+    const client = await buildResourceManagementClient(context);
 
     const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
     const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
@@ -693,7 +772,7 @@ export async function addNoSupplierTagToInvoice(
 
     debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
 
-    const client = await buildClient(context);
+    const client = await buildResourceManagementClient(context);
 
     const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
 
@@ -760,7 +839,7 @@ export async function updateVerifySupplierInvoiceData(
 
   debug('Current invoice data retrieved for update');
 
-  const client = await buildClient(context);
+  const client = await buildResourceManagementClient(context);
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
   const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
