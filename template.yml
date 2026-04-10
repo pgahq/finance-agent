@@ -272,6 +272,26 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
+  # Cache Validation Rules - Single handler (no processor needed)
+  CacheValidationRulesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheValidationRules"
+      Handler: dist/cache_validation_rules.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 11 * * ? *)
+
   # Cache Cost Centers - Query handler
   CacheCostCentersFunction:
     Type: AWS::Serverless::Function

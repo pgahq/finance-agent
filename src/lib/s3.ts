@@ -64,6 +64,28 @@ export async function getPresignedUrl(
   }
 }
 
+export async function putJsonToS3(config: S3Config, key: string, data: unknown): Promise<void> {
+  const command = new PutObjectCommand({
+    Bucket: config.bucketName,
+    Key: key,
+    Body: JSON.stringify(data),
+    ContentType: 'application/json'
+  });
+  await s3Client.send(command);
+}
+
+export async function getJsonFromS3<T>(config: S3Config, key: string): Promise<T | null> {
+  try {
+    const command = new GetObjectCommand({ Bucket: config.bucketName, Key: key });
+    const response = await s3Client.send(command);
+    const body = await response.Body?.transformToString();
+    return body ? JSON.parse(body) as T : null;
+  } catch (error: any) {
+    if (error.name === 'NoSuchKey') return null;
+    throw error;
+  }
+}
+
 export async function uploadAttachmentToS3(
   config: S3Config,
   attachment: DownloadedAttachment,
