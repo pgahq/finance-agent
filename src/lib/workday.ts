@@ -214,24 +214,25 @@ function extractIdsByType(obj: any, type: string): string[] {
 }
 
 function parseValidationRules(rules: any[]): ParsedValidationRule[] {
-  return rules
-    .map(r => r.Custom_Validation_Rule_Data)
-    .filter(data => data?.Custom_Validation_Rule_for_Transaction === 'Supplier Invoice')
-    .flatMap(data =>
-      [data.Custom_Validation_Data].flatMap(vd => vd ?? [])
-        .map(vd => vd.Condition_Rule_Data)
-        .filter(crd => crd?.Rule_Description)
-        .map(crd => ({
-          ruleId: data.Custom_Validation_Rule_ID,
-          classification: data.Custom_Validation_Rule_Classification,
-          conditionRuleId: crd.Condition_Rule_ID,
-          description: crd.Rule_Description,
-          comment: crd.Comment || undefined,
-          suppliers: extractIdsByType(crd, 'Supplier_Reference_ID'),
-          spendCategories: extractIdsByType(crd, 'Spend_Category_ID'),
-          costCenters: extractIdsByType(crd, 'Cost_Center_Reference_ID'),
-        }))
-    );
+  return rules.flatMap(r =>
+    [r.Custom_Validation_Rule_Data].flatMap(d => d ?? [])
+      .filter((data: any) => data?.Custom_Validation_Rule_for_Transaction === 'Supplier Invoice')
+      .flatMap((data: any) =>
+        [data.Custom_Validation_Data].flatMap(vd => vd ?? [])
+          .map((vd: any) => vd.Condition_Rule_Data)
+          .filter((crd: any) => crd?.Rule_Description)
+          .map((crd: any) => ({
+            ruleId: data.Custom_Validation_Rule_ID,
+            classification: data.Custom_Validation_Rule_Classification,
+            conditionRuleId: crd.Condition_Rule_ID,
+            description: crd.Rule_Description,
+            comment: crd.Comment || undefined,
+            suppliers: extractIdsByType(crd, 'Supplier_Reference_ID'),
+            spendCategories: extractIdsByType(crd, 'Spend_Category_ID'),
+            costCenters: extractIdsByType(crd, 'Cost_Center_Reference_ID'),
+          }))
+      )
+  );
 }
 
 export async function getCustomValidationRules(
@@ -241,6 +242,12 @@ export async function getCustomValidationRules(
   const response = await new Promise<any>((resolve, reject) => {
     client.Get_Custom_Validation_Rules({
       Get_Custom_Validation_Rules_Request: {
+        Request_References: {
+          Custom_Validation_Context_Reference: [
+            { ID: [{ $attributes: { type: 'Custom_Validation_Context_ID' }, $value: 'Supplier_Invoice_Critical' }] },
+            { ID: [{ $attributes: { type: 'Custom_Validation_Context_ID' }, $value: 'Supplier_Invoice_Warning' }] }
+          ]
+        },
         Response_Filter: { Page: 1, Count: 999 }
       }
     }, (err: any, result: any) => {
@@ -249,7 +256,7 @@ export async function getCustomValidationRules(
     });
   });
 
-  const rules = [response?.Response_Data?.Custom_Validation_Rule].flatMap(r => r ?? []);
+  const rules = response?.Response_Data?.[0]?.Custom_Validation_Rule ?? [];
   debug(`Fetched ${rules.length} total validation rules, parsing Supplier Invoice rules`);
   return parseValidationRules(rules);
 }
