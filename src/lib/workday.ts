@@ -302,6 +302,21 @@ interface buildSubmitInvoiceDataOptions {
   defaultSupplierRefId?: string;
 }
 
+function stripRichText(text: string): string {
+  let result = text;
+
+  // Decode HTML entities
+  result = result.replace(/&lt;/g, '<');
+  result = result.replace(/&gt;/g, '>');
+  result = result.replace(/&amp;/g, '&');
+  result = result.replace(/&quot;/g, '"');
+  result = result.replace(/&apos;/g, "'");
+  result = result.replace(/&#39;/g, "'");
+  result = result.replace(/&nbsp;/g, ' ');
+
+  return result.trim();
+}
+
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
 
@@ -359,7 +374,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         })()),
         ...(notes && (() => {
           const existingNotes = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Notes;
-          const newNotes = existingNotes ? `${existingNotes}\n\nFINANCE AGENT:\n${notes}` : `FINANCE AGENT:\n${notes}`;
+          const cleanedNotes = stripRichText(notes);
+          const newNotes = existingNotes ? `${existingNotes}\n\nFINANCE AGENT:\n${cleanedNotes}` : `FINANCE AGENT:\n${cleanedNotes}`;
           return { Work_Queue_Notes: newNotes };
         })())
       }

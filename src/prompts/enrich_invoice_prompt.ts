@@ -184,6 +184,7 @@ Always verify the company (buyer/recipient) assignment:
 - **Minor variations are acceptable**: "ABC Corp" vs "ABC Corporation" should be considered matching
 - **Provide clear reasoning** for all decisions
 - **Omit fields with no data**: In extracted information objects, only include fields where you actually found data. Do NOT include fields with null values — simply omit them from the response
+- **Exclusively use plain text in the notes field** — do not use markdown formatting, emojis, or special characters. The notes should be a terse summary of the analysis findings.
 
 ## Part 3: Amount Due
 
@@ -200,7 +201,7 @@ If email context is provided, check whether the email mentions a cost center cod
 3. **If there is a mismatch or no cost center is assigned**:
    - Use \`findCostCenters\` to search for each cost center mentioned in the email and confirm they exist in Workday
    - Populate \`costCenterVerification.suggestedCostCenters\` with the matches found
-4. **Populate \`costCenterVerification.notes\`** with a brief summary: whether they match, what was found in the email, and any recommendation.
+4. **Populate \`costCenterVerification.notes\`** with a brief summary: whether they match, what was found in the email, and any recommendation. Do not use markdown formatting in the notes, strictly use plain text.
 5. If no email context is provided, omit \`costCenterVerification\` entirely.
 
 ---
