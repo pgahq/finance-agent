@@ -110,7 +110,36 @@ jest.mock('../lib/s3.js', () => ({
 describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const { getAiResponse } = require('../lib/ai.js');
+    const { updateSupplierInvoiceSupplier, addNoSupplierTagToInvoice, updateVerifySupplierInvoiceData } = require('../lib/workday.js');
     const validationFailures = require('../lib/invoice_validation_failures.js');
+    getAiResponse.mockResolvedValue({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      }
+    });
+    updateSupplierInvoiceSupplier.mockResolvedValue(undefined);
+    addNoSupplierTagToInvoice.mockResolvedValue(undefined);
+    updateVerifySupplierInvoiceData.mockResolvedValue(undefined);
     validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);
     validationFailures.recordInvoiceValidationFailure.mockResolvedValue(undefined);
   });
@@ -265,5 +294,65 @@ describe('enrich_invoice', () => {
     // Test that the batching logic works with hardcoded values
     // This is more of an integration test to ensure the batching doesn't break
     expect(true).toBe(true); // Placeholder for batching logic validation
+  });
+
+  it('should pass extracted invoice date to Workday update calls', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { updateVerifySupplierInvoiceData } = require('../lib/workday.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceDate: '2026-04-15'
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: {
+          descriptor: 'Existing Supplier',
+          id: 'SUP-1'
+        },
+        company1: {
+          descriptor: 'Test Company',
+          id: 'COMP-1'
+        },
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(updateVerifySupplierInvoiceData).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-invoice-id',
+      expect.any(String),
+      'Test invoice',
+      '2026-04-15'
+    );
   });
 });

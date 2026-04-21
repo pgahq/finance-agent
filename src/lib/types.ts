@@ -110,6 +110,7 @@ export interface WorkdayReference {
 
 export interface WorkdayInvoice {
   Invoice_Number?: string;
+  Invoice_Date?: string;
   controlTotalAmount?: string;
   company1?: WorkdayReference;
   OCRSupplierInvoice?: WorkdayReference;

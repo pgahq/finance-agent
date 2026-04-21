@@ -580,7 +580,15 @@ describe('Workday utilities', () => {
         callback(null, mockSubmitResponse);
       });
 
-      const result = await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      const extractedInvoiceDate = '2025-02-15';
+      const result = await updateSupplierInvoiceSupplier(
+        mockContext,
+        mockInvoiceWorkdayID,
+        mockSupplierID,
+        undefined,
+        undefined,
+        extractedInvoiceDate
+      );
 
       expect(result.success).toBe(true);
       expect(result.message).toContain(mockInvoiceWorkdayID);
@@ -600,7 +608,7 @@ describe('Workday utilities', () => {
             Supplier_Invoice_Data: expect.objectContaining({
               Company_Reference: { ID: 'company-wid' },
               Currency_Reference: { ID: 'USD' },
-              Invoice_Date: '2024-01-01',
+              Invoice_Date: extractedInvoiceDate,
               Invoice_Number: '12345',
               Control_Amount_Total: '100.00',
               Supplier_Reference: expect.objectContaining({
@@ -616,6 +624,52 @@ describe('Workday utilities', () => {
         }),
         expect.any(Function)
       );
+    });
+
+    it('should default invoice date to the first day of the current month when document date is unavailable', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
+
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2026-04-01');
+
+      jest.useRealTimers();
     });
 
     it('should preserve optional fields when present', async () => {

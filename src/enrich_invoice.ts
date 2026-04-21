@@ -130,9 +130,11 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const processingTime = Date.now() - startTime;
     const companyNotes = formatCompanyVerificationNotes(result);
     const amountNotes = formatAmountVerificationNotes(result);
+    const invoiceDateNotes = formatInvoiceDateNotes(result);
     const costCenterNotes = formatCostCenterNotes(result);
     const emailSummary = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
     const memo = result.supplier.extractedInformation?.memo || undefined;
+    const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
     switch (result.supplier.status) {
       case 'found': {
@@ -168,12 +170,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
+        const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo);
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo, extractedInvoiceDate);
         } else {
           debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, notFoundNotes, memo);
+          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, notFoundNotes, memo, extractedInvoiceDate);
         }
         break;
       }
@@ -193,12 +195,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
+        const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, memo);
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, memo, extractedInvoiceDate);
         } else {
           debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, ambiguousNotes, memo);
+          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, ambiguousNotes, memo, extractedInvoiceDate);
         }
         break;
       }
@@ -218,12 +220,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           result.supplier,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
+        const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
         if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, memo);
+          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, memo, extractedInvoiceDate);
         } else {
           debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, errorNotes, memo);
+          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, errorNotes, memo, extractedInvoiceDate);
         }
         break;
       }
@@ -243,8 +245,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const matchingNotes = `AI Agent verified supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, matchingNotes, memo);
+        const matchingNotes = `AI Agent verified supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
+        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, matchingNotes, memo, extractedInvoiceDate);
         break;
       }
 
@@ -267,9 +269,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         const differentNotes = recommended
           ? `AI Agent recommends supplier revision. Recommended supplier: ${recommended.supplierName} (${recommended.supplierId}).
         Confidence: ${(recommended.confidence * 100).toFixed(0)}%.
-        Reason: ${recommended.reason}\n\nVerification details: ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`
-          : `AI Agent recommends supplier revision. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, differentNotes, memo);
+        Reason: ${recommended.reason}\n\nVerification details: ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`
+          : `AI Agent recommends supplier revision. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
+        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, differentNotes, memo, extractedInvoiceDate);
         break;
       }
 
@@ -287,8 +289,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           undefined,
           `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
         );
-        const uncertainNotes = `AI Agent is uncertain that the supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, uncertainNotes, memo);
+        const uncertainNotes = `AI Agent is uncertain that the supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
+        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, uncertainNotes, memo, extractedInvoiceDate);
         break;
       }
     }
@@ -330,9 +332,11 @@ async function handleFoundSupplier(
   if (foundSupplierID) {
     const emailSummarySection = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
     const amountSection = formatAmountVerificationNotes(result);
+    const invoiceDateSection = formatInvoiceDateNotes(result);
     const costCenterSection = formatCostCenterNotes(result);
-    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountSection}${costCenterSection}${emailSummarySection}`;
+    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountSection}${invoiceDateSection}${costCenterSection}${emailSummarySection}`;
     const memo = result.supplier.extractedInformation?.memo || undefined;
+    const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
     if (canModifyInvoice) {
       await updateSupplierInvoiceSupplier(
@@ -340,11 +344,12 @@ async function handleFoundSupplier(
         invoiceWorkdayID,
         foundSupplierID,
         notes,
-        memo
+        memo,
+        extractedInvoiceDate
       );
     } else {
       debug('Invoice modification disabled - recording supplier recommendation as notes only');
-      await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo);
+      await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo, extractedInvoiceDate);
     }
   } else {
     debug('No valid supplier Workday ID found - cannot update invoice');
@@ -375,6 +380,7 @@ async function enrichInvoice(
       phone: extractPhoneFromInvoice(invoice),
       email: extractEmailFromInvoice(invoice),
       invoiceNumber: invoice.Invoice_Number,
+      currentInvoiceDate: invoice.Invoice_Date,
       amount: invoice.controlTotalAmount,
       assignedCostCenters: extractCostCentersFromInvoice(invoice),
       attachments: processedAttachments.map(att => ({
@@ -469,6 +475,11 @@ function formatCostCenterNotes(result: InvoiceEnrichmentResult): string {
 function formatAmountVerificationNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedAmountDue) return '';
   return `\n\nAmount Due (from document): ${result.extractedAmountDue}`;
+}
+
+function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedInvoiceDate) return '';
+  return `\n\nInvoice Date (from document): ${result.extractedInvoiceDate}`;
 }
 
 function formatCompanyVerificationNotes(result: InvoiceEnrichmentResult): string {
