@@ -355,4 +355,67 @@ describe('enrich_invoice', () => {
       '2026-04-15'
     );
   });
+
+  it('should note when invoice date defaults to the first day of the current month', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
+
+    const { getAiResponse } = require('../lib/ai.js');
+    const { updateVerifySupplierInvoiceData } = require('../lib/workday.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      }
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: {
+          descriptor: 'Existing Supplier',
+          id: 'SUP-1'
+        },
+        company1: {
+          descriptor: 'Test Company',
+          id: 'COMP-1'
+        },
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(updateVerifySupplierInvoiceData).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-invoice-id',
+      expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
+      'Test invoice',
+      undefined
+    );
+
+    jest.useRealTimers();
+  });
 });

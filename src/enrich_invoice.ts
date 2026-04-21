@@ -477,9 +477,20 @@ function formatAmountVerificationNotes(result: InvoiceEnrichmentResult): string 
   return `\n\nAmount Due (from document): ${result.extractedAmountDue}`;
 }
 
+function getFirstDayOfCurrentMonth(): string {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = `${now.getUTCMonth() + 1}`.padStart(2, '0');
+  return `${year}-${month}-01`;
+}
+
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
-  if (!result.extractedInvoiceDate) return '';
-  return `\n\nInvoice Date (from document): ${result.extractedInvoiceDate}`;
+  if (result.extractedInvoiceDate) {
+    return `\n\nInvoice Date (from document): ${result.extractedInvoiceDate}`;
+  }
+
+  const fallbackInvoiceDate = getFirstDayOfCurrentMonth();
+  return `\n\nInvoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (${fallbackInvoiceDate}).`;
 }
 
 function formatCompanyVerificationNotes(result: InvoiceEnrichmentResult): string {
