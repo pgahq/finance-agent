@@ -36,7 +36,7 @@
     "typescript": "^5.5.2"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.53",
+    "@ai-sdk/openai": "^3.0.53",
     "@aws-sdk/client-dynamodb": "^3.1020.0",
     "@aws-sdk/client-lambda": "^3.914.0",
     "@aws-sdk/client-secrets-manager": "^3.914.0",
@@ -44,7 +44,7 @@
     "@aws-sdk/s3-request-presigner": "^3.598.0",
     "@pga/lambda-env": "^0.0.11",
     "@pga/logger": "^0.1.10",
-    "ai": "^5.0.76",
+    "ai": "^6.0.168",
     "pg": "^8.16.3",
     "strong-soap": "^5.0.5",
     "zod": "^4.1.12"

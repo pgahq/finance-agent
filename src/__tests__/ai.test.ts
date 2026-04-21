@@ -3,10 +3,12 @@ import { getAiResponse } from '../lib/ai.js';
 // Mock the AI SDK
 jest.mock('ai', () => ({
   generateText: jest.fn(),
-  generateObject: jest.fn(),
   tool: jest.fn(),
   stepCountIs: jest.fn(),
   NoObjectGeneratedError: {
+    isInstance: jest.fn()
+  },
+  NoOutputGeneratedError: {
     isInstance: jest.fn()
   },
   Output: {
@@ -28,8 +30,8 @@ jest.mock('../lib/rag.js', () => ({
 
 describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
-  const mockGenerateObject = require('ai').generateObject;
   const mockNoObjectGeneratedError = require('ai').NoObjectGeneratedError;
+  const mockNoOutputGeneratedError = require('ai').NoOutputGeneratedError;
   const mockOpenai = require('@ai-sdk/openai').openai;
   const mockStepCountIs = require('ai').stepCountIs;
   const mockOutputObject = require('ai').Output.object;
@@ -48,6 +50,7 @@ describe('AI utilities', () => {
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
     mockOutputObject.mockReturnValue('mocked-output-object');
     mockNoObjectGeneratedError.isInstance.mockReturnValue(false);
+    mockNoOutputGeneratedError.isInstance.mockReturnValue(false);
   });
 
   describe('getAiResponse', () => {
@@ -103,22 +106,23 @@ describe('AI utilities', () => {
         }
       } as any;
 
-      // Mock Step 1: generateText result
-      mockGenerateText.mockResolvedValue({
-        text: 'JSON response with supplier data',
-        toolResults: [],
-        response: { messages: [] }
-      });
-
-      // Mock Step 2: generateObject result
-      mockGenerateObject.mockResolvedValue({
-        object: {
-          supplierId: 'test-id',
-          supplierName: 'Test Supplier',
-          confidence: 0.9,
-          reasoning: 'Test reasoning'
-        }
-      });
+      // Mock Step 1: generateText with tools
+      // Mock Step 2: generateText with Output.object
+      mockGenerateText
+        .mockResolvedValueOnce({
+          text: 'JSON response with supplier data',
+          toolResults: [],
+          response: { messages: [] }
+        })
+        .mockResolvedValueOnce({
+          text: '',
+          output: {
+            supplierId: 'test-id',
+            supplierName: 'Test Supplier',
+            confidence: 0.9,
+            reasoning: 'Test reasoning'
+          }
+        });
 
       const result = await getAiResponse({
         prompt: 'Test prompt',
@@ -138,17 +142,18 @@ describe('AI utilities', () => {
         }
       });
 
-      // Verify Step 2: generateObject was called with full conversation history
-      expect(mockGenerateObject).toHaveBeenCalledWith({
+      // Verify Step 2: structured output via generateText + Output.object
+      expect(mockGenerateText).toHaveBeenNthCalledWith(2, {
         model: 'mocked-openai-model',
         messages: expect.arrayContaining([
           expect.objectContaining({ role: 'user' }),
           expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
         ]),
         system: expect.any(String),
-        schema: mockSchema,
+        output: 'mocked-output-object',
         temperature: 0.1
       });
+      expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
 
       expect(result).toEqual({
         supplierId: 'test-id',
