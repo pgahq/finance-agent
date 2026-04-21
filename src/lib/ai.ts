@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { generateText, generateObject, stepCountIs, NoObjectGeneratedError, type ModelMessage } from 'ai';
+import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool } from './rag.js';
 
@@ -58,8 +58,8 @@ export async function getAiResponse({
       return textResult.text;
     }
 
-    // Step 2: Convert to structured output, passing full conversation history including tool results
-    const { object } = await generateObject({
+    // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
+    const structuredResult = await generateText({
       model: openai(model),
       messages: [
         ...messages,
@@ -67,11 +67,11 @@ export async function getAiResponse({
         { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
       ],
       system: prompt,
-      schema: schema,
+      output: Output.object({ schema }),
       temperature: 0.1
     });
 
-    return object;
+    return structuredResult.output;
 
   } catch (error) {
     debug(`AI call error: ${error}`);
@@ -82,6 +82,10 @@ export async function getAiResponse({
       debug('Response:', error.response);
       debug('Usage:', error.usage);
       debug('Finish Reason:', error.finishReason);
+    }
+    if (NoOutputGeneratedError.isInstance(error)) {
+      debug(`NoOutputGeneratedError: ${error}`);
+      debug('Cause:', error.cause);
     }
     throw error;
   }
