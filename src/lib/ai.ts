@@ -12,7 +12,7 @@ export async function getAiResponse({
   prompt,
   messages,
   schema,
-  model = 'gpt-4.1-2025-04-14'
+  model = 'gpt-5.4'
 }: {
   prompt: string;
   messages: ModelMessage[];
@@ -60,7 +60,7 @@ export async function getAiResponse({
 
     // Step 2: Convert to structured output, passing full conversation history including tool results
     const { object } = await generateObject({
-      model: openai('gpt-4.1-2025-04-14'),
+      model: openai(model),
       messages: [
         ...messages,
         ...textResult.response.messages,
