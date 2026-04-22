@@ -14,7 +14,17 @@ The Finance Agent (`finance-agent`) automates accounts-payable workflows in Work
 
 Stakeholders need a durable record of **why** this shape was chosen and **how** major components relate, independent of day-to-day README edits.
 
-> **Note:** This repository follows the organization’s ADR practice ([ADR documentation](https://technology.pgahq.com/engineering/ADRs/adr-documentation)). That page was not reachable from the authoring environment; this document uses a conventional ADR layout (title, status, context, decision, consequences) so it can be aligned with any internal template during review.
+### PGA guide: ADR versus Tech Spec
+
+Engineering guidance on when to write an ADR versus a Tech Spec is published internally as [ADR documentation](https://technology.pgahq.com/engineering/ADRs/adr-documentation) (source markdown in [`technology-pgahq-com` — `999-adr-documentation.md`](https://github.com/pgahq/technology-pgahq-com/blob/82361d3cbca76fb06cdece9ca0407f50b2ee3412/docs/10-engineering/05-ADRs/999-adr-documentation.md)).
+
+**Use an ADR when** the proposed change affects how the system works in a fundamental way, impacts interaction with other systems, changes how developers work going forward, is foundational to application structure (not only a single feature), or is wide-ranging in the sense that it establishes idioms and patterns for later features.
+
+**Use a Tech Spec when** end users will notice the change, you are describing an implementation plan for a specific feature, or the work is feature-focused rather than architectural.
+
+**Key distinction** — ADRs capture rationale and patterns for foundational changes; tech specs describe how to build particular functionality.
+
+**Why this record is an ADR** — Finance Agent’s split between query and processor Lambdas, Workday access patterns (WQL vs SOAP submit), the RAG data plane, and the DynamoDB validation skip registry are cross-cutting contracts: they constrain how new features in this repo integrate with Workday, AWS, and OpenAI and how future handlers should behave. That matches the ADR bar above rather than a one-off feature spec.
 
 ## Decision
 
