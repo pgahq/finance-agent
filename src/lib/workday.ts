@@ -296,6 +296,7 @@ interface WorkQueueTag {
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierID?: string;
+  companyWID?: string;
   workQueueTags?: WorkQueueTag[];
   notes?: string;
   memo?: string;
@@ -353,7 +354,7 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
+  const { currentInvoice, supplierID, companyWID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
 
   const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
@@ -386,7 +387,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   return {
     Submit: false,
-    Company_Reference: currentInvoice.Company_Reference,
+    Company_Reference: companyWID
+      ? { ID: [{ $attributes: { type: 'WID' }, $value: companyWID }] }
+      : currentInvoice.Company_Reference,
     Currency_Reference: currentInvoice.Currency_Reference,
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
@@ -739,17 +742,20 @@ export async function getWorkQueueTagWIDs(
   return wids;
 }
 
-export async function updateSupplierInvoiceSupplier(
+export async function updateSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   supplierID: string,
   notes?: string,
   memo?: string | undefined,
-  invoiceDate?: string
+  invoiceDate?: string,
+  companyWID?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier ID: ${supplierID}`);
+  debug(`Company override: ${companyWID ? `WID=${companyWID}` : '(none - using existing)'}`);
+  debug(`Agent notes: ${notes}`);
 
   try {
     debug('Fetching current invoice data');
@@ -779,6 +785,7 @@ export async function updateSupplierInvoiceSupplier(
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
       supplierID,
+      companyWID,
       workQueueTags,
       notes,
       memo,
@@ -818,88 +825,8 @@ export async function updateSupplierInvoiceSupplier(
   }
 }
 
-export async function addNoSupplierTagToInvoice(
-  context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string,
-  notes?: string,
-  memo?: string | undefined,
-  invoiceDate?: string
-): Promise<{ success: boolean; message?: string }> {
-  debug('Adding no-supplier work queue tag to invoice via SOAP');
-  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
-  try {
-    const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
-    const defaultSupplierID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
-
-    if (!noSupplierTagID) {
-      throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
-    }
-
-    if (!defaultSupplierID) {
-      throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
-    }
-
-    debug('Fetching current invoice data');
-    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
-
-    if (!currentInvoice) {
-      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
-    }
-
-    debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
-
-    const client = await buildResourceManagementClient(context);
-
-    const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
-
-    debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
-    debug(`Using default supplier ID: ${defaultSupplierID}`);
-
-    const invoiceData = buildSubmitInvoiceData({
-      currentInvoice,
-      workQueueTags,
-      notes,
-      memo,
-      defaultSupplierRefId: defaultSupplierID,
-      invoiceDate,
-    });
-
-    const updateResponse = await new Promise<any>((resolve, reject) => {
-      const request = {
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-          },
-          Supplier_Invoice_Data: invoiceData
-        }
-      };
-
-      debug('SOAP Request object for no-supplier tag:', JSON.stringify(request, null, 2));
-      debug('Submitting updated Supplier Invoice to Workday with no-supplier tag');
-      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-        debug('Submit_Supplier_Invoice XML:', client.lastRequest);
-        if (err) {
-          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP update response received');
-        resolve(result);
-      });
-    });
-
-    debug('No-supplier tag added successfully', updateResponse);
-
-    return {
-      success: true,
-      message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
-    };
-  } catch (error) {
-    throw error;
-  }
-}
-
-export async function updateVerifySupplierInvoiceData(
+export async function verifySupplierInvoiceData(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   notes?: string,
@@ -907,6 +834,7 @@ export async function updateVerifySupplierInvoiceData(
   invoiceDate?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
+  debug(`Agent notes: ${notes}`);
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
   debug('Fetching current invoice data');
