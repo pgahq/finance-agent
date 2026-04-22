@@ -10,35 +10,39 @@ Accepted
 
 ## Context
 
-The Finance Agent (`finance-agent`) automates accounts-payable workflows in Workday: it discovers supplier-related invoices, retrieves attachments, uses AI-assisted analysis with retrieval-augmented supplier matching, and notifies operators via Slack. The system must integrate with multiple Workday surfaces (WQL for bulk reads, REST/SOAP for detail and binaries), store embeddings for semantic search, handle PDF-to-image conversion in Lambda, and run on PGA’s AWS estate with shared VPC primitives.
+The Finance Agent (`finance-agent`) automates accounts-payable work against **Workday**: find supplier invoices that need attention, pull attachments and metadata, run **AI-assisted** supplier matching with **RAG** over a local supplier corpus, optionally **write back** to Workday (SOAP), and **notify** operators. The workload is **batch- and schedule-driven**, not an interactive product surface.
 
-Stakeholders need a durable record of **why** this shape was chosen and **how** major components relate, independent of day-to-day README edits.
+That forces a few cross-cutting concerns: **multiple Workday APIs** (WQL for discovery and bulk reads; SOAP for invoice documents, attachments, and submits), **long-running steps** (embedding batches, PDF rasterization, model calls) within Lambda limits, **durable side data** (vectors, attachments, audit), **shared network** constraints (existing VPC), and **failure isolation** (e.g. Workday validation faults that must not retry forever).
 
-### PGA guide: ADR versus Tech Spec
-
-Engineering guidance on when to write an ADR versus a Tech Spec is published internally as [ADR documentation](https://technology.pgahq.com/engineering/ADRs/adr-documentation) (source markdown in [`technology-pgahq-com` — `999-adr-documentation.md`](https://github.com/pgahq/technology-pgahq-com/blob/82361d3cbca76fb06cdece9ca0407f50b2ee3412/docs/10-engineering/05-ADRs/999-adr-documentation.md)).
-
-**Use an ADR when** the proposed change affects how the system works in a fundamental way, impacts interaction with other systems, changes how developers work going forward, is foundational to application structure (not only a single feature), or is wide-ranging in the sense that it establishes idioms and patterns for later features.
-
-**Use a Tech Spec when** end users will notice the change, you are describing an implementation plan for a specific feature, or the work is feature-focused rather than architectural.
-
-**Key distinction** — ADRs capture rationale and patterns for foundational changes; tech specs describe how to build particular functionality.
-
-**Why this record is an ADR** — Finance Agent’s split between query and processor Lambdas, Workday access patterns (WQL vs SOAP submit), the RAG data plane, and the DynamoDB validation skip registry are cross-cutting contracts: they constrain how new features in this repo integrate with Workday, AWS, and OpenAI and how future handlers should behave. That matches the ADR bar above rather than a one-off feature spec.
+Without a written decision, new work in this repository tends to re-litigate the same questions: where queries live vs. where mutation and AI run, how to paginate large WQL results, how to persist embeddings, and how to handle known-bad invoices. This ADR fixes those **idioms for future features**, not the behavior of a single user-facing feature.
 
 ## Decision
 
-We implement Finance Agent as **AWS SAM / CloudFormation–deployed Node.js 20 Lambdas** inside an existing VPC (subnet and VPC IDs imported from the `pgagent` stack), with:
+**We adopt a serverless, split-handler architecture on AWS** as the default way to build Finance Agent capabilities.
 
-1. **Query vs. processor Lambdas** — A thin “query” function runs Workday WQL (and similar), paginates results, and asynchronously invokes a “processor” function per page. Processors own heavy I/O: OpenAI calls, PostgreSQL writes, S3 uploads, SOAP attachment retrieval, and optional direct WQL execution when `pageSize` is `null` (self-contained refresh-style flows). Factories `withQueryHandler` and `withProcessorHandler` in `src/lib/handlers.ts` standardize this contract.
+Concretely:
 
-2. **Data plane** — **Aurora PostgreSQL** (cluster + serverless instance) holds application data including **pgvector**-backed documents for RAG. **S3** stores derived invoice imagery with presigned access for models. **DynamoDB** holds a **per-invoice skip registry** for Workday **validation** failures on the enrich path (see below). Secrets: **SSM Parameter Store** for integration config, **Secrets Manager** for the DB password.
+1. **Deploy and runtime** — **AWS SAM / CloudFormation**, **Node.js 20** Lambdas in the VPC imported from the **`pgagent`** stack (subnets and security groups shared with that footprint). **CircleCI** deploys; **`@pga/lambda-env`** and **`@pga/logger`** are the standard runtime bootstrap.
 
-3. **Cross-cutting** — **CircleCI** builds and deploys; runtime uses `@pga/lambda-env` and `@pga/logger`. The enrich processor ships a **Poppler** Lambda layer for `pdftocairo`-style PDF rasterization.
+2. **Query vs. processor** — **Query** Lambdas run Workday WQL (and similar read paths), optionally paginate, and **asynchronously invoke** **processor** Lambdas per page or with a delegated query (`pageSize: null` so the processor runs WQL itself). Processors own **OpenAI**, **PostgreSQL**, **S3**, **SOAP** reads/writes, and **DynamoDB** where applicable. New scheduled or bulk flows should extend **`withQueryHandler` / `withProcessorHandler`** in `src/lib/handlers.ts` unless this ADR is superseded.
 
-4. **Schedules** — EventBridge rules in `template.yml` drive cadence (UTC cron expressions); operational tuning of cron expressions is infrastructure configuration, not application code.
+3. **Data plane** — **Aurora PostgreSQL** (including **pgvector**) for application and RAG data; **S3** for derived invoice imagery and presigned model access; **DynamoDB** for the **enrich-path validation skip registry** only (partition key `invoiceWorkdayID`); secrets via **SSM Parameter Store** and **Secrets Manager** (database password).
 
-## Architecture (diagrams)
+4. **Workday writes** — All supplier-invoice mutations go through **Resource Management SOAP** (`Get_Supplier_Invoices` then **`Submit_Supplier_Invoice`** with merged `Supplier_Invoice_Data`, **`Submit: false`** in our payload builder). WQL is not used for writes.
+
+5. **PDF in Lambda** — Invoice PDF handling uses a **Poppler** Lambda **layer** on the enrich processor for rasterization; new code that needs PDF-to-image should reuse that pattern.
+
+6. **Schedules** — **EventBridge** rules in `template.yml` own cadence; changing cron is infrastructure change, not a substitute for this architectural split.
+
+### Alternatives considered
+
+- **Single Lambda per flow** — Simpler mentally, but risks timeout on large WQL pages and mixes read pagination with heavy processing; rejected for operability at scale.
+- **Long-running service (ECS/EC2)** — More control over warm connections and long jobs; rejected in favor of managed scale-to-zero and alignment with existing PGA Lambda + SAM usage for this class of integration.
+- **Writes via WQL or custom REST only** — Workday supplier invoice updates are not expressed that way in our integration; SOAP submit after GET is the supported path we standardize on.
+
+## Architecture
+
+The following diagrams document the decided shape; they are **illustrative detail**, not a second decision.
 
 ### High-level deployment and data stores
 
@@ -281,11 +285,11 @@ flowchart TD
 - **Cold start surface** — Many distinct functions and VPC ENI setup can add latency variance versus a single long-running service.
 - **Coupling to shared VPC exports** — Stack imports from `pgagent` tie deployment ordering and network design to that parent stack.
 
-### Follow-up decisions (out of scope here)
+### Follow-up (feature / operational detail — use a Tech Spec or runbooks, not this ADR)
 
-- Model/provider selection and prompt versioning strategy.
-- Exact RAG scoring thresholds and index maintenance windows.
-- Disaster recovery and multi-region posture for Aurora and S3.
+- Model and provider selection, prompt versioning, and evaluation criteria.
+- RAG similarity thresholds, reindexing cadence, and embedding model changes.
+- Disaster recovery, multi-region posture, and DynamoDB TTL or purge tooling for the skip registry.
 
 ## References
 
