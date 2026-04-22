@@ -26,7 +26,7 @@ export const InvoiceEnrichmentSchema = z.object({
       supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
-    }).nullable().default(null).describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different"'),
+    }).nullable().default(null).describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different". When status is "matching", populate this with the existing supplier details.'),
 
     potentialDuplicateSuppliers: z.array(z.object({
       workdayId: z.string().describe('The unique Workday identifier (WID) of the potential duplicate supplier'),
@@ -151,7 +151,7 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 4. **Make Determination**: Decide if the current supplier is correct or needs revision
 
 **Verification Status Guidelines:**
-- **status: "matching"** — The extracted supplier information matches the existing supplier. Minor variations in formatting (e.g., "ABC Corp" vs "ABC Corporation", slight address formatting differences) should be considered matching.
+- **status: "matching"** — The extracted supplier information matches the existing supplier. Minor variations in formatting (e.g., "ABC Corp" vs "ABC Corporation", slight address formatting differences) should be considered matching. Populate \`resolvedSupplier\` with the existing supplier details.
 - **status: "different"** — The extracted supplier information is CONFIDENTLY different from the existing supplier. Only use this when the company name is clearly different, you found a better match in Workday with high confidence (> 0.8), and the evidence strongly supports a different supplier.
 - **status: "uncertain"** — The invoice content is unclear or ambiguous, you cannot confidently determine correctness, or extracted information is too limited.
 
