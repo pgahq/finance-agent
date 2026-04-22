@@ -1118,6 +1118,215 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('should apply fallback payment terms when invoice has none', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      delete process.env.FALLBACK_PAYMENT_TERMS_ID;
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'fallback-payment-terms-id' }]
+      });
+    });
+
+    it('should not override existing payment terms with fallback', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingPaymentTerms = { ID: [{ $attributes: { type: 'WID' }, $value: 'existing-payment-terms-wid' }] };
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Payment_Terms_Reference: existingPaymentTerms
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-wid';
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      delete process.env.FALLBACK_PAYMENT_TERMS_ID;
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
+    });
+
+    it('should append fallback fund and cost center worktags to lines missing them', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const line = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] },
+        Extended_Amount: '100'
+        // No Worktags_Reference
+      };
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Invoice_Line_Replacement_Data: [line]
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
+      process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      delete process.env.FALLBACK_FUND_ID;
+      delete process.env.FALLBACK_COST_CENTER_ID;
+
+      const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      expect(submittedLine.Worktags_Reference).toEqual([
+        { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'fallback-fund-id' }] },
+        { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }
+      ]);
+    });
+
+    it('should not duplicate fallback worktags already present on a line', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingWorktag = { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'fallback-fund-id' }] };
+      const line = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] },
+        Worktags_Reference: [existingWorktag],
+        Extended_Amount: '100'
+      };
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Invoice_Line_Replacement_Data: [line]
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
+      process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
+      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      delete process.env.FALLBACK_FUND_ID;
+      delete process.env.FALLBACK_COST_CENTER_ID;
+
+      const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      expect(submittedLine.Worktags_Reference).toEqual([
+        existingWorktag,
+        { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }
+      ]);
+    });
+
   });
 
   describe('addNoSupplierTagToInvoice', () => {

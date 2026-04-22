@@ -356,12 +356,33 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
 
   const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
+  const fallbackFundId = process.env.FALLBACK_FUND_ID;
+  const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
+  const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
+
   const supplierRef = defaultSupplierRefId
     ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: defaultSupplierRefId }] }
     : supplierID
       ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
       : currentInvoice.Supplier_Reference
       ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
+
+  const fallbackWorktags = [
+    ...(fallbackFundId ? [{ ID: [{ $attributes: { type: 'Fund_ID' }, $value: fallbackFundId }] }] : []),
+    ...(fallbackCostCenterId ? [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: fallbackCostCenterId }] }] : []),
+  ];
+
+  const paymentTermsRef = currentInvoice.Payment_Terms_Reference
+    ?? (fallbackPaymentTermsId ? { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: fallbackPaymentTermsId }] } : undefined);
+
+  const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
+    ?.filter((line: any) => line.Spend_Category_Reference || line.Item_Reference)
+    .map(({ Tax_Data, ...line }: any) => {
+      const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
+      const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
+      const additions = fallbackWorktags.filter(t => !existingWids.has(t.ID[0].$value));
+      return additions.length ? { ...line, Worktags_Reference: [...existing, ...additions] } : line;
+    });
 
   return {
     Submit: false,
@@ -386,16 +407,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...(currentInvoice.Currency_Rate_Data && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    ...(currentInvoice.Invoice_Line_Replacement_Data && (() => {
-      const completedLines = currentInvoice.Invoice_Line_Replacement_Data
-        .filter((line: any) => (line.Spend_Category_Reference || line.Item_Reference) && line.Worktags_Reference)
-        .map(({ Tax_Data, ...line }: any) => line);
-      return completedLines.length > 0 ? { Invoice_Line_Replacement_Data: completedLines } : {};
-    })()),
+    ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 
     ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
 
-    ...(currentInvoice.Payment_Terms_Reference && { Payment_Terms_Reference: currentInvoice.Payment_Terms_Reference }),
+    ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
     ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
     ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
