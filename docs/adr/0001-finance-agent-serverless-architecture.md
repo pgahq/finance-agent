@@ -123,6 +123,70 @@ flowchart LR
   AI --> SL
 ```
 
+### Workday writes: payload, transport, and when they run
+
+Reads use **WQL** (`GET` to `/api/wql/v1/.../data` with a bearer token). **Mutations to supplier invoices** do not use WQL; they use the **Resource Management** SOAP web service (`Resource_Management.wsdl`, endpoint `.../Resource_Management/v44.1`) with **OAuth2 bearer** security (`strong-soap` + `BearerSecurity`), same token source as WQL (`getAccessToken`).
+
+Every invoice update follows the same mechanical pattern in `src/lib/workday.ts`:
+
+1. **Load current state** — `Get_Supplier_Invoices` (SOAP) returns the existing `Supplier_Invoice` document (header, lines, work queue data, etc.).
+2. **Build replacement data** — `buildSubmitInvoiceData` merges the current invoice with intended changes. The payload sets **`Submit: false`** so Workday treats the call as an in-place supplier-invoice update path (not “submit this document for approval” in the boolean sense of that field name—see Workday web service docs for exact semantics).
+3. **Post the change** — `Submit_Supplier_Invoice` with `Submit_Supplier_Invoice_Request` containing `Supplier_Invoice_Reference` (invoice **WID**) and `Supplier_Invoice_Data` (the merged structure).
+
+**What goes into `Supplier_Invoice_Data` (high level)** — largely a **round-trip** of the current invoice plus deltas:
+
+- **Identity / amounts** — `Company_Reference`, `Currency_Reference`, `Invoice_Number`, `Control_Amount_Total`, optional tax/freight/discount fields, ship-to, on-hold/prepaid flags, currency rate data, etc., copied from the GET response so Workday receives a coherent document.
+- **Supplier** — `Supplier_Reference` is set from the AI-resolved **`Supplier_ID`**, or from configured fallbacks (for example `WORKDAY_DEFAULT_SUPPLIER_ID` when tagging “no supplier”).
+- **Dates** — `Invoice_Date` is resolved from AI-extracted date when provided, otherwise first day of current UTC month; `Invoice_Received_Date` preserved when present.
+- **Lines** — `Invoice_Line_Replacement_Data` is rebuilt from existing lines (with tax data stripped per mapping); optional **fallback worktags** (`FALLBACK_FUND_ID`, `FALLBACK_COST_CENTER_ID`) are merged onto lines that have spend/item references when those env vars are set.
+- **Payment terms** — uses existing `Payment_Terms_Reference` or `FALLBACK_PAYMENT_TERMS_ID` when missing on the invoice.
+- **Human-visible audit** — `Memo` and/or `Work_Queue_Information_Data` with **work queue notes** (agent text prefixed with `FINANCE AGENT:`) and optional **work queue tags** (WIDs from `WORKDAY_AGENT_MODIFIED_TAG_WID`, `WORKDAY_AGENT_NO_SUPPLIER_TAG_WID`).
+
+**Application entry points** (all ultimately call `client.Submit_Supplier_Invoice`):
+
+| Function | Typical use | Supplier / tags / notes |
+| --- | --- | --- |
+| `updateSupplierInvoiceSupplier` | High-confidence match | Sets supplier to resolved **Supplier_ID**; adds **agent-modified** tag when `WORKDAY_AGENT_MODIFIED_TAG_WID` is set; merges **notes** and optional **memo** / **invoice date**. |
+| `addNoSupplierTagToInvoice` | `not_found`, `ambiguous`, `error` when modifications allowed | Sets supplier reference from **`WORKDAY_DEFAULT_SUPPLIER_ID`**; adds **no-supplier** tag; notes/memo/date as provided. |
+| `updateVerifySupplierInvoiceData` | Verification-only outcomes, or when modifications disabled | Keeps supplier from current invoice (unless default path in builder applies); updates **notes/memo/date** and optional agent-modified tag. |
+
+The **enrich invoice** processor (`src/enrich_invoice.ts`) chooses among these based on AI `status` and **`INVOICE_MOD_ENABLED`** (defaults to enabled unless env is `'false'`). **Supplier assignment and work-queue tag changes are only attempted for invoices in `Draft`** (`invoiceStatusAsText === 'Draft'`); non-draft invoices still receive **notes-only** updates via `updateVerifySupplierInvoiceData`. A standalone local script `src/update-invoice-supplier.ts` can call `updateSupplierInvoiceSupplier` for manual fixes.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant L as EnrichInvoiceProcessor
+  participant RM as Workday Resource Management SOAP
+  participant INV as Supplier Invoice (Workday)
+
+  L->>RM: Get_Supplier_Invoices (WID)
+  RM-->>INV: Read current document
+  INV-->>L: Supplier_Invoice payload
+
+  Note over L: buildSubmitInvoiceData<br/>(merge deltas, Submit false)
+
+  L->>RM: Submit_Supplier_Invoice<br/>(Supplier_Invoice_Reference + Supplier_Invoice_Data)
+  RM-->>L: SOAP response / faults
+```
+
+```mermaid
+flowchart TD
+  D{Draft status?}
+  M{INVOICE_MOD_ENABLED?}
+  S{supplier.status}
+  NotesOnly["updateVerifySupplierInvoiceData<br/>(notes / memo / date)"]
+  UpdSupp["updateSupplierInvoiceSupplier<br/>supplier + tags + notes"]
+  NoTag["addNoSupplierTagToInvoice<br/>default supplier + no-supplier tag + notes"]
+
+  D -->|no| NotesOnly
+  D -->|yes| M
+  M -->|no| NotesOnly
+  M -->|yes| S
+  S -->|found| UpdSupp
+  S -->|not_found, ambiguous, error| NoTag
+  S -->|matching, different, uncertain| NotesOnly
+```
+
 ## Consequences
 
 ### Positive
