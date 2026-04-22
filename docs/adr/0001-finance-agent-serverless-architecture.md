@@ -22,7 +22,7 @@ We implement Finance Agent as **AWS SAM / CloudFormation–deployed Node.js 20 L
 
 1. **Query vs. processor Lambdas** — A thin “query” function runs Workday WQL (and similar), paginates results, and asynchronously invokes a “processor” function per page. Processors own heavy I/O: OpenAI calls, PostgreSQL writes, S3 uploads, SOAP attachment retrieval, and optional direct WQL execution when `pageSize` is `null` (self-contained refresh-style flows). Factories `withQueryHandler` and `withProcessorHandler` in `src/lib/handlers.ts` standardize this contract.
 
-2. **Data plane** — **Aurora PostgreSQL** (cluster + serverless instance) holds application data including **pgvector**-backed documents for RAG. **S3** stores derived invoice imagery with presigned access for models. **DynamoDB** stores invoice validation failure metadata for the enrich path. Secrets: **SSM Parameter Store** for integration config, **Secrets Manager** for the DB password.
+2. **Data plane** — **Aurora PostgreSQL** (cluster + serverless instance) holds application data including **pgvector**-backed documents for RAG. **S3** stores derived invoice imagery with presigned access for models. **DynamoDB** holds a **per-invoice skip registry** for Workday **validation** failures on the enrich path (see below). Secrets: **SSM Parameter Store** for integration config, **Secrets Manager** for the DB password.
 
 3. **Cross-cutting** — **CircleCI** builds and deploys; runtime uses `@pga/lambda-env` and `@pga/logger`. The enrich processor ships a **Poppler** Lambda layer for `pdftocairo`-style PDF rasterization.
 
@@ -69,7 +69,7 @@ flowchart TB
   P --> OAI
   P --> PG
   P --> S3
-  P --> DDB
+  P -->|"EnrichInvoiceProcessor only<br/>GetItem / PutItem"| DDB
   R --> PG
   R --> OAI
   Q --> SSM
@@ -88,7 +88,8 @@ sequenceDiagram
   participant QF as Query Lambda
   participant WD as Workday WQL
   participant PF as Processor Lambda
-  participant Ex as External deps<br/>(OpenAI, DB, S3, SOAP)
+  participant DDB as DynamoDB<br/>validation skip registry
+  participant Ex as External deps<br/>(OpenAI, Aurora, S3, SOAP)
 
   EB->>QF: Scheduled tick
   QF->>QF: setupContext() via withQueryHandler
@@ -97,9 +98,22 @@ sequenceDiagram
   loop Each page
     QF->>PF: InvokeFunction (Event)<br/>Payload: data[], page, totalPages
     PF->>PF: setupContext() via withProcessorHandler
-    PF->>Ex: Process batch (AI, persistence, files)
+    opt EnrichInvoiceProcessor path
+      PF->>DDB: GetItem by invoiceWorkdayID
+      alt Item exists
+        DDB-->>PF: Item found
+        Note over PF: Early return — skip processing
+      else No item
+        DDB-->>PF: No item
+        PF->>Ex: Process batch (AI, persistence, files)
+        opt Workday validation error
+          PF->>DDB: PutItem (invoiceWorkdayID, createdAt, errorMessage)
+        end
+      end
+    end
   end
 
+  Note over PF,DDB: Other processor Lambdas do not use this table.
   Note over QF,PF: Alternate mode: pageSize null sends {query}<br/>and processor runs WQL itself.
 ```
 
@@ -108,19 +122,58 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   WQL["Workday WQL<br/>candidate invoices"]
+  DDB1[("DynamoDB<br/>skip registry<br/>GetItem")]
+  PROC["EnrichInvoiceProcessor"]
   SOAP["Workday SOAP<br/>attachments + detail"]
   PDF["Poppler / pdftocairo<br/>PDF → images"]
   S3["S3 presigned URLs"]
   AI["OpenAI (vision + tools)"]
   VDB[("PostgreSQL<br/>hybrid / vector search")]
+  WD2["Workday SOAP<br/>Submit_Supplier_Invoice"]
+  DDB2[("DynamoDB<br/>PutItem on<br/>validation fault")]
   SL["Slack status"]
 
-  WQL --> SOAP
+  WQL --> DDB1
+  DDB1 -->|"not skipped"| PROC
+  PROC --> SOAP
   SOAP --> PDF
   PDF --> S3
   S3 --> AI
   VDB --> AI
-  AI --> SL
+  AI --> WD2
+  WD2 -->|"validation error"| DDB2
+  PROC --> SL
+```
+
+### DynamoDB: validation-failure skip registry (enrich path)
+
+**Problem** — Some invoices hit **Workday validation faults** (SOAP `Validation_Fault` shape or message text matching a validation pattern). Retrying the same invoice on every schedule would spam errors and waste capacity without fixing the underlying Workday data.
+
+**Table** — CloudFormation defines `InvoiceValidationFailuresTable` (`template.yml`): partition key **`invoiceWorkdayID`** (string), on-demand billing. Only **`EnrichInvoiceProcessor`** receives `INVOICE_VALIDATION_FAILURES_TABLE_NAME` and IAM for `dynamodb:GetItem` / `dynamodb:PutItem` on that table.
+
+**Write (record failure)** — In `processInvoice`, if any thrown error passes `isWorkdayValidationError`, the processor calls `recordInvoiceValidationFailure`, which **`PutItem`s** an item:
+
+- `invoiceWorkdayID` — Workday invoice WID (same as the table key).
+- `createdAt` — ISO timestamp when the failure was recorded.
+- `errorMessage` — truncated summary of the fault (for debugging; max ~1000 chars).
+
+The handler **returns without rethrowing**, so Lambda does not retry this invocation as a hard failure for that path.
+
+**Read (avoid retry loop)** — At the start of `processInvoice`, **`GetItem`** by `invoiceWorkdayID`. If an item exists, processing **returns immediately** (no Workday GET, no AI, no submit). The invoice can still appear in WQL results, but the processor becomes a cheap no-op until the DynamoDB row is removed or the invoice drops out of the query scope.
+
+**Scope** — Only **validation-class** Workday errors are recorded. Other errors are rethrown (normal Lambda retry / DLQ behavior applies per function configuration). Clearing a stuck invoice requires **operational removal** of the DynamoDB item (or a future admin tool); that is intentionally out of band so bad data does not loop forever.
+
+```mermaid
+flowchart TD
+  A[processInvoice starts] --> B{GetItem<br/>invoiceWorkdayID}
+  B -->|item exists| Z[Return — skipped]
+  B -->|no item| C[Enrich + Workday SOAP]
+  C --> D{Error?}
+  D -->|no| E[Done]
+  D -->|yes| F{isWorkdayValidationError?}
+  F -->|yes| G[PutItem skip record]
+  G --> H[Return — no rethrow]
+  F -->|no| I[Rethrow — Lambda retry]
 ```
 
 ### Workday writes: payload, transport, and when they run
@@ -156,17 +209,31 @@ The **enrich invoice** processor (`src/enrich_invoice.ts`) chooses among these b
 sequenceDiagram
   autonumber
   participant L as EnrichInvoiceProcessor
+  participant DDB as DynamoDB skip registry
   participant RM as Workday Resource Management SOAP
   participant INV as Supplier Invoice (Workday)
 
-  L->>RM: Get_Supplier_Invoices (WID)
-  RM-->>INV: Read current document
-  INV-->>L: Supplier_Invoice payload
+  L->>DDB: GetItem(invoiceWorkdayID)
+  alt Skip registry hit
+    DDB-->>L: Item present
+    Note over L: Exit — do not retry enrichment
+  else Continue
+    DDB-->>L: No item
+    L->>RM: Get_Supplier_Invoices (WID)
+    RM-->>INV: Read current document
+    INV-->>L: Supplier_Invoice payload
 
-  Note over L: buildSubmitInvoiceData<br/>(merge deltas, Submit false)
+    Note over L: buildSubmitInvoiceData<br/>(merge deltas, Submit false)
 
-  L->>RM: Submit_Supplier_Invoice<br/>(Supplier_Invoice_Reference + Supplier_Invoice_Data)
-  RM-->>L: SOAP response / faults
+    L->>RM: Submit_Supplier_Invoice<br/>(Supplier_Invoice_Reference + Supplier_Invoice_Data)
+    alt Validation fault
+      RM-->>L: Validation error
+      L->>DDB: PutItem(invoiceWorkdayID, createdAt, errorMessage)
+      Note over L: Return — no rethrow
+    else Success
+      RM-->>L: OK
+    end
+  end
 ```
 
 ```mermaid
@@ -195,10 +262,12 @@ flowchart TD
 - **Horizontal scale** — Each page invokes a separate processor execution, which maps naturally to large Workday datasets without a single oversized Lambda run.
 - **Security posture** — No public database; Lambdas and Aurora sit in private subnets with least-privilege IAM, SSM-backed secrets, and generated DB passwords in Secrets Manager.
 - **Observable boundaries** — Clear CloudWatch log groups per function; Slack notifications can attribute failures to query vs. processor stages.
+- **Validation fault circuit breaker** — DynamoDB gives a cheap, idempotent “do not process this invoice again” flag for known-bad Workday payloads without changing WQL or Workday configuration.
 
 ### Negative / trade-offs
 
 - **Distributed system complexity** — Async invokes add eventual consistency, duplicate-processing idempotency concerns, and the need to trace across two log streams.
+- **Skip registry operations** — Invoices recorded in DynamoDB stay skipped until the item is deleted; there is no automatic TTL in the documented stack, so operators must clear rows deliberately when Workday is fixed.
 - **Cold start surface** — Many distinct functions and VPC ENI setup can add latency variance versus a single long-running service.
 - **Coupling to shared VPC exports** — Stack imports from `pgagent` tie deployment ordering and network design to that parent stack.
 
@@ -213,3 +282,5 @@ flowchart TD
 - `template.yml` — deployed functions, schedules, IAM, Aurora, S3, DynamoDB, Poppler layer.
 - `README.md` — narrative architecture and extended Mermaid flows.
 - `src/lib/handlers.ts` — `withQueryHandler` / `withProcessorHandler` implementation.
+- `src/lib/invoice_validation_failures.ts` — DynamoDB skip registry (`isWorkdayValidationError`, `recordInvoiceValidationFailure`, `isInvoiceMarkedForSkip`).
+- `src/enrich_invoice.ts` — early exit on skip; catch path records validation failures.
