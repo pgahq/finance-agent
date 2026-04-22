@@ -300,6 +300,7 @@ interface buildSubmitInvoiceDataOptions {
   notes?: string;
   memo?: string;
   defaultSupplierRefId?: string;
+  invoiceDate?: string;
 }
 
 function stripRichText(text: string): string {
@@ -317,8 +318,42 @@ function stripRichText(text: string): string {
   return result.trim();
 }
 
+function getFirstDayOfCurrentMonth(): string {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = `${now.getUTCMonth() + 1}`.padStart(2, '0');
+  return `${year}-${month}-01`;
+}
+
+function normalizeInvoiceDate(invoiceDate?: string): string | undefined {
+  if (!invoiceDate) {
+    return undefined;
+  }
+
+  const trimmed = invoiceDate.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const isoDateMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDateMatch) {
+    return isoDateMatch[1];
+  }
+
+  const parsedDate = new Date(trimmed);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return undefined;
+  }
+
+  return parsedDate.toISOString().split('T')[0];
+}
+
+function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string {
+  return normalizeInvoiceDate(invoiceDate) ?? getFirstDayOfCurrentMonth();
+}
+
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId } = options;
+  const { currentInvoice, supplierID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
 
   const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
   const supplierRef = defaultSupplierRefId
@@ -332,7 +367,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     Submit: false,
     Company_Reference: currentInvoice.Company_Reference,
     Currency_Reference: currentInvoice.Currency_Reference,
-    Invoice_Date: currentInvoice.Invoice_Date,
+    Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
@@ -693,7 +728,8 @@ export async function updateSupplierInvoiceSupplier(
   invoiceWorkdayID: string,
   supplierID: string,
   notes?: string,
-  memo?: string | undefined
+  memo?: string | undefined,
+  invoiceDate?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -729,7 +765,8 @@ export async function updateSupplierInvoiceSupplier(
       supplierID,
       workQueueTags,
       notes,
-      memo
+      memo,
+      invoiceDate
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
@@ -769,7 +806,8 @@ export async function addNoSupplierTagToInvoice(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   notes?: string,
-  memo?: string | undefined
+  memo?: string | undefined,
+  invoiceDate?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Adding no-supplier work queue tag to invoice via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -808,6 +846,7 @@ export async function addNoSupplierTagToInvoice(
       notes,
       memo,
       defaultSupplierRefId: defaultSupplierID,
+      invoiceDate,
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
@@ -848,7 +887,8 @@ export async function updateVerifySupplierInvoiceData(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   notes?: string,
-  memo?: string | undefined
+  memo?: string | undefined,
+  invoiceDate?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -875,7 +915,8 @@ export async function updateVerifySupplierInvoiceData(
     currentInvoice,
     workQueueTags,
     notes,
-    memo
+    memo,
+    invoiceDate
   });
 
   const updateResponse = await new Promise<any>((resolve, reject) => {

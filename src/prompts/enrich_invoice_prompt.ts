@@ -66,6 +66,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.'),
 
+  extractedInvoiceDate: z.string().nullish().describe('The invoice date as shown on the document, normalized to YYYY-MM-DD. Only include this if the document clearly provides an invoice date you can read confidently. Omit if no invoice date is visible or the date is ambiguous.'),
+
   extractedAmountDue: z.string().nullish().describe('The amount due or invoice total as read from the invoice attachment. Omit if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
   costCenterVerification: z.object({
@@ -186,13 +188,25 @@ Always verify the company (buyer/recipient) assignment:
 - **Omit fields with no data**: In extracted information objects, only include fields where you actually found data. Do NOT include fields with null values — simply omit them from the response
 - **Exclusively use plain text in the notes field** — do not use markdown formatting, emojis, or special characters. The notes should be a terse summary of the analysis findings.
 
-## Part 3: Amount Due
+## Part 3: Invoice Date
+
+Read the invoice attachment and extract the invoice date shown on the document. Populate \`extractedInvoiceDate\` using normalized \`YYYY-MM-DD\` format.
+
+Guidelines:
+- Only return the invoice date if it is clearly visible on the document.
+- Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or payment dates.
+- If the document shows multiple dates and the invoice date is ambiguous, omit the field.
+- Do not guess a date.
+
+---
+
+## Part 4: Amount Due
 
 Read the invoice attachment and extract the amount due or invoice total as it appears on the document. Populate \`extractedAmountDue\` with this value (e.g. "$8,573.40"). If no amount can be found, omit the field.
 
 ---
 
-## Part 4: Cost Center Verification
+## Part 5: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 
