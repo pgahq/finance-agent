@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The Finance Agent (`finance-agent`) automates accounts-payable work against **Workday**: find supplier invoices that need attention, pull attachments and metadata, run **AI-assisted** supplier matching with **RAG** over a local supplier corpus, optionally **write back** to Workday (SOAP), and **notify** operators. The workload is **batch- and schedule-driven**, not an interactive product surface.
+The Finance Agent (`finance-agent`) automates accounts-payable work against **Workday**: find supplier invoices that need attention, pull attachments and metadata, run **AI-assisted** supplier matching with **RAG** over a local supplier corpus, optionally **write back** to Workday (SOAP), and **notify** operators. The workload is **integration- and batch-oriented** (invoked Lambdas processing backlogs and deltas), not an interactive product surface.
 
 That forces a few cross-cutting concerns: **multiple Workday APIs** (WQL for discovery and bulk reads; SOAP for invoice documents, attachments, and submits), **long-running steps** (embedding batches, PDF rasterization, model calls) within Lambda limits, **durable side data** (vectors, attachments, audit), **shared network** constraints (existing VPC), and **failure isolation** (e.g. Workday validation faults that must not retry forever).
 
@@ -24,15 +24,13 @@ Concretely:
 
 1. **Deploy and runtime** — **AWS SAM / CloudFormation**, **Node.js 20** Lambdas in the VPC imported from the **`pgagent`** stack (subnets and security groups shared with that footprint). **CircleCI** deploys; **`@pga/lambda-env`** and **`@pga/logger`** are the standard runtime bootstrap.
 
-2. **Query vs. processor** — **Query** Lambdas run Workday WQL (and similar read paths), optionally paginate, and **asynchronously invoke** **processor** Lambdas per page or with a delegated query (`pageSize: null` so the processor runs WQL itself). Processors own **OpenAI**, **PostgreSQL**, **S3**, **SOAP** reads/writes, and **DynamoDB** where applicable. New scheduled or bulk flows should extend **`withQueryHandler` / `withProcessorHandler`** in `src/lib/handlers.ts` unless this ADR is superseded.
+2. **Query vs. processor** — **Query** Lambdas run Workday WQL (and similar read paths), optionally paginate, and **asynchronously invoke** **processor** Lambdas per page or with a delegated query (`pageSize: null` so the processor runs WQL itself). Processors own **OpenAI**, **PostgreSQL**, **S3**, **SOAP** reads/writes, and **DynamoDB** where applicable. New bulk or multi-step flows should extend **`withQueryHandler` / `withProcessorHandler`** in `src/lib/handlers.ts` unless this ADR is superseded.
 
 3. **Data plane** — **Aurora PostgreSQL** (including **pgvector**) for application and RAG data; **S3** for derived invoice imagery and presigned model access; **DynamoDB** for the **enrich-path validation skip registry** only (partition key `invoiceWorkdayID`); secrets via **SSM Parameter Store** and **Secrets Manager** (database password).
 
 4. **Workday writes** — All supplier-invoice mutations go through **Resource Management SOAP** (`Get_Supplier_Invoices` then **`Submit_Supplier_Invoice`** with merged `Supplier_Invoice_Data`, **`Submit: false`** in our payload builder). WQL is not used for writes.
 
 5. **PDF in Lambda** — Invoice PDF handling uses a **Poppler** Lambda **layer** on the enrich processor for rasterization; new code that needs PDF-to-image should reuse that pattern.
-
-6. **Schedules** — **EventBridge** rules in `template.yml` own cadence; changing cron is infrastructure change, not a substitute for this architectural split.
 
 ### Alternatives considered
 
@@ -44,19 +42,17 @@ Concretely:
 
 The following diagrams document the decided shape; they are **illustrative detail**, not a second decision.
 
-### High-level deployment and data stores
+### Process topology: compute, data, and integrations
 
 ```mermaid
 flowchart TB
-  subgraph Schedules["Amazon EventBridge"]
-    EV["Scheduled rules<br/>(see template.yml)"]
-  end
+  T["Entry<br/>Lambda invoke"]
 
   subgraph Compute["AWS Lambda (VPC)"]
-    Q["Query functions<br/>WQL + pagination"]
-    P["Processor functions<br/>AI, DB, S3, SOAP"]
-    R["Retrieval function<br/>RAG queries"]
-    O["Other handlers<br/>validation rules, etc."]
+    Q["Query handlers<br/>WQL + pagination"]
+    P["Processor handlers<br/>AI, DB, S3, SOAP"]
+    R["Retrieval<br/>RAG queries"]
+    O["Other handlers<br/>e.g. validation rules"]
   end
 
   subgraph Data["Managed data services"]
@@ -76,8 +72,9 @@ flowchart TB
     SM["Secrets Manager<br/>(DB password)"]
   end
 
-  EV --> Q
-  EV --> O
+  T --> Q
+  T --> O
+  T --> R
   Q -->|"InvokeFunction (async)"| P
   P --> WD
   P --> OAI
@@ -98,14 +95,14 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   autonumber
-  participant EB as EventBridge schedule
+  participant Tr as Trigger<br/>(invoke)
   participant QF as Query Lambda
   participant WD as Workday WQL
   participant PF as Processor Lambda
   participant DDB as DynamoDB<br/>validation skip registry
   participant Ex as External deps<br/>(OpenAI, Aurora, S3, SOAP)
 
-  EB->>QF: Scheduled tick
+  Tr->>QF: Invoke handler
   QF->>QF: setupContext() via withQueryHandler
   QF->>WD: executeWorkdayQuery()
   WD-->>QF: Rows + totals
@@ -161,7 +158,7 @@ flowchart LR
 
 ### DynamoDB: validation-failure skip registry (enrich path)
 
-**Problem** — Some invoices hit **Workday validation faults** (SOAP `Validation_Fault` shape or message text matching a validation pattern). Retrying the same invoice on every schedule would spam errors and waste capacity without fixing the underlying Workday data.
+**Problem** — Some invoices hit **Workday validation faults** (SOAP `Validation_Fault` shape or message text matching a validation pattern). Retrying the same invoice on every processor run would spam errors and waste capacity without fixing the underlying Workday data.
 
 **Table** — CloudFormation defines `InvoiceValidationFailuresTable` (`template.yml`): partition key **`invoiceWorkdayID`** (string), on-demand billing. Only **`EnrichInvoiceProcessor`** receives `INVOICE_VALIDATION_FAILURES_TABLE_NAME` and IAM for `dynamodb:GetItem` / `dynamodb:PutItem` on that table.
 
@@ -293,7 +290,7 @@ flowchart TD
 
 ## References
 
-- `template.yml` — deployed functions, schedules, IAM, Aurora, S3, DynamoDB, Poppler layer.
+- `template.yml` — deployed functions, IAM, Aurora, S3, DynamoDB, Poppler layer.
 - `README.md` — narrative architecture and extended Mermaid flows.
 - `src/lib/handlers.ts` — `withQueryHandler` / `withProcessorHandler` implementation.
 - `src/lib/invoice_validation_failures.ts` — DynamoDB skip registry (`isWorkdayValidationError`, `recordInvoiceValidationFailure`, `isInvoiceMarkedForSkip`).
