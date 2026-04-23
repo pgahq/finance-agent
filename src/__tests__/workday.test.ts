@@ -41,6 +41,10 @@ jest.mock('../lib/s3.js', () => ({
   })
 }));
 
+jest.mock('../lib/workday_submit_repair.js', () => ({
+  proposeWorkdaySubmitRepair: jest.fn()
+}));
+
 describe('Workday utilities', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -473,6 +477,13 @@ describe('Workday utilities', () => {
         ok: true,
         json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
       });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      proposeWorkdaySubmitRepair.mockResolvedValue({
+        decision: 'give_up',
+        reason: 'No safe repair available',
+        supplierMode: 'preserve'
+      });
     });
 
     it('should throw error when invoice not found', async () => {
@@ -537,6 +548,215 @@ describe('Workday utilities', () => {
 
       await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow('Update failed');
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+    });
+
+    it('should retry validation faults with a repaired payload', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback(new Error('Validation_Fault: invoice date must be the first day of the month'), null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      proposeWorkdaySubmitRepair.mockResolvedValueOnce({
+        decision: 'retry',
+        reason: 'Normalize the invoice date to the first day of the month',
+        invoiceDate: '2025-02-01',
+        supplierMode: 'preserve'
+      });
+
+      const result = await updateSupplierInvoiceSupplier(
+        mockContext,
+        mockInvoiceWorkdayID,
+        mockSupplierID,
+        undefined,
+        undefined,
+        '2025-02-15'
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(1);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+    });
+
+    it('should rethrow the final validation fault after three submit attempts', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(new Error('Validation_Fault: safe repair did not resolve the fault'), null);
+      });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      proposeWorkdaySubmitRepair
+        .mockResolvedValueOnce({
+          decision: 'retry',
+          reason: 'Retry with the first day of the month',
+          invoiceDate: '2025-03-01',
+          supplierMode: 'preserve'
+        })
+        .mockResolvedValueOnce({
+          decision: 'retry',
+          reason: 'Retry with a clearer memo',
+          memo: 'Retry memo',
+          supplierMode: 'preserve'
+        });
+
+      await expect(
+        updateSupplierInvoiceSupplier(
+          mockContext,
+          mockInvoiceWorkdayID,
+          mockSupplierID,
+          undefined,
+          undefined,
+          '2025-03-15'
+        )
+      ).rejects.toThrow('Validation_Fault: safe repair did not resolve the fault');
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(3);
+      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-03-15');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-03-01');
+      expect(capturedRequests[2].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBe('Retry memo');
+    });
+
+    it('should not retry a payload that already failed earlier in the attempt history', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(new Error('Validation_Fault: duplicate payload should not be retried'), null);
+      });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      proposeWorkdaySubmitRepair
+        .mockResolvedValueOnce({
+          decision: 'retry',
+          reason: 'Try the normalized invoice date',
+          invoiceDate: '2025-04-01',
+          supplierMode: 'preserve'
+        })
+        .mockResolvedValueOnce({
+          decision: 'retry',
+          reason: 'Try switching back to the original date',
+          invoiceDate: '2025-04-15',
+          supplierMode: 'preserve'
+        });
+
+      await expect(
+        updateSupplierInvoiceSupplier(
+          mockContext,
+          mockInvoiceWorkdayID,
+          mockSupplierID,
+          undefined,
+          undefined,
+          '2025-04-15'
+        )
+      ).rejects.toThrow('Validation_Fault: duplicate payload should not be retried');
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-04-15');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-04-01');
     });
 
     it('should update supplier successfully', async () => {

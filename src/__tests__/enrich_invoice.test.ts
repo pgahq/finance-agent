@@ -247,7 +247,7 @@ describe('enrich_invoice', () => {
     expect(getSupplierInvoiceWithAttachments).not.toHaveBeenCalled();
   });
 
-  it('should record validation failures and avoid rethrowing them', async () => {
+  it('should record the final validation failure once and avoid rethrowing it', async () => {
     const { updateVerifySupplierInvoiceData } = require('../lib/workday.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
 
@@ -266,6 +266,8 @@ describe('enrich_invoice', () => {
     };
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
+    expect(updateVerifySupplierInvoiceData).toHaveBeenCalledTimes(1);
+    expect(recordInvoiceValidationFailure).toHaveBeenCalledTimes(1);
     expect(recordInvoiceValidationFailure).toHaveBeenCalledWith(undefined, 'test-invoice-id', validationError);
   });
 

@@ -1,5 +1,7 @@
 import { debug } from '@pga/logger';
 import path from 'path';
+import { isWorkdayValidationError, summarizeValidationError } from './invoice_validation_failures.js';
+import { proposeWorkdaySubmitRepair, type WorkdaySubmitRepairAttempt, type WorkdaySubmitRepairPlan } from './workday_submit_repair.js';
 
 import type {
   DownloadedAttachment,
@@ -434,6 +436,205 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   };
 }
 
+const MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS = 3;
+
+interface SubmitSupplierInvoiceRequest {
+  Submit_Supplier_Invoice_Request: {
+    Supplier_Invoice_Reference: {
+      ID: Array<{ $attributes: { type: string }; $value: string }>;
+    };
+    Supplier_Invoice_Data: Record<string, unknown>;
+  };
+}
+
+interface ResourceManagementClient {
+  Submit_Supplier_Invoice: (
+    request: SubmitSupplierInvoiceRequest,
+    callback: (err: unknown, result: unknown) => void
+  ) => void;
+  lastRequest?: string;
+}
+
+interface SubmitSupplierInvoiceWithRepairOptions {
+  context: { workdayConfig: WorkdayConfig };
+  client: ResourceManagementClient;
+  invoiceWorkdayID: string;
+  currentInvoice: any;
+  buildOptions: buildSubmitInvoiceDataOptions;
+  operationName: string;
+  submitLogMessage: string;
+  requestDebugLabel?: string;
+}
+
+function createSubmitSupplierInvoiceRequest(
+  invoiceWorkdayID: string,
+  invoiceData: Record<string, unknown>
+): SubmitSupplierInvoiceRequest {
+  return {
+    Submit_Supplier_Invoice_Request: {
+      Supplier_Invoice_Reference: {
+        ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+      },
+      Supplier_Invoice_Data: invoiceData
+    }
+  };
+}
+
+function serializeSubmitSupplierInvoiceRequest(request: SubmitSupplierInvoiceRequest): string {
+  return JSON.stringify(request);
+}
+
+async function submitSupplierInvoiceSoap(
+  client: ResourceManagementClient,
+  request: SubmitSupplierInvoiceRequest,
+  submitLogMessage: string
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    debug(submitLogMessage);
+    client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
+      debug('Submit_Supplier_Invoice XML:', client.lastRequest);
+      if (err) {
+        debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+        return reject(err);
+      }
+      debug('Workday SOAP update response received');
+      resolve(result);
+    });
+  });
+}
+
+function summarizeInvoiceForRepair(currentInvoice: any): Record<string, unknown> {
+  return {
+    invoiceNumber: currentInvoice.Invoice_Number,
+    invoiceDate: currentInvoice.Invoice_Date,
+    controlAmountTotal: currentInvoice.Control_Amount_Total,
+    supplierReference: currentInvoice.Supplier_Reference,
+    paymentTermsReference: currentInvoice.Payment_Terms_Reference,
+    workQueueInformation: currentInvoice.Work_Queue_Information_Data,
+    invoiceLineCount: Array.isArray(currentInvoice.Invoice_Line_Replacement_Data)
+      ? currentInvoice.Invoice_Line_Replacement_Data.length
+      : 0,
+  };
+}
+
+function mergeRetryNotes(existingNotes?: string, notesAppend?: string): string | undefined {
+  const trimmedExisting = existingNotes?.trim();
+  const trimmedAppend = notesAppend?.trim();
+
+  if (!trimmedAppend) {
+    return trimmedExisting || undefined;
+  }
+
+  if (!trimmedExisting) {
+    return trimmedAppend;
+  }
+
+  return `${trimmedExisting}\n\n${trimmedAppend}`;
+}
+
+function applyRepairPlan(
+  buildOptions: buildSubmitInvoiceDataOptions,
+  repairPlan: WorkdaySubmitRepairPlan
+): buildSubmitInvoiceDataOptions {
+  const nextBuildOptions: buildSubmitInvoiceDataOptions = {
+    ...buildOptions,
+    notes: mergeRetryNotes(buildOptions.notes, repairPlan.notesAppend),
+    memo: repairPlan.memo ?? buildOptions.memo,
+    invoiceDate: repairPlan.invoiceDate ?? buildOptions.invoiceDate,
+  };
+
+  if (repairPlan.supplierMode === 'use_default_supplier') {
+    const defaultSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID ?? buildOptions.defaultSupplierRefId;
+
+    if (defaultSupplierRefId) {
+      nextBuildOptions.defaultSupplierRefId = defaultSupplierRefId;
+      nextBuildOptions.supplierID = undefined;
+    }
+  }
+
+  return nextBuildOptions;
+}
+
+async function submitSupplierInvoiceWithRepair({
+  context,
+  client,
+  invoiceWorkdayID,
+  currentInvoice,
+  buildOptions,
+  operationName,
+  submitLogMessage,
+  requestDebugLabel,
+}: SubmitSupplierInvoiceWithRepairOptions): Promise<unknown> {
+  let attemptBuildOptions = { ...buildOptions };
+  const attemptHistory: WorkdaySubmitRepairAttempt[] = [];
+  const failedRequestFingerprints = new Set<string>();
+  let validationRulesPromise: Promise<ParsedValidationRule[]> | undefined;
+
+  for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
+    const invoiceData = buildSubmitInvoiceData(attemptBuildOptions) as Record<string, unknown>;
+    const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
+
+    if (requestDebugLabel) {
+      debug(requestDebugLabel, JSON.stringify(request, null, 2));
+    }
+
+    try {
+      return await submitSupplierInvoiceSoap(client, request, submitLogMessage);
+    } catch (error) {
+      if (!isWorkdayValidationError(error)) {
+        throw error;
+      }
+
+      const validationError = summarizeValidationError(error);
+      failedRequestFingerprints.add(serializeSubmitSupplierInvoiceRequest(request));
+      attemptHistory.push({
+        attemptNumber,
+        request,
+        validationError,
+      });
+
+      if (attemptNumber === MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS) {
+        throw error;
+      }
+
+      const repairPlan = await proposeWorkdaySubmitRepair({
+        operationName,
+        currentInvoiceSummary: summarizeInvoiceForRepair(currentInvoice),
+        latestAttempt: attemptHistory[attemptHistory.length - 1],
+        previousAttempts: attemptHistory.slice(0, -1),
+        hasDefaultSupplier: Boolean(process.env.WORKDAY_DEFAULT_SUPPLIER_ID ?? attemptBuildOptions.defaultSupplierRefId),
+        getValidationRules: async () => {
+          validationRulesPromise ??= getCustomValidationRules(context);
+          return validationRulesPromise;
+        },
+      });
+
+      if (repairPlan.decision !== 'retry') {
+        debug('Workday submit repair agent chose not to retry', repairPlan);
+        throw error;
+      }
+
+      const nextBuildOptions = applyRepairPlan(attemptBuildOptions, repairPlan);
+      const nextInvoiceData = buildSubmitInvoiceData(nextBuildOptions) as Record<string, unknown>;
+      const nextRequest = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, nextInvoiceData);
+      const nextRequestFingerprint = serializeSubmitSupplierInvoiceRequest(nextRequest);
+
+      if (failedRequestFingerprints.has(nextRequestFingerprint)) {
+        debug('Workday submit repair plan repeated a previously failed payload; aborting retries', repairPlan);
+        throw error;
+      }
+
+      attemptBuildOptions = nextBuildOptions;
+      debug(
+        `Retrying Supplier Invoice submit (${attemptNumber + 1}/${MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS}) after repair`,
+        repairPlan
+      );
+    }
+  }
+
+  throw new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceWorkdayID}`);
+}
+
 function createWorkQueueTag(tagId: string): WorkQueueTag {
   return {
     ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: tagId }]
@@ -751,71 +952,53 @@ export async function updateSupplierInvoiceSupplier(
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier ID: ${supplierID}`);
 
-  try {
-    debug('Fetching current invoice data');
-    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+  debug('Fetching current invoice data');
+  const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
-    if (!currentInvoice) {
-      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
-    }
+  if (!currentInvoice) {
+    throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
+  }
 
-    debug('Current invoice data retrieved - has required fields:', {
-      hasCompanyReference: !!currentInvoice.Company_Reference,
-      hasCurrencyReference: !!currentInvoice.Currency_Reference,
-      hasInvoiceDate: !!currentInvoice.Invoice_Date,
-      hasInvoiceNumber: !!currentInvoice.Invoice_Number,
-      hasControlAmount: !!currentInvoice.Control_Amount_Total
-    });
+  debug('Current invoice data retrieved - has required fields:', {
+    hasCompanyReference: !!currentInvoice.Company_Reference,
+    hasCurrencyReference: !!currentInvoice.Currency_Reference,
+    hasInvoiceDate: !!currentInvoice.Invoice_Date,
+    hasInvoiceNumber: !!currentInvoice.Invoice_Number,
+    hasControlAmount: !!currentInvoice.Control_Amount_Total
+  });
 
-    const client = await buildResourceManagementClient(context);
+  const client = await buildResourceManagementClient(context);
 
-    const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-    const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+  const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
 
-    if (agentModifiedTagID) {
-      debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
-    }
+  if (agentModifiedTagID) {
+    debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
+  }
 
-    const invoiceData = buildSubmitInvoiceData({
+  const updateResponse = await submitSupplierInvoiceWithRepair({
+    context,
+    client: client as ResourceManagementClient,
+    invoiceWorkdayID,
+    currentInvoice,
+    buildOptions: {
       currentInvoice,
       supplierID,
       workQueueTags,
       notes,
       memo,
       invoiceDate
-    });
+    },
+    operationName: 'updateSupplierInvoiceSupplier',
+    submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
+  });
 
-    const updateResponse = await new Promise<any>((resolve, reject) => {
-      const request = {
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-          },
-          Supplier_Invoice_Data: invoiceData
-        }
-      };
+  debug('Supplier invoice updated successfully', updateResponse);
 
-      debug('Submitting updated Supplier Invoice to Workday');
-      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-        debug('Submit_Supplier_Invoice XML:', client.lastRequest);
-        if (err) {
-          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP update response received');
-        resolve(result);
-      });
-    });
-
-    debug('Supplier invoice updated successfully', updateResponse);
-
-    return {
-      success: true,
-      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
-    };
-  } catch (error) {
-    throw error;
-  }
+  return {
+    success: true,
+    message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
+  };
 }
 
 export async function addNoSupplierTagToInvoice(
@@ -828,75 +1011,57 @@ export async function addNoSupplierTagToInvoice(
   debug('Adding no-supplier work queue tag to invoice via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
-  try {
-    const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
-    const defaultSupplierID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
+  const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
+  const defaultSupplierID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
 
-    if (!noSupplierTagID) {
-      throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
-    }
+  if (!noSupplierTagID) {
+    throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
+  }
 
-    if (!defaultSupplierID) {
-      throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
-    }
+  if (!defaultSupplierID) {
+    throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
+  }
 
-    debug('Fetching current invoice data');
-    const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
+  debug('Fetching current invoice data');
+  const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
 
-    if (!currentInvoice) {
-      throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
-    }
+  if (!currentInvoice) {
+    throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
+  }
 
-    debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
+  debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
 
-    const client = await buildResourceManagementClient(context);
+  const client = await buildResourceManagementClient(context);
 
-    const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
+  const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
 
-    debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
-    debug(`Using default supplier ID: ${defaultSupplierID}`);
+  debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
+  debug(`Using default supplier ID: ${defaultSupplierID}`);
 
-    const invoiceData = buildSubmitInvoiceData({
+  const updateResponse = await submitSupplierInvoiceWithRepair({
+    context,
+    client: client as ResourceManagementClient,
+    invoiceWorkdayID,
+    currentInvoice,
+    buildOptions: {
       currentInvoice,
       workQueueTags,
       notes,
       memo,
       defaultSupplierRefId: defaultSupplierID,
       invoiceDate,
-    });
+    },
+    operationName: 'addNoSupplierTagToInvoice',
+    submitLogMessage: 'Submitting updated Supplier Invoice to Workday with no-supplier tag',
+    requestDebugLabel: 'SOAP Request object for no-supplier tag:',
+  });
 
-    const updateResponse = await new Promise<any>((resolve, reject) => {
-      const request = {
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-          },
-          Supplier_Invoice_Data: invoiceData
-        }
-      };
+  debug('No-supplier tag added successfully', updateResponse);
 
-      debug('SOAP Request object for no-supplier tag:', JSON.stringify(request, null, 2));
-      debug('Submitting updated Supplier Invoice to Workday with no-supplier tag');
-      client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-        debug('Submit_Supplier_Invoice XML:', client.lastRequest);
-        if (err) {
-          debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-          return reject(err);
-        }
-        debug('Workday SOAP update response received');
-        resolve(result);
-      });
-    });
-
-    debug('No-supplier tag added successfully', updateResponse);
-
-    return {
-      success: true,
-      message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
-    };
-  } catch (error) {
-    throw error;
-  }
+  return {
+    success: true,
+    message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
+  };
 }
 
 export async function updateVerifySupplierInvoiceData(
@@ -927,34 +1092,20 @@ export async function updateVerifySupplierInvoiceData(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const invoiceData = buildSubmitInvoiceData({
+  const updateResponse = await submitSupplierInvoiceWithRepair({
+    context,
+    client: client as ResourceManagementClient,
+    invoiceWorkdayID,
     currentInvoice,
-    workQueueTags,
-    notes,
-    memo,
-    invoiceDate
-  });
-
-  const updateResponse = await new Promise<any>((resolve, reject) => {
-    const request = {
-      Submit_Supplier_Invoice_Request: {
-        Supplier_Invoice_Reference: {
-          ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-        },
-        Supplier_Invoice_Data: invoiceData
-      }
-    };
-
-    debug('Submitting updated Supplier Invoice to Workday');
-    client.Submit_Supplier_Invoice(request, (err: any, result: any) => {
-      debug('Submit_Supplier_Invoice XML:', client.lastRequest);
-      if (err) {
-        debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
-        return reject(err);
-      }
-      debug('Workday SOAP update response received');
-      resolve(result);
-    });
+    buildOptions: {
+      currentInvoice,
+      workQueueTags,
+      notes,
+      memo,
+      invoiceDate
+    },
+    operationName: 'updateVerifySupplierInvoiceData',
+    submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
 
   debug('Supplier invoice data updated successfully', updateResponse);
