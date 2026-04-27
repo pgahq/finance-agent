@@ -9,7 +9,7 @@ import { executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoice
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
-const DEFAULT_SUPPLIER_ID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
+const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
@@ -128,20 +128,21 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const memo = result.supplier.extractedInformation?.memo || undefined;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
-    const supplierId = result.supplier.resolvedSupplier?.supplierId;
-    const targetSupplierId = supplierId ?? DEFAULT_SUPPLIER_ID;
+    const resolvedSupplierWID = result.supplier.resolvedSupplier?.workdayId
+      ?? (result.supplier.status === 'matching' ? existingSupplier?.id : undefined);
+    const targetSupplierWID = resolvedSupplierWID ?? DEFAULT_SUPPLIER_WID;
     const recommendedCompanyWID = result.companyVerification?.status === 'different'
       ? result.companyVerification.recommended?.workdayId ?? undefined
       : undefined;
 
-    debug(`Supplier resolution: status=${result.supplier.status}, supplierId=${supplierId ?? 'none'}, targetSupplierId=${targetSupplierId ?? 'none'}`);
+    debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatFallbackNotes(!supplierId);
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
-    if (canModifyInvoice && targetSupplierId) {
-      debug(`Setting supplier to ${targetSupplierId} (${supplierId ? 'AI resolved' : 'default fallback'})`);
-      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierId, notes, memo, extractedInvoiceDate, recommendedCompanyWID);
+    if (canModifyInvoice && targetSupplierWID) {
+      debug(`Setting supplier to WID=${targetSupplierWID}`);
+      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, notes, memo, extractedInvoiceDate, recommendedCompanyWID);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
@@ -282,8 +283,8 @@ function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
 
 function formatFallbackNotes(usedDefaultSupplier: boolean): string {
   const parts: string[] = [];
-  if (usedDefaultSupplier && DEFAULT_SUPPLIER_ID) {
-    parts.push(`Supplier: ${DEFAULT_SUPPLIER_ID} (no match found, default applied)`);
+  if (usedDefaultSupplier && DEFAULT_SUPPLIER_WID) {
+    parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (no match found, default applied)`);
   }
   if (process.env.FALLBACK_FUND_ID) {
     parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (applied to lines without an existing fund)`);

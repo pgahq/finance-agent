@@ -1,14 +1,3 @@
-// Core Domain Types
-
-// AI Result Types
-export interface SupplierIdentificationResult {
-  workdayId: string;
-  supplierId: string;
-  supplierName: string;
-  confidence: number;
-  reasoning: string;
-}
-
 
 
 // Data types for actions

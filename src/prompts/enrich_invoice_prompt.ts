@@ -22,7 +22,6 @@ export const InvoiceEnrichmentSchema = z.object({
 
     resolvedSupplier: z.object({
       workdayId: z.string().nullable().describe('The unique Workday identifier (WID) of the supplier'),
-      supplierId: z.string().nullable().describe('The human-readable Supplier ID (e.g., "SUP-12345")'),
       supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
