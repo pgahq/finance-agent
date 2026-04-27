@@ -20,13 +20,19 @@ jest.mock('@ai-sdk/openai', () => ({
   openai: jest.fn()
 }));
 
-jest.mock('../lib/rag.js', () => ({
-  findSuppliersTool: {
+jest.mock('../lib/rag.js', () => {
+  const mockTool = {
     description: 'Mock tool',
     inputSchema: {},
     execute: jest.fn()
-  }
-}));
+  };
+  return {
+    findSuppliersTool: mockTool,
+    findCompaniesTool: mockTool,
+    findCostCentersTool: mockTool,
+    findShippingAddressesTool: mockTool
+  };
+});
 
 describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
@@ -68,7 +74,10 @@ describe('AI utilities', () => {
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
         tools: {
-          findSuppliers: expect.any(Object)
+          findSuppliers: expect.any(Object),
+          findCompanies: expect.any(Object),
+          findCostCenters: expect.any(Object),
+          findShippingAddresses: expect.any(Object)
         }
       });
 
@@ -89,7 +98,10 @@ describe('AI utilities', () => {
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
         tools: {
-          findSuppliers: expect.any(Object)
+          findSuppliers: expect.any(Object),
+          findCompanies: expect.any(Object),
+          findCostCenters: expect.any(Object),
+          findShippingAddresses: expect.any(Object)
         }
       });
     });
@@ -138,7 +150,10 @@ describe('AI utilities', () => {
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
         tools: {
-          findSuppliers: expect.any(Object)
+          findSuppliers: expect.any(Object),
+          findCompanies: expect.any(Object),
+          findCostCenters: expect.any(Object),
+          findShippingAddresses: expect.any(Object)
         }
       });
 
