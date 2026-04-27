@@ -5,15 +5,15 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import { addNoSupplierTagToInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
+import { executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoice, verifySupplierInvoiceData } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
-const NO_SUPPLIER_TAG_REF_ID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_REF_ID || 'FINAGENT-no-supplier';
+const DEFAULT_SUPPLIER_ID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
-  const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID, NO_SUPPLIER_TAG_REF_ID]);
+  const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
 
   const widList = wids.map(wid => `'${wid}'`).join(', ');
 
@@ -24,7 +24,6 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
   return `
   SELECT
     workdayID,
-    invoiceStatusAsText,
     OCRSupplierInvoice,
     supplier,
     company1
@@ -33,7 +32,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     AND workQueueTags not in (${widList})
     AND invoiceStatusAsText = 'Draft'
     AND isCanceled = false
-    AND invoiceReceivedDate = '${yesterdayStr}'
+    AND invoiceReceivedDate >= '${yesterdayStr}'
     AND invoiceIsPaid = false
     AND invoiceIsPartiallyPaid = false
   LIMIT 5
@@ -107,13 +106,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     debug(`Successfully processed ${processedAttachments.length} attachments`);
 
-    // Only allow supplier/tag modifications on Draft invoices
-    const isDraft = invoiceData.invoiceStatusAsText === 'Draft';
-    const canModifyInvoice = INVOICE_MOD_ENABLED && isDraft;
-
-    if (!isDraft) {
-      debug(`Invoice ${invoiceData.workdayID} is in '${invoiceData.invoiceStatusAsText}' status - will only add notes`);
-    }
+    const canModifyInvoice = INVOICE_MOD_ENABLED;
 
     const existingSupplier = invoiceData.supplier?.descriptor
       ? { descriptor: invoiceData.supplier.descriptor, id: invoiceData.supplier.id }
@@ -127,173 +120,46 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const result = await enrichInvoice(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
     debug('Enrichment result:', result);
 
+    if (result.supplier.status === 'error') {
+      throw new Error(`Invoice enrichment returned error status: ${result.supplier.reason}`);
+    }
+
     const processingTime = Date.now() - startTime;
-    const companyNotes = formatCompanyVerificationNotes(result);
-    const amountNotes = formatAmountVerificationNotes(result);
-    const invoiceDateNotes = formatInvoiceDateNotes(result);
-    const costCenterNotes = formatCostCenterNotes(result);
-    const emailSummary = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
     const memo = result.supplier.extractedInformation?.memo || undefined;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
-    switch (result.supplier.status) {
-      case 'found': {
-        await handleFoundSupplier(context, invoiceData.workdayID, result, companyNotes, canModifyInvoice);
-        await notifyResult(
-          'enrich_invoice',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            result: result.supplier,
-            companyVerification: result.companyVerification
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        break;
-      }
+    const supplierId = result.supplier.resolvedSupplier?.supplierId;
+    const targetSupplierId = supplierId ?? DEFAULT_SUPPLIER_ID;
+    const recommendedCompanyWID = result.companyVerification?.status === 'different'
+      ? result.companyVerification.recommended?.workdayId ?? undefined
+      : undefined;
 
-      case 'not_found': {
-        debug('Supplier not found - adding no-supplier work queue tag');
-        await notifyResult(
-          'enrich_invoice',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            result: result.supplier,
-            companyVerification: result.companyVerification
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const notFoundNotes = `AI Agent could not find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, notFoundNotes, memo, extractedInvoiceDate);
-        } else {
-          debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, notFoundNotes, memo, extractedInvoiceDate);
-        }
-        break;
-      }
+    debug(`Supplier resolution: status=${result.supplier.status}, supplierId=${supplierId ?? 'none'}, targetSupplierId=${targetSupplierId ?? 'none'}`);
+    debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
-      case 'ambiguous': {
-        debug('Ambiguous supplier identification - flagging for manual review');
-        await notifyResult(
-          'enrich_invoice',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            result: result.supplier,
-            companyVerification: result.companyVerification
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const ambiguousNotes = `AI Agent could not confidently find a matching supplier to add. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, ambiguousNotes, memo, extractedInvoiceDate);
-        } else {
-          debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, ambiguousNotes, memo, extractedInvoiceDate);
-        }
-        break;
-      }
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatFallbackNotes(!supplierId);
 
-      case 'error': {
-        debug('Error in supplier identification - flagging for manual review');
-        await notifyResult(
-          'enrich_invoice',
-          'error',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            result: result.supplier,
-            companyVerification: result.companyVerification
-          },
-          result.supplier,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const errorNotes = `AI Agent encountered an error while looking for a matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        if (canModifyInvoice) {
-          await addNoSupplierTagToInvoice(context, invoiceData.workdayID, errorNotes, memo, extractedInvoiceDate);
-        } else {
-          debug('Invoice modification disabled - recording recommendation as notes only');
-          await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, errorNotes, memo, extractedInvoiceDate);
-        }
-        break;
-      }
-
-      case 'matching': {
-        debug('Supplier verified as matching - updating invoice with memo');
-        await notifyResult(
-          'verify_invoice_data',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            existingSupplier: invoiceData.supplier?.descriptor,
-            result
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const matchingNotes = `AI Agent verified supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, matchingNotes, memo, extractedInvoiceDate);
-        break;
-      }
-
-      case 'different': {
-        debug('Supplier verification found different supplier - adding revision note');
-        await notifyResult(
-          'verify_invoice_data',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            existingSupplier: invoiceData.supplier?.descriptor,
-            result
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const recommended = result.supplier.resolvedSupplier;
-        const differentNotes = recommended
-          ? `AI Agent recommends supplier revision. Recommended supplier: ${recommended.supplierName} (${recommended.supplierId}).
-        Confidence: ${(recommended.confidence * 100).toFixed(0)}%.
-        Reason: ${recommended.reason}\n\nVerification details: ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`
-          : `AI Agent recommends supplier revision. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, differentNotes, memo, extractedInvoiceDate);
-        break;
-      }
-
-      case 'uncertain': {
-        await notifyResult(
-          'verify_invoice_data',
-          'success',
-          processingTime,
-          {
-            workdayId: invoiceData.workdayID,
-            invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-            existingSupplier: invoiceData.supplier?.descriptor,
-            result
-          },
-          undefined,
-          `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-        );
-        const uncertainNotes = `AI Agent is uncertain that the supplier is correct. ${result.supplier.reason}${companyNotes}${amountNotes}${invoiceDateNotes}${costCenterNotes}${emailSummary}`;
-        await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, uncertainNotes, memo, extractedInvoiceDate);
-        break;
-      }
+    if (canModifyInvoice && targetSupplierId) {
+      debug(`Setting supplier to ${targetSupplierId} (${supplierId ? 'AI resolved' : 'default fallback'})`);
+      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierId, notes, memo, extractedInvoiceDate, recommendedCompanyWID);
+    } else {
+      debug('Invoice modification disabled or no supplier available - recording notes only');
+      await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
     }
+
+    await notifyResult(
+      'enrich_invoice',
+      'success',
+      processingTime,
+      {
+        workdayId: invoiceData.workdayID,
+        invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
+        result: result.supplier,
+        companyVerification: result.companyVerification
+      },
+      undefined,
+      `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
+    );
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error in supplier enrichment process:', error);
@@ -316,43 +182,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     throw error;
-  }
-}
-
-async function handleFoundSupplier(
-  context: ProcessingContext,
-  invoiceWorkdayID: string,
-  result: InvoiceEnrichmentResult,
-  companyNotes: string = '',
-  canModifyInvoice: boolean = INVOICE_MOD_ENABLED
-): Promise<void> {
-  debug('Supplier found in Workday - updating invoice');
-  const foundSupplierID = result.supplier.resolvedSupplier?.supplierId;
-
-  if (foundSupplierID) {
-    const emailSummarySection = result.emailSummary ? `\n\nEmail Summary: ${result.emailSummary}` : '';
-    const amountSection = formatAmountVerificationNotes(result);
-    const invoiceDateSection = formatInvoiceDateNotes(result);
-    const costCenterSection = formatCostCenterNotes(result);
-    const notes = `AI Agent found matching supplier. AI Agent Recommendation: ${result.supplier.recommendation.action}\n${result.supplier.recommendation.reason}${companyNotes}${amountSection}${invoiceDateSection}${costCenterSection}${emailSummarySection}`;
-    const memo = result.supplier.extractedInformation?.memo || undefined;
-    const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
-
-    if (canModifyInvoice) {
-      await updateSupplierInvoiceSupplier(
-        context,
-        invoiceWorkdayID,
-        foundSupplierID,
-        notes,
-        memo,
-        extractedInvoiceDate
-      );
-    } else {
-      debug('Invoice modification disabled - recording supplier recommendation as notes only');
-      await updateVerifySupplierInvoiceData(context, invoiceWorkdayID, notes, memo, extractedInvoiceDate);
-    }
-  } else {
-    debug('No valid supplier Workday ID found - cannot update invoice');
   }
 }
 
@@ -437,44 +266,36 @@ async function enrichInvoice(
 
   } catch (error) {
     debug('Error in invoice enrichment:', error);
-    return {
-      supplier: {
-        status: existingSupplier ? 'uncertain' : 'error',
-        confidence: 0,
-        extractedInformation: {},
-        resolvedSupplier: null,
-        potentialDuplicateSuppliers: null,
-        recommendation: {
-          action: 'manual_review',
-          reason: `Error in invoice enrichment: ${error}`
-        },
-        reason: `Error in invoice enrichment: ${error}`
-      },
-      companyVerification: {
-        status: 'uncertain',
-        confidence: 0,
-        extractedInformation: {},
-        recommended: null,
-        reason: `Error in invoice enrichment: ${error}`
-      }
-    };
+    throw error;
   }
 }
 
-function formatCostCenterNotes(result: InvoiceEnrichmentResult): string {
-  const cc = result.costCenterVerification;
-  if (!cc) return '';
-  let notes = `\n\nCost Center: ${cc.notes}`;
-  if (cc.suggestedCostCenters?.length) {
-    const names = cc.suggestedCostCenters.map(s => `${s.name}${s.code ? ` (${s.code})` : ''}`).join(', ');
-    notes += ` Suggested: ${names}`;
+function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
+  const cv = result.companyVerification;
+  if (!cv || cv.status === 'matching') return '';
+  let notes = `\n\nCompany: ${cv.reason}`;
+  if (cv.status === 'different' && cv.recommended) {
+    notes += ` Recommended: ${cv.recommended.companyName}`;
   }
   return notes;
 }
 
-function formatAmountVerificationNotes(result: InvoiceEnrichmentResult): string {
-  if (!result.extractedAmountDue) return '';
-  return `\n\nAmount Due (from document): ${result.extractedAmountDue}`;
+function formatFallbackNotes(usedDefaultSupplier: boolean): string {
+  const parts: string[] = [];
+  if (usedDefaultSupplier && DEFAULT_SUPPLIER_ID) {
+    parts.push(`Supplier: ${DEFAULT_SUPPLIER_ID} (no match found, default applied)`);
+  }
+  if (process.env.FALLBACK_FUND_ID) {
+    parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (applied to lines without an existing fund)`);
+  }
+  if (process.env.FALLBACK_COST_CENTER_ID) {
+    parts.push(`Cost Center: ${process.env.FALLBACK_COST_CENTER_ID} (applied to lines without an existing cost center)`);
+  }
+  if (process.env.FALLBACK_PAYMENT_TERMS_ID) {
+    parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied when not already set)`);
+  }
+  if (!parts.length) return '';
+  return `\n\nFallback values applied: ${parts.join('; ')}`;
 }
 
 function getFirstDayOfCurrentMonth(): string {
@@ -491,17 +312,6 @@ function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
 
   const fallbackInvoiceDate = getFirstDayOfCurrentMonth();
   return `\n\nInvoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (${fallbackInvoiceDate}).`;
-}
-
-function formatCompanyVerificationNotes(result: InvoiceEnrichmentResult): string {
-  const cv = result.companyVerification;
-  let companyNotes = `\n\nCompany Verification: ${cv.status} - ${cv.reason}`;
-
-  if (cv.recommended) {
-    companyNotes += `\nRecommended Company: ${cv.recommended.companyName} (${cv.recommended.companyId}). Confidence: ${(cv.recommended.confidence * 100).toFixed(0)}%. Reason: ${cv.recommended.reason}`;
-  }
-
-  return companyNotes;
 }
 
 // Helper functions to extract data from invoice

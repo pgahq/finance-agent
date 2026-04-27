@@ -1,5 +1,5 @@
-import { withQueryHandler, withProcessorHandler } from './lib/handlers.js';
 import { debug } from '@pga/logger';
+import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { createSupplierContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
 

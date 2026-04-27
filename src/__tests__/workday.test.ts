@@ -1,4 +1,4 @@
-import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoiceSupplier } from '../lib/workday.js';
+import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoice } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -448,7 +448,7 @@ describe('Workday utilities', () => {
     });
   });
 
-  describe('updateSupplierInvoiceSupplier', () => {
+  describe('updateSupplierInvoice', () => {
     const mockContext = {
       workdayConfig: {
         domain: 'test.workday.com',
@@ -495,7 +495,7 @@ describe('Workday utilities', () => {
         callback(null, mockResponse);
       });
 
-      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID))
+      await expect(updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow(`No invoice found for workdayID: ${mockInvoiceWorkdayID}`);
     });
 
@@ -535,7 +535,7 @@ describe('Workday utilities', () => {
         callback(new Error('Update failed'), null);
       });
 
-      await expect(updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID))
+      await expect(updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID))
         .rejects.toThrow('Update failed');
     });
 
@@ -581,7 +581,7 @@ describe('Workday utilities', () => {
       });
 
       const extractedInvoiceDate = '2025-02-15';
-      const result = await updateSupplierInvoiceSupplier(
+      const result = await updateSupplierInvoice(
         mockContext,
         mockInvoiceWorkdayID,
         mockSupplierID,
@@ -665,7 +665,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2026-04-01');
 
@@ -710,7 +710,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -763,7 +763,7 @@ describe('Workday utilities', () => {
 
       process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'test-work-queue-tag-wid';
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -826,7 +826,7 @@ describe('Workday utilities', () => {
       const testNotes = 'AI Agent found matching supplier';
       const testMemo = 'Office supplies for March 2024';
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID, testNotes, testMemo);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID, testNotes, testMemo);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -880,7 +880,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
     });
@@ -923,7 +923,7 @@ describe('Workday utilities', () => {
       });
 
       const aiMemo = 'AI extracted memo';
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID, undefined, aiMemo);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID, undefined, aiMemo);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -983,7 +983,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1044,7 +1044,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
@@ -1104,7 +1104,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1156,7 +1156,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
       delete process.env.FALLBACK_PAYMENT_TERMS_ID;
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
@@ -1204,7 +1204,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-wid';
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
       delete process.env.FALLBACK_PAYMENT_TERMS_ID;
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
@@ -1257,7 +1257,7 @@ describe('Workday utilities', () => {
 
       process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
       process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
@@ -1316,7 +1316,7 @@ describe('Workday utilities', () => {
 
       process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
       process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
-      await updateSupplierInvoiceSupplier(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
@@ -1329,291 +1329,5 @@ describe('Workday utilities', () => {
 
   });
 
-  describe('addNoSupplierTagToInvoice', () => {
-    const mockContext = {
-      workdayConfig: {
-        domain: 'test.workday.com',
-        tenant: 'test-tenant',
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret',
-        refreshToken: 'test-refresh-token'
-      }
-    };
-
-    const mockInvoiceWorkdayID = 'invoice-wid';
-
-    beforeEach(() => {
-      jest.clearAllMocks();
-      delete process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
-    });
-
-    it('should throw error when environment variable is not set', async () => {
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-
-      await expect(addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID))
-        .rejects.toThrow('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
-    });
-
-    it('should add no-supplier tag to invoice successfully', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      const mockInvoiceResponse = {
-        Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_Number: 'INV-123',
-              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
-              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
-              Invoice_Date: '2025-01-01',
-              Control_Amount_Total: 1000
-            }
-          }
-        }
-      };
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, mockInvoiceResponse);
-      });
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(null, { Response_Data: { success: true } });
-      });
-
-      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
-      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
-
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-      const result = await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID);
-
-      expect(result.success).toBe(true);
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Submit_Supplier_Invoice_Request: expect.objectContaining({
-            Supplier_Invoice_Data: expect.objectContaining({
-              Supplier_Reference: expect.objectContaining({
-                ID: expect.arrayContaining([
-                  expect.objectContaining({
-                    $attributes: { type: 'Supplier_Reference_ID' },
-                    $value: 'S-0001'
-                  })
-                ])
-              }),
-              Work_Queue_Information_Data: expect.objectContaining({
-                Work_Queue_Tags_Reference: expect.arrayContaining([
-                  expect.objectContaining({
-                    ID: expect.arrayContaining([
-                      expect.objectContaining({
-                        $attributes: { type: 'Work_Queue_Tag_ID' },
-                        $value: 'test-no-supplier-tag-wid'
-                      })
-                    ])
-                  })
-                ])
-              })
-            })
-          })
-        }),
-        expect.any(Function)
-      );
-    });
-
-    it('should throw error when invoice not found', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, { Response_Data: {} }); // No invoice
-      });
-
-      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
-      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
-
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-
-      await expect(addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID))
-        .rejects.toThrow('No invoice found for workdayID');
-    });
-
-    it('should include memo and notes when provided', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      const mockInvoiceResponse = {
-        Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_Number: 'INV-123',
-              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
-              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
-              Invoice_Date: '2025-01-01',
-              Control_Amount_Total: 1000
-            }
-          }
-        }
-      };
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, mockInvoiceResponse);
-      });
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(null, { Response_Data: { success: true } });
-      });
-
-      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
-      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
-
-      const testNotes = 'AI Agent could not find supplier';
-      const testMemo = 'Manufacturing equipment repair services';
-
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-      const result = await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID, testNotes, testMemo);
-
-      expect(result.success).toBe(true);
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Submit_Supplier_Invoice_Request: expect.objectContaining({
-            Supplier_Invoice_Data: expect.objectContaining({
-              Memo: testMemo,
-              Work_Queue_Information_Data: expect.objectContaining({
-                Work_Queue_Notes: `FINANCE AGENT:\n${testNotes}`,
-                Work_Queue_Tags_Reference: expect.any(Array)
-              })
-            })
-          })
-        }),
-        expect.any(Function)
-      );
-    });
-
-    it('should not include memo when not provided', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      const mockInvoiceResponse = {
-        Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_Number: 'INV-123',
-              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
-              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
-              Invoice_Date: '2025-01-01',
-              Control_Amount_Total: 1000
-            }
-          }
-        }
-      };
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, mockInvoiceResponse);
-      });
-
-      let capturedRequest: any;
-      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequest = request;
-        callback(null, { Response_Data: { success: true } });
-      });
-
-      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
-      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
-
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-      await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID);
-
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
-    });
-
-    it('should preserve existing memo when invoice already has one', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      const existingMemo = 'Existing user memo';
-      const mockInvoiceResponse = {
-        Response_Data: {
-          Supplier_Invoice: {
-            Supplier_Invoice_Data: {
-              Invoice_Number: 'INV-123',
-              Company_Reference: { ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'COMPANY-1' }] },
-              Currency_Reference: { ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }] },
-              Invoice_Date: '2025-01-01',
-              Control_Amount_Total: 1000,
-              Memo: existingMemo
-            }
-          }
-        }
-      };
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, mockInvoiceResponse);
-      });
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(null, { Response_Data: { success: true } });
-      });
-
-      process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID = 'test-no-supplier-tag-wid';
-      process.env.WORKDAY_DEFAULT_SUPPLIER_ID = 'S-0001';
-
-      const aiMemo = 'AI extracted memo';
-      const { addNoSupplierTagToInvoice } = await import('../lib/workday.js');
-      await addNoSupplierTagToInvoice(mockContext, mockInvoiceWorkdayID, undefined, aiMemo);
-
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Submit_Supplier_Invoice_Request: expect.objectContaining({
-            Supplier_Invoice_Data: expect.objectContaining({
-              Memo: existingMemo
-            })
-          })
-        }),
-        expect.any(Function)
-      );
-    });
-  });
 
 });
