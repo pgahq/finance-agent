@@ -26,7 +26,7 @@ export const InvoiceEnrichmentSchema = z.object({
       supplierName: z.string().describe('The name of the supplier as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this supplier was selected as the best match')
-    }).nullable().default(null).describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different". When status is "matching", populate this with the existing supplier details.'),
+    }).nullable().describe('The supplier found in Workday. Populated when status is "found", "ambiguous", or "different". When status is "matching", populate this with the existing supplier details.'),
 
     potentialDuplicateSuppliers: z.array(z.object({
       workdayId: z.string().describe('The unique Workday identifier (WID) of the potential duplicate supplier'),
