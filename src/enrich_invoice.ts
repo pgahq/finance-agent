@@ -5,7 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import { executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoiceSupplier, updateVerifySupplierInvoiceData } from './lib/workday.js';
+import { executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoice, verifySupplierInvoiceData } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -32,7 +32,7 @@ async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): P
     AND workQueueTags not in (${widList})
     AND invoiceStatusAsText = 'Draft'
     AND isCanceled = false
-    AND invoiceReceivedDate = '${yesterdayStr}'
+    AND invoiceReceivedDate >= '${yesterdayStr}'
     AND invoiceIsPaid = false
     AND invoiceIsPartiallyPaid = false
   LIMIT 5
@@ -120,19 +120,31 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const result = await enrichInvoice(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
     debug('Enrichment result:', result);
 
+    if (result.supplier.status === 'error') {
+      throw new Error(`Invoice enrichment returned error status: ${result.supplier.reason}`);
+    }
+
     const processingTime = Date.now() - startTime;
     const memo = result.supplier.extractedInformation?.memo || undefined;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
     const supplierId = result.supplier.resolvedSupplier?.supplierId;
     const targetSupplierId = supplierId ?? DEFAULT_SUPPLIER_ID;
-    const notes = result.supplier.reason + formatInvoiceDateNotes(result) + formatFallbackNotes(!supplierId);
+    const recommendedCompanyWID = result.companyVerification?.status === 'different'
+      ? result.companyVerification.recommended?.workdayId ?? undefined
+      : undefined;
+
+    debug(`Supplier resolution: status=${result.supplier.status}, supplierId=${supplierId ?? 'none'}, targetSupplierId=${targetSupplierId ?? 'none'}`);
+    debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
+
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatFallbackNotes(!supplierId);
+
     if (canModifyInvoice && targetSupplierId) {
       debug(`Setting supplier to ${targetSupplierId} (${supplierId ? 'AI resolved' : 'default fallback'})`);
-      await updateSupplierInvoiceSupplier(context, invoiceData.workdayID, targetSupplierId, notes, memo, extractedInvoiceDate);
+      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierId, notes, memo, extractedInvoiceDate, recommendedCompanyWID);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
-      await updateVerifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
+      await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
     }
 
     await notifyResult(
@@ -254,28 +266,18 @@ async function enrichInvoice(
 
   } catch (error) {
     debug('Error in invoice enrichment:', error);
-    return {
-      supplier: {
-        status: existingSupplier ? 'uncertain' : 'error',
-        confidence: 0,
-        extractedInformation: {},
-        resolvedSupplier: null,
-        potentialDuplicateSuppliers: null,
-        recommendation: {
-          action: 'manual_review',
-          reason: `Error in invoice enrichment: ${error}`
-        },
-        reason: `Error in invoice enrichment: ${error}`
-      },
-      companyVerification: {
-        status: 'uncertain',
-        confidence: 0,
-        extractedInformation: {},
-        recommended: null,
-        reason: `Error in invoice enrichment: ${error}`
-      }
-    };
+    throw error;
   }
+}
+
+function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
+  const cv = result.companyVerification;
+  if (!cv || cv.status === 'matching') return '';
+  let notes = `\n\nCompany: ${cv.reason}`;
+  if (cv.status === 'different' && cv.recommended) {
+    notes += ` Recommended: ${cv.recommended.companyName}`;
+  }
+  return notes;
 }
 
 function formatFallbackNotes(usedDefaultSupplier: boolean): string {

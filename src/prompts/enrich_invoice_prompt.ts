@@ -5,20 +5,20 @@ export const InvoiceEnrichmentSchema = z.object({
   supplier: z.object({
     // Identification statuses: found, not_found, ambiguous, error
     // Verification statuses: matching, different, uncertain
-    status: z.enum(['found', 'not_found', 'ambiguous', 'matching', 'different', 'uncertain', 'error']).default('error').describe('The result of supplier analysis. Use found/not_found/ambiguous/error when identifying a supplier (no existing supplier). Use matching/different/uncertain when verifying an existing supplier.'),
-    confidence: z.number().min(0).max(1).default(0).describe('Confidence score between 0 and 1'),
+    status: z.enum(['found', 'not_found', 'ambiguous', 'matching', 'different', 'uncertain', 'error']).describe('The result of supplier analysis. Use found/not_found/ambiguous/error when identifying a supplier (no existing supplier). Use matching/different/uncertain when verifying an existing supplier.'),
+    confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1'),
 
     extractedInformation: z.object({
-      supplierName: z.string().nullish().describe('The supplier name as it appears on the invoice'),
-      address: z.string().nullish().describe('The supplier address from the invoice'),
-      phone: z.string().nullish().describe('The supplier phone number from the invoice'),
-      email: z.string().nullish().describe('The supplier email address from the invoice'),
-      taxId: z.string().nullish().describe('The supplier tax ID or EIN from the invoice'),
-      website: z.string().nullish().describe('The supplier website from the invoice'),
-      industry: z.string().nullish().describe('The supplier industry or business type if identifiable'),
-      contactPerson: z.string().nullish().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullish().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
-    }).default({}).describe('All supplier information extracted from the invoice document'),
+      supplierName: z.string().nullable().describe('The supplier name as it appears on the invoice'),
+      address: z.string().nullable().describe('The supplier address from the invoice'),
+      phone: z.string().nullable().describe('The supplier phone number from the invoice'),
+      email: z.string().nullable().describe('The supplier email address from the invoice'),
+      taxId: z.string().nullable().describe('The supplier tax ID or EIN from the invoice'),
+      website: z.string().nullable().describe('The supplier website from the invoice'),
+      industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
+      contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
+      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
+    }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
       workdayId: z.string().nullable().describe('The unique Workday identifier (WID) of the supplier'),
@@ -34,52 +34,50 @@ export const InvoiceEnrichmentSchema = z.object({
       supplierName: z.string().describe('The name of the potential duplicate supplier'),
       confidence: z.number().min(0).max(1).describe('Confidence score for this potential match'),
       reason: z.string().describe('Explanation of why this supplier is a potential match')
-    })).nullable().default(null).describe('List of potential duplicate suppliers. Only populated when status is "ambiguous"'),
+    })).nullable().describe('List of potential duplicate suppliers. Only populated when status is "ambiguous"'),
 
     recommendation: z.object({
       action: z.enum(['update_invoice', 'register_supplier', 'manual_review', 'no_action']).describe('The recommended action to take'),
       reason: z.string().describe('Detailed explanation of why this action is recommended')
-    }).default({ action: 'manual_review', reason: 'No recommendation provided' }).describe('The recommended next action based on the analysis results'),
+    }).describe('The recommended next action based on the analysis results'),
 
-    reason: z.string().default('').describe('Detailed explanation of the supplier analysis decision')
+    reason: z.string().describe('Detailed explanation of the supplier analysis decision')
   }).describe('Supplier identification or verification results'),
 
   companyVerification: z.object({
     status: z.enum(['matching', 'different', 'uncertain']).describe('Whether the extracted company info matches the existing company on the invoice'),
     confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for the company verification decision'),
     extractedInformation: z.object({
-      companyName: z.string().nullish().describe('The company name as it appears on the invoice'),
-      companyId: z.string().nullish().describe('The company ID if identifiable from the invoice'),
-      address: z.string().nullish().describe('The company address from the invoice'),
-      phone: z.string().nullish().describe('The company phone number from the invoice'),
-      email: z.string().nullish().describe('The company email address from the invoice')
-    }).default({}).describe('All company (buyer/recipient) information extracted from the invoice document'),
+      companyName: z.string().nullable().describe('The company name as it appears on the invoice'),
+      address: z.string().nullable().describe('The company address from the invoice'),
+      phone: z.string().nullable().describe('The company phone number from the invoice'),
+      email: z.string().nullable().describe('The company email address from the invoice')
+    }).describe('All company (buyer/recipient) information extracted from the invoice document'),
     recommended: z.object({
       workdayId: z.string().nullable().describe('The unique Workday identifier (WID) of the recommended company'),
-      companyId: z.string().nullable().describe('The human-readable Company ID'),
       companyName: z.string().describe('The name of the company as it appears in Workday'),
       confidence: z.number().min(0).max(1).describe('Confidence score between 0 and 1 for this match'),
       reason: z.string().describe('Detailed explanation of why this company is recommended instead')
-    }).nullable().default(null).describe('The recommended correct company from Workday. Only populated when status is "different"'),
-    reason: z.string().default('').describe('Detailed explanation of why the company is considered matching, different, or uncertain')
+    }).nullable().describe('The recommended correct company from Workday. Only populated when status is "different"'),
+    reason: z.string().describe('Detailed explanation of why the company is considered matching, different, or uncertain')
   }).describe('Company verification results'),
 
-  emailSummary: z.string().nullish().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Omit if no email context was provided.'),
+  emailSummary: z.string().nullable().describe('A 1-4 sentence summary of the inbound email content if email context was provided. Should capture the key information from the email (sender intent, any supplier references, invoice context). Null if no email context was provided.'),
 
-  extractedInvoiceDate: z.string().nullish().describe('The invoice date as shown on the document, normalized to YYYY-MM-DD. Only include this if the document clearly provides an invoice date you can read confidently. Omit if no invoice date is visible or the date is ambiguous.'),
+  extractedInvoiceDate: z.string().nullable().describe('The invoice date as shown on the document, normalized to YYYY-MM-DD. Only include this if the document clearly provides an invoice date you can read confidently. Null if no invoice date is visible or the date is ambiguous.'),
 
-  extractedAmountDue: z.string().nullish().describe('The amount due or invoice total as read from the invoice attachment. Omit if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
+  extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
   costCenterVerification: z.object({
-    emailCostCenter: z.string().nullish().describe('The cost center code or name extracted from the email body, if any was mentioned'),
-    invoiceCostCenters: z.array(z.string()).nullish().describe('The cost center(s) currently assigned to the invoice lines in Workday'),
+    emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
+    invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
     suggestedCostCenters: z.array(z.object({
       workdayId: z.string().nullable(),
       code: z.string().nullable(),
       name: z.string()
     })).nullable().describe('Suggested cost centers from Workday if the email references ones that differ from what is assigned, or if no cost centers are assigned. Only populate after using findCostCenters to confirm they exist in Workday.'),
     notes: z.string().describe('Summary of findings: whether the email cost center code matches the assigned one, any discrepancy, or if no cost center was mentioned in the email')
-  }).nullish().describe('Cost center verification based on email content vs invoice line worktags. Only populate if email context was provided.')
+  }).nullable().describe('Cost center verification based on email content vs invoice line worktags. Null if no email context was provided.')
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
