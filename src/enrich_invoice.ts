@@ -142,7 +142,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
-      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, notes, memo, extractedInvoiceDate, recommendedCompanyWID);
+      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, notes, memo, extractedInvoiceDate, recommendedCompanyWID, result.extractedAmountDue ?? undefined);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
