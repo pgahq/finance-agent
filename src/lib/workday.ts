@@ -295,12 +295,11 @@ interface WorkQueueTag {
 
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
-  supplierID?: string;
+  supplierWID?: string;
   companyWID?: string;
   workQueueTags?: WorkQueueTag[];
   notes?: string;
   memo?: string;
-  defaultSupplierRefId?: string;
   invoiceDate?: string;
 }
 
@@ -354,19 +353,15 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierID, companyWID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
+  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate } = options;
 
-  const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
 
-  const supplierRef = defaultSupplierRefId
-    ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: defaultSupplierRefId }] }
-    : supplierID
-      ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
-      : currentInvoice.Supplier_Reference
-      ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
+  const supplierRef = supplierWID
+    ? { ID: [{ $attributes: { type: 'WID' }, $value: supplierWID }] }
+    : currentInvoice.Supplier_Reference;
 
   const fallbackWorktags = [
     ...(fallbackFundId ? [{ ID: [{ $attributes: { type: 'Fund_ID' }, $value: fallbackFundId }] }] : []),
@@ -745,7 +740,7 @@ export async function getWorkQueueTagWIDs(
 export async function updateSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
-  supplierID: string,
+  supplierWID?: string,
   notes?: string,
   memo?: string | undefined,
   invoiceDate?: string,
@@ -753,7 +748,7 @@ export async function updateSupplierInvoice(
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
-  debug(`Supplier ID: ${supplierID}`);
+  debug(`Supplier WID: ${supplierWID ?? '(none - using existing or default)'}`);
   debug(`Company override: ${companyWID ? `WID=${companyWID}` : '(none - using existing)'}`);
   debug(`Agent notes: ${notes}`);
 
@@ -784,7 +779,7 @@ export async function updateSupplierInvoice(
 
     const invoiceData = buildSubmitInvoiceData({
       currentInvoice,
-      supplierID,
+      supplierWID,
       companyWID,
       workQueueTags,
       notes,
@@ -818,7 +813,7 @@ export async function updateSupplierInvoice(
 
     return {
       success: true,
-      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
+      message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`
     };
   } catch (error) {
     throw error;

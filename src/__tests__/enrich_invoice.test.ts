@@ -297,7 +297,7 @@ describe('enrich_invoice', () => {
 
   it('should pass extracted invoice date to Workday update calls', async () => {
     const { getAiResponse } = require('../lib/ai.js');
-    const { verifySupplierInvoiceData } = require('../lib/workday.js');
+    const { updateSupplierInvoice } = require('../lib/workday.js');
 
     getAiResponse.mockResolvedValueOnce({
       supplier: {
@@ -346,12 +346,14 @@ describe('enrich_invoice', () => {
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
-    expect(verifySupplierInvoiceData).toHaveBeenCalledWith(
+    expect(updateSupplierInvoice).toHaveBeenCalledWith(
       expect.anything(),
       'test-invoice-id',
+      'SUP-1',
       expect.any(String),
       'Test invoice',
-      '2026-04-15'
+      '2026-04-15',
+      undefined
     );
   });
 
@@ -359,7 +361,7 @@ describe('enrich_invoice', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
 
     const { getAiResponse } = require('../lib/ai.js');
-    const { verifySupplierInvoiceData } = require('../lib/workday.js');
+    const { updateSupplierInvoice } = require('../lib/workday.js');
 
     getAiResponse.mockResolvedValueOnce({
       supplier: {
@@ -407,11 +409,13 @@ describe('enrich_invoice', () => {
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
-    expect(verifySupplierInvoiceData).toHaveBeenCalledWith(
+    expect(updateSupplierInvoice).toHaveBeenCalledWith(
       expect.anything(),
       'test-invoice-id',
+      'SUP-1',
       expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
       'Test invoice',
+      undefined,
       undefined
     );
 

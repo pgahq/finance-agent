@@ -195,7 +195,6 @@ export const findSuppliersTool = tool({
         success: true,
         results: results.map(result => ({
           workdayId: result.workday_id,
-          supplierId: result.metadata?.supplierId,
           type: result.type,
           content: result.content,
           metadata: result.metadata,
