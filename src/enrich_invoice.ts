@@ -138,7 +138,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
@@ -304,6 +304,11 @@ function getFirstDayOfCurrentMonth(): string {
   const year = now.getUTCFullYear();
   const month = `${now.getUTCMonth() + 1}`.padStart(2, '0');
   return `${year}-${month}-01`;
+}
+
+function formatAmountNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedAmountDue) return '';
+  return `\n\nInvoice Amount (from document): ${result.extractedAmountDue}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
