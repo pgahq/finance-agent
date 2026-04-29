@@ -378,7 +378,7 @@ sequenceDiagram
 
 #### Workday Submit Retry Process
 
-Supplier invoice updates go through a guarded retry loop before the final Workday SOAP result is returned. The retry process applies to invoice submit operations such as supplier updates, note-only verification updates, and no-supplier tag updates.
+Supplier invoice updates go through a guarded retry loop before the final Workday SOAP result is returned. The retry process applies to invoice submit operations such as supplier updates and note-only verification updates.
 
 ```mermaid
 flowchart TD

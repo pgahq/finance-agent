@@ -1016,69 +1016,6 @@ export async function updateSupplierInvoice(
   };
 }
 
-export async function addNoSupplierTagToInvoice(
-  context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string,
-  notes?: string,
-  memo?: string | undefined,
-  invoiceDate?: string
-): Promise<{ success: boolean; message?: string }> {
-  debug('Adding no-supplier work queue tag to invoice via SOAP');
-  debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
-
-  const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
-  const defaultSupplierWID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
-
-  if (!noSupplierTagID) {
-    throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
-  }
-
-  if (!defaultSupplierWID) {
-    throw new Error('WORKDAY_DEFAULT_SUPPLIER_WID environment variable is not set');
-  }
-
-  debug('Fetching current invoice data');
-  const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
-
-  if (!currentInvoice) {
-    throw new Error(`No invoice found for workdayID: ${invoiceWorkdayID}`);
-  }
-
-  debug('Current invoice data retrieved for no-supplier tag:', JSON.stringify(currentInvoice, null, 2));
-
-  const client = await buildResourceManagementClient(context);
-
-  const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
-
-  debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
-  debug(`Using default supplier WID: ${defaultSupplierWID}`);
-
-  const updateResponse = await submitSupplierInvoiceWithRepair({
-    context,
-    client: client as ResourceManagementClient,
-    invoiceWorkdayID,
-    currentInvoice,
-    buildOptions: {
-      currentInvoice,
-      workQueueTags,
-      notes,
-      memo,
-      defaultSupplierWID,
-      invoiceDate,
-    },
-    operationName: 'addNoSupplierTagToInvoice',
-    submitLogMessage: 'Submitting updated Supplier Invoice to Workday with no-supplier tag',
-    requestDebugLabel: 'SOAP Request object for no-supplier tag:',
-  });
-
-  debug('No-supplier tag added successfully', updateResponse);
-
-  return {
-    success: true,
-    message: `Successfully added no-supplier tag to invoice ${invoiceWorkdayID}`
-  };
-}
-
 export async function verifySupplierInvoiceData(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
