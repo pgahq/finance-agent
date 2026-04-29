@@ -297,13 +297,14 @@ interface WorkQueueTag {
 
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
-  supplierID?: string;
+  supplierWID?: string;
+  defaultSupplierWID?: string;
   companyWID?: string;
   workQueueTags?: WorkQueueTag[];
   notes?: string;
   memo?: string;
-  defaultSupplierRefId?: string;
   invoiceDate?: string;
+  extractedAmountDue?: string;
 }
 
 function stripRichText(text: string): string {
@@ -355,20 +356,25 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
   return normalizeInvoiceDate(invoiceDate) ?? getFirstDayOfCurrentMonth();
 }
 
-function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierID, companyWID, workQueueTags, notes, memo, defaultSupplierRefId, invoiceDate } = options;
+function parseExtractedAmount(raw: string): number | undefined {
+  const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
+  return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
+}
 
-  const fallbackSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
+function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue } = options;
+  const controlAmountTotal = extractedAmountDue
+    ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
+    : currentInvoice.Control_Amount_Total;
+
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
 
-  const supplierRef = defaultSupplierRefId
-    ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: defaultSupplierRefId }] }
-    : supplierID
-      ? { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: supplierID }] }
-      : currentInvoice.Supplier_Reference
-      ?? (fallbackSupplierRefId ? { ID: [{ $attributes: { type: 'Supplier_Reference_ID' }, $value: fallbackSupplierRefId }] } : undefined);
+  const resolvedSupplierWID = supplierWID ?? defaultSupplierWID;
+  const supplierRef = resolvedSupplierWID
+    ? { ID: [{ $attributes: { type: 'WID' }, $value: resolvedSupplierWID }] }
+    : currentInvoice.Supplier_Reference;
 
   const fallbackWorktags = [
     ...(fallbackFundId ? [{ ID: [{ $attributes: { type: 'Fund_ID' }, $value: fallbackFundId }] }] : []),
@@ -399,7 +405,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
     Invoice_Number: currentInvoice.Invoice_Number,
-    Control_Amount_Total: currentInvoice.Control_Amount_Total,
+    Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
     ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
@@ -547,11 +553,11 @@ function applyRepairPlan(
   };
 
   if (repairPlan.supplierMode === 'use_default_supplier') {
-    const defaultSupplierRefId = process.env.WORKDAY_DEFAULT_SUPPLIER_ID ?? buildOptions.defaultSupplierRefId;
+    const defaultSupplierWID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? buildOptions.defaultSupplierWID;
 
-    if (defaultSupplierRefId) {
-      nextBuildOptions.defaultSupplierRefId = defaultSupplierRefId;
-      nextBuildOptions.supplierID = undefined;
+    if (defaultSupplierWID) {
+      nextBuildOptions.defaultSupplierWID = defaultSupplierWID;
+      nextBuildOptions.supplierWID = undefined;
     }
   }
 
@@ -605,7 +611,7 @@ async function submitSupplierInvoiceWithRepair({
         currentInvoiceSummary: summarizeInvoiceForRepair(currentInvoice),
         latestAttempt: attemptHistory[attemptHistory.length - 1],
         previousAttempts: attemptHistory.slice(0, -1),
-        hasDefaultSupplier: Boolean(process.env.WORKDAY_DEFAULT_SUPPLIER_ID ?? attemptBuildOptions.defaultSupplierRefId),
+        hasDefaultSupplier: Boolean(process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? attemptBuildOptions.defaultSupplierWID),
         getValidationRules: async () => {
           validationRulesPromise ??= getCustomValidationRules(context);
           return validationRulesPromise;
@@ -946,15 +952,16 @@ export async function getWorkQueueTagWIDs(
 export async function updateSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
-  supplierID: string,
+  supplierWID?: string,
   notes?: string,
   memo?: string | undefined,
   invoiceDate?: string,
-  companyWID?: string
+  companyWID?: string,
+  extractedAmountDue?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
-  debug(`Supplier ID: ${supplierID}`);
+  debug(`Supplier WID: ${supplierWID ?? '(none - using existing or default)'}`);
   debug(`Company override: ${companyWID ? `WID=${companyWID}` : '(none - using existing)'}`);
   debug(`Agent notes: ${notes}`);
 
@@ -989,12 +996,13 @@ export async function updateSupplierInvoice(
     currentInvoice,
     buildOptions: {
       currentInvoice,
-      supplierID,
+      supplierWID,
       companyWID,
       workQueueTags,
       notes,
       memo,
-      invoiceDate
+      invoiceDate,
+      extractedAmountDue
     },
     operationName: 'updateSupplierInvoice',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
@@ -1004,7 +1012,7 @@ export async function updateSupplierInvoice(
 
   return {
     success: true,
-    message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierID}`
+    message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`
   };
 }
 
@@ -1019,14 +1027,14 @@ export async function addNoSupplierTagToInvoice(
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
 
   const noSupplierTagID = process.env.WORKDAY_AGENT_NO_SUPPLIER_TAG_WID;
-  const defaultSupplierID = process.env.WORKDAY_DEFAULT_SUPPLIER_ID;
+  const defaultSupplierWID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 
   if (!noSupplierTagID) {
     throw new Error('WORKDAY_AGENT_NO_SUPPLIER_TAG_WID environment variable is not set');
   }
 
-  if (!defaultSupplierID) {
-    throw new Error('WORKDAY_DEFAULT_SUPPLIER_ID environment variable is not set');
+  if (!defaultSupplierWID) {
+    throw new Error('WORKDAY_DEFAULT_SUPPLIER_WID environment variable is not set');
   }
 
   debug('Fetching current invoice data');
@@ -1043,7 +1051,7 @@ export async function addNoSupplierTagToInvoice(
   const workQueueTags = [createWorkQueueTag(noSupplierTagID)];
 
   debug(`Adding no-supplier work queue tag: ${noSupplierTagID}`);
-  debug(`Using default supplier ID: ${defaultSupplierID}`);
+  debug(`Using default supplier WID: ${defaultSupplierWID}`);
 
   const updateResponse = await submitSupplierInvoiceWithRepair({
     context,
@@ -1055,7 +1063,7 @@ export async function addNoSupplierTagToInvoice(
       workQueueTags,
       notes,
       memo,
-      defaultSupplierRefId: defaultSupplierID,
+      defaultSupplierWID,
       invoiceDate,
     },
     operationName: 'addNoSupplierTagToInvoice',

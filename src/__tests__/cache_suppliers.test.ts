@@ -118,7 +118,6 @@ describe('cache_suppliers', () => {
           type: 'supplier',
           content: 'Supplier content',
           metadata: expect.objectContaining({
-            supplierId: 'supplier-1',
             supplierName: 'Test Supplier 1',
             workdayId: 'supplier-1',
             lastUpdatedDateTime: '2024-01-01T00:00:00Z'
@@ -160,7 +159,6 @@ describe('cache_suppliers', () => {
           type: 'supplier',
           content: 'Supplier content',
           metadata: expect.objectContaining({
-            supplierId: 'supplier-minimal',
             supplierName: 'Minimal Supplier',
             workdayId: 'supplier-minimal',
             lastUpdatedDateTime: '2024-01-01T00:00:00Z'
@@ -227,7 +225,6 @@ describe('cache_suppliers', () => {
           type: 'supplier',
           content: 'Supplier content',
           metadata: expect.objectContaining({
-            supplierId: 'supplier-complex',
             supplierName: 'Complex Supplier',
             workdayId: 'supplier-complex',
             lastUpdatedDateTime: '2024-01-01T00:00:00Z'

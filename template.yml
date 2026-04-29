@@ -24,7 +24,7 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
-        WORKDAY_DEFAULT_SUPPLIER_ID: S-039647
+        WORKDAY_DEFAULT_SUPPLIER_WID: 29ce29920bac1001634359c103bb0000
         FALLBACK_FUND_ID: ssm:/finance-agent/fallback-fund-id
         FALLBACK_PAYMENT_TERMS_ID: ssm:/finance-agent/fallback-payment-terms-id
         FALLBACK_COST_CENTER_ID: ssm:/finance-agent/fallback-cost-center-id

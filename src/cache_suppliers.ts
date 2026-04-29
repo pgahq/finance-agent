@@ -6,7 +6,6 @@ import { syncDataSource } from './lib/sync.js';
 const QUERY = `
   SELECT
     supplier,
-    supplierID,
     lastUpdatedDateTime,
     supplierStatus,
     allPhoneNumbers,
@@ -39,7 +38,6 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       supplier.supplier.id,
       {
         workdayId: supplier.supplier.id,
-        supplierId: supplier.supplierID || supplier.supplier.id,
         supplierName: supplier.supplier.descriptor,
         lastUpdatedDateTime: supplier.lastUpdatedDateTime,
         allPhoneNumbers: supplier.allPhoneNumbers?.length > 0
@@ -66,7 +64,6 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
     createContent: createSupplierContent,
     createMetadata: (supplier) => ({
       workdayId: supplier.workdayId,
-      supplierId: supplier.supplierId,
       supplierName: supplier.supplierName,
       lastUpdatedDateTime: supplier.lastUpdatedDateTime,
     }),

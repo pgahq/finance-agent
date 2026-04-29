@@ -464,7 +464,7 @@ describe('Workday utilities', () => {
     };
 
     const mockInvoiceWorkdayID = 'invoice-wid';
-    const mockSupplierID = 'SUP-123';
+    const mockSupplierID = 'abc123supplierWID';
 
     beforeEach(() => {
       Object.defineProperty(process, 'cwd', {
@@ -834,7 +834,7 @@ describe('Workday utilities', () => {
               Supplier_Reference: expect.objectContaining({
                 ID: expect.arrayContaining([
                   expect.objectContaining({
-                    $attributes: { type: 'Supplier_ID' },
+                    $attributes: { type: 'WID' },
                     $value: mockSupplierID
                   })
                 ])
