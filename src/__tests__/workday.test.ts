@@ -472,6 +472,12 @@ describe('Workday utilities', () => {
         writable: true
       });
 
+      delete process.env.FALLBACK_PAYMENT_TERMS_ID;
+      delete process.env.FALLBACK_FUND_ID;
+      delete process.env.FALLBACK_COST_CENTER_ID;
+      delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+      delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+
       // Mock fetch for OAuth token
       (global.fetch as jest.Mock).mockResolvedValue({
         ok: true,
@@ -553,7 +559,9 @@ describe('Workday utilities', () => {
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
     });
 
-    it('should retry validation faults with a repaired payload', async () => {
+    it('should retry invoice date validation faults with the default invoice date', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
+
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -596,13 +604,122 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
+      const result = await updateSupplierInvoice(
+        mockContext,
+        mockInvoiceWorkdayID,
+        mockSupplierID,
+        undefined,
+        undefined,
+        '2025-02-15'
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
-      proposeWorkdaySubmitRepair.mockResolvedValueOnce({
-        decision: 'retry',
-        reason: 'Normalize the invoice date to the first day of the month',
-        invoiceDate: '2025-02-01',
-        supplierMode: 'preserve'
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+      jest.useRealTimers();
+    });
+
+    it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
+
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
       });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(new Error('Validation_Fault: invoice date is invalid'), null);
+      });
+
+      await expect(
+        updateSupplierInvoice(
+          mockContext,
+          mockInvoiceWorkdayID,
+          mockSupplierID
+        )
+      ).rejects.toThrow('Validation_Fault: invoice date is invalid');
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+      jest.useRealTimers();
+    });
+
+    it('should retry payment terms validation faults with fallback payment terms', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingPaymentTerms = { ID: [{ $attributes: { type: 'WID' }, $value: 'existing-payment-terms-wid' }] };
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Payment_Terms_Reference: existingPaymentTerms
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback(new Error('Validation_Fault: payment terms are invalid'), null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
 
       const result = await updateSupplierInvoice(
         mockContext,
@@ -615,12 +732,18 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(1);
-      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'fallback-payment-terms-id' }]
+      });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
     });
 
-    it('should rethrow the final validation fault after three submit attempts', async () => {
+    it('should retry only the failing non-fallback field when another field already uses a fallback', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
+
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -654,23 +777,147 @@ describe('Workday utilities', () => {
       const capturedRequests: any[] = [];
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
         capturedRequests.push(request);
-        callback(new Error('Validation_Fault: safe repair did not resolve the fault'), null);
+
+        if (capturedRequests.length === 1) {
+          callback(new Error('Validation_Fault: supplier is invalid'), null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
       });
 
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+
+      const result = await updateSupplierInvoice(
+        mockContext,
+        mockInvoiceWorkdayID,
+        mockSupplierID
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value).toBe(mockSupplierID);
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value).toBe('default-supplier-wid');
+
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
-      proposeWorkdaySubmitRepair
-        .mockResolvedValueOnce({
-          decision: 'retry',
-          reason: 'Retry with the first day of the month',
-          invoiceDate: '2025-03-01',
-          supplierMode: 'preserve'
-        })
-        .mockResolvedValueOnce({
-          decision: 'retry',
-          reason: 'Retry with a clearer memo',
-          memo: 'Retry memo',
-          supplierMode: 'preserve'
-        });
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+      jest.useRealTimers();
+    });
+
+    it('should repeat field-specific fallback retries for new validation fields up to three attempts', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const existingPaymentTerms = { ID: [{ $attributes: { type: 'WID' }, $value: 'existing-payment-terms-wid' }] };
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00',
+              Payment_Terms_Reference: existingPaymentTerms
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback(new Error('Validation_Fault: supplier is invalid'), null);
+          return;
+        }
+
+        if (capturedRequests.length === 2) {
+          callback(new Error('Validation_Fault: payment terms are invalid'), null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
+
+      const result = await updateSupplierInvoice(
+        mockContext,
+        mockInvoiceWorkdayID,
+        mockSupplierID,
+        undefined,
+        undefined,
+        '2025-02-15'
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(3);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value).toBe(mockSupplierID);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value).toBe('default-supplier-wid');
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
+      expect(capturedRequests[2].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value).toBe('default-supplier-wid');
+      expect(capturedRequests[2].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'fallback-payment-terms-id' }]
+      });
+    });
+
+    it('should rethrow validation faults after a fallback retry fails', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-03-21T12:00:00Z'));
+
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(new Error('Validation_Fault: invoice date must be valid'), null);
+      });
 
       await expect(
         updateSupplierInvoice(
@@ -681,16 +928,18 @@ describe('Workday utilities', () => {
           undefined,
           '2025-03-15'
         )
-      ).rejects.toThrow('Validation_Fault: safe repair did not resolve the fault');
+      ).rejects.toThrow('Validation_Fault: invoice date must be valid');
 
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(3);
-      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(2);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-03-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-03-01');
-      expect(capturedRequests[2].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBe('Retry memo');
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+      jest.useRealTimers();
     });
 
-    it('should not retry a payload that already failed earlier in the attempt history', async () => {
+    it('should not retry validation faults without a matching configured fallback field', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -727,21 +976,6 @@ describe('Workday utilities', () => {
         callback(new Error('Validation_Fault: duplicate payload should not be retried'), null);
       });
 
-      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
-      proposeWorkdaySubmitRepair
-        .mockResolvedValueOnce({
-          decision: 'retry',
-          reason: 'Try the normalized invoice date',
-          invoiceDate: '2025-04-01',
-          supplierMode: 'preserve'
-        })
-        .mockResolvedValueOnce({
-          decision: 'retry',
-          reason: 'Try switching back to the original date',
-          invoiceDate: '2025-04-15',
-          supplierMode: 'preserve'
-        });
-
       await expect(
         updateSupplierInvoice(
           mockContext,
@@ -753,10 +987,11 @@ describe('Workday utilities', () => {
         )
       ).rejects.toThrow('Validation_Fault: duplicate payload should not be retried');
 
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-      expect(proposeWorkdaySubmitRepair).toHaveBeenCalledTimes(2);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-04-15');
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-04-01');
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
     });
 
     it('should update supplier successfully', async () => {
@@ -1338,7 +1573,7 @@ describe('Workday utilities', () => {
       );
     });
 
-    it('should apply fallback payment terms when invoice has none', async () => {
+    it('should not apply fallback payment terms unless payment terms validation fails', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1379,9 +1614,7 @@ describe('Workday utilities', () => {
       await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
       delete process.env.FALLBACK_PAYMENT_TERMS_ID;
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
-        ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'fallback-payment-terms-id' }]
-      });
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toBeUndefined();
     });
 
     it('should not override existing payment terms with fallback', async () => {
@@ -1430,7 +1663,7 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
     });
 
-    it('should append fallback fund and cost center worktags to lines missing them', async () => {
+    it('should not append fallback worktags unless worktag validation fails', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1482,13 +1715,10 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_COST_CENTER_ID;
 
       const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-      expect(submittedLine.Worktags_Reference).toEqual([
-        { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'fallback-fund-id' }] },
-        { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }
-      ]);
+      expect(submittedLine.Worktags_Reference).toBeUndefined();
     });
 
-    it('should not duplicate fallback worktags already present on a line', async () => {
+    it('should append fallback worktags only after worktag validation fails', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1528,9 +1758,15 @@ describe('Workday utilities', () => {
         callback(null, mockGetResponse);
       });
 
-      let capturedRequest: any;
+      const capturedRequests: any[] = [];
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequest = request;
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback(new Error('Validation_Fault: worktag cost center is required'), null);
+          return;
+        }
+
         callback(null, { Response_Data: { success: true } });
       });
 
@@ -1540,7 +1776,9 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
-      const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      const firstSubmittedLine = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      const submittedLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      expect(firstSubmittedLine.Worktags_Reference).toEqual([existingWorktag]);
       expect(submittedLine.Worktags_Reference).toEqual([
         existingWorktag,
         { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }

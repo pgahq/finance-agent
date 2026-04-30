@@ -1,7 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
 import { isWorkdayValidationError, summarizeValidationError } from './invoice_validation_failures.js';
-import { proposeWorkdaySubmitRepair, type WorkdaySubmitRepairAttempt, type WorkdaySubmitRepairPlan } from './workday_submit_repair.js';
 
 import type {
   DownloadedAttachment,
@@ -304,7 +303,16 @@ interface buildSubmitInvoiceDataOptions {
   notes?: string;
   memo?: string;
   invoiceDate?: string;
+  paymentTermsWID?: string;
+  applyFallbackWorktags?: boolean;
   extractedAmountDue?: string;
+}
+
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
+
+interface AppliedFallback {
+  field: FallbackField;
+  label: string;
 }
 
 function stripRichText(text: string): string {
@@ -361,35 +369,159 @@ function parseExtractedAmount(raw: string): number | undefined {
   return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
 }
 
+function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
+  return { ID: [{ $attributes: { type }, $value: value }] };
+}
+
+function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions): string | undefined {
+  return process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? options.defaultSupplierWID;
+}
+
+function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFallbackWorktags } = options;
+  const fallbacks: AppliedFallback[] = [];
+  const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
+
+  if (configuredDefaultSupplierWID && (supplierWID === configuredDefaultSupplierWID || (!supplierWID && defaultSupplierWID))) {
+    fallbacks.push({ field: 'supplier', label: 'default supplier' });
+  }
+
+  if (!normalizeInvoiceDate(invoiceDate)) {
+    fallbacks.push({ field: 'invoiceDate', label: 'default invoice date' });
+  }
+
+  if (
+    process.env.FALLBACK_PAYMENT_TERMS_ID
+    && paymentTermsWID === process.env.FALLBACK_PAYMENT_TERMS_ID
+  ) {
+    fallbacks.push({ field: 'paymentTerms', label: 'fallback payment terms' });
+  }
+
+  if (applyFallbackWorktags) {
+    fallbacks.push({ field: 'worktags', label: 'fallback worktags' });
+  }
+
+  return fallbacks;
+}
+
+function getValidationFallbackField(validationError: string): FallbackField | undefined {
+  const normalizedError = validationError.toLowerCase();
+
+  if (/supplier/.test(normalizedError)) {
+    return 'supplier';
+  }
+
+  if (/invoice[_\s-]*date|\bdate\b/.test(normalizedError)) {
+    return 'invoiceDate';
+  }
+
+  if (/payment[_\s-]*terms?|\bterms?\b/.test(normalizedError)) {
+    return 'paymentTerms';
+  }
+
+  if (/worktags?|\bfund\b|cost[_\s-]*center/.test(normalizedError)) {
+    return 'worktags';
+  }
+
+  return undefined;
+}
+
+function getFallbackRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions,
+  field: FallbackField
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
+
+  if (
+    field === 'supplier'
+    &&
+    defaultSupplierWID
+    && options.supplierWID !== defaultSupplierWID
+  ) {
+    return {
+      buildOptions: {
+        ...options,
+        supplierWID: undefined,
+        defaultSupplierWID,
+      },
+      fallbackLabel: 'default supplier',
+    };
+  }
+
+  if (
+    field === 'invoiceDate'
+    && normalizeInvoiceDate(options.invoiceDate)
+  ) {
+    return {
+      buildOptions: {
+        ...options,
+        invoiceDate: undefined,
+      },
+      fallbackLabel: 'default invoice date',
+    };
+  }
+
+  if (
+    field === 'paymentTerms'
+    &&
+    process.env.FALLBACK_PAYMENT_TERMS_ID
+    && options.paymentTermsWID !== process.env.FALLBACK_PAYMENT_TERMS_ID
+  ) {
+    return {
+      buildOptions: {
+        ...options,
+        paymentTermsWID: process.env.FALLBACK_PAYMENT_TERMS_ID,
+      },
+      fallbackLabel: 'fallback payment terms',
+    };
+  }
+
+  if (
+    field === 'worktags'
+    && !options.applyFallbackWorktags
+    && (process.env.FALLBACK_FUND_ID || process.env.FALLBACK_COST_CENTER_ID)
+  ) {
+    return {
+      buildOptions: {
+        ...options,
+        applyFallbackWorktags: true,
+      },
+      fallbackLabel: 'fallback worktags',
+    };
+  }
+
+  return undefined;
+}
+
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
-  const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
 
   const resolvedSupplierWID = supplierWID ?? defaultSupplierWID;
   const supplierRef = resolvedSupplierWID
-    ? { ID: [{ $attributes: { type: 'WID' }, $value: resolvedSupplierWID }] }
+    ? createReference('WID', resolvedSupplierWID)
     : currentInvoice.Supplier_Reference;
 
   const fallbackWorktags = [
-    ...(fallbackFundId ? [{ ID: [{ $attributes: { type: 'Fund_ID' }, $value: fallbackFundId }] }] : []),
-    ...(fallbackCostCenterId ? [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: fallbackCostCenterId }] }] : []),
+    ...(fallbackFundId ? [createReference('Fund_ID', fallbackFundId)] : []),
+    ...(fallbackCostCenterId ? [createReference('Cost_Center_Reference_ID', fallbackCostCenterId)] : []),
   ];
 
-  const paymentTermsRef = currentInvoice.Payment_Terms_Reference
-    ?? (fallbackPaymentTermsId ? { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: fallbackPaymentTermsId }] } : undefined);
+  const paymentTermsRef = paymentTermsWID
+    ? createReference('Payment_Terms_ID', paymentTermsWID)
+    : currentInvoice.Payment_Terms_Reference;
 
   const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
     ?.filter((line: any) => line.Spend_Category_Reference || line.Item_Reference)
     .map(({ Tax_Data, ...line }: any) => {
       const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
       const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
-      const additions = fallbackWorktags.filter(t => !existingWids.has(t.ID[0].$value));
+      const additions = applyFallbackWorktags ? fallbackWorktags.filter(t => !existingWids.has(t.ID[0].$value)) : [];
       return additions.length ? { ...line, Worktags_Reference: [...existing, ...additions] } : line;
     });
 
@@ -465,7 +597,6 @@ interface ResourceManagementClient {
 }
 
 interface SubmitSupplierInvoiceWithRepairOptions {
-  context: { workdayConfig: WorkdayConfig };
   client: ResourceManagementClient;
   invoiceWorkdayID: string;
   currentInvoice: any;
@@ -512,76 +643,21 @@ async function submitSupplierInvoiceSoap(
   });
 }
 
-function summarizeInvoiceForRepair(currentInvoice: any): Record<string, unknown> {
-  return {
-    invoiceNumber: currentInvoice.Invoice_Number,
-    invoiceDate: currentInvoice.Invoice_Date,
-    controlAmountTotal: currentInvoice.Control_Amount_Total,
-    supplierReference: currentInvoice.Supplier_Reference,
-    paymentTermsReference: currentInvoice.Payment_Terms_Reference,
-    workQueueInformation: currentInvoice.Work_Queue_Information_Data,
-    invoiceLineCount: Array.isArray(currentInvoice.Invoice_Line_Replacement_Data)
-      ? currentInvoice.Invoice_Line_Replacement_Data.length
-      : 0,
-  };
-}
-
-function mergeRetryNotes(existingNotes?: string, notesAppend?: string): string | undefined {
-  const trimmedExisting = existingNotes?.trim();
-  const trimmedAppend = notesAppend?.trim();
-
-  if (!trimmedAppend) {
-    return trimmedExisting || undefined;
-  }
-
-  if (!trimmedExisting) {
-    return trimmedAppend;
-  }
-
-  return `${trimmedExisting}\n\n${trimmedAppend}`;
-}
-
-function applyRepairPlan(
-  buildOptions: buildSubmitInvoiceDataOptions,
-  repairPlan: WorkdaySubmitRepairPlan
-): buildSubmitInvoiceDataOptions {
-  const nextBuildOptions: buildSubmitInvoiceDataOptions = {
-    ...buildOptions,
-    notes: mergeRetryNotes(buildOptions.notes, repairPlan.notesAppend),
-    memo: repairPlan.memo ?? buildOptions.memo,
-    invoiceDate: repairPlan.invoiceDate ?? buildOptions.invoiceDate,
-  };
-
-  if (repairPlan.supplierMode === 'use_default_supplier') {
-    const defaultSupplierWID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? buildOptions.defaultSupplierWID;
-
-    if (defaultSupplierWID) {
-      nextBuildOptions.defaultSupplierWID = defaultSupplierWID;
-      nextBuildOptions.supplierWID = undefined;
-    }
-  }
-
-  return nextBuildOptions;
-}
-
 async function submitSupplierInvoiceWithRepair({
-  context,
   client,
   invoiceWorkdayID,
-  currentInvoice,
   buildOptions,
   operationName,
   submitLogMessage,
   requestDebugLabel,
 }: SubmitSupplierInvoiceWithRepairOptions): Promise<unknown> {
   let attemptBuildOptions = { ...buildOptions };
-  const attemptHistory: WorkdaySubmitRepairAttempt[] = [];
   const failedRequestFingerprints = new Set<string>();
-  let validationRulesPromise: Promise<ParsedValidationRule[]> | undefined;
 
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
     const invoiceData = buildSubmitInvoiceData(attemptBuildOptions) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
+    const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions);
 
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
@@ -595,48 +671,52 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const validationError = summarizeValidationError(error);
+      const validationFallbackField = getValidationFallbackField(validationError);
       failedRequestFingerprints.add(serializeSubmitSupplierInvoiceRequest(request));
-      attemptHistory.push({
-        attemptNumber,
-        request,
-        validationError,
-      });
+      const appliedFallbacksForField = validationFallbackField
+        ? appliedFallbacks.filter(fallback => fallback.field === validationFallbackField)
+        : [];
+
+      if (appliedFallbacksForField.length > 0) {
+        debug(
+          `Validation fault occurred after applying fallback/default value for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          { operationName, appliedFallbacks: appliedFallbacksForField.map(fallback => fallback.label), validationError }
+        );
+        throw error;
+      }
 
       if (attemptNumber === MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS) {
         throw error;
       }
 
-      const repairPlan = await proposeWorkdaySubmitRepair({
-        operationName,
-        currentInvoiceSummary: summarizeInvoiceForRepair(currentInvoice),
-        latestAttempt: attemptHistory[attemptHistory.length - 1],
-        previousAttempts: attemptHistory.slice(0, -1),
-        hasDefaultSupplier: Boolean(process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? attemptBuildOptions.defaultSupplierWID),
-        getValidationRules: async () => {
-          validationRulesPromise ??= getCustomValidationRules(context);
-          return validationRulesPromise;
-        },
-      });
-
-      if (repairPlan.decision !== 'retry') {
-        debug('Workday submit repair agent chose not to retry', repairPlan);
+      const fallbackRetry = validationFallbackField
+        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField)
+        : undefined;
+      if (!fallbackRetry) {
+        debug(
+          `Validation fault did not match a configured fallback/default retry for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          { operationName, appliedFallbacks: appliedFallbacks.map(fallback => fallback.label), validationError }
+        );
         throw error;
       }
 
-      const nextBuildOptions = applyRepairPlan(attemptBuildOptions, repairPlan);
+      const nextBuildOptions = fallbackRetry.buildOptions;
       const nextInvoiceData = buildSubmitInvoiceData(nextBuildOptions) as Record<string, unknown>;
       const nextRequest = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, nextInvoiceData);
       const nextRequestFingerprint = serializeSubmitSupplierInvoiceRequest(nextRequest);
 
       if (failedRequestFingerprints.has(nextRequestFingerprint)) {
-        debug('Workday submit repair plan repeated a previously failed payload; aborting retries', repairPlan);
+        debug(
+          `Fallback/default retry repeated a previously failed payload for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          { operationName, fallbackLabel: fallbackRetry.fallbackLabel, validationError }
+        );
         throw error;
       }
 
       attemptBuildOptions = nextBuildOptions;
       debug(
-        `Retrying Supplier Invoice submit (${attemptNumber + 1}/${MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS}) after repair`,
-        repairPlan
+        `Retrying Supplier Invoice submit (${attemptNumber + 1}/${MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS}) with ${fallbackRetry.fallbackLabel}`,
+        { operationName, validationError }
       );
     }
   }
@@ -990,7 +1070,6 @@ export async function updateSupplierInvoice(
   }
 
   const updateResponse = await submitSupplierInvoiceWithRepair({
-    context,
     client: client as ResourceManagementClient,
     invoiceWorkdayID,
     currentInvoice,
@@ -1046,7 +1125,6 @@ export async function verifySupplierInvoiceData(
   }
 
   const updateResponse = await submitSupplierInvoiceWithRepair({
-    context,
     client: client as ResourceManagementClient,
     invoiceWorkdayID,
     currentInvoice,
