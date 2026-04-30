@@ -285,7 +285,6 @@ function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
 
 function formatFallbackNotes(usedDefaultSupplier: boolean): string {
   const parts: string[] = [];
-
   if (usedDefaultSupplier && DEFAULT_SUPPLIER_WID) {
     parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (no match found, default applied)`);
   }
