@@ -12,10 +12,6 @@ const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FI
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
-function isConfiguredEnvValue(value: string | undefined): value is string {
-  return !!value && value !== 'REPLACE_ME';
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -293,21 +289,18 @@ function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
 
 function formatFallbackNotes(usedDefaultSupplier: boolean): string {
   const parts: string[] = [];
-  const fallbackFundId = process.env.FALLBACK_FUND_ID;
-  const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
-  const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
 
   if (usedDefaultSupplier && DEFAULT_SUPPLIER_WID) {
     parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (no match found, default applied)`);
   }
-  if (isConfiguredEnvValue(fallbackFundId)) {
-    parts.push(`Fund: ${fallbackFundId} (applied to lines without an existing fund)`);
+  if (process.env.FALLBACK_FUND_ID) {
+    parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (applied to lines without an existing fund)`);
   }
-  if (isConfiguredEnvValue(fallbackCostCenterId)) {
-    parts.push(`Cost Center: ${fallbackCostCenterId} (applied to lines without an existing cost center)`);
+  if (process.env.FALLBACK_COST_CENTER_ID) {
+    parts.push(`Cost Center: ${process.env.FALLBACK_COST_CENTER_ID} (applied to lines without an existing cost center)`);
   }
-  if (isConfiguredEnvValue(fallbackPaymentTermsId)) {
-    parts.push(`Payment Terms: ${fallbackPaymentTermsId} (applied when not already set)`);
+  if (process.env.FALLBACK_PAYMENT_TERMS_ID) {
+    parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied when not already set)`);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;
