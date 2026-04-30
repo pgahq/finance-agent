@@ -44,7 +44,15 @@ references:
             --capabilities CAPABILITY_IAM
             --region us-east-1
             --role-arn $AWS_DEPLOY_ROLE_ARN
-            --parameter-overrides LogLevel=$LOG_LEVEL
+            --parameter-overrides
+            LogLevel=$LOG_LEVEL
+            WorkdayDomain=$WORKDAY_DOMAIN
+            WorkdayTenant=$WORKDAY_TENANT
+            FallbackFundId=$FALLBACK_FUND_ID
+            FallbackPaymentTermsId=$FALLBACK_PAYMENT_TERMS_ID
+            FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
+            InvoiceModEnabled=$INVOICE_MOD_ENABLED
+
 jobs:
   build:
     working_directory: ~/app
@@ -95,11 +103,23 @@ jobs:
     <<: *deploy_container_config
     environment:
       LOG_LEVEL: DEBUG
+      WORKDAY_DOMAIN: wd2-impl-services1.workday.com
+      WORKDAY_TENANT: pgahq8
+      FALLBACK_FUND_ID: FUND-General_Fund_Unrestricted
+      FALLBACK_PAYMENT_TERMS_ID: Net_60
+      FALLBACK_COST_CENTER_ID: CC0000
+      INVOICE_MOD_ENABLED: "true"
 
   deploy-to-prod:
     <<: *deploy_container_config
     environment:
       LOG_LEVEL: DEBUG
+      WORKDAY_DOMAIN: services1.myworkday.com
+      WORKDAY_TENANT: pgahq
+      FALLBACK_FUND_ID: REPLACE_ME
+      FALLBACK_PAYMENT_TERMS_ID: REPLACE_ME
+      FALLBACK_COST_CENTER_ID: REPLACE_ME
+      INVOICE_MOD_ENABLED: "false"
 
 workflows:
   version: 2
