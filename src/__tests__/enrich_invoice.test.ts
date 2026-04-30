@@ -355,6 +355,7 @@ describe('enrich_invoice', () => {
       '2026-04-15',
       undefined,
       undefined,
+      undefined,
       undefined
     );
   });
@@ -417,6 +418,7 @@ describe('enrich_invoice', () => {
       'SUP-1',
       expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
       'Test invoice',
+      undefined,
       undefined,
       undefined,
       undefined,

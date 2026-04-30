@@ -69,6 +69,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Null if not visible or unclear.'),
 
+  extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping" or "delivery" charges. Null if no freight amount could be found or if it is ambiguous.'),
+
   costCenterVerification: z.object({
     emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
     invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
@@ -205,13 +207,19 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ---
 
-## Part 5: Supplier Invoice Number
+## Part 5: Freight Amount
 
-Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSupplierInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
+Read the invoice attachment and extract the freight amount, which may also be labeled as "shipping" or "delivery" charges. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00"). If no freight amount can be found or if it is ambiguous, omit the field.
 
 ---
 
-## Part 6: Cost Center Verification
+## Part 6: Supplier's Invoice Number
+
+Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
+
+---
+
+## Part 7: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 

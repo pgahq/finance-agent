@@ -303,6 +303,7 @@ interface buildSubmitInvoiceDataOptions {
   invoiceDate?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
+  extractedFreightAmount?: string;
 }
 
 function stripRichText(text: string): string {
@@ -364,10 +365,13 @@ function parseExtractedAmount(raw: string): number | undefined {
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, suppliersInvoiceNumber } = options;
+  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, extractedFreightAmount, suppliersInvoiceNumber } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
+  const freightAmount = extractedFreightAmount
+    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount)
+    : currentInvoice.Freight_Amount;
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackPaymentTermsId = process.env.FALLBACK_PAYMENT_TERMS_ID;
@@ -409,7 +413,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
-    ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
+    ...(freightAmount && { Freight_Amount: freightAmount }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
@@ -761,7 +765,8 @@ export async function updateSupplierInvoice(
   invoiceDate?: string,
   companyWID?: string,
   extractedAmountDue?: string,
-  suppliersInvoiceNumber?: string
+  suppliersInvoiceNumber?: string,
+  extractedFreightAmount?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -803,7 +808,8 @@ export async function updateSupplierInvoice(
       memo,
       invoiceDate,
       extractedAmountDue,
-      suppliersInvoiceNumber
+      suppliersInvoiceNumber,
+      extractedFreightAmount
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
