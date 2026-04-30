@@ -357,7 +357,8 @@ describe('enrich_invoice', () => {
         memo: 'Test invoice',
         invoiceDate: '2026-04-15',
         companyWID: undefined,
-        extractedAmountDue: undefined
+        extractedAmountDue: undefined,
+        supplierInvoiceNumber: undefined
       }
     );
   });
@@ -423,7 +424,8 @@ describe('enrich_invoice', () => {
         memo: 'Test invoice',
         invoiceDate: undefined,
         companyWID: undefined,
-        extractedAmountDue: undefined
+        extractedAmountDue: undefined,
+        supplierInvoiceNumber: undefined
       }
     );
 

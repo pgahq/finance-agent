@@ -67,6 +67,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
+  extractedSupplierInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Null if not visible or unclear.'),
+
   costCenterVerification: z.object({
     emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
     invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
@@ -203,7 +205,13 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ---
 
-## Part 5: Cost Center Verification
+## Part 5: Supplier Invoice Number
+
+Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSupplierInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
+
+---
+
+## Part 6: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 

@@ -138,21 +138,24 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const extractedSupplierInvoiceNumber = result.extractedSupplierInvoiceNumber || undefined;
+    const baseNotes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
       await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
-        notes,
+        notes: baseNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
         companyWID: recommendedCompanyWID,
-        extractedAmountDue: result.extractedAmountDue ?? undefined
+        extractedAmountDue: result.extractedAmountDue ?? undefined,
+        supplierInvoiceNumber: extractedSupplierInvoiceNumber
       });
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
+      const notes = baseNotes + formatInvoiceNumberNotes(result);
       await annotateSupplierInvoice(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         notes,
@@ -322,6 +325,11 @@ function getFirstDayOfCurrentMonth(): string {
 function formatAmountNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedAmountDue) return '';
   return `\n\nInvoice Amount (from document): ${result.extractedAmountDue}`;
+}
+
+function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedSupplierInvoiceNumber) return '';
+  return `\n\nSupplier Invoice Number (from document): ${result.extractedSupplierInvoiceNumber}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
