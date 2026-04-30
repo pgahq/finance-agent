@@ -5,7 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import { executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, updateSupplierInvoice, verifySupplierInvoiceData } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -142,10 +142,23 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
-      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, notes, memo, extractedInvoiceDate, recommendedCompanyWID, result.extractedAmountDue ?? undefined);
+      await submitSupplierInvoiceUpdate(context, {
+        invoiceWorkdayID: invoiceData.workdayID,
+        supplierWID: targetSupplierWID,
+        notes,
+        memo,
+        invoiceDate: extractedInvoiceDate,
+        companyWID: recommendedCompanyWID,
+        extractedAmountDue: result.extractedAmountDue ?? undefined
+      });
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
-      await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
+      await annotateSupplierInvoice(context, {
+        invoiceWorkdayID: invoiceData.workdayID,
+        notes,
+        memo,
+        invoiceDate: extractedInvoiceDate
+      });
     }
 
     await notifyResult(

@@ -1029,15 +1029,27 @@ export async function getWorkQueueTagWIDs(
   return wids;
 }
 
-export async function updateSupplierInvoice(
+export interface SubmitSupplierInvoiceUpdateParams {
+  invoiceWorkdayID: string;
+  supplierWID?: string;
+  notes?: string;
+  memo?: string;
+  invoiceDate?: string;
+  companyWID?: string;
+  extractedAmountDue?: string;
+}
+
+export async function submitSupplierInvoiceUpdate(
   context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string,
-  supplierWID?: string,
-  notes?: string,
-  memo?: string | undefined,
-  invoiceDate?: string,
-  companyWID?: string,
-  extractedAmountDue?: string
+  {
+    invoiceWorkdayID,
+    supplierWID,
+    notes,
+    memo,
+    invoiceDate,
+    companyWID,
+    extractedAmountDue
+  }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -1083,7 +1095,7 @@ export async function updateSupplierInvoice(
       invoiceDate,
       extractedAmountDue
     },
-    operationName: 'updateSupplierInvoice',
+    operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
 
@@ -1095,12 +1107,21 @@ export async function updateSupplierInvoice(
   };
 }
 
-export async function verifySupplierInvoiceData(
+export interface AnnotateSupplierInvoiceParams {
+  invoiceWorkdayID: string;
+  notes?: string;
+  memo?: string;
+  invoiceDate?: string;
+}
+
+export async function annotateSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
-  invoiceWorkdayID: string,
-  notes?: string,
-  memo?: string | undefined,
-  invoiceDate?: string
+  {
+    invoiceWorkdayID,
+    notes,
+    memo,
+    invoiceDate
+  }: AnnotateSupplierInvoiceParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
   debug(`Agent notes: ${notes}`);
@@ -1124,20 +1145,19 @@ export async function verifySupplierInvoiceData(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const updateResponse = await submitSupplierInvoiceWithRepair({
-    client: client as ResourceManagementClient,
-    invoiceWorkdayID,
+  const invoiceData = buildSubmitInvoiceData({
     currentInvoice,
-    buildOptions: {
-      currentInvoice,
-      workQueueTags,
-      notes,
-      memo,
-      invoiceDate
-    },
-    operationName: 'verifySupplierInvoiceData',
-    submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
-  });
+    workQueueTags,
+    notes,
+    memo,
+    invoiceDate
+  }) as Record<string, unknown>;
+  const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
+  const updateResponse = await submitSupplierInvoiceSoap(
+    client as ResourceManagementClient,
+    request,
+    'Submitting updated Supplier Invoice to Workday'
+  );
 
   debug('Supplier invoice data updated successfully', updateResponse);
 

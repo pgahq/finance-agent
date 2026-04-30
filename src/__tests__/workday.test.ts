@@ -1,4 +1,4 @@
-import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoice } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -452,7 +452,7 @@ describe('Workday utilities', () => {
     });
   });
 
-  describe('updateSupplierInvoice', () => {
+  describe('submitSupplierInvoiceUpdate', () => {
     const mockContext = {
       workdayConfig: {
         domain: 'test.workday.com',
@@ -465,6 +465,11 @@ describe('Workday utilities', () => {
 
     const mockInvoiceWorkdayID = 'invoice-wid';
     const mockSupplierID = 'abc123supplierWID';
+    const submitSupplierInvoiceUpdateForTest = (overrides: Partial<Parameters<typeof submitSupplierInvoiceUpdate>[1]> = {}) => submitSupplierInvoiceUpdate(mockContext, {
+      invoiceWorkdayID: mockInvoiceWorkdayID,
+      supplierWID: mockSupplierID,
+      ...overrides
+    });
 
     beforeEach(() => {
       Object.defineProperty(process, 'cwd', {
@@ -512,7 +517,7 @@ describe('Workday utilities', () => {
         callback(null, mockResponse);
       });
 
-      await expect(updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID))
+      await expect(submitSupplierInvoiceUpdateForTest())
         .rejects.toThrow(`No invoice found for workdayID: ${mockInvoiceWorkdayID}`);
     });
 
@@ -552,7 +557,7 @@ describe('Workday utilities', () => {
         callback(new Error('Update failed'), null);
       });
 
-      await expect(updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID))
+      await expect(submitSupplierInvoiceUpdateForTest())
         .rejects.toThrow('Update failed');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
@@ -604,14 +609,9 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      const result = await updateSupplierInvoice(
-        mockContext,
-        mockInvoiceWorkdayID,
-        mockSupplierID,
-        undefined,
-        undefined,
-        '2025-02-15'
-      );
+      const result = await submitSupplierInvoiceUpdateForTest({
+        invoiceDate: '2025-02-15'
+      });
 
       expect(result.success).toBe(true);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -661,11 +661,7 @@ describe('Workday utilities', () => {
       });
 
       await expect(
-        updateSupplierInvoice(
-          mockContext,
-          mockInvoiceWorkdayID,
-          mockSupplierID
-        )
+        submitSupplierInvoiceUpdateForTest()
       ).rejects.toThrow('Validation_Fault: invoice date is invalid');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
@@ -721,14 +717,9 @@ describe('Workday utilities', () => {
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
 
-      const result = await updateSupplierInvoice(
-        mockContext,
-        mockInvoiceWorkdayID,
-        mockSupplierID,
-        undefined,
-        undefined,
-        '2025-02-15'
-      );
+      const result = await submitSupplierInvoiceUpdateForTest({
+        invoiceDate: '2025-02-15'
+      });
 
       expect(result.success).toBe(true);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -788,11 +779,7 @@ describe('Workday utilities', () => {
 
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
 
-      const result = await updateSupplierInvoice(
-        mockContext,
-        mockInvoiceWorkdayID,
-        mockSupplierID
-      );
+      const result = await submitSupplierInvoiceUpdateForTest();
 
       expect(result.success).toBe(true);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -859,14 +846,9 @@ describe('Workday utilities', () => {
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
 
-      const result = await updateSupplierInvoice(
-        mockContext,
-        mockInvoiceWorkdayID,
-        mockSupplierID,
-        undefined,
-        undefined,
-        '2025-02-15'
-      );
+      const result = await submitSupplierInvoiceUpdateForTest({
+        invoiceDate: '2025-02-15'
+      });
 
       expect(result.success).toBe(true);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(3);
@@ -920,14 +902,9 @@ describe('Workday utilities', () => {
       });
 
       await expect(
-        updateSupplierInvoice(
-          mockContext,
-          mockInvoiceWorkdayID,
-          mockSupplierID,
-          undefined,
-          undefined,
-          '2025-03-15'
-        )
+        submitSupplierInvoiceUpdateForTest({
+          invoiceDate: '2025-03-15'
+        })
       ).rejects.toThrow('Validation_Fault: invoice date must be valid');
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -977,14 +954,9 @@ describe('Workday utilities', () => {
       });
 
       await expect(
-        updateSupplierInvoice(
-          mockContext,
-          mockInvoiceWorkdayID,
-          mockSupplierID,
-          undefined,
-          undefined,
-          '2025-04-15'
-        )
+        submitSupplierInvoiceUpdateForTest({
+          invoiceDate: '2025-04-15'
+        })
       ).rejects.toThrow('Validation_Fault: duplicate payload should not be retried');
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
@@ -1036,14 +1008,9 @@ describe('Workday utilities', () => {
       });
 
       const extractedInvoiceDate = '2025-02-15';
-      const result = await updateSupplierInvoice(
-        mockContext,
-        mockInvoiceWorkdayID,
-        mockSupplierID,
-        undefined,
-        undefined,
-        extractedInvoiceDate
-      );
+      const result = await submitSupplierInvoiceUpdateForTest({
+        invoiceDate: extractedInvoiceDate
+      });
 
       expect(result.success).toBe(true);
       expect(result.message).toContain(mockInvoiceWorkdayID);
@@ -1120,7 +1087,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2026-04-01');
 
@@ -1165,7 +1132,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1218,7 +1185,7 @@ describe('Workday utilities', () => {
 
       process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'test-work-queue-tag-wid';
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1281,7 +1248,10 @@ describe('Workday utilities', () => {
       const testNotes = 'AI Agent found matching supplier';
       const testMemo = 'Office supplies for March 2024';
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID, testNotes, testMemo);
+      await submitSupplierInvoiceUpdateForTest({
+        notes: testNotes,
+        memo: testMemo
+      });
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1335,7 +1305,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Memo).toBeUndefined();
     });
@@ -1378,7 +1348,9 @@ describe('Workday utilities', () => {
       });
 
       const aiMemo = 'AI extracted memo';
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID, undefined, aiMemo);
+      await submitSupplierInvoiceUpdateForTest({
+        memo: aiMemo
+      });
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1438,7 +1410,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1499,7 +1471,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
@@ -1559,7 +1531,7 @@ describe('Workday utilities', () => {
         callback(null, { Response_Data: { success: true } });
       });
 
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1611,7 +1583,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
       delete process.env.FALLBACK_PAYMENT_TERMS_ID;
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toBeUndefined();
@@ -1657,7 +1629,7 @@ describe('Workday utilities', () => {
       });
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-wid';
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
       delete process.env.FALLBACK_PAYMENT_TERMS_ID;
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
@@ -1710,7 +1682,7 @@ describe('Workday utilities', () => {
 
       process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
       process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
@@ -1772,7 +1744,7 @@ describe('Workday utilities', () => {
 
       process.env.FALLBACK_FUND_ID = 'fallback-fund-id';
       process.env.FALLBACK_COST_CENTER_ID = 'fallback-cost-center-id';
-      await updateSupplierInvoice(mockContext, mockInvoiceWorkdayID, mockSupplierID);
+      await submitSupplierInvoiceUpdateForTest();
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
@@ -1787,5 +1759,88 @@ describe('Workday utilities', () => {
 
   });
 
+  describe('annotateSupplierInvoice', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    const mockInvoiceWorkdayID = 'invoice-wid';
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'cwd', {
+        value: jest.fn(() => '/test/path'),
+        writable: true
+      });
+
+      delete process.env.FALLBACK_PAYMENT_TERMS_ID;
+      delete process.env.FALLBACK_FUND_ID;
+      delete process.env.FALLBACK_COST_CENTER_ID;
+      delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+      delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('should not fallback-retry validation faults when only verifying invoice data', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(new Error('Validation_Fault: invoice date must be the first day of the month'), null);
+      });
+
+      await expect(
+        annotateSupplierInvoice(mockContext, {
+          invoiceWorkdayID: mockInvoiceWorkdayID,
+          notes: 'notes only',
+          invoiceDate: '2025-02-15'
+        })
+      ).rejects.toThrow('Validation_Fault: invoice date must be the first day of the month');
+
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
+    });
+  });
 
 });
