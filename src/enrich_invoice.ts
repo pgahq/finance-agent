@@ -12,10 +12,6 @@ const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FI
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
 
@@ -64,7 +60,7 @@ export const handler = withHandler(async (context) => {
   const lambda = new LambdaClient({ region: process.env.AWS_REGION });
 
   for (const invoice of allData) {
-    const inv = invoice as InvoiceData;
+    const inv = invoice as any;
     const emailContext = emailMap.get(inv.workdayID) || undefined;
     debug(`Invoice ${inv.workdayID}: emailContext ${emailContext ? 'found' : 'not found'}`);
     if (emailContext) {
@@ -356,8 +352,8 @@ function extractEmailFromInvoice(invoice: WorkdayInvoice): string | undefined {
 
 function extractCostCentersFromInvoice(invoice: WorkdayInvoice): string[] {
   const results: string[] = [];
-  JSON.stringify(invoice, (_, value: unknown) => {
-    if (isRecord(value) && isRecord(value.$attributes) && value.$attributes.type === 'Cost_Center_Reference_ID' && typeof value.$value === 'string') {
+  JSON.stringify(invoice, (_, value) => {
+    if (value?.$attributes?.type === 'Cost_Center_Reference_ID') {
       results.push(value.$value);
     }
     return value;
