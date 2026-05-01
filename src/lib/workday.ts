@@ -327,12 +327,16 @@ function getFirstDayOfCurrentMonth(): string {
   return `${year}-${month}-01`;
 }
 
-function normalizeInvoiceDate(invoiceDate?: string): string | undefined {
+function normalizeInvoiceDate(invoiceDate?: string | Date | unknown): string | undefined {
   if (!invoiceDate) {
     return undefined;
   }
 
-  const trimmed = invoiceDate.trim();
+  if (invoiceDate instanceof Date) {
+    return Number.isNaN(invoiceDate.getTime()) ? undefined : invoiceDate.toISOString().split('T')[0];
+  }
+
+  const trimmed = String(invoiceDate).trim();
   if (!trimmed) {
     return undefined;
   }
