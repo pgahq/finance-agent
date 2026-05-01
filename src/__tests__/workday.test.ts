@@ -1,4 +1,4 @@
-import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoice } from '../lib/workday.js';
+import { executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, updateSupplierInvoice, verifySupplierInvoiceData } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -1327,6 +1327,116 @@ describe('Workday utilities', () => {
       ]);
     });
 
+  });
+
+  describe('verifySupplierInvoiceData', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    const mockInvoiceWorkdayID = 'invoice-wid';
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'cwd', {
+        value: jest.fn(() => '/test/path'),
+        writable: true
+      });
+
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('should use the existing invoice date from Workday, not default to first of month', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-03-15',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await verifySupplierInvoiceData(mockContext, mockInvoiceWorkdayID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
+
+    it('should use the existing invoice date when it is a Date object from the SOAP library', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: new Date('2024-03-15T00:00:00.000Z'),
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await verifySupplierInvoiceData(mockContext, mockInvoiceWorkdayID);
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
   });
 
 
