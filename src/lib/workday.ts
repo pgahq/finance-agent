@@ -541,7 +541,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
-    Invoice_Number: supplierInvoiceNumber ?? currentInvoice.Invoice_Number,
+    Invoice_Number: currentInvoice.Invoice_Number,
+    ...(supplierInvoiceNumber && { Suppliers_Invoice_Number: supplierInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
     ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
