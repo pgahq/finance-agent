@@ -147,7 +147,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       const notes = baseNotes + formatInvoiceNumberNotes(result);
-      await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo, extractedInvoiceDate);
+      await verifySupplierInvoiceData(context, invoiceData.workdayID, notes, memo);
     }
 
     await notifyResult(

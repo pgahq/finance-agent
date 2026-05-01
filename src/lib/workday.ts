@@ -839,8 +839,7 @@ export async function verifySupplierInvoiceData(
   context: { workdayConfig: WorkdayConfig },
   invoiceWorkdayID: string,
   notes?: string,
-  memo?: string | undefined,
-  invoiceDate?: string
+  memo?: string | undefined
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
   debug(`Agent notes: ${notes}`);
@@ -869,7 +868,7 @@ export async function verifySupplierInvoiceData(
     workQueueTags,
     notes,
     memo,
-    invoiceDate
+    invoiceDate: currentInvoice.Invoice_Date
   });
 
   const updateResponse = await new Promise<any>((resolve, reject) => {
