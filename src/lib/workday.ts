@@ -338,12 +338,16 @@ function getFirstDayOfCurrentMonth(): string {
   return `${year}-${month}-01`;
 }
 
-function normalizeInvoiceDate(invoiceDate?: string): string | undefined {
+function normalizeInvoiceDate(invoiceDate?: string | Date | unknown): string | undefined {
   if (!invoiceDate) {
     return undefined;
   }
 
-  const trimmed = invoiceDate.trim();
+  if (invoiceDate instanceof Date) {
+    return Number.isNaN(invoiceDate.getTime()) ? undefined : invoiceDate.toISOString().split('T')[0];
+  }
+
+  const trimmed = String(invoiceDate).trim();
   if (!trimmed) {
     return undefined;
   }
@@ -1154,7 +1158,7 @@ export async function annotateSupplierInvoice(
     workQueueTags,
     notes,
     memo,
-    invoiceDate
+    invoiceDate: normalizeInvoiceDate(invoiceDate) ?? normalizeInvoiceDate(currentInvoice.Invoice_Date)
   }) as Record<string, unknown>;
   const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
   const updateResponse = await submitSupplierInvoiceSoap(

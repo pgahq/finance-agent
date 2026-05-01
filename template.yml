@@ -8,6 +8,25 @@ Parameters:
     Type: String
     Description: Logger Log Level
     Default: DEBUG
+  WorkdayDomain:
+    Type: String
+    Description: Workday domain hostname
+  WorkdayTenant:
+    Type: String
+    Description: Workday tenant identifier
+  FallbackFundId:
+    Type: String
+    Description: Workday WID for the fallback fund
+  FallbackPaymentTermsId:
+    Type: String
+    Description: Workday WID for the fallback payment terms
+  FallbackCostCenterId:
+    Type: String
+    Description: Workday WID for the fallback cost center
+  InvoiceModEnabled:
+    Type: String
+    Description: Whether to enable invoice modification
+    Default: "false"
 
 Globals:
   Function:
@@ -18,17 +37,17 @@ Globals:
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel
-        WORKDAY_DOMAIN: ssm:/finance-agent/workday-domain
-        WORKDAY_TENANT: ssm:/finance-agent/workday-tenant
+        WORKDAY_DOMAIN: !Ref WorkdayDomain
+        WORKDAY_TENANT: !Ref WorkdayTenant
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
         WORKDAY_DEFAULT_SUPPLIER_WID: 29ce29920bac1001634359c103bb0000
-        FALLBACK_FUND_ID: ssm:/finance-agent/fallback-fund-id
-        FALLBACK_PAYMENT_TERMS_ID: ssm:/finance-agent/fallback-payment-terms-id
-        FALLBACK_COST_CENTER_ID: ssm:/finance-agent/fallback-cost-center-id
-        INVOICE_MOD_ENABLED: "false"
+        FALLBACK_FUND_ID: !Ref FallbackFundId
+        FALLBACK_PAYMENT_TERMS_ID: !Ref FallbackPaymentTermsId
+        FALLBACK_COST_CENTER_ID: !Ref FallbackCostCenterId
+        INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
