@@ -138,12 +138,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
-    const extractedSupplierInvoiceNumber = result.extractedSupplierInvoiceNumber || undefined;
+    const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const baseNotes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
-      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, baseNotes, memo, extractedInvoiceDate, recommendedCompanyWID, result.extractedAmountDue ?? undefined, extractedSupplierInvoiceNumber);
+      await updateSupplierInvoice(context, invoiceData.workdayID, targetSupplierWID, baseNotes, memo, extractedInvoiceDate, recommendedCompanyWID, result.extractedAmountDue ?? undefined, extractedSuppliersInvoiceNumber);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       const notes = baseNotes + formatInvoiceNumberNotes(result);
@@ -314,8 +314,8 @@ function formatAmountNotes(result: InvoiceEnrichmentResult): string {
 }
 
 function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
-  if (!result.extractedSupplierInvoiceNumber) return '';
-  return `\n\nSupplier Invoice Number (from document): ${result.extractedSupplierInvoiceNumber}`;
+  if (!result.extractedSuppliersInvoiceNumber) return '';
+  return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

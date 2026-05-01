@@ -302,7 +302,7 @@ interface buildSubmitInvoiceDataOptions {
   memo?: string;
   invoiceDate?: string;
   extractedAmountDue?: string;
-  supplierInvoiceNumber?: string;
+  suppliersInvoiceNumber?: string;
 }
 
 function stripRichText(text: string): string {
@@ -364,7 +364,7 @@ function parseExtractedAmount(raw: string): number | undefined {
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, supplierInvoiceNumber } = options;
+  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, suppliersInvoiceNumber } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -405,7 +405,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
-    Invoice_Number: supplierInvoiceNumber ?? currentInvoice.Invoice_Number,
+    Invoice_Number: currentInvoice.Invoice_Number,
+    ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
     ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
@@ -760,7 +761,7 @@ export async function updateSupplierInvoice(
   invoiceDate?: string,
   companyWID?: string,
   extractedAmountDue?: string,
-  supplierInvoiceNumber?: string
+  suppliersInvoiceNumber?: string
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -802,7 +803,7 @@ export async function updateSupplierInvoice(
       memo,
       invoiceDate,
       extractedAmountDue,
-      supplierInvoiceNumber
+      suppliersInvoiceNumber
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
