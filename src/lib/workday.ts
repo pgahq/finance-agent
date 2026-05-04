@@ -304,6 +304,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  filterInvoiceLines?: boolean;
 }
 
 function stripRichText(text: string): string {
@@ -365,7 +366,7 @@ function parseExtractedAmount(raw: string): number | undefined {
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, extractedFreightAmount, suppliersInvoiceNumber } = options;
+  const { currentInvoice, supplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, extractedAmountDue, extractedFreightAmount, suppliersInvoiceNumber, filterInvoiceLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -390,7 +391,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ?? (fallbackPaymentTermsId ? { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: fallbackPaymentTermsId }] } : undefined);
 
   const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
-    ?.filter((line: any) => line.Spend_Category_Reference || line.Item_Reference)
+    ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
     .map(({ Tax_Data, ...line }: any) => {
       const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
       const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
@@ -809,7 +810,8 @@ export async function updateSupplierInvoice(
       invoiceDate,
       extractedAmountDue,
       suppliersInvoiceNumber,
-      extractedFreightAmount
+      extractedFreightAmount,
+      filterInvoiceLines: true
     });
 
     const updateResponse = await new Promise<any>((resolve, reject) => {
