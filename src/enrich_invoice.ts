@@ -139,23 +139,25 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
-    const baseNotes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const extractedAmountDue = result.extractedAmountDue ?? undefined;
+    const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
       await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
-        notes: baseNotes,
+        notes,
         memo,
         invoiceDate: extractedInvoiceDate,
         companyWID: recommendedCompanyWID,
-        extractedAmountDue: result.extractedAmountDue ?? undefined,
-        supplierInvoiceNumber: extractedSuppliersInvoiceNumber
+        extractedAmountDue,
+        supplierInvoiceNumber: extractedSuppliersInvoiceNumber,
+        extractedFreightAmount
       });
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
-      const notes = baseNotes + formatInvoiceNumberNotes(result);
       await annotateSupplierInvoice(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         notes,
@@ -325,6 +327,11 @@ function getFirstDayOfCurrentMonth(): string {
 function formatAmountNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedAmountDue) return '';
   return `\n\nInvoice Amount (from document): ${result.extractedAmountDue}`;
+}
+
+function formatFreightAmountNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedFreightAmount) return '';
+  return `\n\nFreight Amount (from document): ${result.extractedFreightAmount}`;
 }
 
 function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {

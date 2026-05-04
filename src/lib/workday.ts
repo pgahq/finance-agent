@@ -307,6 +307,7 @@ interface buildSubmitInvoiceDataOptions {
   applyFallbackWorktags?: boolean;
   extractedAmountDue?: string;
   supplierInvoiceNumber?: string;
+  extractedFreightAmount?: string;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
@@ -499,10 +500,13 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, supplierInvoiceNumber } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, supplierInvoiceNumber, extractedFreightAmount } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
+  const freightAmount = extractedFreightAmount
+    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount)
+    : currentInvoice.Freight_Amount;
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
@@ -545,7 +549,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(supplierInvoiceNumber && { Suppliers_Invoice_Number: supplierInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
-    ...(currentInvoice.Freight_Amount && { Freight_Amount: currentInvoice.Freight_Amount }),
+    ...(freightAmount && { Freight_Amount: freightAmount }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
@@ -1044,6 +1048,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   companyWID?: string;
   extractedAmountDue?: string;
   supplierInvoiceNumber?: string;
+  extractedFreightAmount?: string;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1056,7 +1061,8 @@ export async function submitSupplierInvoiceUpdate(
     invoiceDate,
     companyWID,
     extractedAmountDue,
-    supplierInvoiceNumber
+    supplierInvoiceNumber,
+    extractedFreightAmount
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
@@ -1102,7 +1108,8 @@ export async function submitSupplierInvoiceUpdate(
       memo,
       invoiceDate,
       extractedAmountDue,
-      supplierInvoiceNumber
+      supplierInvoiceNumber,
+      extractedFreightAmount
     },
     operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
