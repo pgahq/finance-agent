@@ -308,6 +308,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedAmountDue?: string;
   supplierInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  filterInvoiceLines?: boolean;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
@@ -500,7 +501,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, supplierInvoiceNumber, extractedFreightAmount } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, supplierInvoiceNumber, extractedFreightAmount, filterInvoiceLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -526,7 +527,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     : currentInvoice.Payment_Terms_Reference;
 
   const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
-    ?.filter((line: any) => line.Spend_Category_Reference || line.Item_Reference)
+    ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
     .map(({ Tax_Data, ...line }: any) => {
       const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
       const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
@@ -1109,7 +1110,8 @@ export async function submitSupplierInvoiceUpdate(
       invoiceDate,
       extractedAmountDue,
       supplierInvoiceNumber,
-      extractedFreightAmount
+      extractedFreightAmount,
+      filterInvoiceLines: true
     },
     operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
