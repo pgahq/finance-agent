@@ -161,8 +161,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       await annotateSupplierInvoice(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         notes,
-        memo,
-        invoiceDate: extractedInvoiceDate
+        memo
       });
     }
 

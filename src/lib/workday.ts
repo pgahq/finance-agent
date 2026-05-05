@@ -1129,7 +1129,6 @@ export interface AnnotateSupplierInvoiceParams {
   invoiceWorkdayID: string;
   notes?: string;
   memo?: string;
-  invoiceDate?: string;
 }
 
 export async function annotateSupplierInvoice(
@@ -1137,8 +1136,7 @@ export async function annotateSupplierInvoice(
   {
     invoiceWorkdayID,
     notes,
-    memo,
-    invoiceDate
+    memo
   }: AnnotateSupplierInvoiceParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
@@ -1163,12 +1161,17 @@ export async function annotateSupplierInvoice(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
+  const currentInvoiceDate = normalizeInvoiceDate(currentInvoice.Invoice_Date);
+  if (!currentInvoiceDate) {
+    throw new Error(`Current invoice date is required to annotate invoice ${invoiceWorkdayID} without changing its date`);
+  }
+
   const invoiceData = buildSubmitInvoiceData({
     currentInvoice,
     workQueueTags,
     notes,
     memo,
-    invoiceDate: normalizeInvoiceDate(invoiceDate) ?? normalizeInvoiceDate(currentInvoice.Invoice_Date)
+    invoiceDate: currentInvoiceDate
   }) as Record<string, unknown>;
   const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
   const updateResponse = await submitSupplierInvoiceSoap(

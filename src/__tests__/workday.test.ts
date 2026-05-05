@@ -1790,7 +1790,7 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should not fallback-retry validation faults when only verifying invoice data', async () => {
+    it('should not fallback-retry validation faults when only annotating invoice data', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1824,19 +1824,18 @@ describe('Workday utilities', () => {
       const capturedRequests: any[] = [];
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
         capturedRequests.push(request);
-        callback(new Error('Validation_Fault: invoice date must be the first day of the month'), null);
+        callback(new Error('Validation_Fault: spend category is required'), null);
       });
 
       await expect(
         annotateSupplierInvoice(mockContext, {
           invoiceWorkdayID: mockInvoiceWorkdayID,
-          notes: 'notes only',
-          invoiceDate: '2025-02-15'
+          notes: 'notes only'
         })
-      ).rejects.toThrow('Validation_Fault: invoice date must be the first day of the month');
+      ).rejects.toThrow('Validation_Fault: spend category is required');
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
-      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-01-01');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
@@ -1882,6 +1881,43 @@ describe('Workday utilities', () => {
       await annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID });
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
+
+    it('should throw instead of defaulting when annotating an invoice without an existing invoice date', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      await expect(
+        annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID })
+      ).rejects.toThrow(`Current invoice date is required to annotate invoice ${mockInvoiceWorkdayID} without changing its date`);
+
+      expect(mockClient.Submit_Supplier_Invoice).not.toHaveBeenCalled();
     });
 
     it('should use the existing invoice date when it is a Date object from the SOAP library', async () => {
