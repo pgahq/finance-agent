@@ -7,7 +7,7 @@
  */
 
 import * as dotenv from 'dotenv';
-import { getWorkdayConfig, updateSupplierInvoice } from './lib/workday.js';
+import { getWorkdayConfig, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -38,11 +38,10 @@ async function main() {
     console.log('⏳ Updating invoice supplier...');
     console.log('');
 
-    const result = await updateSupplierInvoice(
-      context,
+    const result = await submitSupplierInvoiceUpdate(context, {
       invoiceWorkdayID,
-      supplierWorkdayID
-    );
+      supplierWID: supplierWorkdayID
+    });
 
     console.log('✅ Success!');
     console.log('');

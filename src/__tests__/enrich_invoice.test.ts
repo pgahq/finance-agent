@@ -38,8 +38,8 @@ jest.mock('../lib/workday.js', () => ({
       allAttachmentsForBusinessDocument: []
     }]
   }),
-  updateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
-  verifySupplierInvoiceData: jest.fn().mockResolvedValue(undefined)
+  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue(undefined),
+  annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -110,7 +110,7 @@ describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     const { getAiResponse } = require('../lib/ai.js');
-    const { updateSupplierInvoice, verifySupplierInvoiceData } = require('../lib/workday.js');
+    const { submitSupplierInvoiceUpdate, annotateSupplierInvoice } = require('../lib/workday.js');
     const validationFailures = require('../lib/invoice_validation_failures.js');
     getAiResponse.mockResolvedValue({
       supplier: {
@@ -136,9 +136,9 @@ describe('enrich_invoice', () => {
         reason: 'Company matches existing assignment'
       }
     });
-    updateSupplierInvoice.mockResolvedValue(undefined);
+    submitSupplierInvoiceUpdate.mockResolvedValue(undefined);
 
-    verifySupplierInvoiceData.mockResolvedValue(undefined);
+    annotateSupplierInvoice.mockResolvedValue(undefined);
     validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);
     validationFailures.recordInvoiceValidationFailure.mockResolvedValue(undefined);
   });
@@ -247,11 +247,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should record validation failures and avoid rethrowing them', async () => {
-    const { verifySupplierInvoiceData } = require('../lib/workday.js');
+    const { annotateSupplierInvoice } = require('../lib/workday.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
 
     const validationError = new Error('Validation_Fault: spend category is required');
-    verifySupplierInvoiceData.mockRejectedValue(validationError);
+    annotateSupplierInvoice.mockRejectedValue(validationError);
 
     const mockEvent = {
       data: [{
@@ -265,14 +265,16 @@ describe('enrich_invoice', () => {
     };
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
+    expect(annotateSupplierInvoice).toHaveBeenCalledTimes(1);
+    expect(recordInvoiceValidationFailure).toHaveBeenCalledTimes(1);
     expect(recordInvoiceValidationFailure).toHaveBeenCalledWith(undefined, 'test-invoice-id', validationError);
   });
 
   it('should continue throwing non-validation processing errors', async () => {
-    const { verifySupplierInvoiceData } = require('../lib/workday.js');
+    const { annotateSupplierInvoice } = require('../lib/workday.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
 
-    verifySupplierInvoiceData.mockRejectedValue(new Error('Update failed'));
+    annotateSupplierInvoice.mockRejectedValue(new Error('Update failed'));
 
     const mockEvent = {
       data: [{
@@ -297,7 +299,7 @@ describe('enrich_invoice', () => {
 
   it('should pass extracted invoice date to Workday update calls', async () => {
     const { getAiResponse } = require('../lib/ai.js');
-    const { updateSupplierInvoice } = require('../lib/workday.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
     getAiResponse.mockResolvedValueOnce({
       supplier: {
@@ -346,17 +348,19 @@ describe('enrich_invoice', () => {
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
-    expect(updateSupplierInvoice).toHaveBeenCalledWith(
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
       expect.anything(),
-      'test-invoice-id',
-      'SUP-1',
-      expect.any(String),
-      'Test invoice',
-      '2026-04-15',
-      undefined,
-      undefined,
-      undefined,
-      undefined
+      {
+        invoiceWorkdayID: 'test-invoice-id',
+        supplierWID: 'SUP-1',
+        notes: expect.any(String),
+        memo: 'Test invoice',
+        invoiceDate: '2026-04-15',
+        companyWID: undefined,
+        extractedAmountDue: undefined,
+        suppliersInvoiceNumber: undefined,
+        extractedFreightAmount: undefined
+      }
     );
   });
 
@@ -364,7 +368,7 @@ describe('enrich_invoice', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
 
     const { getAiResponse } = require('../lib/ai.js');
-    const { updateSupplierInvoice } = require('../lib/workday.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
     getAiResponse.mockResolvedValueOnce({
       supplier: {
@@ -412,17 +416,19 @@ describe('enrich_invoice', () => {
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
-    expect(updateSupplierInvoice).toHaveBeenCalledWith(
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
       expect.anything(),
-      'test-invoice-id',
-      'SUP-1',
-      expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
-      'Test invoice',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined
+      {
+        invoiceWorkdayID: 'test-invoice-id',
+        supplierWID: 'SUP-1',
+        notes: expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
+        memo: 'Test invoice',
+        invoiceDate: undefined,
+        companyWID: undefined,
+        extractedAmountDue: undefined,
+        suppliersInvoiceNumber: undefined,
+        extractedFreightAmount: undefined
+      }
     );
 
     jest.useRealTimers();

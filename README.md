@@ -376,6 +376,55 @@ sequenceDiagram
     Slack-->>Processor: Notification sent
 ```
 
+#### Workday Submit Retry Process
+
+Supplier invoice updates go through a guarded retry loop before the final Workday SOAP result is returned. The retry process applies to invoice submit operations such as supplier updates and note-only verification updates.
+
+```mermaid
+flowchart TD
+    START[Build Supplier Invoice submit payload]
+    SUBMIT[Submit payload to Workday SOAP]
+    SUCCESS{Submit succeeded?}
+    DONE[Return success]
+    ERROR{Workday validation fault?}
+    THROW[Throw original error]
+    LIMIT{Attempts remaining?<br/>max 3 total}
+    RECORD[Record failed request<br/>and summarized validation fault]
+    REPAIR[Ask Workday submit repair agent<br/>for a safe repair plan]
+    RULES[Optional: look up Workday<br/>Supplier Invoice validation rules]
+    DECISION{Repair decision}
+    APPLY[Apply allowed changes only:<br/>invoice date, memo, notes append,<br/>or configured default supplier]
+    DUPLICATE{Payload already failed?}
+    RETRY[Retry with repaired payload]
+
+    START --> SUBMIT
+    SUBMIT --> SUCCESS
+    SUCCESS -- Yes --> DONE
+    SUCCESS -- No --> ERROR
+    ERROR -- No --> THROW
+    ERROR -- Yes --> RECORD
+    RECORD --> LIMIT
+    LIMIT -- No --> THROW
+    LIMIT -- Yes --> REPAIR
+    REPAIR -. when useful .-> RULES
+    RULES -. validation context .-> REPAIR
+    REPAIR --> DECISION
+    DECISION -- give_up --> THROW
+    DECISION -- retry --> APPLY
+    APPLY --> DUPLICATE
+    DUPLICATE -- Yes --> THROW
+    DUPLICATE -- No --> RETRY
+    RETRY --> SUBMIT
+```
+
+Retry guardrails:
+
+- Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
+- The repair agent must inspect the latest failed request before deciding whether to retry.
+- Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available.
+- The loop tracks failed payload fingerprints and aborts if a repair would repeat a payload that already failed.
+- The final validation fault is rethrown after the third failed submit attempt or when the repair agent chooses `give_up`.
+
 #### PDF Processing Pipeline
 
 The PDF processing pipeline converts invoice PDFs into images for AI vision analysis:
