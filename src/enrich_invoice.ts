@@ -153,7 +153,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         invoiceDate: extractedInvoiceDate,
         companyWID: recommendedCompanyWID,
         extractedAmountDue,
-        supplierInvoiceNumber: extractedSuppliersInvoiceNumber,
+        suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount
       });
     } else {

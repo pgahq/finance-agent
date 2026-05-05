@@ -306,7 +306,7 @@ interface buildSubmitInvoiceDataOptions {
   paymentTermsWID?: string;
   applyFallbackWorktags?: boolean;
   extractedAmountDue?: string;
-  supplierInvoiceNumber?: string;
+  suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   filterInvoiceLines?: boolean;
 }
@@ -501,7 +501,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, supplierInvoiceNumber, extractedFreightAmount, filterInvoiceLines } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -528,7 +528,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
     ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
-    .map(({ Tax_Data, ...line }: any) => {
+    .map(({ Tax_Data: _Tax_Data, ...line }: any) => {
       const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
       const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
       const additions = applyFallbackWorktags ? fallbackWorktags.filter(t => !existingWids.has(t.ID[0].$value)) : [];
@@ -547,7 +547,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(supplierRef && { Supplier_Reference: supplierRef }),
 
     Invoice_Number: currentInvoice.Invoice_Number,
-    ...(supplierInvoiceNumber && { Suppliers_Invoice_Number: supplierInvoiceNumber }),
+    ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
     ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
     ...(freightAmount && { Freight_Amount: freightAmount }),
@@ -1048,7 +1048,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   invoiceDate?: string;
   companyWID?: string;
   extractedAmountDue?: string;
-  supplierInvoiceNumber?: string;
+  suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
 }
 
@@ -1062,7 +1062,7 @@ export async function submitSupplierInvoiceUpdate(
     invoiceDate,
     companyWID,
     extractedAmountDue,
-    supplierInvoiceNumber,
+    suppliersInvoiceNumber,
     extractedFreightAmount
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string }> {
@@ -1109,7 +1109,7 @@ export async function submitSupplierInvoiceUpdate(
       memo,
       invoiceDate,
       extractedAmountDue,
-      supplierInvoiceNumber,
+      suppliersInvoiceNumber,
       extractedFreightAmount,
       filterInvoiceLines: true
     },

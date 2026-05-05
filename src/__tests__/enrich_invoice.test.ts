@@ -358,7 +358,7 @@ describe('enrich_invoice', () => {
         invoiceDate: '2026-04-15',
         companyWID: undefined,
         extractedAmountDue: undefined,
-        supplierInvoiceNumber: undefined,
+        suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined
       }
     );
@@ -426,7 +426,7 @@ describe('enrich_invoice', () => {
         invoiceDate: undefined,
         companyWID: undefined,
         extractedAmountDue: undefined,
-        supplierInvoiceNumber: undefined,
+        suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined
       }
     );
