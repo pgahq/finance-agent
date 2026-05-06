@@ -141,7 +141,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
@@ -336,6 +336,11 @@ function formatFreightAmountNotes(result: InvoiceEnrichmentResult): string {
 function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
+}
+
+function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedPurchaseOrderNumber) return '';
+  return `\n\nPurchase Order Number (from document): ${result.extractedPurchaseOrderNumber}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
