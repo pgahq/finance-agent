@@ -28,24 +28,24 @@ type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
   try {
     const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-    
+
     if (!webhookUrl) {
       debug('SLACK_WEBHOOK_URL environment variable not set - skipping Slack notification');
       return;
     }
-    
+
     // Create fallback text from the first section block for notifications
-    const fallbackText = blocks.length > 0 && blocks[0].type === 'section' 
+    const fallbackText = blocks.length > 0 && blocks[0].type === 'section'
       ? blocks[0].text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
       : 'Slack notification';
-    
+
     const payload = {
       text: fallbackText, // Fallback for notifications
       blocks
     };
-    
+
     debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
-    
+
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
@@ -78,18 +78,17 @@ export async function notifyResult(
 ): Promise<void> {
   const statusEmoji = status === 'success' ? '✅' : '🚨';
   const statusText = status === 'success' ? 'successfully' : 'with error';
-  
+
   // Format processing time
   const timeText = processingTime ? `${(processingTime / 1000).toFixed(2)}s` : 'unknown time';
-  
+
   // Build the main message
   let mainMessage = `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
-  
+
   if (context) {
     mainMessage += ` for ${context}`;
   }
 
-  // Build blocks array
   const blocks: SlackBlock[] = [
     {
       type: 'section',
@@ -100,7 +99,6 @@ export async function notifyResult(
     }
   ];
 
-  // Add details/error as context block if present
   if (details || error) {
     let detailsData;
     if (error) {
@@ -117,7 +115,7 @@ export async function notifyResult(
     } else {
       detailsData = details;
     }
-    
+
     const jsonString = JSON.stringify(detailsData, null, 2);
     blocks.push({
       type: 'context',
@@ -127,6 +125,139 @@ export async function notifyResult(
           text: `\`\`\`${jsonString}\`\`\``
         }
       ]
+    });
+  }
+
+  await sendSlackMessage(blocks);
+}
+
+export interface EnrichmentNotification {
+  processingTime: number;
+  invoiceNumber: string;
+  canModify: boolean;
+  supplier: {
+    status: string;
+    resolvedName?: string;
+    existingName?: string;
+    isDefault: boolean;
+  };
+  company?: {
+    status: string;
+    existingName?: string;
+    recommendedName?: string;
+  };
+  extracted: {
+    invoiceDate?: string;
+    amountDue?: string;
+    suppliersInvoiceNumber?: string;
+    freightAmount?: string;
+    purchaseOrderNumber?: string;
+  };
+  poLineCount?: number;
+  suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
+  fallbacks: {
+    defaultSupplier: boolean;
+    fallbackFund?: string;
+    fallbackCostCenter?: string;
+  };
+}
+
+export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
+  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, fallbacks } = notification;
+
+  const timeText = `${(processingTime / 1000).toFixed(2)}s`;
+  const blocks: SlackBlock[] = [];
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `✅ *enrich_invoice* processed \`${invoiceNumber}\` in ${timeText}` }
+  });
+
+  const changeLines: string[] = [];
+  const verifiedLines: string[] = [];
+  const fallbackLines: string[] = [];
+
+  // Supplier
+  switch (supplier.status) {
+    case 'found':
+      changeLines.push(`*Supplier* → ${supplier.resolvedName ?? 'Unknown'} (identified)`);
+      break;
+    case 'different':
+      changeLines.push(`*Supplier* → ${supplier.resolvedName ?? 'Unknown'} (was: ${supplier.existingName ?? 'previous supplier'})`);
+      break;
+    case 'matching':
+      verifiedLines.push(`*Supplier* · ${supplier.resolvedName ?? supplier.existingName ?? 'Unknown'} (matching)`);
+      break;
+    default:
+      if (!fallbacks.defaultSupplier) changeLines.push(`*Supplier* · ${supplier.status}`);
+  }
+
+  switch (company?.status) {
+    case 'different':
+      changeLines.push(`*Company* → ${company.recommendedName ?? 'Unknown'} (was: ${company.existingName ?? 'previous company'})`);
+      break;
+    case 'matching':
+      verifiedLines.push(`*Company* · ${company.existingName ?? 'Unknown'} (matching)`);
+      break;
+    case 'uncertain':
+      verifiedLines.push(`*Company* · uncertain`);
+      break;
+  }
+
+  if (extracted.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
+  if (extracted.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
+  if (extracted.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
+  if (extracted.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted.purchaseOrderNumber) {
+    const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${lineSuffix}`);
+  }
+  if (suggestedCostCenters?.length) {
+    const formatted = suggestedCostCenters.map(cc => cc.code ? `${cc.name} (${cc.code})` : cc.name).join(', ');
+    changeLines.push(`*Cost Center* → ${formatted}`);
+  }
+
+  if (canModify && fallbacks.defaultSupplier) {
+    fallbackLines.push(`Default supplier — no match found in Workday`);
+  }
+  if (canModify && fallbacks.fallbackFund) {
+    fallbackLines.push(`Fallback fund applied to lines: \`${fallbacks.fallbackFund}\``);
+  }
+  if (canModify && fallbacks.fallbackCostCenter) {
+    fallbackLines.push(`Fallback cost center applied to lines: \`${fallbacks.fallbackCostCenter}\``);
+  }
+
+  if (!canModify) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `_Invoice modification disabled — notes only_` }
+    });
+    const analysisLines = [...changeLines, ...verifiedLines];
+    if (analysisLines.length) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Analysis*\n${analysisLines.map(l => `• ${l}`).join('\n')}` }
+      });
+    }
+  } else {
+    if (changeLines.length) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Changes*\n${changeLines.map(l => `• ${l}`).join('\n')}` }
+      });
+    }
+    if (verifiedLines.length) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Verified*\n${verifiedLines.map(l => `• ${l}`).join('\n')}` }
+      });
+    }
+  }
+
+  if (fallbackLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Fallbacks Applied*\n${fallbackLines.map(l => `• ${l}`).join('\n')}` }
     });
   }
 
