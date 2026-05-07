@@ -294,6 +294,14 @@ interface WorkQueueTag {
   ID: Array<{ $attributes: { type: string }; $value: string }>;
 }
 
+export interface PurchaseOrderLine {
+  lineOrder: number;
+  description?: string;
+  spendCategoryReference?: any;
+  extendedAmount?: number;
+  worktagsReference?: any[];
+}
+
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
@@ -309,6 +317,7 @@ interface buildSubmitInvoiceDataOptions {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   filterInvoiceLines?: boolean;
+  poLines?: PurchaseOrderLine[];
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
@@ -501,7 +510,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, applyFallbackWorktags, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -526,14 +535,34 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ? createReference('Payment_Terms_ID', paymentTermsWID)
     : currentInvoice.Payment_Terms_Reference;
 
-  const invoiceLines = currentInvoice.Invoice_Line_Replacement_Data
-    ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
-    .map(({ Tax_Data: _Tax_Data, ...line }: any) => {
-      const existing = ([] as any[]).concat(line.Worktags_Reference ?? []);
-      const existingWids = new Set(existing.map((t: any) => t.ID?.[0]?.$value));
-      const additions = applyFallbackWorktags ? fallbackWorktags.filter(t => !existingWids.has(t.ID[0].$value)) : [];
-      return additions.length ? { ...line, Worktags_Reference: [...existing, ...additions] } : line;
-    });
+  const withFallbackWorktags = (worktags: any[]): any[] => {
+    if (!fallbackWorktags.length) return worktags;
+    const existingTypes = new Set(
+      worktags.flatMap((t: any) =>
+        ([] as any[]).concat(t.ID ?? []).map((id: any) => id.$attributes?.type)
+      ).filter(Boolean)
+    );
+    const additions = fallbackWorktags.filter(t => !existingTypes.has(t.ID[0].$attributes?.type));
+    return additions.length ? [...worktags, ...additions] : worktags;
+  };
+
+  const invoiceLines = poLines?.length
+    ? poLines.map(line => {
+        const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
+        return {
+          Line_Order: line.lineOrder,
+          ...(line.description && { Description: line.description }),
+          ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
+          ...(line.extendedAmount !== undefined && { Extended_Amount: line.extendedAmount }),
+          ...(worktags.length && { Worktags_Reference: worktags }),
+        };
+      })
+    : currentInvoice.Invoice_Line_Replacement_Data
+        ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
+        .map(({ Tax_Data: _Tax_Data, ...line }: any) => ({
+          ...line,
+          Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
+        }));
 
   return {
     Submit: false,
@@ -1050,6 +1079,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  poLines?: PurchaseOrderLine[];
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1063,7 +1093,8 @@ export async function submitSupplierInvoiceUpdate(
     companyWID,
     extractedAmountDue,
     suppliersInvoiceNumber,
-    extractedFreightAmount
+    extractedFreightAmount,
+    poLines
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
@@ -1111,6 +1142,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      poLines,
       filterInvoiceLines: true
     },
     operationName: 'submitSupplierInvoiceUpdate',
@@ -1188,4 +1220,56 @@ export async function annotateSupplierInvoice(
   };
 }
 
+export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
+  const purchaseOrderRaw = poResponse?.Response_Data?.Purchase_Order;
+  const purchaseOrder = Array.isArray(purchaseOrderRaw) ? purchaseOrderRaw[0] : purchaseOrderRaw;
+  const poData = purchaseOrder?.Purchase_Order_Data;
 
+  if (!poData) return [];
+
+  const serviceLines = ([] as any[]).concat(poData.Service_Line_Data ?? []);
+
+  return serviceLines.map((line: any) => ({
+    lineOrder: line.Line_Number,
+    description: line.Description,
+    spendCategoryReference: line.Resource_Category_Reference,
+    extendedAmount: line.Extended_Amount,
+    worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+  }));
+}
+
+export async function getPurchaseOrder(
+  context: { workdayConfig: WorkdayConfig },
+  purchaseOrderNumber: string
+): Promise<any> {
+  debug(`Fetching Purchase Order: ${purchaseOrderNumber}`);
+
+  const client = await buildResourceManagementClient(context);
+
+  const response = await new Promise<any>((resolve, reject) => {
+    const request = {
+      Get_Purchase_Orders_Request: {
+        Request_References: {
+          Purchase_Order_Reference: {
+            ID: [{ $attributes: { type: 'Document_Number' }, $value: purchaseOrderNumber }]
+          }
+        },
+        Response_Group: {
+          Include_Reference: true,
+          Include_Attachment_Data: false
+        }
+      }
+    };
+
+    client.Get_Purchase_Orders(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Purchase_Orders):', err);
+        return reject(err);
+      }
+      debug('Get_Purchase_Orders response received');
+      resolve(result);
+    });
+  });
+
+  return response;
+}
