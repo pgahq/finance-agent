@@ -1,4 +1,4 @@
-import { annotateSupplierInvoice, executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -1416,7 +1416,12 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
             Supplier_Invoice_Data: expect.objectContaining({
-              Invoice_Line_Replacement_Data: [completedLine]
+              Invoice_Line_Replacement_Data: [
+                expect.objectContaining({
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Worktags_Reference: [completedLine.Worktags_Reference]
+                })
+              ]
             })
           })
         }),
@@ -1537,7 +1542,9 @@ describe('Workday utilities', () => {
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
             Supplier_Invoice_Data: expect.objectContaining({
-              Invoice_Line_Replacement_Data: [completedLine]
+              Invoice_Line_Replacement_Data: [
+                expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1' })
+              ]
             })
           })
         }),
@@ -1635,7 +1642,7 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
     });
 
-    it('should not append fallback worktags unless worktag validation fails', async () => {
+    it('should apply fallback worktags on first submission when line is missing those worktag types', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1687,10 +1694,13 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_COST_CENTER_ID;
 
       const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-      expect(submittedLine.Worktags_Reference).toBeUndefined();
+      expect(submittedLine.Worktags_Reference).toEqual([
+        { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'fallback-fund-id' }] },
+        { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }
+      ]);
     });
 
-    it('should append fallback worktags only after worktag validation fails', async () => {
+    it('should only apply fallback for worktag types that are absent from the line', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1703,11 +1713,16 @@ describe('Workday utilities', () => {
         callback(null, mockClient);
       });
 
-      const existingWorktag = { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'fallback-fund-id' }] };
+      const existingFundWorktag = {
+        ID: [
+          { $attributes: { type: 'WID' }, $value: 'existing-fund-wid' },
+          { $attributes: { type: 'Fund_ID' }, $value: 'existing-fund-id' }
+        ]
+      };
       const line = {
         Supplier_Invoice_Line_ID: 'LINE-1',
         Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] },
-        Worktags_Reference: [existingWorktag],
+        Worktags_Reference: [existingFundWorktag],
         Extended_Amount: '100'
       };
 
@@ -1730,15 +1745,9 @@ describe('Workday utilities', () => {
         callback(null, mockGetResponse);
       });
 
-      const capturedRequests: any[] = [];
+      let capturedRequest: any;
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequests.push(request);
-
-        if (capturedRequests.length === 1) {
-          callback(new Error('Validation_Fault: worktag cost center is required'), null);
-          return;
-        }
-
+        capturedRequest = request;
         callback(null, { Response_Data: { success: true } });
       });
 
@@ -1748,15 +1757,168 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_FUND_ID;
       delete process.env.FALLBACK_COST_CENTER_ID;
 
-      const firstSubmittedLine = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-      const submittedLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-      expect(firstSubmittedLine.Worktags_Reference).toEqual([existingWorktag]);
+      const submittedLine = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
       expect(submittedLine.Worktags_Reference).toEqual([
-        existingWorktag,
+        existingFundWorktag,
         { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cost-center-id' }] }
       ]);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
     });
 
+  });
+
+  describe('parsePurchaseOrderLines', () => {
+    const makeWorktag = (type: string, value: string) => ({
+      ID: [
+        { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+        { $attributes: { type }, $value: value }
+      ]
+    });
+
+    const makePoResponse = (serviceLineData: any) => ({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-404770',
+            Service_Line_Data: serviceLineData
+          }
+        }
+      }
+    });
+
+    it('should parse a single service line', () => {
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'Design/Mapping Services for the 2025 PGA Championship',
+        Resource_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Design_Mapping' }] },
+        Extended_Amount: 653000,
+        Worktags_Reference: [
+          makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
+          makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
+        ]
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toEqual({
+        lineOrder: 1,
+        description: 'Design/Mapping Services for the 2025 PGA Championship',
+        spendCategoryReference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Design_Mapping' }] },
+        extendedAmount: 653000,
+        worktagsReference: [
+          makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
+          makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
+        ]
+      });
+    });
+
+    it('should parse multiple service lines', () => {
+      const response = makePoResponse([
+        {
+          Line_Number: 1,
+          Description: 'Line 1',
+          Resource_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-A' }] },
+          Extended_Amount: 10000,
+          Worktags_Reference: [makeWorktag('Fund_ID', 'FUND-A')]
+        },
+        {
+          Line_Number: 2,
+          Description: 'Line 2',
+          Resource_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-B' }] },
+          Extended_Amount: 20000,
+          Worktags_Reference: [makeWorktag('Cost_Center_Reference_ID', 'CC-B')]
+        }
+      ]);
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(2);
+      expect(lines[0].lineOrder).toBe(1);
+      expect(lines[0].extendedAmount).toBe(10000);
+      expect(lines[1].lineOrder).toBe(2);
+      expect(lines[1].extendedAmount).toBe(20000);
+    });
+
+    it('should handle Purchase_Order as an array', () => {
+      const response = {
+        Response_Data: {
+          Purchase_Order: [
+            {
+              Purchase_Order_Data: {
+                Service_Line_Data: {
+                  Line_Number: 1,
+                  Description: 'Single line',
+                  Extended_Amount: 5000,
+                  Worktags_Reference: []
+                }
+              }
+            }
+          ]
+        }
+      };
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].lineOrder).toBe(1);
+      expect(lines[0].description).toBe('Single line');
+    });
+
+    it('should return empty array when Response_Data is missing', () => {
+      expect(parsePurchaseOrderLines({})).toEqual([]);
+      expect(parsePurchaseOrderLines(null)).toEqual([]);
+      expect(parsePurchaseOrderLines(undefined)).toEqual([]);
+    });
+
+    it('should return empty array when Purchase_Order_Data is missing', () => {
+      const response = { Response_Data: { Purchase_Order: {} } };
+      expect(parsePurchaseOrderLines(response)).toEqual([]);
+    });
+
+    it('should return empty array when no service lines exist', () => {
+      const response = makePoResponse(undefined);
+      expect(parsePurchaseOrderLines(response)).toEqual([]);
+    });
+
+    it('should handle a line with no worktags', () => {
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'No worktags line',
+        Extended_Amount: 100
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].worktagsReference).toEqual([]);
+    });
+
+    it('should handle a line with a single Worktags_Reference object (not array)', () => {
+      const singleWorktag = makeWorktag('Fund_ID', 'FUND-A');
+      const response = makePoResponse({
+        Line_Number: 1,
+        Extended_Amount: 100,
+        Worktags_Reference: singleWorktag
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual([singleWorktag]);
+    });
+
+    it('should handle a line missing optional fields', () => {
+      const response = makePoResponse({ Line_Number: 3 });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].lineOrder).toBe(3);
+      expect(lines[0].description).toBeUndefined();
+      expect(lines[0].spendCategoryReference).toBeUndefined();
+      expect(lines[0].extendedAmount).toBeUndefined();
+      expect(lines[0].worktagsReference).toEqual([]);
+    });
   });
 
   describe('annotateSupplierInvoice', () => {

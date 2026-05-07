@@ -5,7 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -141,7 +141,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const extractedPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+
+    let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
+    if (extractedPurchaseOrderNumber) {
+      debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
+      const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
+      poLines = parsePurchaseOrderLines(poResponse);
+      debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
+    }
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
@@ -154,7 +163,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         companyWID: recommendedCompanyWID,
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-        extractedFreightAmount
+        extractedFreightAmount,
+        poLines
       });
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
@@ -336,6 +346,11 @@ function formatFreightAmountNotes(result: InvoiceEnrichmentResult): string {
 function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
+}
+
+function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedPurchaseOrderNumber) return '';
+  return `\n\nPurchase Order Number (from document): ${result.extractedPurchaseOrderNumber}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

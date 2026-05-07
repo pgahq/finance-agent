@@ -71,6 +71,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping" or "delivery" charges. Null if no freight amount could be found or if it is ambiguous.'),
 
+  extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear.'),
+
   costCenterVerification: z.object({
     emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
     invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
@@ -219,7 +221,13 @@ Read the invoice attachment and extract the supplier's invoice number as it appe
 
 ---
 
-## Part 7: Cost Center Verification
+## Part 7: Purchase Order Number
+
+Read the invoice attachment and extract the purchase order number if one is referenced. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Populate \`extractedPurchaseOrderNumber\` with the value as it appears on the document. If no PO number is visible or the value is ambiguous, omit the field.
+
+---
+
+## Part 8: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 
