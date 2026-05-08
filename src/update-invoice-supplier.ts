@@ -43,6 +43,12 @@ async function main() {
       supplierWID: supplierWorkdayID
     });
 
+    if (!result.success) {
+      console.error('');
+      console.error('❌ Update failed:', result.message);
+      process.exit(1);
+    }
+
     console.log('✅ Success!');
     console.log('');
     console.log('Result:', result.message);

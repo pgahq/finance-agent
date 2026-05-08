@@ -38,7 +38,7 @@ jest.mock('../lib/workday.js', () => ({
       allAttachmentsForBusinessDocument: []
     }]
   }),
-  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue(undefined),
+  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true }),
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
 }));
 
@@ -136,7 +136,7 @@ describe('enrich_invoice', () => {
         reason: 'Company matches existing assignment'
       }
     });
-    submitSupplierInvoiceUpdate.mockResolvedValue(undefined);
+    submitSupplierInvoiceUpdate.mockResolvedValue({ success: true });
 
     annotateSupplierInvoice.mockResolvedValue(undefined);
     validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);

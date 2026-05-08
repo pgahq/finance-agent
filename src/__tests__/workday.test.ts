@@ -557,8 +557,9 @@ describe('Workday utilities', () => {
         callback(new Error('Update failed'), null);
       });
 
-      await expect(submitSupplierInvoiceUpdateForTest())
-        .rejects.toThrow('Update failed');
+      const result = await submitSupplierInvoiceUpdateForTest();
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Workday submit failed');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();

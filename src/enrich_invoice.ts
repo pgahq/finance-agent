@@ -154,7 +154,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
-      await submitSupplierInvoiceUpdate(context, {
+      const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
         notes,
@@ -166,6 +166,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         poLines
       });
+      if (!updateOutcome.success) {
+        debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
+        return;
+      }
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       await annotateSupplierInvoice(context, {

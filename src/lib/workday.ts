@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import path from 'path';
 import { isWorkdayValidationError, summarizeValidationError } from './invoice_validation_failures.js';
+import { notifyResult } from './slack.js';
 
 import type {
   DownloadedAttachment,
@@ -690,7 +691,7 @@ async function submitSupplierInvoiceWithRepair({
   operationName,
   submitLogMessage,
   requestDebugLabel,
-}: SubmitSupplierInvoiceWithRepairOptions): Promise<unknown> {
+}: SubmitSupplierInvoiceWithRepairOptions): Promise<unknown | undefined> {
   let attemptBuildOptions = { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
 
@@ -707,7 +708,18 @@ async function submitSupplierInvoiceWithRepair({
       return await submitSupplierInvoiceSoap(client, request, submitLogMessage);
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
-        throw error;
+        await notifyResult(
+          operationName,
+          'error',
+          undefined,
+          {
+            invoiceWorkdayID,
+            note: 'This fault is not from agentic validation retry (non-validation SOAP/infrastructure error).'
+          },
+          error,
+          'Submit_Supplier_Invoice — not agentic retry'
+        );
+        return undefined;
       }
 
       const validationError = summarizeValidationError(error);
@@ -1148,6 +1160,14 @@ export async function submitSupplierInvoiceUpdate(
     operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
+
+  if (updateResponse === undefined) {
+    debug('Supplier invoice update aborted after non-validation Workday error (Slack notified)');
+    return {
+      success: false,
+      message: `Workday submit failed for invoice ${invoiceWorkdayID} (not an agentic validation retry fault — see Slack)`
+    };
+  }
 
   debug('Supplier invoice updated successfully', updateResponse);
 
