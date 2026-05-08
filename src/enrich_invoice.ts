@@ -3,7 +3,7 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './lib/ai.js';
 import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
-import { notifyResult } from './lib/slack.js';
+import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
@@ -175,19 +175,37 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       });
     }
 
-    await notifyResult(
-      'enrich_invoice',
-      'success',
+    const isDefaultSupplier = !resolvedSupplierWID && !!targetSupplierWID;
+    await notifyEnrichmentResult({
       processingTime,
-      {
-        workdayId: invoiceData.workdayID,
-        invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
-        result: result.supplier,
-        companyVerification: result.companyVerification
+      invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
+      canModify: canModifyInvoice && !!targetSupplierWID,
+      supplier: {
+        status: result.supplier.status,
+        resolvedName: result.supplier.resolvedSupplier?.supplierName,
+        existingName: existingSupplier?.descriptor,
+        isDefault: isDefaultSupplier,
       },
-      undefined,
-      `invoice: \`${detailedInvoice.Invoice_Number || 'Unknown'}\``
-    );
+      company: result.companyVerification ? {
+        status: result.companyVerification.status,
+        existingName: existingCompany?.descriptor,
+        recommendedName: result.companyVerification.recommended?.companyName,
+      } : undefined,
+      extracted: {
+        invoiceDate: extractedInvoiceDate,
+        amountDue: extractedAmountDue,
+        suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+        freightAmount: extractedFreightAmount,
+        purchaseOrderNumber: extractedPurchaseOrderNumber,
+      },
+      poLineCount: poLines?.length,
+      suggestedCostCenters: result.costCenterVerification?.suggestedCostCenters ?? undefined,
+      fallbacks: {
+        defaultSupplier: isDefaultSupplier,
+        fallbackFund: process.env.FALLBACK_FUND_ID,
+        fallbackCostCenter: process.env.FALLBACK_COST_CENTER_ID,
+      },
+    });
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error in supplier enrichment process:', error);
