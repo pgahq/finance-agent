@@ -1,4 +1,4 @@
-version: '2.1'
+version: "2.1"
 references:
   deploy_container_config: &deploy_container_config
     docker:
@@ -52,6 +52,7 @@ references:
             FallbackPaymentTermsId=$FALLBACK_PAYMENT_TERMS_ID
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
+            DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
 
 jobs:
   build:
@@ -109,6 +110,7 @@ jobs:
       FALLBACK_PAYMENT_TERMS_ID: Net_60
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
+      FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -120,6 +122,7 @@ jobs:
       FALLBACK_PAYMENT_TERMS_ID: ""
       FALLBACK_COST_CENTER_ID: ""
       INVOICE_MOD_ENABLED: "false"
+      FALLBACK_SPEND_CATEGORY_ID: ""
 
 workflows:
   version: 2

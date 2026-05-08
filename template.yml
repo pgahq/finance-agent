@@ -27,6 +27,9 @@ Parameters:
     Type: String
     Description: Whether to enable invoice modification
     Default: "false"
+  DefaultOcrSpendCategoryId:
+    Type: String
+    Description: Workday Spend_Category_ID to apply as fallback for OCR lines missing a spend category
 
 Globals:
   Function:
@@ -48,6 +51,7 @@ Globals:
         FALLBACK_PAYMENT_TERMS_ID: !Ref FallbackPaymentTermsId
         FALLBACK_COST_CENTER_ID: !Ref FallbackCostCenterId
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
+        FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
