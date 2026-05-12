@@ -157,19 +157,6 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
-  # Poppler Layer for PDF processing
-  PopplerLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: !Sub "${AWS::StackName}-poppler-layer"
-      Description: "Poppler binaries for PDF processing"
-      ContentUri: layers/poppler/release-x86_64.zip
-      CompatibleRuntimes:
-        - nodejs20.x
-      CompatibleArchitectures:
-        - x86_64
-      RetentionPolicy: Delete
-
   FinanceAgentLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -469,8 +456,6 @@ Resources:
       Environment:
         Variables:
           INVOICE_VALIDATION_FAILURES_TABLE_NAME: !Ref InvoiceValidationFailuresTable
-      Layers:
-        - !Ref PopplerLayer
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup

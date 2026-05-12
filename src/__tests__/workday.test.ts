@@ -24,14 +24,6 @@ jest.mock('path', () => ({
   join: jest.fn((...args) => args.join('/'))
 }));
 
-// Mock the pdf and s3 modules
-jest.mock('../lib/pdf.js', () => ({
-  processPdfAttachment: jest.fn().mockResolvedValue({
-    originalFileName: 'test.pdf',
-    images: []
-  })
-}));
-
 jest.mock('../lib/s3.js', () => ({
   uploadAttachmentToS3: jest.fn().mockResolvedValue({
     id: 'test-id',
@@ -398,6 +390,7 @@ describe('Workday utilities', () => {
       });
 
       const result = await getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID);
+      const { uploadAttachmentToS3 } = require('../lib/s3.js');
 
       expect(result.invoice).toEqual({
         Invoice_ID: 'INV-001',
@@ -410,6 +403,7 @@ describe('Workday utilities', () => {
         }
       });
       expect(result.presignedAttachments).toBeDefined();
+      expect(uploadAttachmentToS3).toHaveBeenCalledTimes(1);
     });
 
     it('should handle invoice without attachments', async () => {

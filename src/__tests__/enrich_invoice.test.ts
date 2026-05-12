@@ -189,6 +189,56 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
   });
 
+  it('should pass PDF attachments to the AI as file parts', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+    const pdfBuffer = Buffer.from('fake-pdf-data');
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: {
+        Invoice_ID: 'test-invoice-id',
+        Attachment_Data: []
+      },
+      presignedAttachments: [
+        {
+          id: 'pdf-1',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          presignedUrl: 'https://example.com/invoice.pdf',
+          expiresAt: new Date('2026-05-12T00:00:00Z'),
+          s3Key: 'attachments/test-invoice-id/invoice.pdf',
+          buffer: pdfBuffer
+        }
+      ]
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    const aiCall = getAiResponse.mock.calls[0][0];
+    const messageContent = aiCall.messages[0].content;
+
+    expect(messageContent).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'file',
+        data: pdfBuffer,
+        mediaType: 'application/pdf',
+        filename: 'invoice.pdf'
+      })
+    ]));
+    expect(messageContent.some((part: { type: string }) => part.type === 'image')).toBe(false);
+  });
+
   it('should skip processing when supplier already exists', async () => {
     const { executeWorkdayQuery } = require('../lib/workday.js');
     executeWorkdayQuery.mockResolvedValue({

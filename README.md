@@ -26,7 +26,7 @@ The Finance Agent automates financial data processing in Workday by intelligentl
 
 - **Modern Handler Architecture**: Separated query execution from data processing for better maintainability
 - **Intelligent Pagination**: Configurable page sizes for efficient large dataset processing
-- **Enhanced Test Coverage**: 88 tests with 74.72% coverage including comprehensive RAG and PDF testing
+- **Enhanced Test Coverage**: Focused Jest coverage for RAG, invoice enrichment, and Workday integration
 - **Self-Contained Refresh**: Refresh operations no longer depend on external Lambda invocations
 - **RAG Integration**: Added semantic search capabilities with OpenAI embeddings
 
@@ -134,12 +134,11 @@ src/
 │   ├── handlers.ts                 # Handler architecture (withQueryHandler, withProcessorHandler)
 │   ├── ai.ts                       # AI integration
 │   ├── database.ts                 # PostgreSQL database
-│   ├── pdf.ts                      # PDF processing utilities
 │   ├── rag.ts                      # RAG and embedding functionality
 │   ├── slack.ts                    # Slack notifications
 │   ├── workday.ts                  # Workday API client
 │   └── types.ts                    # Type definitions
-└── __tests__/                      # Test suite (88 tests, 74.72% coverage)
+└── __tests__/                      # Test suite
 ```
 
 ## 🔧 System Architecture
@@ -159,11 +158,12 @@ src/
 - Enables fast similarity search across supplier data
 - Incremental sync keeps data current
 
-### PDF Processing
+### Attachment Processing
 
 - Downloads invoice PDFs from Workday
-- Splits multi-page PDFs into separate images using pdftocairo
-- Uses vision models to extract text and data
+- Saves original attachments to S3 for audit/debug access
+- Sends PDF attachments to the AI model as `application/pdf` file inputs
+- Sends image attachments to the AI model as image inputs
 - Generates presigned URLs for document access
 
 ### RAG (Retrieval-Augmented Generation)
@@ -225,17 +225,15 @@ Set up parameters in AWS Systems Manager Parameter Store for Workday credentials
 ## 🧪 Testing
 
 ```bash
-npm test                    # Run all tests (88 tests)
-npm run test:coverage      # Run with coverage (74.72% overall)
+npm test                    # Run all tests
+npm run test:coverage      # Run with coverage
 ```
 
 ### Test Coverage
 
-- **88 tests passing** across 11 test suites
-- **74.72% overall coverage** with comprehensive test coverage for:
+- Jest coverage includes:
   - Handler architecture (`handlers.ts`: 97.67%)
   - RAG functionality (`rag.ts`: 86%)
-  - PDF processing (`pdf.ts`: 58.92%)
   - Supplier refresh (`refresh_suppliers.ts`: 100%)
   - Core business logic and Workday API interactions
 
@@ -323,7 +321,6 @@ sequenceDiagram
     participant WorkdayWQL as Workday WQL
     participant Processor as EnrichInvoice<br/>Processor
     participant WorkdaySOAP as Workday SOAP
-    participant PDFProcessor as PDF Processor
     participant S3
     participant AI as GPT-4
     participant RAG as RAG/Vector DB
@@ -340,17 +337,12 @@ sequenceDiagram
     Processor->>WorkdaySOAP: Get attachments
     WorkdaySOAP-->>Processor: PDF attachments
 
-    Processor->>PDFProcessor: Process PDFs
-    activate PDFProcessor
-    PDFProcessor->>PDFProcessor: Split multi-page PDFs<br/>Convert to images
-    PDFProcessor->>S3: Upload images
-    S3-->>PDFProcessor: Presigned URLs
-    deactivate PDFProcessor
-    PDFProcessor-->>Processor: Processed attachments
+    Processor->>S3: Upload original attachments
+    S3-->>Processor: Presigned URLs
 
     Processor->>Processor: Extract invoice data<br/>(company, address, phone, email)
 
-    Processor->>AI: Analyze invoice<br/>(with images + RAG tool)
+    Processor->>AI: Analyze invoice<br/>(with PDF files/images + RAG tool)
     activate AI
     AI->>RAG: findSuppliers tool<br/>(semantic search)
     activate RAG
@@ -358,7 +350,7 @@ sequenceDiagram
     RAG-->>AI: Similar suppliers
     deactivate RAG
 
-    AI->>AI: Analyze invoice + images<br/>Match with RAG results
+    AI->>AI: Analyze invoice attachments<br/>Match with RAG results
     deactivate AI
     AI-->>Processor: Supplier identification result
 
@@ -425,50 +417,29 @@ Retry guardrails:
 - The loop tracks failed payload fingerprints and aborts if a repair would repeat a payload that already failed.
 - The final validation fault is rethrown after the third failed submit attempt or when the repair agent chooses `give_up`.
 
-#### PDF Processing Pipeline
+#### Attachment Processing Pipeline
 
-The PDF processing pipeline converts invoice PDFs into images for AI vision analysis:
+The attachment processing pipeline uploads the original Workday attachments for access/debugging and sends supported attachment content directly to the AI model:
 
 ```mermaid
 sequenceDiagram
     participant Processor
-    participant FileSystem
-    participant pdftocairo
     participant S3
+    participant AI
 
     Processor->>Processor: Receive attachment<br/>(from Workday SOAP)
 
+    Processor->>S3: Upload original attachment
+    S3-->>Processor: S3 key
+    Processor->>S3: Generate presigned URL<br/>(expires 1 hour)
+    S3-->>Processor: Presigned URL
+
     alt PDF Attachment
-        Processor->>FileSystem: Create temp directory<br/>(/tmp/pdf-processing)
-        Processor->>FileSystem: Write PDF buffer<br/>to temp file
-        Processor->>FileSystem: Create output directory
-
-        Processor->>pdftocairo: Execute conversion<br/>(PDF to PNG, all pages)
-        activate pdftocairo
-        pdftocairo->>FileSystem: Generate PNG files<br/>(page-1.png, page-2.png, ...)
-        deactivate pdftocairo
-
-        Processor->>FileSystem: Find generated PNGs
-        FileSystem-->>Processor: PNG file list
-        Processor->>Processor: Sort by page number
-
-        loop For each page
-            Processor->>FileSystem: Read PNG file
-            FileSystem-->>Processor: PNG buffer
-            Processor->>Processor: Create ProcessedImage<br/>(fileName, buffer, pageNumber)
-            Processor->>S3: Upload image<br/>(workdayID/attachmentIndex/page-N)
-            S3-->>Processor: S3 key
-            Processor->>S3: Generate presigned URL<br/>(expires 1 hour)
-            S3-->>Processor: Presigned URL
-            Processor->>FileSystem: Delete temp PNG file
-        end
-
-        Processor->>FileSystem: Cleanup temp files<br/>(PDF + directories)
-    else Image/Other Attachment
-        Processor->>S3: Upload directly
-        S3-->>Processor: S3 key
-        Processor->>S3: Generate presigned URL
-        S3-->>Processor: Presigned URL
+        Processor->>AI: Send PDF buffer as file input<br/>(application/pdf)
+    else Image Attachment
+        Processor->>AI: Send image URL as image input
+    else Other Attachment
+        Processor->>Processor: Keep attachment metadata only
     end
 
     Processor->>Processor: Return processed attachments<br/>(array of PresignedAttachment)
