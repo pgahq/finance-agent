@@ -156,4 +156,4 @@ Both scripts use functions exported from `src/lib/workday.ts` that can also be u
 
 - **`getSupplierInvoice()`** - Fetch invoice without attachments (read-only)
 - **`updateSupplierInvoiceSupplier()`** - Update an invoice's supplier (write operation)
-- **`getSupplierInvoiceWithAttachments()`** - Fetch invoice with attachments, process PDFs, upload to S3 (production Lambda)
+- **`getSupplierInvoiceWithAttachments()`** - Fetch invoice with attachments and upload originals to S3 (production Lambda)

@@ -318,7 +318,31 @@ async function enrichInvoice(
 
     const taskInstructions = existingSupplier
       ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.'
-      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the images from the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.';
+      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.';
+
+    const attachmentContentParts: Array<
+      { type: 'file'; data: Buffer; mediaType: string; filename: string }
+      | { type: 'image'; image: URL }
+    > = [];
+
+    for (const att of processedAttachments) {
+      if (att.contentType === 'application/pdf' && att.buffer) {
+        attachmentContentParts.push({
+          type: 'file',
+          data: att.buffer,
+          mediaType: att.contentType,
+          filename: att.fileName
+        });
+        continue;
+      }
+
+      if (att.contentType.startsWith('image/')) {
+        attachmentContentParts.push({
+          type: 'image',
+          image: new URL(att.presignedUrl)
+        });
+      }
+    }
 
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
@@ -331,12 +355,7 @@ async function enrichInvoice(
               type: 'text',
               text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}`
             },
-            ...processedAttachments
-              .filter(att => att.contentType.startsWith('image/'))
-              .map(att => ({
-                type: 'image' as const,
-                image: new URL(att.presignedUrl)
-              }))
+            ...attachmentContentParts
           ]
         }
       ]

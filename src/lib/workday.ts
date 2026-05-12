@@ -833,7 +833,7 @@ export async function getSupplierInvoiceWithAttachments(
 
   debug('Invoice data from SOAP', invoice);
 
-  // Process attachments: convert PDFs to images and upload to S3
+  // Process attachments: upload them to S3 and preserve metadata for AI inputs
   const processedAttachments: PresignedAttachment[] = [];
   const attachmentData = invoice.Attachment_Data;
 
@@ -849,36 +849,26 @@ export async function getSupplierInvoiceWithAttachments(
         const contentType = attachment.$attributes?.Content_Type || 'application/octet-stream';
         const fileName = attachment.$attributes?.Filename || `attachment-${i}`;
 
-        // Check if it's a PDF and convert to images
-        if (contentType === 'application/pdf') {
-          const { processPdfAttachment } = await import('./pdf.js');
-          const processedPdf = await processPdfAttachment(buffer, fileName, workdayID, i, context.s3Config);
+        const downloadedAttachment: DownloadedAttachment = {
+          id: `${workdayID}-${i}`,
+          fileName: fileName,
+          contentType: contentType,
+          buffer: buffer,
+          size: buffer.length
+        };
 
-          // Add all converted images to processed attachments
-          processedAttachments.push(...processedPdf.images);
-        } else {
-          // Handle non-PDF attachments (images, etc.)
-          const downloadedAttachment: DownloadedAttachment = {
-            id: `${workdayID}-${i}`,
-            fileName: fileName,
-            contentType: contentType,
-            buffer: buffer,
-            size: buffer.length
-          };
+        const { uploadAttachmentToS3 } = await import('./s3.js');
+        const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
 
-          const { uploadAttachmentToS3 } = await import('./s3.js');
-          const presignedAttachment = await uploadAttachmentToS3(context.s3Config, downloadedAttachment, workdayID);
-
-          processedAttachments.push({
-            id: presignedAttachment.id,
-            fileName: fileName,
-            contentType: contentType,
-            presignedUrl: presignedAttachment.presignedUrl,
-            expiresAt: presignedAttachment.expiresAt,
-            s3Key: presignedAttachment.s3Key,
-            buffer: buffer
-          });
-        }
+        processedAttachments.push({
+          id: presignedAttachment.id,
+          fileName: fileName,
+          contentType: contentType,
+          presignedUrl: presignedAttachment.presignedUrl,
+          expiresAt: presignedAttachment.expiresAt,
+          s3Key: presignedAttachment.s3Key,
+          buffer: buffer
+        });
 
       } catch (attachmentError) {
         debug(`Error processing attachment ${attachment.$attributes?.Filename}:`, attachmentError);
