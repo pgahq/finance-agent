@@ -11,6 +11,27 @@ import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmen
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
+const WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE = 'The task submitted is not authorized';
+
+function errorText(error: unknown): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}\n${error.stack ?? ''}`;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return '';
+  }
+}
+
+function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
+  return errorText(error).includes(WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE);
+}
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
@@ -154,7 +175,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
-      await submitSupplierInvoiceUpdate(context, {
+      const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
         notes,
@@ -166,6 +187,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         poLines
       });
+      if (!updateOutcome.success) {
+        debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
+        return;
+      }
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       await annotateSupplierInvoice(context, {
@@ -209,6 +234,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error in supplier enrichment process:', error);
+    const shouldSkipRetry = isWorkdayTaskNotAuthorizedError(error);
 
     await notifyResult(
       'enrich_invoice',
@@ -216,10 +242,18 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       processingTime,
       {
         workdayId: invoiceData.workdayID,
-        processingTime: `${processingTime}ms`
+        processingTime: `${processingTime}ms`,
+        ...(shouldSkipRetry && {
+          note: 'Workday returned "The task submitted is not authorized"; not retrying this Lambda invocation.'
+        })
       },
-      error
+      error,
+      shouldSkipRetry ? 'Workday task not authorized - no retry' : undefined
     );
+
+    if (shouldSkipRetry) {
+      return;
+    }
 
     if (isWorkdayValidationError(error)) {
       debug(`Validation failure detected for invoice ${invoiceData.workdayID} - recording in skip registry`);

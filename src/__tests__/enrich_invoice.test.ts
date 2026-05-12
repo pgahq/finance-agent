@@ -38,7 +38,7 @@ jest.mock('../lib/workday.js', () => ({
       allAttachmentsForBusinessDocument: []
     }]
   }),
-  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue(undefined),
+  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true }),
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
 }));
 
@@ -79,6 +79,11 @@ jest.mock('../lib/ai.js', () => ({
       reason: 'Company matches existing assignment'
     }
   })
+}));
+
+jest.mock('../lib/slack.js', () => ({
+  notifyEnrichmentResult: jest.fn().mockResolvedValue(undefined),
+  notifyResult: jest.fn().mockResolvedValue(undefined)
 }));
 
 jest.mock('../lib/invoice_validation_failures.js', () => ({
@@ -136,7 +141,7 @@ describe('enrich_invoice', () => {
         reason: 'Company matches existing assignment'
       }
     });
-    submitSupplierInvoiceUpdate.mockResolvedValue(undefined);
+    submitSupplierInvoiceUpdate.mockResolvedValue({ success: true });
 
     annotateSupplierInvoice.mockResolvedValue(undefined);
     validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);
@@ -288,6 +293,40 @@ describe('enrich_invoice', () => {
     };
 
     await expect(processor(mockEvent as any)).rejects.toThrow('Update failed');
+    expect(recordInvoiceValidationFailure).not.toHaveBeenCalled();
+  });
+
+  it('should notify Slack and stop retrying Workday task-not-authorized errors', async () => {
+    const { annotateSupplierInvoice } = require('../lib/workday.js');
+    const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
+    const { notifyResult } = require('../lib/slack.js');
+
+    const authorizationError = new Error('The task submitted is not authorized for this supplier invoice');
+    annotateSupplierInvoice.mockRejectedValue(authorizationError);
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+    expect(notifyResult).toHaveBeenCalledWith(
+      'enrich_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({
+        workdayId: 'test-invoice-id',
+        note: expect.stringContaining('not retrying')
+      }),
+      authorizationError,
+      'Workday task not authorized - no retry'
+    );
     expect(recordInvoiceValidationFailure).not.toHaveBeenCalled();
   });
 
