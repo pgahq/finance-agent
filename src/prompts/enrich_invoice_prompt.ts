@@ -73,6 +73,11 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear.'),
 
+  extractedPaymentTerms: z.object({
+    name: z.string().describe('The payment terms as they appear on the invoice document (e.g. "Net 30", "Net 60")'),
+    workdayId: z.string().nullable().describe('The Payment_Terms_ID from Workday after matching via the findPaymentTerms tool. Null if no match found.')
+  }).nullable().describe('Payment terms extracted from the invoice and resolved to a Workday ID via findPaymentTerms. Null if no payment terms are visible on the document.'),
+
   costCenterVerification: z.object({
     emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
     invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
@@ -89,9 +94,10 @@ export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
 
 export const invoiceEnrichmentPrompt = `You are an expert at matching invoices to suppliers and verifying company information in a Workday system. Your task is to analyze an invoice, identify or verify the supplier, and verify the company assignment.
 
-You have access to three search tools:
+You have access to four search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
+- **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
 - **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
@@ -197,7 +203,7 @@ Read the invoice attachment and extract the invoice date shown on the document. 
 
 Guidelines:
 - Only return the invoice date if it is clearly visible on the document.
-- Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or payment dates.
+- Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or Default_OCR_Spend_Category dates.
 - If the document shows multiple dates and the invoice date is ambiguous, omit the field.
 - Do not guess a date.
 
@@ -227,7 +233,19 @@ Read the invoice attachment and extract the purchase order number if one is refe
 
 ---
 
-## Part 8: Cost Center Verification
+## Part 8: Payment Terms
+
+If payment terms are visible on the invoice (e.g. "Net 30", "Net 60", "Due on Receipt"):
+
+1. Extract the payment terms text as it appears on the document.
+2. Use the **findPaymentTerms** tool to find the best matching Workday payment terms entry.
+3. Populate \`extractedPaymentTerms\` with the extracted name and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
+
+If no payment terms are visible on the document, omit \`extractedPaymentTerms\` entirely.
+
+---
+
+## Part 9: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 

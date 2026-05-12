@@ -152,6 +152,7 @@ export interface EnrichmentNotification {
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     purchaseOrderNumber?: string;
+    paymentTerms?: string;
   };
   poLineCount?: number;
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
@@ -212,6 +213,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${lineSuffix}`);
   }
+  if (extracted.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
   if (suggestedCostCenters?.length) {
     const formatted = suggestedCostCenters.map(cc => cc.code ? `${cc.name} (${cc.code})` : cc.name).join(', ');
     changeLines.push(`*Cost Center* → ${formatted}`);
