@@ -548,21 +548,27 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   const invoiceLines = poLines?.length
     ? poLines.map(line => {
-        const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
-        return {
-          Line_Order: line.lineOrder,
-          ...(line.description && { Description: line.description }),
-          ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
-          ...(line.extendedAmount !== undefined && { Extended_Amount: line.extendedAmount }),
-          ...(worktags.length && { Worktags_Reference: worktags }),
-        };
-      })
+      const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
+      return {
+        Line_Order: line.lineOrder,
+        ...(line.description && { Description: line.description }),
+        ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
+        ...(line.extendedAmount !== undefined && { Extended_Amount: line.extendedAmount }),
+        ...(worktags.length && { Worktags_Reference: worktags }),
+      };
+    })
     : currentInvoice.Invoice_Line_Replacement_Data
-        ?.filter((line: any) => !filterInvoiceLines || line.Spend_Category_Reference || line.Item_Reference)
-        .map(({ Tax_Data: _Tax_Data, ...line }: any) => ({
+      ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
+        const missingSpendCategory = filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference;
+        const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
+        return {
           ...line,
           Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
-        }));
+          ...(missingSpendCategory && defaultSpendCategoryId && {
+            Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId),
+          }),
+        };
+      });
 
   return {
     Submit: false,

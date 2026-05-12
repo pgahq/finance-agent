@@ -482,6 +482,7 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_COST_CENTER_ID;
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      delete process.env.FALLBACK_SPEND_CATEGORY_ID;
 
       // Mock fetch for OAuth token
       (global.fetch as jest.Mock).mockResolvedValue({
@@ -1429,7 +1430,9 @@ describe('Workday utilities', () => {
       );
     });
 
-    it('should exclude incomplete OCR lines and omit Invoice_Line_Replacement_Data when no completed lines exist', async () => {
+    it('should apply default OCR spend category to incomplete lines missing a spend category', async () => {
+      process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
+
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1478,10 +1481,19 @@ describe('Workday utilities', () => {
 
       await submitSupplierInvoiceUpdateForTest();
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toBeUndefined();
+      delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Supplier_Invoice_Line_ID: 'LINE-1',
+          Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'DEFAULT-SPEND-CAT' }] }
+        })
+      ]);
     });
 
-    it('should include only completed lines and drop incomplete OCR lines when mixed', async () => {
+    it('should apply default OCR spend category to incomplete lines while preserving existing categories', async () => {
+      process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
+
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -1532,24 +1544,26 @@ describe('Workday utilities', () => {
         callback(null, mockGetResponse);
       });
 
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
         callback(null, { Response_Data: { success: true } });
       });
 
       await submitSupplierInvoiceUpdateForTest();
 
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Submit_Supplier_Invoice_Request: expect.objectContaining({
-            Supplier_Invoice_Data: expect.objectContaining({
-              Invoice_Line_Replacement_Data: [
-                expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1' })
-              ]
-            })
-          })
-        }),
-        expect.any(Function)
-      );
+      delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+
+      const lines = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatchObject({
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'CAT-1' }] }
+      });
+      expect(lines[1]).toMatchObject({
+        Supplier_Invoice_Line_ID: 'LINE-2',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'DEFAULT-SPEND-CAT' }] }
+      });
     });
 
     it('should not apply fallback payment terms unless payment terms validation fails', async () => {
@@ -1945,6 +1959,7 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_COST_CENTER_ID;
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      delete process.env.FALLBACK_SPEND_CATEGORY_ID;
 
       (global.fetch as jest.Mock).mockResolvedValue({
         ok: true,
