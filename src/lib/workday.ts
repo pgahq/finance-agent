@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, summarizeValidationError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
+import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 
 import type {
   DownloadedAttachment,
@@ -321,6 +322,7 @@ interface buildSubmitInvoiceDataOptions {
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
+const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktags'];
 
 interface AppliedFallback {
   field: FallbackField;
@@ -420,26 +422,38 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
   return fallbacks;
 }
 
-function getValidationFallbackField(validationError: string): FallbackField | undefined {
-  const normalizedError = validationError.toLowerCase();
+function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): FallbackField[] {
+  return FALLBACK_FIELDS.filter(field => getFallbackRetryBuildOptions(options, field));
+}
 
-  if (/supplier/.test(normalizedError)) {
-    return 'supplier';
+async function getValidationFallbackField(
+  error: unknown,
+  validationError: string,
+  retryableFallbackFields: FallbackField[]
+): Promise<FallbackField | undefined> {
+  if (retryableFallbackFields.length === 0) {
+    debug('No unused fallback values are available for this validation fault; skipping fallback retry', {
+      validationError,
+    });
+    return undefined;
   }
 
-  if (/invoice[_\s-]*date|\bdate\b/.test(normalizedError)) {
-    return 'invoiceDate';
-  }
+  const validation = parseWorkdayValidationDetails(error) ?? { message: validationError };
 
-  if (/payment[_\s-]*terms?|\bterms?\b/.test(normalizedError)) {
-    return 'paymentTerms';
-  }
+  try {
+    const decision = await classifyWorkdayValidationField({
+      validation,
+      allowedRetryFields: retryableFallbackFields,
+    });
 
-  if (/worktags?|\bfund\b|cost[_\s-]*center/.test(normalizedError)) {
-    return 'worktags';
+    return decision.retryField === 'unknown' ? undefined : decision.retryField;
+  } catch (classificationError) {
+    debug('Unable to classify Workday validation field; skipping fallback retry', {
+      validationError,
+      classificationError,
+    });
+    return undefined;
   }
-
-  return undefined;
 }
 
 function getFallbackRetryBuildOptions(
@@ -717,7 +731,8 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const validationError = summarizeValidationError(error);
-      const validationFallbackField = getValidationFallbackField(validationError);
+      const retryableFallbackFields = getRetryableFallbackFields(attemptBuildOptions);
+      const validationFallbackField = await getValidationFallbackField(error, validationError, retryableFallbackFields);
       failedRequestFingerprints.add(serializeSubmitSupplierInvoiceRequest(request));
       const appliedFallbacksForField = validationFallbackField
         ? appliedFallbacks.filter(fallback => fallback.field === validationFallbackField)

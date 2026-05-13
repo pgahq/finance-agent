@@ -21,6 +21,34 @@ describe('invoice_validation_failures', () => {
     expect(isWorkdayValidationError(error)).toBe(true);
   });
 
+  it('reads Workday Validation_Error message and xpath details', () => {
+    const error = {
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'The entered information does not meet the restrictions defined for this field.',
+          Detail_Message: 'Please verify the referenced ship-to contact before submitting.',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Ship_To_Contact_Reference'
+        }
+      }
+    };
+
+    expect(summarizeValidationError(error)).toBe(
+      'The entered information does not meet the restrictions defined for this field. Detail: Please verify the referenced ship-to contact before submitting. Xpath: /wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Ship_To_Contact_Reference'
+    );
+    expect(isWorkdayValidationError(error)).toBe(true);
+  });
+
+  it('does not classify an empty validation fault shape as a usable validation error', () => {
+    const error = {
+      Validation_Fault: {
+        Validation_Error: {}
+      }
+    };
+
+    expect(summarizeValidationError(error)).toBe('');
+    expect(isWorkdayValidationError(error)).toBe(false);
+  });
+
   it('reads standard SOAP fault strings', () => {
     const error = {
       faultstring: 'Validation error occurred while submitting supplier invoice'
