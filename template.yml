@@ -33,7 +33,7 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: nodejs20.x
+    Runtime: nodejs24.x
     CodeUri: .
     MemorySize: 1024
     Timeout: 600
