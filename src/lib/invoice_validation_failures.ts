@@ -3,12 +3,34 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dyn
 
 const TABLE_NAME_ENV = 'INVOICE_VALIDATION_FAILURES_TABLE_NAME';
 const VALIDATION_ERROR_PATTERN = /validation(?:[_\s-]+fault|[_\s-]+error|\b)|validation fault/i;
+const VALIDATION_MESSAGE_KEYS = ['Validation_Message', 'Message', 'message', 'faultstring', 'faultString', 'reason'];
+const VALIDATION_DETAIL_MESSAGE_KEYS = ['Detail_Message', 'detailMessage'];
+const VALIDATION_XPATH_KEYS = ['Xpath', 'XPath', 'xpath'];
+const VALIDATION_CONTAINER_KEYS = [
+  'Validation_Error',
+  'Validation_Errors',
+  'Validation_Fault',
+  'ValidationFault',
+  'detail',
+  'Fault',
+  'fault',
+  'response',
+  'body',
+  'root',
+];
 
 let documentClient: DynamoDBDocumentClient | undefined;
 
 export interface InvoiceValidationFailuresConfig {
   tableName: string;
 }
+
+export type WorkdayValidationDetails = {
+  message?: string;
+  detailMessage?: string;
+  xpath?: string;
+  field?: string;
+};
 
 export function getInvoiceValidationFailuresConfig(
   env: NodeJS.ProcessEnv
@@ -41,6 +63,98 @@ function normalizeErrorText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+function getNormalizedString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const normalized = normalizeErrorText(value);
+    return normalized || undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = getNormalizedString(item);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getFirstStringByKey(objectValue: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const candidate = getNormalizedString(objectValue[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function extractWorkdayValidationErrorDetails(value: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = extractWorkdayValidationErrorDetails(item);
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const objectValue = value as Record<string, unknown>;
+  const details = {
+    message: getFirstStringByKey(objectValue, VALIDATION_MESSAGE_KEYS),
+    detailMessage: getFirstStringByKey(objectValue, VALIDATION_DETAIL_MESSAGE_KEYS),
+    xpath: getFirstStringByKey(objectValue, VALIDATION_XPATH_KEYS),
+  };
+
+  if (details.message || details.detailMessage || details.xpath) {
+    return details;
+  }
+
+  for (const key of VALIDATION_CONTAINER_KEYS) {
+    const candidate = extractWorkdayValidationErrorDetails(objectValue[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+export function parseWorkdayValidationDetails(error: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
+  return extractWorkdayValidationErrorDetails(error);
+}
+
+function formatWorkdayValidationErrorDetails(details: WorkdayValidationDetails): string {
+  const parts: string[] = [];
+
+  if (details.message) {
+    parts.push(details.message);
+  }
+
+  if (details.detailMessage && details.detailMessage !== details.message) {
+    parts.push(`Detail: ${details.detailMessage}`);
+  }
+
+  if (details.xpath) {
+    parts.push(`Xpath: ${details.xpath}`);
+  }
+
+  if (details.field) {
+    parts.push(`Field: ${details.field}`);
+  }
+
+  return parts.join(' ');
+}
+
 function getFirstString(value: unknown): string | undefined {
   if (typeof value === 'string') {
     const normalized = normalizeErrorText(value);
@@ -59,14 +173,14 @@ function getFirstString(value: unknown): string | undefined {
   if (value && typeof value === 'object') {
     const objectValue = value as Record<string, unknown>;
 
-    for (const key of ['Validation_Message', 'message', 'faultstring', 'faultString', 'reason']) {
+    for (const key of [...VALIDATION_MESSAGE_KEYS, ...VALIDATION_DETAIL_MESSAGE_KEYS, ...VALIDATION_XPATH_KEYS]) {
       const candidate = getFirstString(objectValue[key]);
       if (candidate) {
         return candidate;
       }
     }
 
-    for (const key of ['Validation_Fault', 'ValidationFault', 'detail', 'Fault', 'fault', 'response', 'body', 'root']) {
+    for (const key of VALIDATION_CONTAINER_KEYS) {
       const candidate = getFirstString(objectValue[key]);
       if (candidate) {
         return candidate;
@@ -78,6 +192,11 @@ function getFirstString(value: unknown): string | undefined {
 }
 
 function extractErrorText(error: unknown): string {
+  const validationDetails = extractWorkdayValidationErrorDetails(error);
+  if (validationDetails) {
+    return formatWorkdayValidationErrorDetails(validationDetails);
+  }
+
   if (typeof error === 'string') {
     return normalizeErrorText(error);
   }
@@ -134,7 +253,9 @@ export function summarizeValidationError(error: unknown): string {
 }
 
 export function isWorkdayValidationError(error: unknown): boolean {
-  return hasValidationFaultShape(error) || VALIDATION_ERROR_PATTERN.test(summarizeValidationError(error));
+  const validationMessage = summarizeValidationError(error);
+  return Boolean(validationMessage)
+    && (hasValidationFaultShape(error) || VALIDATION_ERROR_PATTERN.test(validationMessage));
 }
 
 export async function recordInvoiceValidationFailure(

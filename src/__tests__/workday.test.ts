@@ -37,9 +37,35 @@ jest.mock('../lib/workday_submit_repair.js', () => ({
   proposeWorkdaySubmitRepair: jest.fn()
 }));
 
+jest.mock('../lib/workday_validation_field_agent.js', () => ({
+  classifyWorkdayValidationField: jest.fn()
+}));
+
 describe('Workday utilities', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+    classifyWorkdayValidationField.mockImplementation(({ validation }: { validation: { message?: string; detailMessage?: string; xpath?: string } }) => {
+      const text = `${validation.message ?? ''} ${validation.detailMessage ?? ''} ${validation.xpath ?? ''}`.toLowerCase();
+
+      if (/payment[_\s-]*terms?|\bterms?\b/.test(text)) {
+        return Promise.resolve({ retryField: 'paymentTerms', reason: 'test payment terms classification' });
+      }
+
+      if (/invoice[_\s-]*date|\bdate\b/.test(text)) {
+        return Promise.resolve({ retryField: 'invoiceDate', reason: 'test invoice date classification' });
+      }
+
+      if (/worktags?|\bfund\b|cost[_\s-]*center|spend[_\s-]*category/.test(text)) {
+        return Promise.resolve({ retryField: 'worktags', reason: 'test worktag classification' });
+      }
+
+      if (/supplier/.test(text)) {
+        return Promise.resolve({ retryField: 'supplier', reason: 'test supplier classification' });
+      }
+
+      return Promise.resolve({ retryField: 'unknown', reason: 'test unknown classification' });
+    });
   });
 
   describe('getWorkdayConfig', () => {
@@ -597,7 +623,15 @@ describe('Workday utilities', () => {
         capturedRequests.push(request);
 
         if (capturedRequests.length === 1) {
-          callback(new Error('Validation_Fault: invoice date must be the first day of the month'), null);
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'The entered information does not meet the restrictions defined for this field.',
+                Detail_Message: 'The invoice date must be the first day of the month.',
+                Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Date'
+              }
+            }
+          }, null);
           return;
         }
 
@@ -614,6 +648,15 @@ describe('Workday utilities', () => {
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).toHaveBeenCalledWith({
+        validation: {
+          message: 'The entered information does not meet the restrictions defined for this field.',
+          detailMessage: 'The invoice date must be the first day of the month.',
+          xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Date'
+        },
+        allowedRetryFields: ['invoiceDate']
+      });
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
       jest.useRealTimers();
     });
@@ -660,7 +703,9 @@ describe('Workday utilities', () => {
       ).rejects.toThrow('Validation_Fault: invoice date is invalid');
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
       jest.useRealTimers();
     });
