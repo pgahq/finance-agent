@@ -65,6 +65,20 @@ export function createCostCenterContent(costCenter: any): string {
   return content;
 }
 
+export function createShippingAddressContent(item: {
+  locationName?: string;
+  companyName?: string;
+  addressPrimary?: string;
+}): string {
+  const lines = [
+    item.locationName ? `Location: ${item.locationName}` : null,
+    item.companyName ? `Company: ${item.companyName}` : null,
+    item.addressPrimary ? `Address: ${item.addressPrimary}` : null,
+  ].filter(Boolean) as string[];
+
+  return lines.join('\n');
+}
+
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
@@ -72,7 +86,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'shipping_address';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -248,6 +262,51 @@ export const findCostCentersTool = tool({
       };
     } catch (error) {
       debug(`Find Cost Centers Tool Error: ${error}`);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+});
+
+export const findShippingAddressesTool = tool({
+  description: `Search for Workday shipping / ship-to locations using semantic similarity and exact text matching.
+
+  Use this tool to look up addresses by:
+  - Street, city, state, postal code, or country text
+  - Location name
+  - Company name associated with the location
+
+  Examples: "100 Main St", "Building A Seattle", "HQ receiving dock"`,
+  inputSchema: z.object({
+    query: z.string().describe('Search query for shipping addresses (address text, location name, or company)'),
+    limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    try {
+      const results = await queryDocuments({
+        query,
+        documentType: 'shipping_address',
+        limit,
+        similarityThreshold
+      });
+
+      debug(`Find Shipping Addresses Tool: Found ${results.length} addresses`);
+
+      return {
+        success: true,
+        results: results.map(result => ({
+          workdayId: result.workday_id,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          similarity: result.similarity
+        }))
+      };
+    } catch (error) {
+      debug(`Find Shipping Addresses Tool Error: ${error}`);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred'

@@ -11,7 +11,7 @@ export interface DatabaseConfig {
   password: string;
 }
 
-export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center';
+export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center' | 'shipping_address';
 
 // Document interface
 export interface Document {
@@ -35,7 +35,7 @@ export const CREATE_DOCUMENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workday_id VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'shipping_address')),
     content TEXT NOT NULL,
     metadata JSONB,
     embedding VECTOR(1536),
@@ -54,7 +54,7 @@ export const CREATE_INDEXES = [
 // Migrations to run on every cold start (idempotent)
 export const MIGRATIONS = [
   `ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`,
-  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center'))`,
+  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'shipping_address'))`,
 ];
 
 // Enable pgvector extension

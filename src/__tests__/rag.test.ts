@@ -1,4 +1,4 @@
-import { createEmbedding, createSupplierContent, queryDocuments } from '../lib/rag.js';
+import { createEmbedding, createSupplierContent, createShippingAddressContent, queryDocuments } from '../lib/rag.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -85,6 +85,28 @@ describe('rag', () => {
           input: 'test text'
         })
       });
+    });
+  });
+
+  describe('createShippingAddressContent', () => {
+    it('should create content with all fields', () => {
+      const result = createShippingAddressContent({
+        locationName: 'DC East',
+        companyName: 'Acme Corp',
+        addressPrimary: '1 Main St, Boston, MA 02101'
+      });
+
+      expect(result).toBe(`Location: DC East
+Company: Acme Corp
+Address: 1 Main St, Boston, MA 02101`);
+    });
+
+    it('should omit missing fields', () => {
+      const result = createShippingAddressContent({
+        addressPrimary: 'PO Box 100'
+      });
+
+      expect(result).toBe('Address: PO Box 100');
     });
   });
 
@@ -340,6 +362,46 @@ Status: Active`);
         query: 'test query'
       })).rejects.toThrow('Search failed');
 
+      expect(mockDb.close).toHaveBeenCalled();
+    });
+
+    it('should query shipping_address document type', async () => {
+      const mockSearchResults = [
+        {
+          workday_id: 'loc-1',
+          type: 'shipping_address',
+          content: 'Location: HQ\nCompany: Acme\nAddress: 1 St',
+          metadata: { workdayId: 'loc-1' },
+          similarity: '0.9'
+        }
+      ];
+
+      mockSearchDocuments.mockResolvedValue(mockSearchResults);
+
+      const mockResponse = {
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          data: [{ embedding: [0.1, 0.2, 0.3] }]
+        })
+      };
+      mockFetch.mockResolvedValue(mockResponse as any);
+
+      const result = await queryDocuments({
+        query: 'Boston',
+        documentType: 'shipping_address',
+        limit: 5,
+        similarityThreshold: 0.3
+      });
+
+      expect(mockSearchDocuments).toHaveBeenCalledWith(
+        mockDb,
+        [0.1, 0.2, 0.3],
+        'Boston',
+        'shipping_address',
+        5
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe('shipping_address');
       expect(mockDb.close).toHaveBeenCalled();
     });
 
