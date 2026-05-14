@@ -163,7 +163,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const extractedPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
+    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
     if (extractedPurchaseOrderNumber) {
@@ -175,6 +175,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
+
+      const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
+
       const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
@@ -185,7 +188,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
-        poLines
+        poLines,
+        paymentTermsId
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -222,6 +226,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
+        paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
       suggestedCostCenters: result.costCenterVerification?.suggestedCostCenters ?? undefined,
@@ -422,6 +427,13 @@ function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
 function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPurchaseOrderNumber) return '';
   return `\n\nPurchase Order Number (from document): ${result.extractedPurchaseOrderNumber}`;
+}
+
+function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedPaymentTerms) return '';
+  const { name, workdayId } = result.extractedPaymentTerms;
+  const resolvedSuffix = workdayId ? ` (resolved: ${workdayId})` : ' (no Workday match found)';
+  return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

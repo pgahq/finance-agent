@@ -65,6 +65,10 @@ export function createCostCenterContent(costCenter: any): string {
   return content;
 }
 
+export function createPaymentTermsContent(paymentTerms: any): string {
+  return `Payment Terms: ${paymentTerms.name}`;
+}
+
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
@@ -72,7 +76,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -300,3 +304,43 @@ export const findCompaniesTool = tool({
   }
 });
 
+export const findPaymentTermsTool = tool({
+  description: `Search for payment terms using semantic similarity.
+
+  Use this tool to match payment terms extracted from an invoice (e.g. "Net 30", "Net 60", "Due on Receipt") against the payment terms configured in Workday.
+
+  Examples: "Net 30", "net30", "NET 60", "Due on receipt"`,
+  inputSchema: z.object({
+    query: z.string().describe('Payment terms text extracted from the invoice'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    try {
+      const results = await queryDocuments({
+        query,
+        documentType: 'payment_terms',
+        limit,
+        similarityThreshold
+      });
+
+      debug(`Find Payment Terms Tool: Found ${results.length} matches`);
+
+      return {
+        success: true,
+        results: results.map(result => ({
+          workdayId: result.workday_id,
+          content: result.content,
+          metadata: result.metadata,
+          similarity: result.similarity
+        }))
+      };
+    } catch (error) {
+      debug(`Find Payment Terms Tool Error: ${error}`);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+});

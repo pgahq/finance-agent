@@ -1091,6 +1091,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   poLines?: PurchaseOrderLine[];
+  paymentTermsId?: string;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1105,7 +1106,8 @@ export async function submitSupplierInvoiceUpdate(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
-    poLines
+    poLines,
+    paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice supplier via SOAP');
@@ -1154,6 +1156,7 @@ export async function submitSupplierInvoiceUpdate(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       poLines,
+      paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true
     },
     operationName: 'submitSupplierInvoiceUpdate',
@@ -1283,4 +1286,42 @@ export async function getPurchaseOrder(
   });
 
   return response;
+}
+
+export async function getAllPaymentTerms(
+  context: { workdayConfig: WorkdayConfig }
+): Promise<Array<{ paymentTermsId: string; name: string }>> {
+  debug('Fetching all Payment Terms from Workday');
+
+  const client = await buildFinancialManagementClient(context);
+
+  const response = await new Promise<any>((resolve, reject) => {
+    const request = {
+      Get_Payment_Terms_Request: {
+        Response_Group: {
+          Include_Reference: true
+        }
+      }
+    };
+
+    client.Get_Payment_Terms(request, (err: any, result: any) => {
+      if (err) {
+        debug('Error from Workday SOAP (Get_Payment_Terms):', err);
+        return reject(err);
+      }
+      debug('Get_Payment_Terms response received');
+      resolve(result);
+    });
+  });
+
+  const paymentTermsArray: any[] = ([] as any[]).concat(response?.Response_Data?.Payment_Terms ?? []);
+
+  return paymentTermsArray.flatMap((pt: any) => {
+    const ids: any[] = ([] as any[]).concat(pt?.Payment_Terms_Reference?.ID ?? []);
+    const idEntry = ids.find((id: any) => id.$attributes?.type === 'Payment_Terms_ID');
+    const paymentTermsId = idEntry?.$value;
+    const name = pt?.Payment_Terms_Data?.Payment_Terms_Name;
+    if (!paymentTermsId || !name) return [];
+    return [{ paymentTermsId, name }];
+  });
 }

@@ -323,6 +323,25 @@ Resources:
           Properties:
             Schedule: cron(59 11 * * ? *)
 
+  # Cache Payment Terms - runs first day of each month
+  CachePaymentTermsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CachePaymentTerms"
+      Handler: dist/cache_payment_terms.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 1 * ? *)
+
   # Cache Cost Centers Processor - Data processing
   CacheCostCentersProcessor:
     Type: AWS::Serverless::Function
