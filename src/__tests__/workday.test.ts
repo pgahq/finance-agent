@@ -1855,6 +1855,7 @@ describe('Workday utilities', () => {
 
       expect(lines).toHaveLength(1);
       expect(lines[0]).toEqual({
+        purchaseOrderDocumentNumber: 'PO-404770',
         lineOrder: 1,
         description: 'Design/Mapping Services for the 2025 PGA Championship',
         spendCategoryReference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Design_Mapping' }] },

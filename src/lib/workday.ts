@@ -297,9 +297,12 @@ interface WorkQueueTag {
 
 export interface PurchaseOrderLine {
   lineOrder: number;
+  purchaseOrderDocumentNumber: string;
   description?: string;
   spendCategoryReference?: any;
   extendedAmount?: number;
+  quantity?: number;
+  unitCost?: number;
   worktagsReference?: any[];
 }
 
@@ -565,8 +568,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
       return {
         Line_Order: line.lineOrder,
+        Purchase_Order_Line_Reference: createReference('Document_Number', line.purchaseOrderDocumentNumber),
         ...(line.description && { Description: line.description }),
         ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
+        ...(line.quantity !== undefined && { Quantity: line.quantity }),
+        ...(line.unitCost !== undefined && { Unit_Cost: line.unitCost }),
         ...(line.extendedAmount !== undefined && { Extended_Amount: line.extendedAmount }),
         ...(worktags.length && { Worktags_Reference: worktags }),
       };
@@ -1242,14 +1248,31 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
   if (!poData) return [];
 
   const serviceLines = ([] as any[]).concat(poData.Service_Line_Data ?? []);
+  const goodsLines = ([] as any[]).concat(poData.Goods_Line_Data ?? []);
 
-  return serviceLines.map((line: any) => ({
+  const purchaseOrderDocumentNumber = poData.Document_Number;
+
+  const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
     lineOrder: line.Line_Number,
+    purchaseOrderDocumentNumber,
     description: line.Description,
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
   }));
+
+  const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
+    lineOrder: line.Line_Number,
+    purchaseOrderDocumentNumber,
+    description: line.Item_Description,
+    spendCategoryReference: line.Resource_Category_Reference,
+    quantity: line.Quantity !== undefined ? Number(line.Quantity) : undefined,
+    unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
+    extendedAmount: line.Extended_Amount,
+    worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+  }));
+
+  return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
 }
 
 export async function getPurchaseOrder(
