@@ -1243,7 +1243,8 @@ export async function annotateSupplierInvoice(
 export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
   const purchaseOrderRaw = poResponse?.Response_Data?.Purchase_Order;
   const purchaseOrder = Array.isArray(purchaseOrderRaw) ? purchaseOrderRaw[0] : purchaseOrderRaw;
-  const poData = purchaseOrder?.Purchase_Order_Data;
+  const poDataRaw = purchaseOrder?.Purchase_Order_Data;
+  const poData = Array.isArray(poDataRaw) ? poDataRaw[0] : poDataRaw;
 
   if (!poData) return [];
 

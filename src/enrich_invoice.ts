@@ -169,6 +169,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     if (extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
       const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
+      debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
       poLines = parsePurchaseOrderLines(poResponse);
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
