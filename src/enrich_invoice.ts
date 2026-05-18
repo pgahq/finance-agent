@@ -162,7 +162,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
-    const extractedPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
+    const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
+    const extractedPurchaseOrderNumber = rawPurchaseOrderNumber
+      ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/,'')}`
+      : undefined;
     const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
 
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
