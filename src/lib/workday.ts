@@ -297,6 +297,7 @@ interface WorkQueueTag {
 
 export interface PurchaseOrderLine {
   lineOrder: number;
+  purchaseOrderLineId: string;
   purchaseOrderDocumentNumber: string;
   description?: string;
   spendCategoryReference?: any;
@@ -568,8 +569,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
       return {
         Line_Order: line.lineOrder,
-        Purchase_Order_Line_Reference: createReference('Document_Number', line.purchaseOrderDocumentNumber),
-        ...(line.description && { Description: line.description }),
+        Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId),
+        ...(line.description && { Item_Description: line.description }),
         ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
         ...(line.quantity !== undefined && { Quantity: line.quantity }),
         ...(line.unitCost !== undefined && { Unit_Cost: line.unitCost }),
@@ -1255,6 +1256,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
 
   const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
     lineOrder: line.Line_Number,
+    purchaseOrderLineId: line.Service_Order_Line_ID,
     purchaseOrderDocumentNumber,
     description: line.Description,
     spendCategoryReference: line.Resource_Category_Reference,
@@ -1264,6 +1266,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
 
   const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
     lineOrder: line.Line_Number,
+    purchaseOrderLineId: line.Goods_Purchase_Order_Line_ID,
     purchaseOrderDocumentNumber,
     description: line.Item_Description,
     spendCategoryReference: line.Resource_Category_Reference,
