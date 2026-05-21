@@ -40,7 +40,8 @@ async function main() {
 
     const result = await submitSupplierInvoiceUpdate(context, {
       invoiceWorkdayID,
-      supplierWID: supplierWorkdayID
+      supplierWID: supplierWorkdayID,
+      buildNotes: () => ''
     });
 
     console.log('✅ Success!');

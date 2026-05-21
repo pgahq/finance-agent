@@ -160,6 +160,7 @@ export interface EnrichmentNotification {
     defaultSupplier: boolean;
     fallbackFund?: string;
     fallbackCostCenter?: string;
+    fallbackPaymentTerms?: boolean;
   };
 }
 
@@ -227,6 +228,9 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
   if (canModify && fallbacks.fallbackCostCenter) {
     fallbackLines.push(`Fallback cost center applied to lines: \`${fallbacks.fallbackCostCenter}\``);
+  }
+  if (canModify && fallbacks.fallbackPaymentTerms) {
+    fallbackLines.push(`Fallback payment terms applied`);
   }
 
   if (!canModify) {
