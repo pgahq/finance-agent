@@ -38,7 +38,7 @@ jest.mock('../lib/workday.js', () => ({
       allAttachmentsForBusinessDocument: []
     }]
   }),
-  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true }),
+  submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
 }));
 
@@ -141,7 +141,7 @@ describe('enrich_invoice', () => {
         reason: 'Company matches existing assignment'
       }
     });
-    submitSupplierInvoiceUpdate.mockResolvedValue({ success: true });
+    submitSupplierInvoiceUpdate.mockResolvedValue({ success: true, appliedFallbacks: [] });
 
     annotateSupplierInvoice.mockResolvedValue(undefined);
     validationFailures.isInvoiceMarkedForSkip.mockResolvedValue(false);
@@ -442,13 +442,15 @@ describe('enrich_invoice', () => {
       {
         invoiceWorkdayID: 'test-invoice-id',
         supplierWID: 'SUP-1',
-        notes: expect.any(String),
+        buildNotes: expect.any(Function),
         memo: 'Test invoice',
         invoiceDate: '2026-04-15',
         companyWID: undefined,
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
-        extractedFreightAmount: undefined
+        extractedFreightAmount: undefined,
+        poLines: undefined,
+        paymentTermsId: undefined,
       }
     );
   });
@@ -510,15 +512,20 @@ describe('enrich_invoice', () => {
       {
         invoiceWorkdayID: 'test-invoice-id',
         supplierWID: 'SUP-1',
-        notes: expect.stringContaining('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).'),
+        buildNotes: expect.any(Function),
         memo: 'Test invoice',
         invoiceDate: undefined,
         companyWID: undefined,
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
-        extractedFreightAmount: undefined
+        extractedFreightAmount: undefined,
+        poLines: undefined,
+        paymentTermsId: undefined,
       }
     );
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.buildNotes([])).toContain('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).');
 
     jest.useRealTimers();
   });

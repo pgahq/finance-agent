@@ -5,6 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
+import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
@@ -164,10 +165,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const extractedPurchaseOrderNumber = rawPurchaseOrderNumber
-      ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/,'')}`
+      ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
       : undefined;
-    const notes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result) + formatFallbackNotes(!resolvedSupplierWID);
-
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
     if (extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
@@ -177,6 +176,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
+    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines);
+    const baseNotes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result);
+    const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
+      baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
+
+    let fallbacks: Fallbacks;
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
 
@@ -185,7 +190,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
-        notes,
+        buildNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
         companyWID: recommendedCompanyWID,
@@ -199,16 +204,17 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
         return;
       }
+      fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
+      fallbacks = mergeFallbacks(upfrontFallbacks, []);
       await annotateSupplierInvoice(context, {
         invoiceWorkdayID: invoiceData.workdayID,
-        notes,
+        notes: buildNotes([]),
         memo
       });
     }
 
-    const isDefaultSupplier = !resolvedSupplierWID && !!targetSupplierWID;
     await notifyEnrichmentResult({
       processingTime,
       invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
@@ -217,7 +223,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         existingName: existingSupplier?.descriptor,
-        isDefault: isDefaultSupplier,
+        isDefault: fallbacks.defaultSupplier,
       },
       company: result.companyVerification ? {
         status: result.companyVerification.status,
@@ -235,9 +241,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       poLineCount: poLines?.length,
       suggestedCostCenters: result.costCenterVerification?.suggestedCostCenters ?? undefined,
       fallbacks: {
-        defaultSupplier: isDefaultSupplier,
-        fallbackFund: process.env.FALLBACK_FUND_ID,
-        fallbackCostCenter: process.env.FALLBACK_COST_CENTER_ID,
+        defaultSupplier: fallbacks.defaultSupplier,
+        fallbackFund: fallbacks.fund ? process.env.FALLBACK_FUND_ID : undefined,
+        fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
+        fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
       },
     });
   } catch (error) {
@@ -388,19 +395,73 @@ function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
   return notes;
 }
 
-function formatFallbackNotes(usedDefaultSupplier: boolean): string {
+interface UpfrontFallbacks {
+  defaultSupplier: boolean;
+  fund: boolean;
+  costCenter: boolean;
+  spendCategory: boolean;
+}
+
+interface Fallbacks extends UpfrontFallbacks {
+  paymentTerms: boolean;
+}
+
+function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
+  return {
+    defaultSupplier: upfront.defaultSupplier || submissionFallbacks.some(f => f.field === 'supplier'),
+    fund: upfront.fund,
+    costCenter: upfront.costCenter,
+    spendCategory: upfront.spendCategory,
+    paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
+  };
+}
+
+function lineHasWorktag(line: any, type: string): boolean {
+  const worktags = ([] as any[]).concat(line.worktagsReference ?? line.Worktags_Reference ?? []);
+  return worktags.some((t: any) =>
+    ([] as any[]).concat(t.ID ?? []).some((id: any) => id.$attributes?.type === type)
+  );
+}
+
+function getUpfrontFallbacks(
+  resolvedSupplierWID: string | undefined,
+  detailedInvoice: { [key: string]: unknown },
+  poLines?: PurchaseOrderLine[]
+): UpfrontFallbacks {
+  const usingPOLines = !!(poLines?.length);
+  const effectiveLines: any[] = usingPOLines
+    ? poLines!
+    : ([] as any[]).concat((detailedInvoice as any).Invoice_Line_Replacement_Data ?? []);
+
+  const fund = !!(process.env.FALLBACK_FUND_ID && effectiveLines.some(l => !lineHasWorktag(l, 'Fund_ID')));
+  const costCenter = !!(process.env.FALLBACK_COST_CENTER_ID && effectiveLines.some(l => !lineHasWorktag(l, 'Cost_Center_Reference_ID')));
+  // Spend category is only applied to raw invoice lines (not PO lines)
+  const spendCategory = !usingPOLines && !!(process.env.FALLBACK_SPEND_CATEGORY_ID && effectiveLines.some(l => !l.Spend_Category_Reference && !l.Item_Reference));
+
+  return {
+    defaultSupplier: !resolvedSupplierWID && !!DEFAULT_SUPPLIER_WID,
+    fund,
+    costCenter,
+    spendCategory,
+  };
+}
+
+function formatFallbackNotes(fallbacks: Fallbacks): string {
   const parts: string[] = [];
-  if (usedDefaultSupplier && DEFAULT_SUPPLIER_WID) {
+  if (fallbacks.defaultSupplier && DEFAULT_SUPPLIER_WID) {
     parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (no match found, default applied)`);
   }
-  if (process.env.FALLBACK_FUND_ID) {
+  if (fallbacks.fund && process.env.FALLBACK_FUND_ID) {
     parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (applied to lines without an existing fund)`);
   }
-  if (process.env.FALLBACK_COST_CENTER_ID) {
+  if (fallbacks.costCenter && process.env.FALLBACK_COST_CENTER_ID) {
     parts.push(`Cost Center: ${process.env.FALLBACK_COST_CENTER_ID} (applied to lines without an existing cost center)`);
   }
-  if (process.env.FALLBACK_PAYMENT_TERMS_ID) {
-    parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied when not already set)`);
+  if (fallbacks.spendCategory && process.env.FALLBACK_SPEND_CATEGORY_ID) {
+    parts.push(`Spend Category: ${process.env.FALLBACK_SPEND_CATEGORY_ID} (applied to lines without an existing spend category)`);
+  }
+  if (fallbacks.paymentTerms && process.env.FALLBACK_PAYMENT_TERMS_ID) {
+    parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied after validation error)`);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;

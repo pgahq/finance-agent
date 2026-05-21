@@ -488,6 +488,7 @@ describe('Workday utilities', () => {
     const submitSupplierInvoiceUpdateForTest = (overrides: Partial<Parameters<typeof submitSupplierInvoiceUpdate>[1]> = {}) => submitSupplierInvoiceUpdate(mockContext, {
       invoiceWorkdayID: mockInvoiceWorkdayID,
       supplierWID: mockSupplierID,
+      buildNotes: () => '',
       ...overrides
     });
 
@@ -1289,7 +1290,7 @@ describe('Workday utilities', () => {
       const testMemo = 'Office supplies for March 2024';
 
       await submitSupplierInvoiceUpdateForTest({
-        notes: testNotes,
+        buildNotes: () => testNotes,
         memo: testMemo
       });
 

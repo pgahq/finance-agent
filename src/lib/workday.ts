@@ -328,7 +328,7 @@ interface buildSubmitInvoiceDataOptions {
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
 const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktags'];
 
-interface AppliedFallback {
+export interface AppliedFallback {
   field: FallbackField;
   label: string;
 }
@@ -668,6 +668,7 @@ interface SubmitSupplierInvoiceWithRepairOptions {
   invoiceWorkdayID: string;
   currentInvoice: any;
   buildOptions: buildSubmitInvoiceDataOptions;
+  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
   operationName: string;
   submitLogMessage: string;
   requestDebugLabel?: string;
@@ -714,24 +715,27 @@ async function submitSupplierInvoiceWithRepair({
   client,
   invoiceWorkdayID,
   buildOptions,
+  buildNotes,
   operationName,
   submitLogMessage,
   requestDebugLabel,
-}: SubmitSupplierInvoiceWithRepairOptions): Promise<unknown> {
+}: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
   let attemptBuildOptions = { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
 
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
-    const invoiceData = buildSubmitInvoiceData(attemptBuildOptions) as Record<string, unknown>;
-    const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions);
+    const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks) };
+    const invoiceData = buildSubmitInvoiceData(optionsWithNotes) as Record<string, unknown>;
+    const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
 
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
     }
 
     try {
-      return await submitSupplierInvoiceSoap(client, request, submitLogMessage);
+      const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
+      return { result, finalBuildOptions: attemptBuildOptions };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         throw error;
@@ -791,6 +795,7 @@ async function submitSupplierInvoiceWithRepair({
 
   throw new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceWorkdayID}`);
 }
+
 
 function createWorkQueueTag(tagId: string): WorkQueueTag {
   return {
@@ -1090,7 +1095,7 @@ export async function getWorkQueueTagWIDs(
 export interface SubmitSupplierInvoiceUpdateParams {
   invoiceWorkdayID: string;
   supplierWID?: string;
-  notes?: string;
+  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
   memo?: string;
   invoiceDate?: string;
   companyWID?: string;
@@ -1106,7 +1111,7 @@ export async function submitSupplierInvoiceUpdate(
   {
     invoiceWorkdayID,
     supplierWID,
-    notes,
+    buildNotes,
     memo,
     invoiceDate,
     companyWID,
@@ -1116,12 +1121,11 @@ export async function submitSupplierInvoiceUpdate(
     poLines,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
-): Promise<{ success: boolean; message?: string }> {
+): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier WID: ${supplierWID ?? '(none - using existing or default)'}`);
   debug(`Company override: ${companyWID ? `WID=${companyWID}` : '(none - using existing)'}`);
-  debug(`Agent notes: ${notes}`);
 
   debug('Fetching current invoice data');
   const currentInvoice = await getSupplierInvoice(context, invoiceWorkdayID);
@@ -1147,7 +1151,7 @@ export async function submitSupplierInvoiceUpdate(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const updateResponse = await submitSupplierInvoiceWithRepair({
+  const { finalBuildOptions } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     invoiceWorkdayID,
     currentInvoice,
@@ -1156,7 +1160,6 @@ export async function submitSupplierInvoiceUpdate(
       supplierWID,
       companyWID,
       workQueueTags,
-      notes,
       memo,
       invoiceDate,
       extractedAmountDue,
@@ -1166,15 +1169,18 @@ export async function submitSupplierInvoiceUpdate(
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true
     },
+    buildNotes,
     operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
 
-  debug('Supplier invoice updated successfully', updateResponse);
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  debug('Supplier invoice updated successfully', { appliedFallbacks });
 
   return {
     success: true,
-    message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`
+    message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
+    appliedFallbacks,
   };
 }
 
