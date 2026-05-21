@@ -168,7 +168,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
       : undefined;
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
-    if (extractedPurchaseOrderNumber) {
+    if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
       const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
       debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
