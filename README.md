@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.2-blue.svg)](https://www.typescriptlang.org/)
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-orange.svg)](https://aws.amazon.com/lambda/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4.1-purple.svg)](https://openai.com/)
+[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.4-purple.svg)](https://openai.com/)
 
 ## 🎯 Overview
 
@@ -61,7 +61,7 @@ graph TB
     end
 
     subgraph "AI & Storage"
-        AI[OpenAI GPT-4<br/>Supplier identification]
+        AI[OpenAI GPT-5<br/>Supplier identification]
         DB[(PostgreSQL<br/>Supplier database)]
         S3[S3<br/>PDF attachments]
     end
@@ -182,7 +182,7 @@ src/
 
 ### AI Processing
 
-- OpenAI GPT-4 for supplier identification
+- OpenAI GPT-5 for supplier identification
 - Structured responses with confidence scoring
 - Analyzes invoice content and metadata
 - Integrates with vector database for context
@@ -322,7 +322,7 @@ sequenceDiagram
     participant Processor as EnrichInvoice<br/>Processor
     participant WorkdaySOAP as Workday SOAP
     participant S3
-    participant AI as GPT-4
+    participant AI as GPT-5
     participant RAG as RAG/Vector DB
     participant Slack
 
