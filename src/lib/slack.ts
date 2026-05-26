@@ -22,6 +22,18 @@ interface SlackDividerBlock {
 
 type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
+function buildCloudWatchLogUrl(): string | undefined {
+  const region = process.env.AWS_REGION;
+  const logGroup = process.env.AWS_LAMBDA_LOG_GROUP_NAME;
+  const logStream = process.env.AWS_LAMBDA_LOG_STREAM_NAME;
+  if (!region || !logGroup || !logStream) return undefined;
+
+  // CloudWatch console deep-links use double-percent-encoding with $ instead of %
+  const encode = (s: string) => encodeURIComponent(encodeURIComponent(s)).replace(/%/g, '$');
+
+  return `https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#logsV2:log-groups/log-group/${encode(logGroup)}/log-events/${encode(logStream)}`;
+}
+
 /**
  * Send a message to Slack using blocks
  */
@@ -125,6 +137,14 @@ export async function notifyResult(
           text: `\`\`\`${jsonString}\`\`\``
         }
       ]
+    });
+  }
+
+  const logUrl = buildCloudWatchLogUrl();
+  if (logUrl) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
     });
   }
 
@@ -264,6 +284,14 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: `*Fallbacks Applied*\n${fallbackLines.map(l => `• ${l}`).join('\n')}` }
+    });
+  }
+
+  const logUrl = buildCloudWatchLogUrl();
+  if (logUrl) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
     });
   }
 
