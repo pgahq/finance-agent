@@ -1,4 +1,4 @@
-import { annotateSupplierInvoice, executeWorkdayQuery, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -2178,6 +2178,129 @@ describe('Workday utilities', () => {
       await annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID });
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
+  });
+
+  describe('getAllPaymentTerms', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    beforeEach(() => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('should parse payment terms from Response_Data.Payment_Term array', async () => {
+      const { soap } = require('strong-soap');
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Payment_Terms: jest.fn() };
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Payment_Terms.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Payment_Term: [
+              {
+                Payment_Term_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_30' }] },
+                Payment_Term_Data: { Payment_Terms_Name: 'Net 30' }
+              },
+              {
+                Payment_Term_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_60' }] },
+                Payment_Term_Data: { Payment_Terms_Name: 'Net 60' }
+              }
+            ]
+          }
+        });
+      });
+
+      const result = await getAllPaymentTerms(mockContext);
+
+      expect(result).toEqual([
+        { paymentTermsId: 'NET_30', name: 'Net 30' },
+        { paymentTermsId: 'NET_60', name: 'Net 60' }
+      ]);
+    });
+
+    it('should handle a single Payment_Term object (non-array) via concat normalisation', async () => {
+      const { soap } = require('strong-soap');
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Payment_Terms: jest.fn() };
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Payment_Terms.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Payment_Term: {
+              Payment_Term_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_30' }] },
+              Payment_Term_Data: { Payment_Terms_Name: 'Net 30' }
+            }
+          }
+        });
+      });
+
+      const result = await getAllPaymentTerms(mockContext);
+
+      expect(result).toEqual([{ paymentTermsId: 'NET_30', name: 'Net 30' }]);
+    });
+
+    it('should return empty array when Response_Data has no Payment_Term', async () => {
+      const { soap } = require('strong-soap');
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Payment_Terms: jest.fn() };
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Payment_Terms.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Data: {} });
+      });
+
+      const result = await getAllPaymentTerms(mockContext);
+
+      expect(result).toEqual([]);
+    });
+
+    it('should skip entries missing paymentTermsId or name', async () => {
+      const { soap } = require('strong-soap');
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Payment_Terms: jest.fn() };
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Payment_Terms.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Payment_Term: [
+              {
+                Payment_Term_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_30' }] },
+                Payment_Term_Data: { Payment_Terms_Name: 'Net 30' }
+              },
+              {
+                Payment_Term_Reference: { ID: [] },
+                Payment_Term_Data: { Payment_Terms_Name: 'Missing ID' }
+              },
+              {
+                Payment_Term_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_60' }] },
+                Payment_Term_Data: {}
+              }
+            ]
+          }
+        });
+      });
+
+      const result = await getAllPaymentTerms(mockContext);
+
+      expect(result).toEqual([{ paymentTermsId: 'NET_30', name: 'Net 30' }]);
     });
   });
 
