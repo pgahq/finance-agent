@@ -185,33 +185,25 @@ export const findSuppliersTool = tool({
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
-    try {
-      const results = await queryDocuments({
-        query,
-        documentType: 'supplier',
-        limit,
-        similarityThreshold
-      });
+    const results = await queryDocuments({
+      query,
+      documentType: 'supplier',
+      limit,
+      similarityThreshold
+    });
 
-      debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
+    debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
 
-      return {
-        success: true,
-        results: results.map(result => ({
-          workdayId: result.workday_id,
-          type: result.type,
-          content: result.content,
-          metadata: result.metadata,
-          similarity: result.similarity
-        }))
-      };
-    } catch (error) {
-      debug(`Find Suppliers Tool Error: ${error}`);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
-      };
-    }
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        type: result.type,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
   }
 });
 
@@ -230,33 +222,25 @@ export const findCostCentersTool = tool({
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
-    try {
-      const results = await queryDocuments({
-        query,
-        documentType: 'cost_center',
-        limit,
-        similarityThreshold
-      });
+    const results = await queryDocuments({
+      query,
+      documentType: 'cost_center',
+      limit,
+      similarityThreshold
+    });
 
-      debug(`Find Cost Centers Tool: Found ${results.length} cost centers`);
+    debug(`Find Cost Centers Tool: Found ${results.length} cost centers`);
 
-      return {
-        success: true,
-        results: results.map(result => ({
-          workdayId: result.workday_id,
-          type: result.type,
-          content: result.content,
-          metadata: result.metadata,
-          similarity: result.similarity
-        }))
-      };
-    } catch (error) {
-      debug(`Find Cost Centers Tool Error: ${error}`);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
-      };
-    }
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        type: result.type,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
   }
 });
 
@@ -274,33 +258,25 @@ export const findCompaniesTool = tool({
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
-    try {
-      const results = await queryDocuments({
-        query,
-        documentType: 'company',
-        limit,
-        similarityThreshold
-      });
+    const results = await queryDocuments({
+      query,
+      documentType: 'company',
+      limit,
+      similarityThreshold
+    });
 
-      debug(`Find Companies Tool: Found ${results.length} companies`);
+    debug(`Find Companies Tool: Found ${results.length} companies`);
 
-      return {
-        success: true,
-        results: results.map(result => ({
-          workdayId: result.workday_id,
-          type: result.type,
-          content: result.content,
-          metadata: result.metadata,
-          similarity: result.similarity
-        }))
-      };
-    } catch (error) {
-      debug(`Find Companies Tool Error: ${error}`);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
-      };
-    }
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        type: result.type,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
   }
 });
 
@@ -316,31 +292,23 @@ export const findPaymentTermsTool = tool({
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
-    try {
-      const results = await queryDocuments({
-        query,
-        documentType: 'payment_terms',
-        limit,
-        similarityThreshold
-      });
+    const results = await queryDocuments({
+      query,
+      documentType: 'payment_terms',
+      limit,
+      similarityThreshold
+    });
 
-      debug(`Find Payment Terms Tool: Found ${results.length} matches`);
+    debug(`Find Payment Terms Tool: Found ${results.length} matches`);
 
-      return {
-        success: true,
-        results: results.map(result => ({
-          workdayId: result.workday_id,
-          content: result.content,
-          metadata: result.metadata,
-          similarity: result.similarity
-        }))
-      };
-    } catch (error) {
-      debug(`Find Payment Terms Tool Error: ${error}`);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred'
-      };
-    }
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
   }
 });
