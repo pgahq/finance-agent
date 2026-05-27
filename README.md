@@ -276,9 +276,11 @@ Deployment is automated via CircleCI:
 
 ### 1. Executive summary
 
-**Finance Agent** is a serverless TypeScript application that integrates with **Workday** (WQL, REST, SOAP) to automate supplier-invoice enrichment using **retrieval-augmented generation (RAG)** and **large language models (LLMs)**. It is maintained by the PGA of America technology organization with the goal of releasing it as **true open source** for the broader **Workday customer ecosystem**, including financial contributors and code contributors from other enterprises (e.g. early interest from the PGA Tour).
+**Finance Agent** (working title — **public name will be generic** and will not include "PGA" or "Workday" in the product name; descriptive positioning such as *a finance agent for Workday customers*) is a serverless TypeScript application that integrates with **Workday** (WQL, REST, SOAP) to automate supplier-invoice enrichment using **retrieval-augmented generation (RAG)** and **large language models (LLMs)**.
 
-The system can **read and write** Workday supplier invoice data, cache supplier master data in PostgreSQL (pgvector), store invoice attachments in S3, and optionally notify operators via Slack.
+**Governance:** PGA of America maintains the repository initially. **Distribution:** PGA and its partners will **not** host a shared production instance; each adopter deploys to their own cloud account. The goal is **true open source** for the broader **Workday customer ecosystem**, including code and financial support from other enterprises (e.g. soft interest from PGA Tour as contributor and/or funder — structure subject to legal review).
+
+The system can **read and write** Workday supplier invoice data, cache supplier master data in PostgreSQL (pgvector), store invoice attachments in S3, and optionally notify operators via pluggable channels (Slack today; abstracted in OSS phase).
 
 ### 2. Rights & license
 
@@ -289,17 +291,19 @@ The system can **read and write** Workday supplier invoice data, cache supplier 
 | **LICENSE file in repo** | TODO — add `LICENSE` with AGPL-3.0 full text after legal sign-off |
 | **Patents / trade secrets** | None asserted for open-source release; no known trade-secret blockers in application logic |
 
-**AGPL note for adopters:** AGPL-3.0 requires that users who interact with the software over a network (typical for SaaS or hosted Lambda deployments) receive corresponding source for the running version. Legal and architecture reviewers should confirm this matches PGA’s distribution and hosting plans.
+**AGPL note:** PGA of America and its partners will **not** operate a hosted multi-tenant service for this project. **Each operator** who deploys the software (e.g. AWS Lambda behind their network) is responsible for AGPL-3.0 compliance for *their* deployment, including source-offer obligations for network users if applicable. AGPL does not apply to PGA merely because PGA is the copyright holder of the upstream repository.
 
-### 3. Trademark
+### 3. Trademark & naming
 
-The **PGA of America** name, logos, and other brand marks remain the property of the PGA of America. This project name and documentation must **not** imply endorsement by the PGA of America—or by Workday, OpenAI, or other vendors—unless separately authorized.
+The **PGA of America** name, logos, and other brand marks remain the property of the PGA of America. The **open-source product name** will be generic (no "PGA" or "Workday" in the name). Use of PGA marks in forks, marketing, or conference materials requires separate authorization.
 
-**TODO:** Add a `TRADEMARK.md` (or equivalent NOTICE section) that:
+Documentation and READMEs may **highlight partners** who offer optional integrations (for example, an identity provider for agentic SSO) or professional services for adopters. Such mentions must:
 
-- States PGA of America retains all rights to PGA marks
-- Clarifies permitted vs. prohibited uses of PGA branding in forks, docs, and conference talks
-- Distinguishes the open-source **project name** from official PGA product branding
+- Be factual (e.g. "configurable Okta integration when enabled in deployment")
+- Not imply PGA endorsement of the partner's full product line unless contracted
+- Link to the partner's own terms and trademarks
+
+**TODO:** Add `TRADEMARK.md` covering PGA marks, neutral project naming, and partner-mention guidelines.
 
 ### 4. Community, contributions & CLA
 
@@ -307,9 +311,10 @@ The **PGA of America** name, logos, and other brand marks remain the property of
 |------|-----------|
 | **Community goal** | True open community: other Workday customers may contribute code, run the stack in their tenants, and optionally support the project financially |
 | **Early adopters** | Soft commitment from PGA Tour to use and/or contribute |
-| **Contribution agreement** | **Contributor License Agreement (CLA)** expected; alternatives (e.g. DCO only) open for legal review |
+| **Contribution agreement** | **Corporate and individual CLA** required (not DCO-only) |
+| **Funding** | PGA Tour may contribute code and/or fund development payable to PGA of America — **legal review TODO** |
 
-**TODO:** Select and publish CLA (or DCO) tooling, bot, and corporate entity for signature (PGA of America).
+**TODO:** Select CLA platform (e.g. EasyCLA, CLA Assistant), publish corporate + individual agreements, and wire GitHub status checks.
 
 ### 5. Data classification & LLM disclosure
 
@@ -320,7 +325,9 @@ Operators must:
 - Classify data before enabling LLM features
 - Configure provider terms (enterprise DPA, zero retention, no training, region, subprocessors) appropriate to their jurisdiction and industry
 - Restrict S3, database, and log retention to policy
-- Treat automated Workday **write-back** (supplier assignment, memo/date repair, default supplier fallback) as **high-impact** and gate with feature flags and human review where required
+- Treat automated Workday **write-back** (supplier assignment, memo/date repair, default supplier fallback) as **high-impact**
+
+**Deploy-time configuration:** Product and security behavior (LLM enablement, invoice modification, notifications, authentication/SSO, human-in-the-loop requirements) are intended to be controlled via **feature flags and environment configuration** when an operator deploys the stack. Safe defaults and documentation are an OSS-phase deliverable; this repository does not prescribe a single PGA production policy.
 
 This repository documents behavior; **it does not provide compliance certification** for any tenant or cloud account.
 
@@ -329,10 +336,10 @@ This repository documents behavior; **it does not provide compliance certificati
 | Dependency | Role | Open-source readiness |
 |------------|------|------------------------|
 | **Workday** (WQL, REST, SOAP) | System of record; optional invoice mutation | **TODO:** Legal review of Workday API/developer terms for publishing integration patterns |
-| **Workday WSDLs** (`src/soap/*.wsdl`, ~10 MB) | SOAP client generation / calls | **TODO:** Confirm redistribution rights; if not permitted, document “bring your own WSDL” and remove from public tree |
+| **Workday WSDLs** (`src/soap/*.wsdl`, ~10 MB) | SOAP client generation / calls | Sourced from Workday’s publicly hosted Production API files ([Community index](https://community.workday.com/sites/default/files/file-hosting/productionapi/index.html)). **TODO:** Legal confirm bundling + integration code publication under Workday API terms |
 | **OpenAI** (embeddings + chat) | Supplier matching and submit-repair agents | **TODO (OSS phase):** Abstract behind a pluggable LLM interface; document required provider policies |
 | **Slack** | Operational notifications | **TODO (OSS phase):** Abstract behind a pluggable notification interface |
-| **`@pga/logger`, `@pga/lambda-env`** | Logging and env loading | **TODO (OSS phase):** Replace or open-source; required for external builds today |
+| **`@pga/logger`, `@pga/lambda-env`** | Logging and env loading | Published on npm under **ISC**; **TODO (OSS phase):** Replace with neutral packages or document as optional PGA reference implementations |
 | **AWS** (Lambda, RDS, S3, DynamoDB, SSM) | Runtime and secrets | Standard SDK licenses; deployment is operator-specific |
 
 **TODO:** Add `NOTICE` / third-party license aggregation (e.g. `npm` license scan in CI) once `package-lock.json` policy is settled.
@@ -357,8 +364,8 @@ Planned **OSS phase** work before or alongside public launch:
 | **LLM data egress** | Invoice PDFs and supplier PII may leave the operator’s boundary | Provider DPAs, disable LLM path, on-prem / private models when abstracted |
 | **Misconfiguration** | Hardcoded or copied tenant IDs, WIDs, SSM ARNs | OSS phase parameterization; deployment guides |
 | **Private npm packages** | `@pga/*` may block community builds | Abstraction phase |
-| **WSDL redistribution** | Possible Workday IP restriction | Legal research TODO |
-| **AGPL compliance** | Network use triggers source-offer obligations | Hosting and fork policy with legal |
+| **WSDL / API terms** | Workday IP and developer terms | Public WSDL hosting noted; formal legal sign-off TODO |
+| **AGPL compliance** | Each **operator** who exposes the app over a network must comply | PGA does not host; operator documentation TODO |
 | **AI nondeterminism** | Wrong supplier or repair plan | Confidence thresholds, Slack alerts, validation-failure store |
 | **Dependency audit** | No `package-lock.json` in tree at time of writing | Add lockfile + license CI |
 | **Attack surface** | OAuth tokens, presigned S3 URLs, document query endpoints | Document security baseline; auth on HTTP APIs |
@@ -373,14 +380,18 @@ Planned **OSS phase** work before or alongside public launch:
 
 **EXPORT CONTROL.** Status **unknown** — TODO for legal review whether finance/ERP integration code triggers export classification review.
 
-### 10. Agent documentation notes
+### 10. Pre-release scans (for Legal)
+
+A snapshot report from dependency, license, and secret scans is maintained at [`docs/legal-pre-release-scan.md`](docs/legal-pre-release-scan.md). Re-run before the first public push (especially **gitleaks on full git history**, which was not completed in the automated environment).
+
+### 11. Agent documentation notes
 
 When documenting or scoring this repository for open-source readiness, agents should:
 
-1. Treat §§1–9 as the canonical legal/technical summary until separate policy docs exist.
-2. Record blockers explicitly: WSDL rights, Workday API terms, `@pga/*` packages, missing `LICENSE`.
+1. Treat §§1–10 as the canonical legal/technical summary until separate policy docs exist.
+2. Record blockers explicitly: Workday API terms, missing `LICENSE`, CLA tooling, scrub of org-specific config defaults.
 3. Not mark “ready to publish” until OSS phase TODOs agreed with legal are complete or waived in writing.
-4. Preserve the **LLM + attachment PII** warning in any derivative docs.
+4. Preserve the **LLM + attachment PII** warning and **self-hosted-only** distribution model in any derivative docs.
 
 ### Open questions & follow-ups
 
@@ -388,23 +399,24 @@ When documenting or scoring this repository for open-source readiness, agents sh
 |----|-------|-------|--------|
 | L-01 | Publish `LICENSE` (AGPL-3.0) | Legal | TODO |
 | L-02 | `TRADEMARK.md` for PGA of America marks | Legal | TODO |
-| L-03 | CLA vs DCO selection and enforcement | Legal | TODO |
-| L-04 | Workday WSDL redistribution | Legal + Workday liaison | TODO — research |
-| L-05 | Workday API terms for published integration code | Legal + Workday liaison | TODO — research |
+| L-03 | Corporate + individual CLA (vendor + enforcement) | Legal | TODO |
+| L-04 | Workday WSDL + API terms (public Community hosting noted) | Legal | TODO — confirm |
+| L-05 | PGA Tour funding / contribution structure | Legal | TODO — may be nixed |
 | L-06 | OpenAI / LLM subprocessors and public documentation | Legal + Security | TODO (OSS phase abstraction) |
 | L-07 | Export control screening | Legal | TODO — unknown |
-| L-08 | Financial support / governance model for multi-customer community | PGA + partners | Open |
+| L-08 | Partner README mentions (integrations + services) disclaimer template | Legal | TODO |
+| L-11 | Public **generic project name** + repo rename | Product + Legal | TODO |
 | L-09 | `NOTICE` and dependency license CI | Engineering | TODO |
 | L-10 | Remove PGA-specific deployment identifiers from public defaults | Engineering | TODO (OSS phase) |
 
-**Questions still requiring PGA input** (for legal/product):
+**Questions still requiring PGA / Legal input:**
 
-1. **AGPL hosting:** Will PGA (or sponsors) offer a managed/hosted instance? If yes, source-offer and trademark usage need explicit policy.
-2. **CLA scope:** Individual only, or also corporate CLA for PGA Tour and other enterprises?
-3. **WSDL fallback:** If redistribution is denied, is the project still viable with vendor-supplied WSDL only?
-4. **Minimum security bar for “1.0 OSS”:** Required auth on `query_documents`, mandatory human approval before write-back, etc.?
-5. **Governance:** Maintainer team, steering committee, or neutral foundation long-term?
-6. **Export control:** Trigger formal review yes/no?
+1. **PGA Tour funding:** Acceptable structure for payments to PGA of America vs. direct project sponsorship.
+2. **Workday API terms:** Confirm publishing integration patterns (beyond publicly hosted WSDLs).
+3. **Partner highlights:** Approved disclaimer for README “Partners & integrations” (e.g. Okta when SSO ships).
+4. **Export control:** Trigger formal review yes/no.
+5. **Public name / repo rename:** Final generic name and timing relative to `LICENSE` commit.
+6. **NOTICE + lockfile:** Commit `package-lock.json` and generated `NOTICE` for AGPL distribution?
 
 ---
 
