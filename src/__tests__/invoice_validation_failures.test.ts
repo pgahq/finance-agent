@@ -57,4 +57,14 @@ describe('invoice_validation_failures', () => {
     expect(summarizeValidationError(error)).toBe('Validation error occurred while submitting supplier invoice');
     expect(isWorkdayValidationError(error)).toBe(true);
   });
+
+  it('does not classify AI or Zod schema validation failures as Workday validation errors', () => {
+    expect(isWorkdayValidationError(new Error('Type validation failed: Value must be object'))).toBe(false);
+    expect(isWorkdayValidationError(new Error('Schema validation failed'))).toBe(false);
+  });
+
+  it('does not classify RAG or infrastructure errors mentioning validation as Workday validation errors', () => {
+    expect(isWorkdayValidationError(new Error('Failed to fetch validation rules: ECONNREFUSED'))).toBe(false);
+    expect(isWorkdayValidationError(new Error('connection terminated unexpectedly'))).toBe(false);
+  });
 });

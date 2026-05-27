@@ -2,7 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 const TABLE_NAME_ENV = 'INVOICE_VALIDATION_FAILURES_TABLE_NAME';
-const VALIDATION_ERROR_PATTERN = /validation(?:[_\s-]+fault|[_\s-]+error|\b)|validation fault/i;
+const VALIDATION_ERROR_PATTERN = /Validation_Fault|validation(?:[_\s-]+fault|[_\s-]+error)|validation fault/i;
 const VALIDATION_MESSAGE_KEYS = ['Validation_Message', 'Message', 'message', 'faultstring', 'faultString', 'reason'];
 const VALIDATION_DETAIL_MESSAGE_KEYS = ['Detail_Message', 'detailMessage'];
 const VALIDATION_XPATH_KEYS = ['Xpath', 'XPath', 'xpath'];

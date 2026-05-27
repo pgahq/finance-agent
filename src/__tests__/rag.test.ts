@@ -374,4 +374,21 @@ Status: Active`);
 
   // Note: findSuppliersTool tests are complex due to AI SDK integration
   // The tool is tested indirectly through the queryDocuments function above
+
+  describe('RAG tools', () => {
+    const { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool } = require('../lib/rag.js');
+
+    beforeEach(() => {
+      mockGetDatabaseConnection.mockRejectedValue(new Error('Database connection failed'));
+    });
+
+    it.each([
+      ['findSuppliersTool', findSuppliersTool],
+      ['findCompaniesTool', findCompaniesTool],
+      ['findCostCentersTool', findCostCentersTool],
+      ['findPaymentTermsTool', findPaymentTermsTool],
+    ])('%s propagates query failures instead of returning success: false', async (_name, ragTool) => {
+      await expect(ragTool.execute({ query: 'Acme Corp' })).rejects.toThrow('Database connection failed');
+    });
+  });
 });
