@@ -1347,13 +1347,13 @@ export async function getAllPaymentTerms(
     });
   });
 
-  const paymentTermsArray: any[] = ([] as any[]).concat(response?.Response_Data?.Payment_Terms ?? []);
+  const paymentTermsArray: any[] = ([] as any[]).concat(response?.Response_Data?.Payment_Term ?? []);
 
   return paymentTermsArray.flatMap((pt: any) => {
-    const ids: any[] = ([] as any[]).concat(pt?.Payment_Terms_Reference?.ID ?? []);
+    const ids: any[] = ([] as any[]).concat(pt?.Payment_Term_Reference?.ID ?? []);
     const idEntry = ids.find((id: any) => id.$attributes?.type === 'Payment_Terms_ID');
     const paymentTermsId = idEntry?.$value;
-    const name = pt?.Payment_Terms_Data?.Payment_Terms_Name;
+    const name = pt?.Payment_Term_Data?.Payment_Terms_Name;
     if (!paymentTermsId || !name) return [];
     return [{ paymentTermsId, name }];
   });
