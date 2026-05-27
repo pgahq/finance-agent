@@ -177,7 +177,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines);
-    const baseNotes = result.supplier.reason + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -383,6 +383,10 @@ async function enrichInvoice(
     debug('Error in invoice enrichment:', error);
     throw error;
   }
+}
+
+function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
+  return `Supplier: ${result.supplier.reason}`;
 }
 
 function formatCompanyNotes(result: InvoiceEnrichmentResult): string {
