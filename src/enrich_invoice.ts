@@ -177,7 +177,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -503,6 +503,18 @@ function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   const { name, workdayId } = result.extractedPaymentTerms;
   const resolvedSuffix = workdayId ? ` (resolved: ${workdayId})` : ' (no Workday match found)';
   return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
+}
+
+function formatInvoiceLinesNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedInvoiceLines?.length) return '';
+  const lineTexts = result.extractedInvoiceLines.map((line, i) => {
+    const parts = [line.description];
+    if (line.quantity != null) parts.push(`Qty: ${line.quantity}`);
+    if (line.unitCost) parts.push(`Unit Cost: ${line.unitCost}`);
+    if (line.totalPrice) parts.push(`Total: ${line.totalPrice}`);
+    return `${i + 1}. ${parts.join(' | ')}`;
+  });
+  return `\n\nInvoice Lines (from document):\n${lineTexts.join('\n')}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

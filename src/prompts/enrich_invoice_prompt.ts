@@ -78,6 +78,13 @@ export const InvoiceEnrichmentSchema = z.object({
     workdayId: z.string().nullable().describe('The Payment_Terms_ID from Workday after matching via the findPaymentTerms tool. Null if no match found.')
   }).nullable().describe('Payment terms extracted from the invoice and resolved to a Workday ID via findPaymentTerms. Null if no payment terms are visible on the document.'),
 
+  extractedInvoiceLines: z.array(z.object({
+    description: z.string().describe('Line item description as it appears on the invoice'),
+    quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
+    unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated.'),
+    totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.')
+  })).nullable().describe('Line items extracted from the invoice document. Null if no line items could be extracted.'),
+
   costCenterVerification: z.object({
     emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
     invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
@@ -245,7 +252,21 @@ If no payment terms are visible on the document, omit \`extractedPaymentTerms\` 
 
 ---
 
-## Part 9: Cost Center Verification
+## Part 9: Invoice Lines
+
+Extract the individual line items from the invoice document:
+
+1. For each line item, extract:
+   - **Description**: The item description or service name as it appears on the invoice
+   - **Quantity**: The quantity ordered/delivered (if stated)
+   - **Unit Cost**: The price per unit (if stated)
+   - **Total Price**: The total/extended price for the line (if stated)
+
+Populate \`extractedInvoiceLines\` with all line items found. If no line items can be extracted, omit the field.
+
+---
+
+## Part 10: Cost Center Verification
 
 If email context is provided, check whether the email mentions a cost center code or name:
 
