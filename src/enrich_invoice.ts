@@ -164,8 +164,11 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
-    const extractedPurchaseOrderNumber = rawPurchaseOrderNumber
+    const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
+      : undefined;
+    const extractedPurchaseOrderNumber = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
+      ? normalizedPurchaseOrderNumber
       : undefined;
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
@@ -176,9 +179,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
+    const candidateLines = canModifyInvoice && !extractedPurchaseOrderNumber
+      ? (result.extractedInvoiceLines ?? [])
+      : [];
     const extractedLines: ExtractedInvoiceLine[] | undefined =
-      canModifyInvoice && !extractedPurchaseOrderNumber && result.extractedInvoiceLines?.length
-        ? result.extractedInvoiceLines
+      candidateLines.length > 0 && candidateLines.every(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
+        ? candidateLines
         : undefined;
 
     if (extractedLines) {
