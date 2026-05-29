@@ -5,7 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
+import type { AppliedFallback, ExtractedInvoiceLine, PurchaseOrderLine } from './lib/workday.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
@@ -176,7 +176,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
-    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines);
+    const extractedLines: ExtractedInvoiceLine[] | undefined =
+      canModifyInvoice && !extractedPurchaseOrderNumber && result.extractedInvoiceLines?.length
+        ? result.extractedInvoiceLines
+        : undefined;
+
+    if (extractedLines) {
+      debug(`Using ${extractedLines.length} extracted invoice line(s) from document`);
+    }
+
+    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, extractedLines);
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
@@ -198,6 +207,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         poLines,
+        extractedLines,
         paymentTermsId
       });
       if (!updateOutcome.success) {
@@ -430,8 +440,18 @@ function lineHasWorktag(line: any, type: string): boolean {
 function getUpfrontFallbacks(
   resolvedSupplierWID: string | undefined,
   detailedInvoice: { [key: string]: unknown },
-  poLines?: PurchaseOrderLine[]
+  poLines?: PurchaseOrderLine[],
+  extractedLines?: ExtractedInvoiceLine[]
 ): UpfrontFallbacks {
+  if (extractedLines?.length) {
+    return {
+      defaultSupplier: !resolvedSupplierWID && !!DEFAULT_SUPPLIER_WID,
+      fund: !!process.env.FALLBACK_FUND_ID,
+      costCenter: !!process.env.FALLBACK_COST_CENTER_ID,
+      spendCategory: !!process.env.FALLBACK_SPEND_CATEGORY_ID,
+    };
+  }
+
   const usingPOLines = !!(poLines?.length);
   const effectiveLines: any[] = usingPOLines
     ? poLines!
