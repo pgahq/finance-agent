@@ -144,7 +144,7 @@ describe('trigger_enrich_invoice handler', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when invoice is not found', async () => {
+  it('returns 404 when invoice is not found by WID or invoice number', async () => {
     mockExecuteWorkdayQuery.mockResolvedValue({ total: 0, data: [] });
 
     const response = await handler(buildEvent());
@@ -154,7 +154,39 @@ describe('trigger_enrich_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: 'Invoice not found' }),
     });
+    expect(mockExecuteWorkdayQuery).toHaveBeenCalledTimes(2);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('falls back to invoice number lookup when WID lookup returns no rows', async () => {
+    mockExecuteWorkdayQuery
+      .mockResolvedValueOnce({ total: 0, data: [] })
+      .mockResolvedValueOnce({
+        total: 1,
+        data: [{
+          workdayID: 'invoice-wid-123',
+          invoiceStatusAsText: 'Draft',
+          OCRSupplierInvoice: {
+            descriptor: '24953$4729',
+            id: 'ocr-id',
+          },
+        }],
+      });
+
+    const response = await handler(buildEvent({
+      body: JSON.stringify({ supplierInvoiceId: 'SUPIN-412727' }),
+    }));
+
+    expect(response).toEqual({
+      statusCode: 202,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Enrichment triggered',
+        supplierInvoiceId: 'SUPIN-412727',
+      }),
+    });
+    expect(mockExecuteWorkdayQuery).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
   it('returns 202 and invokes processor when request is valid', async () => {

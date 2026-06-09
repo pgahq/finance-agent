@@ -18,16 +18,44 @@ function jsonResponse(statusCode: number, body: Record<string, string>): APIGate
   };
 }
 
-function buildInvoiceLookupQuery(supplierInvoiceId: string): string {
-  return `
+const INVOICE_LOOKUP_SELECT = `
   SELECT
     workdayID,
     OCRSupplierInvoice,
     supplier,
     company1
   FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
-  WHERE workdayID = '${supplierInvoiceId}'
 `;
+
+function escapeWqlLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function buildInvoiceLookupByWidQuery(workdayId: string): string {
+  return `${INVOICE_LOOKUP_SELECT} WHERE workdayID = '${escapeWqlLiteral(workdayId)}'`;
+}
+
+function buildInvoiceLookupByNumberQuery(invoiceNumber: string): string {
+  return `${INVOICE_LOOKUP_SELECT} WHERE invoiceNumber = '${escapeWqlLiteral(invoiceNumber)}'`;
+}
+
+async function lookupSupplierInvoice(
+  workdayConfig: ReturnType<typeof getWorkdayConfig>,
+  supplierInvoiceId: string,
+): Promise<InvoiceData[]> {
+  const byWid = await executeWorkdayQuery(workdayConfig, buildInvoiceLookupByWidQuery(supplierInvoiceId));
+  const widMatches = byWid.data;
+  if (Array.isArray(widMatches) && widMatches.length > 0) {
+    return widMatches as InvoiceData[];
+  }
+
+  const byNumber = await executeWorkdayQuery(workdayConfig, buildInvoiceLookupByNumberQuery(supplierInvoiceId));
+  const numberMatches = byNumber.data;
+  if (Array.isArray(numberMatches) && numberMatches.length > 0) {
+    return numberMatches as InvoiceData[];
+  }
+
+  return [];
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
@@ -58,13 +86,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   try {
     const workdayConfig = getWorkdayConfig(process.env);
-    const [invoiceQuery, emailMap] = await Promise.all([
-      executeWorkdayQuery(workdayConfig, buildInvoiceLookupQuery(supplierInvoiceId)),
+    const [invoices, emailMap] = await Promise.all([
+      lookupSupplierInvoice(workdayConfig, supplierInvoiceId),
       getInboundEmailsForOCRInvoices(workdayConfig),
     ]);
 
-    const invoices = invoiceQuery.data;
-    if (!invoices || !Array.isArray(invoices) || invoices.length === 0) {
+    if (invoices.length === 0) {
       return jsonResponse(404, { message: 'Invoice not found' });
     }
 
