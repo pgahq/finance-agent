@@ -5,7 +5,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
+import type { AppliedFallback, ExtractedInvoiceLine, PurchaseOrderLine } from './lib/workday.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
@@ -164,8 +164,11 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
-    const extractedPurchaseOrderNumber = rawPurchaseOrderNumber
+    const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
+      : undefined;
+    const extractedPurchaseOrderNumber = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
+      ? normalizedPurchaseOrderNumber
       : undefined;
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
@@ -176,8 +179,20 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
-    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatPaymentTermsNotes(result);
+    const candidateLines = canModifyInvoice && !extractedPurchaseOrderNumber
+      ? (result.extractedInvoiceLines ?? [])
+      : [];
+    const extractedLines: ExtractedInvoiceLine[] | undefined =
+      candidateLines.length > 0 && candidateLines.every(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
+        ? candidateLines
+        : undefined;
+
+    if (extractedLines) {
+      debug(`Using ${extractedLines.length} extracted invoice line(s) from document`);
+    }
+
+    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, extractedLines);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -198,6 +213,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         poLines,
+        extractedLines,
         paymentTermsId
       });
       if (!updateOutcome.success) {
@@ -430,8 +446,18 @@ function lineHasWorktag(line: any, type: string): boolean {
 function getUpfrontFallbacks(
   resolvedSupplierWID: string | undefined,
   detailedInvoice: { [key: string]: unknown },
-  poLines?: PurchaseOrderLine[]
+  poLines?: PurchaseOrderLine[],
+  extractedLines?: ExtractedInvoiceLine[]
 ): UpfrontFallbacks {
+  if (extractedLines?.length) {
+    return {
+      defaultSupplier: !resolvedSupplierWID && !!DEFAULT_SUPPLIER_WID,
+      fund: !!process.env.FALLBACK_FUND_ID,
+      costCenter: !!process.env.FALLBACK_COST_CENTER_ID,
+      spendCategory: !!process.env.FALLBACK_SPEND_CATEGORY_ID,
+    };
+  }
+
   const usingPOLines = !!(poLines?.length);
   const effectiveLines: any[] = usingPOLines
     ? poLines!
@@ -503,6 +529,18 @@ function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   const { name, workdayId } = result.extractedPaymentTerms;
   const resolvedSuffix = workdayId ? ` (resolved: ${workdayId})` : ' (no Workday match found)';
   return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
+}
+
+function formatInvoiceLinesNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedInvoiceLines?.length) return '';
+  const lineTexts = result.extractedInvoiceLines.map((line, i) => {
+    const parts = [line.description];
+    if (line.quantity != null) parts.push(`Qty: ${line.quantity}`);
+    if (line.unitCost) parts.push(`Unit Cost: ${line.unitCost}`);
+    if (line.totalPrice) parts.push(`Total: ${line.totalPrice}`);
+    return `${i + 1}. ${parts.join(' | ')}`;
+  });
+  return `\n\nInvoice Lines (from document):\n${lineTexts.join('\n')}`;
 }
 
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

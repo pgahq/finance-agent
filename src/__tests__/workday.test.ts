@@ -1819,6 +1819,116 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
     });
 
+    describe('extractedLines', () => {
+      const mockBaseGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '500.00'
+            }
+          }
+        }
+      };
+
+      const setupMockClient = () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, { Response_Data: { success: true } });
+        });
+        return { mockClient, getCapturedRequest: () => capturedRequest };
+      };
+
+      it('should build invoice lines from extractedLines with all fallback worktags applied', async () => {
+        process.env.FALLBACK_FUND_ID = 'FUND-001';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC-001';
+        process.env.FALLBACK_SPEND_CATEGORY_ID = 'SC-001';
+
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedLines: [
+            { description: 'Consulting Services', quantity: 5, unitCost: '$200.00', totalPrice: '$1,000.00' }
+          ]
+        });
+
+        delete process.env.FALLBACK_FUND_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+        delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toEqual({
+          Line_Order: 1,
+          Item_Description: 'Consulting Services',
+          Quantity: 5,
+          Unit_Cost: 200,
+          Extended_Amount: 1000,
+          Worktags_Reference: [
+            { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-001' }] },
+            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-001' }] }
+          ],
+          Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-001' }] }
+        });
+      });
+
+      it('should assign sequential Line_Order values for multiple extracted lines', async () => {
+        process.env.FALLBACK_FUND_ID = 'FUND-001';
+
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedLines: [
+            { description: 'Line A', quantity: 1, unitCost: '$100.00', totalPrice: '$100.00' },
+            { description: 'Line B', quantity: 2, unitCost: '$50.00', totalPrice: '$100.00' },
+            { description: 'Line C', quantity: null, unitCost: null, totalPrice: null }
+          ]
+        });
+
+        delete process.env.FALLBACK_FUND_ID;
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines).toHaveLength(3);
+        expect(lines[0].Line_Order).toBe(1);
+        expect(lines[1].Line_Order).toBe(2);
+        expect(lines[2].Line_Order).toBe(3);
+      });
+
+      it('should omit optional fields when null', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedLines: [{ description: 'Simple Service', quantity: null, unitCost: null, totalPrice: null }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0]).toEqual({ Line_Order: 1, Item_Description: 'Simple Service' });
+        expect(lines[0].Quantity).toBeUndefined();
+        expect(lines[0].Unit_Cost).toBeUndefined();
+        expect(lines[0].Extended_Amount).toBeUndefined();
+        expect(lines[0].Worktags_Reference).toBeUndefined();
+        expect(lines[0].Spend_Category_Reference).toBeUndefined();
+      });
+
+    });
+
   });
 
   describe('parsePurchaseOrderLines', () => {
