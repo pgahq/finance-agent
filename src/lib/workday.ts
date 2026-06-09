@@ -307,6 +307,13 @@ export interface PurchaseOrderLine {
   worktagsReference?: any[];
 }
 
+export interface ExtractedInvoiceLine {
+  description: string;
+  quantity?: number | null;
+  unitCost?: string | null;
+  totalPrice?: string | null;
+}
+
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
@@ -323,6 +330,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedFreightAmount?: string;
   filterInvoiceLines?: boolean;
   poLines?: PurchaseOrderLine[];
+  extractedLines?: ExtractedInvoiceLine[];
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
@@ -528,7 +536,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines, extractedLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -578,6 +586,25 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(worktags.length && { Worktags_Reference: worktags }),
       };
     })
+    : extractedLines?.length
+      ? extractedLines.map((line, idx) => {
+        const worktags = [
+          ...(fallbackFundId ? [createReference('Fund_ID', fallbackFundId)] : []),
+          ...(fallbackCostCenterId ? [createReference('Cost_Center_Reference_ID', fallbackCostCenterId)] : []),
+        ];
+        const fallbackSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
+        const parsedUnitCost = line.unitCost ? parseExtractedAmount(line.unitCost) : undefined;
+        const parsedExtendedAmount = line.totalPrice ? parseExtractedAmount(line.totalPrice) : undefined;
+        return {
+          Line_Order: idx + 1,
+          Item_Description: line.description,
+          ...(line.quantity != null && { Quantity: line.quantity }),
+          ...(parsedUnitCost !== undefined && { Unit_Cost: parsedUnitCost }),
+          ...(parsedExtendedAmount !== undefined && { Extended_Amount: parsedExtendedAmount }),
+          ...(worktags.length && { Worktags_Reference: worktags }),
+          ...(fallbackSpendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId) }),
+        };
+      })
     : currentInvoice.Invoice_Line_Replacement_Data
       ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
         const missingSpendCategory = filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference;
@@ -1103,6 +1130,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   poLines?: PurchaseOrderLine[];
+  extractedLines?: ExtractedInvoiceLine[];
   paymentTermsId?: string;
 }
 
@@ -1119,6 +1147,7 @@ export async function submitSupplierInvoiceUpdate(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     poLines,
+    extractedLines,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
@@ -1166,6 +1195,7 @@ export async function submitSupplierInvoiceUpdate(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       poLines,
+      extractedLines,
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true
     },
