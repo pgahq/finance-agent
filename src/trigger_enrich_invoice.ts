@@ -77,6 +77,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   const providedToken = extractBearerToken(event.headers?.authorization);
   if (!isAuthorizedBearer(providedToken ?? '', expectedToken)) {
+    debug('Unauthorized enrich invoice trigger request', {
+      hasAuthorizationHeader: Boolean(event.headers?.authorization),
+    });
     return jsonResponse(401, { message: 'Unauthorized' });
   }
 
@@ -90,6 +93,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   const supplierInvoiceId = requestBody.supplierInvoiceId?.trim();
   if (!supplierInvoiceId) {
+    debug('Missing supplierInvoiceId in enrich invoice trigger request', { body: event.body });
     return jsonResponse(400, { message: 'supplierInvoiceId is required' });
   }
 
@@ -98,6 +102,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const invoices = await lookupSupplierInvoice(workdayConfig, supplierInvoiceId);
 
     if (invoices.length === 0) {
+      debug('Invoice not found for enrich invoice trigger', { supplierInvoiceId });
       return jsonResponse(404, { message: 'Invoice not found' });
     }
 
