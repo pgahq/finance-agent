@@ -1819,7 +1819,7 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
     });
 
-    describe('extractedLines', () => {
+    describe('finalLines', () => {
       const mockBaseGetResponse = {
         Response_Data: {
           Supplier_Invoice: {
@@ -1856,22 +1856,14 @@ describe('Workday utilities', () => {
         return { mockClient, getCapturedRequest: () => capturedRequest };
       };
 
-      it('should build invoice lines from extractedLines with all fallback worktags applied', async () => {
-        process.env.FALLBACK_FUND_ID = 'FUND-001';
-        process.env.FALLBACK_COST_CENTER_ID = 'CC-001';
-        process.env.FALLBACK_SPEND_CATEGORY_ID = 'SC-001';
-
+      it('should build invoice lines from finalLines with all worktags applied', async () => {
         const { getCapturedRequest } = setupMockClient();
 
         await submitSupplierInvoiceUpdateForTest({
-          extractedLines: [
-            { description: 'Consulting Services', quantity: 5, unitCost: '$200.00', totalPrice: '$1,000.00' }
+          finalLines: [
+            { lineOrder: 1, description: 'Consulting Services', quantity: 5, unitCost: 200, extendedAmount: 1000, fundId: 'FUND-001', costCenterId: 'CC-001', spendCategoryId: 'SC-001' }
           ]
         });
-
-        delete process.env.FALLBACK_FUND_ID;
-        delete process.env.FALLBACK_COST_CENTER_ID;
-        delete process.env.FALLBACK_SPEND_CATEGORY_ID;
 
         const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
         expect(lines).toHaveLength(1);
@@ -1889,20 +1881,16 @@ describe('Workday utilities', () => {
         });
       });
 
-      it('should assign sequential Line_Order values for multiple extracted lines', async () => {
-        process.env.FALLBACK_FUND_ID = 'FUND-001';
-
+      it('should use Line_Order from finalLines for each line', async () => {
         const { getCapturedRequest } = setupMockClient();
 
         await submitSupplierInvoiceUpdateForTest({
-          extractedLines: [
-            { description: 'Line A', quantity: 1, unitCost: '$100.00', totalPrice: '$100.00' },
-            { description: 'Line B', quantity: 2, unitCost: '$50.00', totalPrice: '$100.00' },
-            { description: 'Line C', quantity: null, unitCost: null, totalPrice: null }
+          finalLines: [
+            { lineOrder: 1, description: 'Line A', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Line B', quantity: 2, unitCost: 50, extendedAmount: 100 },
+            { lineOrder: 3, description: 'Line C', quantity: null, unitCost: null, extendedAmount: null }
           ]
         });
-
-        delete process.env.FALLBACK_FUND_ID;
 
         const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
         expect(lines).toHaveLength(3);
@@ -1915,7 +1903,7 @@ describe('Workday utilities', () => {
         const { getCapturedRequest } = setupMockClient();
 
         await submitSupplierInvoiceUpdateForTest({
-          extractedLines: [{ description: 'Simple Service', quantity: null, unitCost: null, totalPrice: null }]
+          finalLines: [{ lineOrder: 1, description: 'Simple Service', quantity: null, unitCost: null, extendedAmount: null }]
         });
 
         const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
@@ -1925,6 +1913,79 @@ describe('Workday utilities', () => {
         expect(lines[0].Extended_Amount).toBeUndefined();
         expect(lines[0].Worktags_Reference).toBeUndefined();
         expect(lines[0].Spend_Category_Reference).toBeUndefined();
+      });
+
+      it('should append fallback worktags to finalLines missing those worktag types', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_COST_CENTER_ID = 'fallback-cc-id';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-001' }]
+        });
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-001' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cc-id' }] }
+        ]);
+      });
+
+      it('should replace cost center with fallback on worktag validation fault retry', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Technology Services" is entered then these worktag types must also have a value: Line of Business.',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_COST_CENTER_ID = 'fallback-cc-id';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 10980, extendedAmount: 10980, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Technology_Services', spendCategoryId: 'SC-Contingent_Workers' }
+          ]
+        });
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+
+        const firstLine = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(firstLine.Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Technology_Services' }] }
+        ]);
+
+        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(retryLine.Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cc-id' }] }
+        ]);
       });
 
     });
