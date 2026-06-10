@@ -10,6 +10,13 @@ interface TriggerEnrichInvoiceRequest {
   supplierInvoiceId?: string;
 }
 
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
+}
+
 function jsonResponse(statusCode: number, body: Record<string, string>): APIGatewayProxyResultV2 {
   return {
     statusCode,
@@ -59,6 +66,7 @@ async function lookupSupplierInvoice(
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+  debug('Trigger enrich invoice request body', event.body);
   process.env = await loadEnv();
 
   const expectedToken = process.env.ENRICH_INVOICE_API_TOKEN;
@@ -75,7 +83,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   let requestBody: TriggerEnrichInvoiceRequest;
   try {
     requestBody = event.body ? JSON.parse(event.body) as TriggerEnrichInvoiceRequest : {};
-  } catch {
+  } catch (error) {
+    debug('Invalid JSON body', { body: event.body, error: formatError(error) });
     return jsonResponse(400, { message: 'Invalid JSON body' });
   }
 
@@ -102,7 +111,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
 
-    await lambda.send(new InvokeCommand({
+    const invokeResult = await lambda.send(new InvokeCommand({
       FunctionName: processorFunctionName,
       InvocationType: 'Event',
       Payload: JSON.stringify({
@@ -112,13 +121,26 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    debug(`Triggered enrichment for invoice ${supplierInvoiceId}`);
+    if (invokeResult.FunctionError) {
+      debug('Enrich invoice processor invoke error', {
+        body: event.body,
+        functionError: invokeResult.FunctionError,
+        payload: invokeResult.Payload
+          ? Buffer.from(invokeResult.Payload).toString('utf8')
+          : undefined,
+      });
+      return jsonResponse(500, { message: 'Internal server error' });
+    }
+
     return jsonResponse(202, {
       message: 'Enrichment triggered',
       supplierInvoiceId,
     });
   } catch (error) {
-    debug('Error triggering invoice enrichment:', error);
+    debug('Error triggering invoice enrichment', {
+      body: event.body,
+      error: formatError(error),
+    });
     return jsonResponse(500, { message: 'Internal server error' });
   }
 }
