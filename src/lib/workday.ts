@@ -458,7 +458,15 @@ async function getValidationFallbackField(
       allowedRetryFields: retryableFallbackFields,
     });
 
-    return decision.retryField === 'unknown' ? undefined : decision.retryField;
+    if (decision.retryField !== 'unknown') {
+      return decision.retryField;
+    }
+
+    if (decision.workdayField?.includes('Worktags_Reference') && retryableFallbackFields.includes('worktags')) {
+      return 'worktags';
+    }
+
+    return undefined;
   } catch (classificationError) {
     debug('Unable to classify Workday validation field; skipping fallback retry', {
       validationError,
@@ -536,7 +544,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines, extractedLines } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines, extractedLines, applyFallbackWorktags } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -563,6 +571,13 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   const withFallbackWorktags = (worktags: any[]): any[] => {
     if (!fallbackWorktags.length) return worktags;
+    if (applyFallbackWorktags) {
+      const fallbackTypes = new Set(fallbackWorktags.map(t => t.ID[0].$attributes?.type).filter(Boolean));
+      const remaining = worktags.filter((t: any) =>
+        ([] as any[]).concat(t.ID ?? []).every((id: any) => !fallbackTypes.has(id.$attributes?.type))
+      );
+      return [...remaining, ...fallbackWorktags];
+    }
     const existingTypes = new Set(
       worktags.flatMap((t: any) =>
         ([] as any[]).concat(t.ID ?? []).map((id: any) => id.$attributes?.type)

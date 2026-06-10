@@ -41,7 +41,7 @@ Map the failing Workday field to one of the configured retry fields only when th
 - supplier: supplier references or supplier identity fields
 - invoiceDate: invoice date fields or date restrictions
 - paymentTerms: payment terms fields
-- worktags: fund, cost center, spend category, worktag, or accounting worktag fields
+- worktags: fund, cost center, spend category, worktag, accounting worktag fields, or any error whose XPath includes Worktags_Reference — classify as worktags even when the specific missing worktag type (e.g. Line of Business) is not one of the configured fallback types, since applying fallback worktags may still resolve the conflict
 
 Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, or when changing the field would require inventing new invoice line/contact/company data.
 When finished, call done exactly once.`,
