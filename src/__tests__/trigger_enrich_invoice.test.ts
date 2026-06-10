@@ -155,6 +155,7 @@ describe('trigger_enrich_invoice handler', () => {
       body: JSON.stringify({ message: 'Invoice not found' }),
     });
     expect(mockExecuteWorkdayQuery).toHaveBeenCalledTimes(2);
+    expect(mockGetInboundEmailsForOCRInvoices).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -186,6 +187,7 @@ describe('trigger_enrich_invoice handler', () => {
       }),
     });
     expect(mockExecuteWorkdayQuery).toHaveBeenCalledTimes(2);
+    expect(mockGetInboundEmailsForOCRInvoices).toHaveBeenCalledTimes(1);
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
@@ -227,6 +229,7 @@ describe('trigger_enrich_invoice handler', () => {
         totalPages: 1,
       }),
     });
+    expect(mockGetInboundEmailsForOCRInvoices).toHaveBeenCalledTimes(1);
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

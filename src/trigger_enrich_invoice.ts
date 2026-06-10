@@ -86,16 +86,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   try {
     const workdayConfig = getWorkdayConfig(process.env);
-    const [invoices, emailMap] = await Promise.all([
-      lookupSupplierInvoice(workdayConfig, supplierInvoiceId),
-      getInboundEmailsForOCRInvoices(workdayConfig),
-    ]);
+    const invoices = await lookupSupplierInvoice(workdayConfig, supplierInvoiceId);
 
     if (invoices.length === 0) {
       return jsonResponse(404, { message: 'Invoice not found' });
     }
 
-    const invoice = invoices[0] as InvoiceData;
+    const emailMap = await getInboundEmailsForOCRInvoices(workdayConfig);
+    const invoice = invoices[0];
     const emailContext = emailMap.get(invoice.workdayID);
     const enrichedInvoice: InvoiceData = { ...invoice, emailContext };
 
