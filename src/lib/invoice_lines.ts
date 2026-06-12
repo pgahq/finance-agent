@@ -19,6 +19,7 @@ export interface FinalInvoiceLine {
   costCenterId?: string | null;
   fundId?: string | null;
   spendCategoryId?: string | null;
+  lineOfBusinessId?: string | null;
 }
 
 export interface LineFallbacks {
@@ -40,6 +41,7 @@ function extractWorktagId(worktags: any[], type: string): string | null {
   }
   return null;
 }
+
 
 function extractSpendCategoryId(spendCategoryReference: any): string | null {
   if (!spendCategoryReference) return null;
@@ -74,6 +76,7 @@ function applyFallbacks(
       costCenterId,
       fundId,
       spendCategoryId,
+      lineOfBusinessId: line.lineOfBusinessId ?? null,
     };
   });
 
@@ -93,6 +96,7 @@ function buildFallbackLines(
     costCenterId: fallbackIds.costCenterId ?? null,
     fundId: fallbackIds.fundId ?? null,
     spendCategoryId: fallbackIds.spendCategoryId ?? null,
+    lineOfBusinessId: null,
   }));
   return {
     lines,
@@ -112,13 +116,17 @@ export async function buildFinalInvoiceLines(
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
   const mergeInput = {
     extractedInvoiceLines: extractedLines,
-    purchaseOrderLines: poLines?.map(l => ({
-      lineOrder: l.lineOrder,
-      description: l.description ?? null,
-      costCenterId: extractWorktagId(([] as any[]).concat(l.worktagsReference ?? []), 'Cost_Center_Reference_ID'),
-      fundId: extractWorktagId(([] as any[]).concat(l.worktagsReference ?? []), 'Fund_ID'),
-      spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
-    })),
+    purchaseOrderLines: poLines?.map(l => {
+      const worktags = ([] as any[]).concat(l.worktagsReference ?? []);
+      return {
+        lineOrder: l.lineOrder,
+        description: l.description ?? null,
+        costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
+        fundId: extractWorktagId(worktags, 'Fund_ID'),
+        spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
+        worktagsReference: worktags,
+      };
+    }),
     emailBody: emailBody ?? null,
   };
 

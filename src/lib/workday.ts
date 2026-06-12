@@ -581,7 +581,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(line.lineOfBusinessId ? [createReference('Line_of_Business_ID', line.lineOfBusinessId)] : []),
+        ...(line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
       ]);
       return {
         Line_Order: line.lineOrder,
