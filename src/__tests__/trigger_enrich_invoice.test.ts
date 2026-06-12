@@ -139,9 +139,28 @@ describe('trigger_enrich_invoice handler', () => {
     expect(response).toEqual({
       statusCode: 400,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'Invalid JSON body' }),
+      body: JSON.stringify({
+        message: 'Invalid JSON body; supplierInvoiceId must be a quoted string',
+      }),
     });
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('accepts an unquoted supplierInvoiceId WID in the request body', async () => {
+    const response = await handler(buildEvent({
+      body: '{\n  "supplierInvoiceId": 77bfcad92b869001464c934999520000\n}',
+    }));
+
+    expect(response).toEqual({
+      statusCode: 202,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Enrichment triggered',
+        supplierInvoiceId: '77bfcad92b869001464c934999520000',
+      }),
+    });
+    expect(mockGetInboundEmailsForOCRInvoices).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
   it('returns 404 when invoice is not found by WID or invoice number', async () => {

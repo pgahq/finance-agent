@@ -17,6 +17,25 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
+function quoteUnquotedSupplierInvoiceId(body: string): string {
+  return body.replace(
+    /"supplierInvoiceId"\s*:\s*([^"\s{},[\]]+)/,
+    '"supplierInvoiceId": "$1"',
+  );
+}
+
+function parseRequestBody(body: string): TriggerEnrichInvoiceRequest {
+  try {
+    return JSON.parse(body) as TriggerEnrichInvoiceRequest;
+  } catch {
+    const repaired = quoteUnquotedSupplierInvoiceId(body);
+    if (repaired !== body) {
+      return JSON.parse(repaired) as TriggerEnrichInvoiceRequest;
+    }
+    throw new Error('Invalid JSON body');
+  }
+}
+
 function jsonResponse(statusCode: number, body: Record<string, string>): APIGatewayProxyResultV2 {
   return {
     statusCode,
@@ -85,10 +104,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   let requestBody: TriggerEnrichInvoiceRequest;
   try {
-    requestBody = event.body ? JSON.parse(event.body) as TriggerEnrichInvoiceRequest : {};
+    requestBody = event.body ? parseRequestBody(event.body) : {};
   } catch (error) {
     debug('Invalid JSON body', { body: event.body, error: formatError(error) });
-    return jsonResponse(400, { message: 'Invalid JSON body' });
+    return jsonResponse(400, {
+      message: 'Invalid JSON body; supplierInvoiceId must be a quoted string',
+    });
   }
 
   const supplierInvoiceId = requestBody.supplierInvoiceId?.trim();
