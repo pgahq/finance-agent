@@ -307,6 +307,7 @@ export interface PurchaseOrderLine {
   quantity?: number;
   unitCost?: number;
   worktagsReference?: any[];
+  shipToAddressId?: string | null;
 }
 
 interface buildSubmitInvoiceDataOptions {
@@ -591,6 +592,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
         ...(worktags.length && { Worktags_Reference: worktags }),
         ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
+        ...(line.shipToAddressId && { 'Ship-To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
       };
     })
     : currentInvoice.Invoice_Line_Replacement_Data
@@ -1275,6 +1277,15 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
 
   const purchaseOrderDocumentNumber = poData.Document_Number;
 
+  const extractShipToAddressId = (shipToRef: any): string | null => {
+    if (!shipToRef) return null;
+    const ids = ([] as any[]).concat(shipToRef.ID ?? []);
+    const addressId = ids.find((id: any) => id.$attributes?.type === 'Address_ID');
+    if (addressId) return addressId.$value;
+    const wid = ids.find((id: any) => id.$attributes?.type === 'WID');
+    return wid?.$value ?? null;
+  };
+
   const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
     lineOrder: line.Line_Number,
     purchaseOrderLineId: line.Service_Order_Line_ID,
@@ -1283,6 +1294,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 
   const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
@@ -1295,6 +1307,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);

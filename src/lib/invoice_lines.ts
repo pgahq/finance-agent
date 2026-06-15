@@ -20,6 +20,7 @@ export interface FinalInvoiceLine {
   fundId?: string | null;
   spendCategoryId?: string | null;
   lineOfBusinessId?: string | null;
+  shipToAddressId?: string | null;
 }
 
 export interface LineFallbacks {
@@ -77,6 +78,7 @@ function applyFallbacks(
       fundId,
       spendCategoryId,
       lineOfBusinessId: line.lineOfBusinessId ?? null,
+      shipToAddressId: line.shipToAddressId ?? null,
     };
   });
 
@@ -97,6 +99,7 @@ function buildFallbackLines(
     fundId: fallbackIds.fundId ?? null,
     spendCategoryId: fallbackIds.spendCategoryId ?? null,
     lineOfBusinessId: null,
+    shipToAddressId: null,
   }));
   return {
     lines,
@@ -125,6 +128,7 @@ export async function buildFinalInvoiceLines(
         fundId: extractWorktagId(worktags, 'Fund_ID'),
         spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
         worktagsReference: worktags,
+        shipToAddressId: l.shipToAddressId ?? null,
       };
     }),
     emailBody: emailBody ?? null,

@@ -2028,6 +2028,7 @@ describe('Workday utilities', () => {
       expect(lines).toHaveLength(1);
       expect(lines[0]).toEqual({
         purchaseOrderDocumentNumber: 'PO-404770',
+        purchaseOrderLineId: undefined,
         lineOrder: 1,
         description: 'Design/Mapping Services for the 2025 PGA Championship',
         spendCategoryReference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Design_Mapping' }] },
@@ -2035,7 +2036,8 @@ describe('Workday utilities', () => {
         worktagsReference: [
           makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
-        ]
+        ],
+        shipToAddressId: null,
       });
     });
 
