@@ -2,6 +2,8 @@ import { debug } from '@pga/logger';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
+import type { FinalInvoiceLine } from './invoice_lines.js';
+import { parseExtractedAmount } from './invoice_lines.js';
 
 import type {
   DownloadedAttachment,
@@ -305,13 +307,7 @@ export interface PurchaseOrderLine {
   quantity?: number;
   unitCost?: number;
   worktagsReference?: any[];
-}
-
-export interface ExtractedInvoiceLine {
-  description: string;
-  quantity?: number | null;
-  unitCost?: string | null;
-  totalPrice?: string | null;
+  shipToAddressId?: string | null;
 }
 
 interface buildSubmitInvoiceDataOptions {
@@ -329,8 +325,7 @@ interface buildSubmitInvoiceDataOptions {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   filterInvoiceLines?: boolean;
-  poLines?: PurchaseOrderLine[];
-  extractedLines?: ExtractedInvoiceLine[];
+  finalLines?: FinalInvoiceLine[];
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
@@ -392,11 +387,6 @@ function normalizeInvoiceDate(invoiceDate?: string | Date | unknown): string | u
 
 function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string {
   return normalizeInvoiceDate(invoiceDate) ?? getFirstDayOfCurrentMonth();
-}
-
-function parseExtractedAmount(raw: string): number | undefined {
-  const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
-  return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
 }
 
 function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
@@ -544,7 +534,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, poLines, extractedLines, applyFallbackWorktags } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, finalLines, applyFallbackWorktags } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -587,39 +577,24 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     return additions.length ? [...worktags, ...additions] : worktags;
   };
 
-  const invoiceLines = poLines?.length
-    ? poLines.map(line => {
-      const worktags = withFallbackWorktags(([] as any[]).concat(line.worktagsReference ?? []));
+  const invoiceLines = finalLines?.length
+    ? finalLines.map(line => {
+      const worktags = withFallbackWorktags([
+        ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
+        ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
+        ...(line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+      ]);
       return {
         Line_Order: line.lineOrder,
-        Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId),
-        ...(line.description && { Item_Description: line.description }),
-        ...(line.spendCategoryReference && { Spend_Category_Reference: line.spendCategoryReference }),
-        ...(line.quantity !== undefined && { Quantity: line.quantity }),
-        ...(line.unitCost !== undefined && { Unit_Cost: line.unitCost }),
-        ...(line.extendedAmount !== undefined && { Extended_Amount: line.extendedAmount }),
+        Item_Description: line.description,
+        ...(line.quantity != null && { Quantity: line.quantity }),
+        ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
+        ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
         ...(worktags.length && { Worktags_Reference: worktags }),
+        ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
+        ...(line.shipToAddressId && { 'Ship-To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
       };
     })
-    : extractedLines?.length
-      ? extractedLines.map((line, idx) => {
-        const worktags = [
-          ...(fallbackFundId ? [createReference('Fund_ID', fallbackFundId)] : []),
-          ...(fallbackCostCenterId ? [createReference('Cost_Center_Reference_ID', fallbackCostCenterId)] : []),
-        ];
-        const fallbackSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
-        const parsedUnitCost = line.unitCost ? parseExtractedAmount(line.unitCost) : undefined;
-        const parsedExtendedAmount = line.totalPrice ? parseExtractedAmount(line.totalPrice) : undefined;
-        return {
-          Line_Order: idx + 1,
-          Item_Description: line.description,
-          ...(line.quantity != null && { Quantity: line.quantity }),
-          ...(parsedUnitCost !== undefined && { Unit_Cost: parsedUnitCost }),
-          ...(parsedExtendedAmount !== undefined && { Extended_Amount: parsedExtendedAmount }),
-          ...(worktags.length && { Worktags_Reference: worktags }),
-          ...(fallbackSpendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId) }),
-        };
-      })
     : currentInvoice.Invoice_Line_Replacement_Data
       ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
         const missingSpendCategory = filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference;
@@ -1144,8 +1119,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
-  poLines?: PurchaseOrderLine[];
-  extractedLines?: ExtractedInvoiceLine[];
+  finalLines?: FinalInvoiceLine[];
   paymentTermsId?: string;
 }
 
@@ -1161,8 +1135,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
-    poLines,
-    extractedLines,
+    finalLines,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
@@ -1209,8 +1182,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
-      poLines,
-      extractedLines,
+      finalLines,
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true
     },
@@ -1305,6 +1277,15 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
 
   const purchaseOrderDocumentNumber = poData.Document_Number;
 
+  const extractShipToAddressId = (shipToRef: any): string | null => {
+    if (!shipToRef) return null;
+    const ids = ([] as any[]).concat(shipToRef.ID ?? []);
+    const addressId = ids.find((id: any) => id.$attributes?.type === 'Address_ID');
+    if (addressId) return addressId.$value;
+    const wid = ids.find((id: any) => id.$attributes?.type === 'WID');
+    return wid?.$value ?? null;
+  };
+
   const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
     lineOrder: line.Line_Number,
     purchaseOrderLineId: line.Service_Order_Line_ID,
@@ -1313,6 +1294,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 
   const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
@@ -1325,6 +1307,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);

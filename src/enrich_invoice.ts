@@ -5,8 +5,9 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
-import type { AppliedFallback, ExtractedInvoiceLine, PurchaseOrderLine } from './lib/workday.js';
+import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { buildFinalInvoiceLines, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -179,19 +180,30 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
-    const candidateLines = canModifyInvoice && !extractedPurchaseOrderNumber
-      ? (result.extractedInvoiceLines ?? [])
+    const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
+      ? (result.extractedInvoiceLines ?? []).filter(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
       : [];
-    const extractedLines: ExtractedInvoiceLine[] | undefined =
-      candidateLines.length > 0 && candidateLines.every(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
-        ? candidateLines
-        : undefined;
 
-    if (extractedLines) {
-      debug(`Using ${extractedLines.length} extracted invoice line(s) from document`);
+    let finalLines: FinalInvoiceLine[] | undefined;
+    let lineFallbacks: LineFallbacks | undefined;
+    if (candidateLines.length > 0) {
+      debug(`Building final invoice lines from ${candidateLines.length} extracted line(s)`);
+      const built = await buildFinalInvoiceLines(
+        candidateLines,
+        poLines,
+        invoiceData.emailContext?.plainTextBody,
+        {
+          fundId: process.env.FALLBACK_FUND_ID,
+          costCenterId: process.env.FALLBACK_COST_CENTER_ID,
+          spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+        }
+      );
+      finalLines = built.lines;
+      lineFallbacks = built.appliedFallbacks;
+      debug(`Built ${finalLines.length} final invoice line(s)`);
     }
 
-    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, extractedLines);
+    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
@@ -212,8 +224,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
-        poLines,
-        extractedLines,
+        finalLines,
         paymentTermsId
       });
       if (!updateOutcome.success) {
@@ -447,14 +458,14 @@ function getUpfrontFallbacks(
   resolvedSupplierWID: string | undefined,
   detailedInvoice: { [key: string]: unknown },
   poLines?: PurchaseOrderLine[],
-  extractedLines?: ExtractedInvoiceLine[]
+  lineFallbacks?: LineFallbacks
 ): UpfrontFallbacks {
-  if (extractedLines?.length) {
+  if (lineFallbacks) {
     return {
       defaultSupplier: !resolvedSupplierWID && !!DEFAULT_SUPPLIER_WID,
-      fund: !!process.env.FALLBACK_FUND_ID,
-      costCenter: !!process.env.FALLBACK_COST_CENTER_ID,
-      spendCategory: !!process.env.FALLBACK_SPEND_CATEGORY_ID,
+      fund: lineFallbacks.fund,
+      costCenter: lineFallbacks.costCenter,
+      spendCategory: lineFallbacks.spendCategory,
     };
   }
 

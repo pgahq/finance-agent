@@ -12,12 +12,14 @@ export async function getAiResponse({
   prompt,
   messages,
   schema,
-  model = 'gpt-5.4'
+  model = 'gpt-5.4',
+  tools,
 }: {
   prompt: string;
   messages: ModelMessage[];
   schema?: z.ZodSchema<any>;
   model?: string;
+  tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
     // Step 1: Generate text with tools (if needed)
@@ -44,7 +46,7 @@ export async function getAiResponse({
       system: systemPrompt,
       stopWhen: stepCountIs(10),
       temperature: 0.2,
-      tools: {
+      tools: tools ?? {
         findSuppliers: findSuppliersTool,
         findCompanies: findCompaniesTool,
         findCostCenters: findCostCentersTool,
