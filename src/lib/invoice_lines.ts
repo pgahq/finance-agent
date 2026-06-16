@@ -21,6 +21,7 @@ export interface FinalInvoiceLine {
   spendCategoryId?: string | null;
   lineOfBusinessId?: string | null;
   shipToAddressId?: string | null;
+  purchaseOrderLineId?: string | null;
 }
 
 export interface LineFallbacks {
@@ -79,6 +80,7 @@ function applyFallbacks(
       spendCategoryId,
       lineOfBusinessId: line.lineOfBusinessId ?? null,
       shipToAddressId: line.shipToAddressId ?? null,
+      purchaseOrderLineId: line.purchaseOrderLineId ?? null,
     };
   });
 
@@ -123,6 +125,7 @@ export async function buildFinalInvoiceLines(
       const worktags = ([] as any[]).concat(l.worktagsReference ?? []);
       return {
         lineOrder: l.lineOrder,
+        purchaseOrderLineId: l.purchaseOrderLineId ?? null,
         description: l.description ?? null,
         costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
         fundId: extractWorktagId(worktags, 'Fund_ID'),

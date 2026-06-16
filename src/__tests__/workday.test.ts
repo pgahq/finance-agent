@@ -1913,6 +1913,20 @@ describe('Workday utilities', () => {
         expect(lines[0].Extended_Amount).toBeUndefined();
         expect(lines[0].Worktags_Reference).toBeUndefined();
         expect(lines[0].Spend_Category_Reference).toBeUndefined();
+        expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+      });
+
+      it('should include Purchase_Order_Line_Reference when purchaseOrderLineId is present', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 500, extendedAmount: 500, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Purchase_Order_Line_Reference).toEqual({
+          ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }]
+        });
       });
 
       it('should append fallback worktags to finalLines missing those worktag types', async () => {
