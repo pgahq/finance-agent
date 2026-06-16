@@ -481,3 +481,33 @@ Resources:
         SubnetIds:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
+
+  # Trigger Enrich Invoice - HTTP API endpoint
+  TriggerEnrichInvoiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-TriggerEnrichInvoice"
+      Handler: dist/trigger_enrich_invoice.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        EnrichInvoiceApi:
+          Type: HttpApi
+          Properties:
+            Path: /enrich-invoice
+            Method: POST
+
+Outputs:
+  EnrichInvoiceApiUrl:
+    Description: POST endpoint to trigger invoice enrichment
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/enrich-invoice"
