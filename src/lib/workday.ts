@@ -302,6 +302,7 @@ export interface PurchaseOrderLine {
   purchaseOrderLineId: string;
   purchaseOrderDocumentNumber: string;
   description?: string;
+  memo?: string;
   spendCategoryReference?: any;
   extendedAmount?: number;
   quantity?: number;
@@ -595,6 +596,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
         ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
         ...(line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+        ...(line.memo && { Memo: line.memo }),
       };
     })
     : currentInvoice.Invoice_Line_Replacement_Data
@@ -1293,6 +1295,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     purchaseOrderLineId: line.Service_Order_Line_ID,
     purchaseOrderDocumentNumber,
     description: line.Description,
+    memo: line.Memo,
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
     worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
@@ -1304,6 +1307,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     purchaseOrderLineId: line.Goods_Purchase_Order_Line_ID,
     purchaseOrderDocumentNumber,
     description: line.Item_Description,
+    memo: line.Memo,
     spendCategoryReference: line.Resource_Category_Reference,
     quantity: line.Quantity !== undefined ? Number(line.Quantity) : undefined,
     unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,

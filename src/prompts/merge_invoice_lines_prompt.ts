@@ -4,6 +4,7 @@ export const MergeInvoiceLinesSchema = z.object({
   lines: z.array(z.object({
     lineOrder: z.number().describe('Sequential line number starting at 1'),
     description: z.string().describe('Line item description from the invoice'),
+    memo: z.string().nullable().describe('Memo from the matched PO line. Copy it directly from the matched PO line\'s memo field. Null if no PO line was matched or the PO line has no memo.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00). Null if not stated.'),
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
@@ -33,9 +34,10 @@ Your task is to produce final invoice lines by:
 3. For lineOfBusinessId: inspect the matched PO line's worktagsReference array and copy the full worktag reference object that represents a line of business (e.g. an entry whose ID array contains an Organization_Reference_ID or Custom_Organization_Reference_ID value that identifies a line of business)
 4. For eventId: inspect the matched PO line's worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Set null if you are unsure or no event-like worktag is present
 5. For shipToAddressId: copy the shipToAddressId value directly from the matched PO line
-5. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
-6. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
-7. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
+6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
+7. For memo: copy the memo value directly from the matched PO line's memo field. Set null if no PO line was matched or the PO line has no memo
+8. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
+9. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 
 Guidelines:
 - Return exactly one output line per extracted invoice line, in the same order
