@@ -583,6 +583,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
         ...(line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+        ...(line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []),
       ]);
       return {
         Line_Order: line.lineOrder,

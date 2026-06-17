@@ -20,6 +20,7 @@ export interface FinalInvoiceLine {
   fundId?: string | null;
   spendCategoryId?: string | null;
   lineOfBusinessId?: string | null;
+  eventId?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
 }
@@ -79,6 +80,7 @@ function applyFallbacks(
       fundId,
       spendCategoryId,
       lineOfBusinessId: line.lineOfBusinessId ?? null,
+      eventId: line.eventId ?? null,
       shipToAddressId: line.shipToAddressId ?? null,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
     };
@@ -101,6 +103,7 @@ function buildFallbackLines(
     fundId: fallbackIds.fundId ?? null,
     spendCategoryId: fallbackIds.spendCategoryId ?? null,
     lineOfBusinessId: null,
+    eventId: null,
     shipToAddressId: null,
   }));
   return {
