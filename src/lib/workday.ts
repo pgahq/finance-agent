@@ -593,7 +593,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
         ...(worktags.length && { Worktags_Reference: worktags }),
         ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
-        ...(line.shipToAddressId && { 'Ship-To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
+        ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
         ...(line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
       };
     })
