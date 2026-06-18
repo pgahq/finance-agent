@@ -342,6 +342,41 @@ Resources:
           Properties:
             Schedule: cron(0 12 1 * ? *)
 
+  # Cache LOBs - Query handler
+  CacheLobsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheLobs"
+      Handler: dist/cache_lobs.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 13 * * ? *)
+
+  # Cache LOBs Processor - Data processing
+  CacheLobsProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheLobsProcessor"
+      Handler: dist/cache_lobs.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
   # Cache Events - Query handler
   CacheEventsFunction:
     Type: AWS::Serverless::Function
