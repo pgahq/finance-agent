@@ -13,6 +13,7 @@ export interface ExtractedInvoiceLine {
 export interface FinalInvoiceLine {
   lineOrder: number;
   description: string;
+  memo?: string | null;
   quantity?: number | null;
   unitCost?: number | null;
   extendedAmount?: number | null;
@@ -73,6 +74,7 @@ function applyFallbacks(
     return {
       lineOrder: line.lineOrder,
       description: line.description,
+      memo: line.memo ?? null,
       quantity: line.quantity,
       unitCost: line.unitCost,
       extendedAmount: line.extendedAmount,
@@ -130,6 +132,7 @@ export async function buildFinalInvoiceLines(
         lineOrder: l.lineOrder,
         purchaseOrderLineId: l.purchaseOrderLineId ?? null,
         description: l.description ?? null,
+        memo: l.memo ?? null,
         costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
         fundId: extractWorktagId(worktags, 'Fund_ID'),
         spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
