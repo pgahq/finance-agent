@@ -69,6 +69,10 @@ export function createPaymentTermsContent(paymentTerms: any): string {
   return `Payment Terms: ${paymentTerms.name}`;
 }
 
+export function createEventContent(event: any): string {
+  return `Event Name: ${event.name}`;
+}
+
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
@@ -76,7 +80,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event';
   limit?: number;
   similarityThreshold?: number;
 }

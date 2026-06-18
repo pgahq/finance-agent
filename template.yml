@@ -342,6 +342,41 @@ Resources:
           Properties:
             Schedule: cron(0 12 1 * ? *)
 
+  # Cache Events - Query handler
+  CacheEventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheEvents"
+      Handler: dist/cache_events.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 12 * * ? *)
+
+  # Cache Events Processor - Data processing
+  CacheEventsProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheEventsProcessor"
+      Handler: dist/cache_events.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
   # Cache Cost Centers Processor - Data processing
   CacheCostCentersProcessor:
     Type: AWS::Serverless::Function
