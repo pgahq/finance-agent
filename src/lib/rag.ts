@@ -73,6 +73,13 @@ export function createEventContent(event: any): string {
   return `Event Name: ${event.name}`;
 }
 
+export function createLobContent(lob: any): string {
+  return [
+    `LOB Name: ${lob.name}`,
+    lob.referenceId ? `Reference ID: ${lob.referenceId}` : null,
+  ].filter(Boolean).join('\n');
+}
+
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
@@ -80,7 +87,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob';
   limit?: number;
   similarityThreshold?: number;
 }
