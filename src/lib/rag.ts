@@ -73,6 +73,10 @@ export function createEventContent(event: any): string {
   return `Event Name: ${event.name}`;
 }
 
+export function createFundContent(fund: any): string {
+  return `Fund Reference ID: ${fund.referenceId}`;
+}
+
 export function createLobContent(lob: any): string {
   return [
     `LOB Name: ${lob.name}`,
@@ -87,7 +91,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund';
   limit?: number;
   similarityThreshold?: number;
 }
