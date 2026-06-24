@@ -7,7 +7,7 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
-import { buildFinalInvoiceLines, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
+import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -180,6 +180,13 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
     }
 
+    const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
+      costCenterId: result.emailWorktags.costCenter?.code ?? null,
+      eventName: result.emailWorktags.event?.name ?? null,
+      lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
+      fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
+    } : undefined;
+
     const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
       ? (result.extractedInvoiceLines ?? []).filter(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
       : [];
@@ -196,7 +203,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           fundId: process.env.FALLBACK_FUND_ID,
           costCenterId: process.env.FALLBACK_COST_CENTER_ID,
           spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
-        }
+        },
+        emailWorktags
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -204,7 +212,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -266,7 +274,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
-      suggestedCostCenters: result.costCenterVerification?.suggestedCostCenters ?? undefined,
+      suggestedCostCenters: result.emailWorktags?.costCenter
+        ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
+        : undefined,
       fallbacks: {
         defaultSupplier: fallbacks.defaultSupplier,
         fallbackFund: fallbacks.fund ? process.env.FALLBACK_FUND_ID : undefined,
@@ -334,7 +344,6 @@ async function enrichInvoice(
       invoiceNumber: invoice.Invoice_Number,
       currentInvoiceDate: invoice.Invoice_Date,
       amount: invoice.controlTotalAmount,
-      assignedCostCenters: extractCostCentersFromInvoice(invoice),
       attachments: processedAttachments.map(att => ({
         fileName: att.fileName,
         contentType: att.contentType,
@@ -360,8 +369,8 @@ async function enrichInvoice(
       : 'Please identify the supplier and verify the company on this invoice';
 
     const taskInstructions = existingSupplier
-      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.'
-      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, check for a cost center reference and compare it against the assignedCostCenters using the findCostCenters tool if needed.';
+      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, extract any worktags (cost center, event, LOB, fund) and resolve them using the appropriate find tools.'
+      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, extract any worktags (cost center, event, LOB, fund) and resolve them using the appropriate find tools.';
 
     const attachmentContentParts: Array<
       { type: 'file'; data: Buffer; mediaType: string; filename: string }
@@ -554,6 +563,30 @@ function formatInvoiceLinesNotes(result: InvoiceEnrichmentResult): string {
   return `\n\nInvoice Lines (from document):\n${lineTexts.join('\n')}`;
 }
 
+function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string {
+  const wt = result.emailWorktags;
+  if (!wt) return '';
+  const parts: string[] = [];
+  if (wt.costCenter?.extracted) {
+    const resolved = wt.costCenter.code ? ` (resolved: ${wt.costCenter.name ?? wt.costCenter.code})` : ' (no Workday match found)';
+    parts.push(`Cost Center: ${wt.costCenter.extracted}${resolved}`);
+  }
+  if (wt.event?.extracted) {
+    const resolved = wt.event.name ? ` (resolved: ${wt.event.name})` : ' (no Workday match found)';
+    parts.push(`Event: ${wt.event.extracted}${resolved}`);
+  }
+  if (wt.lineOfBusiness?.extracted) {
+    const resolved = wt.lineOfBusiness.referenceId ? ` (resolved: ${wt.lineOfBusiness.referenceId})` : ' (no Workday match found)';
+    parts.push(`Line of Business: ${wt.lineOfBusiness.extracted}${resolved}`);
+  }
+  if (wt.fund?.extracted) {
+    const resolved = wt.fund.referenceId ? ` (resolved: ${wt.fund.referenceId})` : ' (no Workday match found)';
+    parts.push(`Fund: ${wt.fund.extracted}${resolved}`);
+  }
+  if (!parts.length) return '';
+  return `\n\nEmail Worktags: ${parts.join('; ')}`;
+}
+
 function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {
   if (result.extractedInvoiceDate) {
     return `\n\nInvoice Date (from document): ${result.extractedInvoiceDate}`;
@@ -585,13 +618,3 @@ function extractEmailFromInvoice(invoice: WorkdayInvoice): string | undefined {
   return undefined;
 }
 
-function extractCostCentersFromInvoice(invoice: WorkdayInvoice): string[] {
-  const results: string[] = [];
-  JSON.stringify(invoice, (_, value) => {
-    if (value?.$attributes?.type === 'Cost_Center_Reference_ID') {
-      results.push(value.$value);
-    }
-    return value;
-  });
-  return [...new Set(results)];
-}

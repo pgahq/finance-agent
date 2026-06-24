@@ -463,6 +463,41 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
+  # Cache Spend Categories - Query handler
+  CacheSpendCategoriesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheSpendCategories"
+      Handler: dist/cache_spend_categories.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 * * ? *)
+
+  # Cache Spend Categories Processor - Data processing
+  CacheSpendCategoriesProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CacheSpendCategoriesProcessor"
+      Handler: dist/cache_spend_categories.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
   # Cache Companies - Query handler
   CacheCompaniesFunction:
     Type: AWS::Serverless::Function

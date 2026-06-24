@@ -85,27 +85,46 @@ export const InvoiceEnrichmentSchema = z.object({
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.')
   })).nullable().describe('Line items extracted from the invoice document. Null if no line items could be extracted.'),
 
-  costCenterVerification: z.object({
-    emailCostCenter: z.string().nullable().describe('The cost center code or name extracted from the email body, if any was mentioned. Null if none found.'),
-    invoiceCostCenters: z.array(z.string()).nullable().describe('The cost center(s) currently assigned to the invoice lines in Workday. Null if none assigned.'),
-    suggestedCostCenters: z.array(z.object({
-      workdayId: z.string().nullable(),
-      code: z.string().nullable(),
-      name: z.string()
-    })).nullable().describe('Suggested cost centers from Workday if the email references ones that differ from what is assigned, or if no cost centers are assigned. Only populate after using findCostCenters to confirm they exist in Workday.'),
-    notes: z.string().describe('Summary of findings: whether the email cost center code matches the assigned one, any discrepancy, or if no cost center was mentioned in the email')
-  }).nullable().describe('Cost center verification based on email content vs invoice line worktags. Null if no email context was provided.')
+  emailWorktags: z.object({
+    event: z.object({
+      extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
+      name: z.string().nullable().describe('The matched event name from Workday (used as Organization_Reference_ID). Populate after calling findEvents.'),
+    }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
+    lineOfBusiness: z.object({
+      extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
+      referenceId: z.string().nullable().describe('The referenceId from the matched LOB in Workday (used as Organization_Reference_ID). Populate after calling findLobs.'),
+    }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
+    fund: z.object({
+      extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
+      referenceId: z.string().nullable().describe('The referenceId from the matched fund in Workday (used as Fund_ID). Populate after calling findFunds.'),
+    }).nullable().describe('Fund worktag resolved from email content. Null if no fund was mentioned.'),
+    costCenter: z.object({
+      extracted: z.string().nullable().describe('The cost center code or name as mentioned in the email'),
+      name: z.string().nullable().describe('The matched cost center name from Workday. Populate after calling findCostCenters.'),
+      code: z.string().nullable().describe('The Cost_Center_Reference_ID from the matched cost center in Workday (e.g. "72200"). Populate after calling findCostCenters.'),
+    }).nullable().describe('Cost center worktag resolved from email content. Null if no cost center was mentioned.'),
+    spendCategory: z.object({
+      extracted: z.string().nullable().describe('The spend category name or reference as mentioned in the email'),
+      name: z.string().nullable().describe('The matched spend category name from Workday. Populate after calling findSpendCategories.'),
+      referenceId: z.string().nullable().describe('The referenceId from the matched spend category in Workday. Populate after calling findSpendCategories.'),
+    }).nullable().describe('Spend category worktag resolved from email content. Null if no spend category was mentioned.'),
+  }).nullable().describe('Worktags extracted from email content and resolved via RAG lookup. Null if no email context was provided or no worktags were found.'),
+
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
 
 export const invoiceEnrichmentPrompt = `You are an expert at matching invoices to suppliers and verifying company information in a Workday system. Your task is to analyze an invoice, identify or verify the supplier, and verify the company assignment.
 
-You have access to four search tools:
+You have access to eight search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
 - **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
+- **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday.
+- **findLobs**: Search our lines of business database by name or reference to look up LOBs in Workday.
+- **findFunds**: Search our funds database by reference ID or name to look up funds in Workday.
+- **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
 
@@ -266,17 +285,43 @@ Populate \`extractedInvoiceLines\` with all line items found. If no line items c
 
 ---
 
-## Part 10: Cost Center Verification
+## Part 10: Email Worktag Extraction
 
-If email context is provided, check whether the email mentions a cost center code or name:
+If email context is provided, scan the email body for any mentions of cost centers, events, lines of business (LOBs), or funds that should be applied as invoice worktags. These take priority over any worktags derived from the purchase order — PO values are used only as a fallback when email worktags are absent.
 
-1. **Extract from email**: Scan the email body for any cost center references (e.g. codes like "72200" or names like "Marketing Communications"). Populate \`costCenterVerification.emailCostCenter\` with what was found (comma-separated if multiple).
-2. **Compare with invoice lines**: The invoiceData includes \`assignedCostCenters\` — the cost center(s) currently on the invoice lines in Workday (there may be multiple). Populate \`costCenterVerification.invoiceCostCenters\` with these.
-3. **If there is a mismatch or no cost center is assigned**:
-   - Use \`findCostCenters\` to search for each cost center mentioned in the email and confirm they exist in Workday
-   - Populate \`costCenterVerification.suggestedCostCenters\` with the matches found
-4. **Populate \`costCenterVerification.notes\`** with a brief summary: whether they match, what was found in the email, and any recommendation. Do not use markdown formatting in the notes, strictly use plain text.
-5. If no email context is provided, omit \`costCenterVerification\` entirely.
+1. **Cost Centers**: Look for references to a cost center code or name. These are typically prefaced with "cost center", "cc:", or "CC:" (e.g., "CC: 72200", "cost center: Marketing Communications"). If found:
+   - Call **findCostCenters** with the cost center name or code to resolve it in Workday
+   - Populate emailWorktags.costCenter.extracted with what you found in the email
+   - Populate emailWorktags.costCenter.name with the matched cost center name from the top result's metadata
+   - Populate emailWorktags.costCenter.code with the matched cost center's code (Cost_Center_Reference_ID) from the top result's metadata
+   - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
+
+2. **Events**: Look for references explicitly labeled as an event — typically prefaced with the word "event:" (e.g., "Event: 2026 PGA Championship"). Do NOT classify something as an event just because it sounds like a tournament or occasion — it must be explicitly labeled as an event. If found:
+   - Call **findEvents** with the event name to resolve it in Workday
+   - Populate emailWorktags.event.extracted with what you found in the email
+   - Populate emailWorktags.event.name with the matched event name from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
+   - If no match is found, set emailWorktags.event.name to null
+
+3. **Lines of Business**: Look for references to a line of business, business unit, or LOB (e.g., "Golf", "Technology Services", "Media"). If found:
+   - Call **findLobs** with the LOB name to resolve it in Workday
+   - Populate emailWorktags.lineOfBusiness.extracted with what you found in the email
+   - Populate emailWorktags.lineOfBusiness.referenceId with the matched LOB's referenceId from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
+   - If no match is found, set emailWorktags.lineOfBusiness.referenceId to null
+
+4. **Funds**: Look for references to a fund or fund code (e.g., "FD-001", "Operating Fund"). If found:
+   - Call **findFunds** with the fund name or reference to resolve it in Workday
+   - Populate emailWorktags.fund.extracted with what you found in the email
+   - Populate emailWorktags.fund.referenceId with the matched fund's referenceId from the top result's metadata (this is the value used as the Fund_ID worktag)
+   - If no match is found, set emailWorktags.fund.referenceId to null
+
+5. **Spend Categories**: Look for references explicitly prefaced with "spend category:", "spend cat:", or "SC:" (e.g., "SC: Office Supplies", "spend cat: Professional Services"). If found:
+   - Call **findSpendCategories** with the spend category name or reference to resolve it in Workday
+   - Populate emailWorktags.spendCategory.extracted with what you found in the email
+   - Populate emailWorktags.spendCategory.name with the matched spend category name from the top result's metadata
+   - Populate emailWorktags.spendCategory.referenceId with the matched spend category's referenceId from the top result's metadata
+   - If no match is found, set emailWorktags.spendCategory.name and emailWorktags.spendCategory.referenceId to null
+
+6. If no email context is provided, or none of the above worktags were mentioned, omit emailWorktags entirely.
 
 ---
 

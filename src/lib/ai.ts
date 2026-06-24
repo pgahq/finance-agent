@@ -2,7 +2,7 @@ import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool } from './rag.js';
+import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 
 // Set OpenAI API key globally
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
@@ -50,7 +50,11 @@ export async function getAiResponse({
         findSuppliers: findSuppliersTool,
         findCompanies: findCompaniesTool,
         findCostCenters: findCostCentersTool,
-        findPaymentTerms: findPaymentTermsTool
+        findPaymentTerms: findPaymentTermsTool,
+        findEvents: findEventsTool,
+        findLobs: findLobsTool,
+        findFunds: findFundsTool,
+        findSpendCategories: findSpendCategoriesTool,
       }
     };
 

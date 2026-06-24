@@ -118,11 +118,30 @@ function buildFallbackLines(
   };
 }
 
+function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWorktags): FinalInvoiceLine[] {
+  if (!emailWorktags) return lines;
+  return lines.map(line => ({
+    ...line,
+    ...(emailWorktags.costCenterId != null && { costCenterId: emailWorktags.costCenterId }),
+    ...(emailWorktags.eventName != null && { eventId: emailWorktags.eventName }),
+    ...(emailWorktags.lobReferenceId != null && { lineOfBusinessId: emailWorktags.lobReferenceId }),
+    ...(emailWorktags.fundReferenceId != null && { fundId: emailWorktags.fundReferenceId }),
+  }));
+}
+
+export interface EmailWorktags {
+  costCenterId?: string | null;
+  eventName?: string | null;
+  lobReferenceId?: string | null;
+  fundReferenceId?: string | null;
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
-  fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string }
+  fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string },
+  emailWorktags?: EmailWorktags
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
   const mergeInput = {
     extractedInvoiceLines: extractedLines,
@@ -158,8 +177,10 @@ export async function buildFinalInvoiceLines(
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
-    return buildFallbackLines(extractedLines, fallbackIds);
+    const fallback = buildFallbackLines(extractedLines, fallbackIds);
+    return { lines: applyEmailWorktags(fallback.lines, emailWorktags), appliedFallbacks: fallback.appliedFallbacks };
   }
 
-  return applyFallbacks(mergeResult.lines, fallbackIds);
+  const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
+  return { lines: applyEmailWorktags(lines, emailWorktags), appliedFallbacks };
 }

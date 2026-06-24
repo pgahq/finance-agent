@@ -84,6 +84,13 @@ export function createLobContent(lob: any): string {
   ].filter(Boolean).join('\n');
 }
 
+export function createSpendCategoryContent(sc: any): string {
+  return [
+    `Spend Category: ${sc.name}`,
+    sc.referenceId ? `Reference ID: ${sc.referenceId}` : null,
+  ].filter(Boolean).join('\n');
+}
+
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
@@ -91,7 +98,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -287,6 +294,139 @@ export const findCompaniesTool = tool({
       results: results.map(result => ({
         workdayId: result.workday_id,
         type: result.type,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
+  }
+});
+
+export const findEventsTool = tool({
+  description: `Search for events using semantic similarity and exact text matching.
+
+  Use this tool to look up events (tournaments, championships, conferences, etc.) by name when mentioned in an email.
+
+  Examples: "2026 PGA Championship", "Masters Tournament", "Ryder Cup"`,
+  inputSchema: z.object({
+    query: z.string().describe('Event name or description from the email'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    const results = await queryDocuments({
+      query,
+      documentType: 'event',
+      limit,
+      similarityThreshold
+    });
+
+    debug(`Find Events Tool: Found ${results.length} events`);
+
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
+  }
+});
+
+export const findLobsTool = tool({
+  description: `Search for lines of business (LOBs) using semantic similarity and exact text matching.
+
+  Use this tool to look up lines of business by name or reference ID when mentioned in an email.
+
+  Examples: "Golf", "Technology Services", "Media"`,
+  inputSchema: z.object({
+    query: z.string().describe('Line of business name or reference from the email'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    const results = await queryDocuments({
+      query,
+      documentType: 'lob',
+      limit,
+      similarityThreshold
+    });
+
+    debug(`Find LOBs Tool: Found ${results.length} LOBs`);
+
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
+  }
+});
+
+export const findFundsTool = tool({
+  description: `Search for funds using semantic similarity and exact text matching.
+
+  Use this tool to look up funds by reference ID or name when mentioned in an email.
+
+  Examples: "FD-001", "Operating Fund", "Capital Fund"`,
+  inputSchema: z.object({
+    query: z.string().describe('Fund reference ID or name from the email'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    const results = await queryDocuments({
+      query,
+      documentType: 'fund',
+      limit,
+      similarityThreshold
+    });
+
+    debug(`Find Funds Tool: Found ${results.length} funds`);
+
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
+        content: result.content,
+        metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
+  }
+});
+
+export const findSpendCategoriesTool = tool({
+  description: `Search for spend categories using semantic similarity and exact text matching.
+
+  Use this tool to look up spend categories by name or reference ID when mentioned in an email.
+  These are typically prefaced with "spend category:", "spend cat:", or "SC:" in the email.
+
+  Examples: "Office Supplies", "Professional Services", "Travel"`,
+  inputSchema: z.object({
+    query: z.string().describe('Spend category name or reference from the email'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    const results = await queryDocuments({
+      query,
+      documentType: 'spend_category',
+      limit,
+      similarityThreshold
+    });
+
+    debug(`Find Spend Categories Tool: Found ${results.length} spend categories`);
+
+    return {
+      success: true,
+      results: results.map(result => ({
+        workdayId: result.workday_id,
         content: result.content,
         metadata: result.metadata,
         similarity: result.similarity
