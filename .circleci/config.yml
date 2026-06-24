@@ -104,7 +104,7 @@ jobs:
     <<: *deploy_container_config
     environment:
       LOG_LEVEL: DEBUG
-      WORKDAY_DOMAIN: impl.workday.com
+      WORKDAY_DOMAIN: impl-services1.workday.com
       WORKDAY_TENANT: pgahq
       FALLBACK_FUND_ID: FUND-General_Fund_Unrestricted
       FALLBACK_PAYMENT_TERMS_ID: Net_60
