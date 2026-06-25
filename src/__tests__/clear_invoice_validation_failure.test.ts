@@ -40,6 +40,20 @@ describe('clearInvoiceValidationFailure', () => {
     expect(mockSend.mock.calls[0][0].input).toEqual({
       TableName: 'finance-agent-invoice-validation-failures',
       Key: { invoiceWorkdayID: 'invoice-wid-123' },
+      ConditionExpression: 'attribute_exists(invoiceWorkdayID)',
     });
+  });
+
+  it('ignores missing records without affecting other table items', async () => {
+    const conditionalCheckFailed = new Error('The conditional request failed');
+    conditionalCheckFailed.name = 'ConditionalCheckFailedException';
+    mockSend.mockRejectedValueOnce(conditionalCheckFailed);
+
+    await expect(clearInvoiceValidationFailure(
+      { tableName: 'finance-agent-invoice-validation-failures' },
+      'invoice-wid-123',
+    )).resolves.toBeUndefined();
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

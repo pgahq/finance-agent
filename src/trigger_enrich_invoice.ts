@@ -134,6 +134,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const enrichedInvoice: InvoiceData = { ...invoice, emailContext };
 
     const validationFailuresConfig = getInvoiceValidationFailuresConfig(process.env);
+    debug('Clearing validation failure record for triggered invoice', {
+      supplierInvoiceId,
+      invoiceWorkdayID: invoice.workdayID,
+    });
     await clearInvoiceValidationFailure(validationFailuresConfig, invoice.workdayID);
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceProcessor`;

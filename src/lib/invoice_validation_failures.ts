@@ -287,10 +287,19 @@ export async function clearInvoiceValidationFailure(
     return;
   }
 
-  await getDocumentClient().send(new DeleteCommand({
-    TableName: config.tableName,
-    Key: { invoiceWorkdayID },
-  }));
+  try {
+    await getDocumentClient().send(new DeleteCommand({
+      TableName: config.tableName,
+      Key: { invoiceWorkdayID },
+      ConditionExpression: 'attribute_exists(invoiceWorkdayID)',
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function isInvoiceMarkedForSkip(
