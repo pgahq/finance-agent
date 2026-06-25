@@ -41,6 +41,19 @@ jest.mock('../lib/workday.js', () => ({
   getInboundEmailsForOCRInvoices: jest.fn(),
 }));
 
+const mockClearInvoiceValidationFailure = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../lib/invoice_validation_failures.js', () => {
+  const actual = jest.requireActual('../lib/invoice_validation_failures.js');
+  return {
+    ...actual,
+    getInvoiceValidationFailuresConfig: jest.fn().mockReturnValue({
+      tableName: 'finance-agent-invoice-validation-failures',
+    }),
+    clearInvoiceValidationFailure: (...args: unknown[]) => mockClearInvoiceValidationFailure(...args),
+  };
+});
+
 import { executeWorkdayQuery, getInboundEmailsForOCRInvoices } from '../lib/workday.js';
 
 const mockExecuteWorkdayQuery = executeWorkdayQuery as jest.MockedFunction<typeof executeWorkdayQuery>;
@@ -83,6 +96,7 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
 describe('trigger_enrich_invoice handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockClearInvoiceValidationFailure.mockResolvedValue(undefined);
     mockSend.mockResolvedValue({});
     mockGetInboundEmailsForOCRInvoices.mockResolvedValue(new Map());
     mockExecuteWorkdayQuery.mockResolvedValue({
@@ -250,5 +264,49 @@ describe('trigger_enrich_invoice handler', () => {
     });
     expect(mockGetInboundEmailsForOCRInvoices).toHaveBeenCalledTimes(1);
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears validation failure record before invoking processor', async () => {
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({
+      statusCode: 202,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Enrichment triggered',
+        supplierInvoiceId: 'invoice-wid-123',
+      }),
+    });
+    expect(mockClearInvoiceValidationFailure).toHaveBeenCalledTimes(1);
+    expect(mockClearInvoiceValidationFailure).toHaveBeenCalledWith(
+      { tableName: 'finance-agent-invoice-validation-failures' },
+      'invoice-wid-123',
+    );
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears validation failure using resolved workdayID when lookup is by invoice number', async () => {
+    mockExecuteWorkdayQuery
+      .mockResolvedValueOnce({ total: 0, data: [] })
+      .mockResolvedValueOnce({
+        total: 1,
+        data: [{
+          workdayID: 'resolved-wid-from-number',
+          invoiceStatusAsText: 'Draft',
+          OCRSupplierInvoice: {
+            descriptor: '24953$4729',
+            id: 'ocr-id',
+          },
+        }],
+      });
+
+    await handler(buildEvent({
+      body: JSON.stringify({ supplierInvoiceId: 'SUPIN-412727' }),
+    }));
+
+    expect(mockClearInvoiceValidationFailure).toHaveBeenCalledWith(
+      { tableName: 'finance-agent-invoice-validation-failures' },
+      'resolved-wid-from-number',
+    );
   });
 });

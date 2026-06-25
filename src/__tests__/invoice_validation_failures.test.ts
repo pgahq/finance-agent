@@ -1,4 +1,8 @@
-import { isWorkdayValidationError, summarizeValidationError } from '../lib/invoice_validation_failures.js';
+import {
+  getInvoiceValidationFailuresConfig,
+  isWorkdayValidationError,
+  summarizeValidationError,
+} from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
   it('returns the plain validation message from an Error', () => {
@@ -66,5 +70,19 @@ describe('invoice_validation_failures', () => {
   it('does not classify RAG or infrastructure errors mentioning validation as Workday validation errors', () => {
     expect(isWorkdayValidationError(new Error('Failed to fetch validation rules: ECONNREFUSED'))).toBe(false);
     expect(isWorkdayValidationError(new Error('connection terminated unexpectedly'))).toBe(false);
+  });
+
+  describe('getInvoiceValidationFailuresConfig', () => {
+    it('returns undefined when table name env var is missing', () => {
+      expect(getInvoiceValidationFailuresConfig({})).toBeUndefined();
+    });
+
+    it('returns config when table name env var is set', () => {
+      expect(getInvoiceValidationFailuresConfig({
+        INVOICE_VALIDATION_FAILURES_TABLE_NAME: 'finance-agent-invoice-validation-failures',
+      })).toEqual({
+        tableName: 'finance-agent-invoice-validation-failures',
+      });
+    });
   });
 });

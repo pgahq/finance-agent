@@ -206,6 +206,10 @@ Resources:
                   - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:finance-agent-*
               - Effect: Allow
                 Action:
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt InvoiceValidationFailuresTable.Arn
+              - Effect: Allow
+                Action:
                   - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
@@ -634,6 +638,7 @@ Resources:
       Environment:
         Variables:
           ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+          INVOICE_VALIDATION_FAILURES_TABLE_NAME: !Ref InvoiceValidationFailuresTable
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup

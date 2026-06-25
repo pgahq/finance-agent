@@ -3,6 +3,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
+import { clearInvoiceValidationFailure, getInvoiceValidationFailuresConfig } from './lib/invoice_validation_failures.js';
 import { getWorkdayConfig, executeWorkdayQuery, getInboundEmailsForOCRInvoices } from './lib/workday.js';
 import type { InvoiceData } from './lib/types.js';
 
@@ -131,6 +132,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const invoice = invoices[0];
     const emailContext = emailMap.get(invoice.workdayID);
     const enrichedInvoice: InvoiceData = { ...invoice, emailContext };
+
+    const validationFailuresConfig = getInvoiceValidationFailuresConfig(process.env);
+    await clearInvoiceValidationFailure(validationFailuresConfig, invoice.workdayID);
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-EnrichInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
