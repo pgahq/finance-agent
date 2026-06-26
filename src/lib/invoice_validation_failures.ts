@@ -1,5 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 
 const TABLE_NAME_ENV = 'INVOICE_VALIDATION_FAILURES_TABLE_NAME';
 const VALIDATION_ERROR_PATTERN = /Validation_Fault|validation(?:[_\s-]+fault|[_\s-]+error)|validation fault/i;
@@ -277,6 +277,29 @@ export async function recordInvoiceValidationFailure(
       errorMessage,
     },
   }));
+}
+
+export async function clearInvoiceValidationFailure(
+  config: InvoiceValidationFailuresConfig | undefined,
+  invoiceWorkdayID: string,
+): Promise<void> {
+  if (!config || !invoiceWorkdayID) {
+    return;
+  }
+
+  try {
+    await getDocumentClient().send(new DeleteCommand({
+      TableName: config.tableName,
+      Key: { invoiceWorkdayID },
+      ConditionExpression: 'attribute_exists(invoiceWorkdayID)',
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function isInvoiceMarkedForSkip(
