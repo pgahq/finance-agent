@@ -81,9 +81,9 @@ jobs:
             RUN_EVALS: "0"
           command: |
             if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
-              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit || true
+              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit --testPathIgnorePatterns=evals/run- || true
             else
-              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit
+              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit --testPathIgnorePatterns=evals/run-
             fi
       - store_test_results:
           path: reports

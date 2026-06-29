@@ -50,7 +50,7 @@ export function getEmbeddingRequestConfig(): {
 
   return {
     url: 'https://api.openai.com/v1/embeddings',
-    apiKey: process.env.OPENAI_API_KEY || process.env.EVALS_API_KEY || 'MISSING_KEY',
+    apiKey: process.env.OPENAI_API_KEY || 'MISSING_KEY',
     model: 'text-embedding-3-small',
   };
 }
