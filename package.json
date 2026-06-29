@@ -13,7 +13,7 @@
     "prebuild": "npm run clean",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "eval": "RUN_EVALS=1 jest evals",
+    "eval": "RUN_EVALS=1 jest --testPathPattern=evals/run-",
     "eval:db:up": "docker compose -f docker-compose.eval.yml up -d",
     "eval:db:down": "docker compose -f docker-compose.eval.yml down -v",
     "eval:seed": "RUN_EVALS=1 tsx evals/seed-rag-fixtures.ts"

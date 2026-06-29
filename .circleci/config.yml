@@ -78,6 +78,7 @@ jobs:
           name: Run tests
           environment:
             JEST_JUNIT_OUTPUT_DIR: reports
+            RUN_EVALS: "0"
           command: |
             if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
               npm run test:coverage -- --ci --reporters=default --reporters=jest-junit || true
@@ -141,7 +142,7 @@ jobs:
       - checkout
       - run:
           name: Install dependencies
-          command: npm ci
+          command: npm install
       - run:
           name: Wait for Postgres
           command: |
