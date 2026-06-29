@@ -13,7 +13,7 @@
     "prebuild": "npm run clean",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "eval": "RUN_EVALS=1 jest --runInBand --forceExit --testTimeout=180000 --testPathPattern=evals/run-",
+    "eval": "RUN_EVALS=1 jest --config jest.eval.config.js --runInBand --forceExit --testTimeout=180000",
     "eval:embeddings": "RUN_EVALS=1 tsx evals/generate-fixture-embeddings.ts",
     "eval:db:up": "docker compose -f docker-compose.eval.yml up -d",
     "eval:db:down": "docker compose -f docker-compose.eval.yml down -v",

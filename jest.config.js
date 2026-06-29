@@ -8,9 +8,7 @@ export default {
   },
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.ts', '**/evals/**/*.test.ts'],
-  testPathIgnorePatterns: process.env.RUN_EVALS === '1'
-    ? []
-    : ['<rootDir>/evals/run-'],
+  testPathIgnorePatterns: ['<rootDir>/evals/run-'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',

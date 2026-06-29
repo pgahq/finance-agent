@@ -81,9 +81,9 @@ jobs:
             RUN_EVALS: "0"
           command: |
             if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
-              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit --testPathIgnorePatterns=evals/run- || true
+              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit || true
             else
-              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit --testPathIgnorePatterns=evals/run-
+              RUN_EVALS=0 npm run test:coverage -- --ci --reporters=default --reporters=jest-junit
             fi
       - store_test_results:
           path: reports
@@ -166,9 +166,9 @@ jobs:
               exit 1
             fi
             npm run eval:seed
-            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-validation-field.test.ts || exit 1
-            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-invoice-line-merge.test.ts || exit 1
-            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-supplier-rag.test.ts || exit 1
+            RUN_EVALS=1 npx jest --config jest.eval.config.js --runInBand --forceExit --testTimeout=180000 evals/run-validation-field.test.ts || exit 1
+            RUN_EVALS=1 npx jest --config jest.eval.config.js --runInBand --forceExit --testTimeout=180000 evals/run-invoice-line-merge.test.ts || exit 1
+            RUN_EVALS=1 npx jest --config jest.eval.config.js --runInBand --forceExit --testTimeout=180000 evals/run-supplier-rag.test.ts || exit 1
       - store_test_results:
           path: reports
           when: always
