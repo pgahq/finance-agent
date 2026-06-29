@@ -1,6 +1,7 @@
 import './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { error, info } from '@pga/logger';
 import { bulkInsertDocuments, getDatabaseConnection } from '../src/lib/database.js';
 import { createEmbedding } from '../src/lib/rag.js';
 import { requireEvalEnv } from './setup.js';
@@ -44,13 +45,13 @@ async function main(): Promise<void> {
     }
 
     await bulkInsertDocuments(db, documents);
-    console.log(`Seeded ${documents.length} supplier documents for evals`);
+    info(`Seeded ${documents.length} supplier documents for evals`);
   } finally {
     await db.close();
   }
 }
 
-main().catch(error => {
-  console.error(error);
+main().catch(err => {
+  error(err);
   process.exit(1);
 });

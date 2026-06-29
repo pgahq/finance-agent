@@ -1,3 +1,4 @@
+import { info } from '@pga/logger';
 import './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -62,8 +63,8 @@ describeEval('supplier RAG eval', () => {
     const hitAt1 = aggregateHitRate(hitScores, 1);
     const hitAt3 = aggregateHitRate(hitScores, 3);
 
-    console.log(`\nHit@1: ${(hitAt1 * 100).toFixed(1)}%`);
-    console.log(`Hit@3: ${(hitAt3 * 100).toFixed(1)}%`);
+    info(`\nHit@1: ${(hitAt1 * 100).toFixed(1)}%`);
+    info(`Hit@3: ${(hitAt3 * 100).toFixed(1)}%`);
 
     assertReport(report, MIN_HIT_AT_3);
     expect(hitAt1).toBeGreaterThanOrEqual(MIN_HIT_AT_1);

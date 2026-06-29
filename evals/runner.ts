@@ -1,3 +1,5 @@
+import { info } from '@pga/logger';
+
 export interface EvalCaseResult {
   id: string;
   passed: boolean;
@@ -28,11 +30,11 @@ export function buildReport(name: string, results: EvalCaseResult[]): EvalReport
 }
 
 export function printReport(report: EvalReport): void {
-  console.log(`\n=== ${report.name} ===`);
-  console.log(`Passed: ${report.passed}/${report.total} (${(report.accuracy * 100).toFixed(1)}%)`);
+  info(`\n=== ${report.name} ===`);
+  info(`Passed: ${report.passed}/${report.total} (${(report.accuracy * 100).toFixed(1)}%)`);
 
   for (const result of report.results.filter(r => !r.passed)) {
-    console.log(`  FAIL ${result.id}: ${result.details ?? 'no details'}`);
+    info(`  FAIL ${result.id}: ${result.details ?? 'no details'}`);
   }
 }
 

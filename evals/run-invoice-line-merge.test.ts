@@ -1,9 +1,10 @@
+import { info } from '@pga/logger';
 import './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildFinalInvoiceLines } from '../src/lib/invoice_lines.js';
 import type { PurchaseOrderLine } from '../src/lib/workday.js';
-import { buildReport, type EvalCaseResult } from './runner.js';
+import { buildReport, printReport, type EvalCaseResult } from './runner.js';
 import {
   aggregateFieldAccuracy,
   scoreInvoiceLineMergeCase,
@@ -55,15 +56,7 @@ describeEval('invoice line merge eval', () => {
   }, 300000);
 });
 
-function printReport(report: ReturnType<typeof buildReport>): void {
-  console.log(`\n=== ${report.name} ===`);
-  console.log(`Case pass rate: ${report.passed}/${report.total} (${(report.accuracy * 100).toFixed(1)}%)`);
-  for (const result of report.results.filter(r => !r.passed)) {
-    console.log(`  FAIL ${result.id}: ${result.details ?? 'no details'}`);
-  }
-}
-
 function printFieldAccuracy(fieldScores: ReturnType<typeof scoreInvoiceLineMergeCase>['fieldScores']): void {
   const accuracy = aggregateFieldAccuracy(fieldScores);
-  console.log(`\nPer-field accuracy: ${(accuracy * 100).toFixed(1)}%`);
+  info(`\nPer-field accuracy: ${(accuracy * 100).toFixed(1)}%`);
 }

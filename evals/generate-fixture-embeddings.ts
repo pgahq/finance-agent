@@ -1,6 +1,7 @@
 import './setup.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { error, info } from '@pga/logger';
 import { createEmbedding } from '../src/lib/rag.js';
 import { requireEvalEnv } from './setup.js';
 
@@ -28,10 +29,10 @@ async function main(): Promise<void> {
   }
 
   writeFileSync(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`);
-  console.log(`Updated embeddings for ${fixture.documents.length} supplier documents`);
+  info(`Updated embeddings for ${fixture.documents.length} supplier documents`);
 }
 
-main().catch(error => {
-  console.error(error);
+main().catch(err => {
+  error(err);
   process.exit(1);
 });
