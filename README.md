@@ -262,7 +262,30 @@ Eval suites:
 | `invoice-line-merge` | Invoice line → PO worktag mapping |
 | `supplier-rag` | Supplier query → correct `workday_id` in top 3 |
 
-CircleCI runs unit tests and evals on every push (`build` + `eval` jobs in `build-deploy`). A failing eval blocks the workflow and merge. The `eval` job uses `EVALS_API_KEY` from the `chatbot-development` context and an ephemeral pgvector sidecar. Local `npm test` skips live evals unless `RUN_EVALS=1`.
+CircleCI runs unit tests on every push. Live evals run **only when AI-related files change** (see `evals/should-run-eval.sh`) — they still block merge/deploy when triggered, but skip on docs-only or unrelated PRs to save API cost.
+
+When evals run, they use `gpt-5.4-mini` via `EVAL_LLM_MODEL`, a single structured-output call for line merge (no tool pass), and skip IVFFlat indexing on the ephemeral eval database. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
+
+```bash
+# Start local eval database (pgvector on port 5433)
+npm run eval:db:up
+
+export EVAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finance_agent_eval
+export EVALS_API_KEY=sk-...   # or OPENAI_API_KEY
+
+npm run eval:seed             # embed + load supplier fixtures
+npm run eval                  # RUN_EVALS=1 jest evals/run-*
+```
+
+Eval suites:
+
+| Suite | What it measures |
+| --- | --- |
+| `validation-field-classifier` | Workday fault → retry field classification |
+| `invoice-line-merge` | Invoice line → PO worktag mapping |
+| `supplier-rag` | Supplier query → correct `workday_id` in top 3 |
+
+The `eval` job uses `EVALS_API_KEY` from the `chatbot-development` context and an ephemeral pgvector sidecar. Local `npm test` skips live evals unless `RUN_EVALS=1`.
 
 ## 🚀 Deployment
 

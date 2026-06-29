@@ -22,6 +22,25 @@ export async function getAiResponse({
   tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
+    const resolvedModel = process.env.RUN_EVALS === '1' && process.env.EVAL_LLM_MODEL
+      ? process.env.EVAL_LLM_MODEL
+      : model;
+    const hasTools = tools !== undefined
+      ? Object.keys(tools).length > 0
+      : true;
+
+    if (schema && !hasTools) {
+      const structuredResult = await generateText({
+        model: openai(resolvedModel),
+        messages,
+        system: prompt,
+        output: Output.object({ schema }),
+        temperature: 0.1,
+      });
+
+      return structuredResult.output;
+    }
+
     // Step 1: Generate text with tools (if needed)
     let systemPrompt = prompt;
     
@@ -41,7 +60,7 @@ export async function getAiResponse({
     }
     
     const generateTextOptions: any = {
-      model: openai(model),
+      model: openai(resolvedModel),
       messages,
       system: systemPrompt,
       stopWhen: stepCountIs(10),
@@ -67,7 +86,7 @@ export async function getAiResponse({
 
     // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
     const structuredResult = await generateText({
-      model: openai(model),
+      model: openai(resolvedModel),
       messages: [
         ...messages,
         ...textResult.response.messages,

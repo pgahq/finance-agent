@@ -12,6 +12,7 @@ interface SupplierFixtureDocument {
   type: 'supplier';
   content: string;
   metadata: Record<string, unknown>;
+  embedding?: number[];
 }
 
 async function main(): Promise<void> {
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
 
     const documents = [];
     for (const document of fixture.documents) {
-      const embedding = await createEmbedding(document.content);
+      const embedding = document.embedding ?? await createEmbedding(document.content);
       documents.push({
         workdayId: document.workday_id,
         type: document.type,

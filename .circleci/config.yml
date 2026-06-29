@@ -152,11 +152,15 @@ jobs:
               sleep 1
             done
       - run:
-          name: Seed eval database
-          command: npm run eval:seed
-      - run:
-          name: Run evals
-          command: npm run eval
+          name: Run evals when AI paths change
+          command: |
+            chmod +x evals/should-run-eval.sh
+            if ! evals/should-run-eval.sh; then
+              echo "Skipping live evals (no AI-related diff)"
+              exit 0
+            fi
+            npm run eval:seed
+            npm run eval
 
 workflows:
   version: 2

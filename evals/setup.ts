@@ -3,6 +3,10 @@ process.env.OPENAI_API_KEY =
   ?? process.env.OPENAI_API_KEY
   ?? '';
 
+if (process.env.RUN_EVALS === '1' && !process.env.EVAL_LLM_MODEL) {
+  process.env.EVAL_LLM_MODEL = 'gpt-5.4-mini';
+}
+
 export function requireEvalEnv(): void {
   if (process.env.RUN_EVALS !== '1') {
     return;
