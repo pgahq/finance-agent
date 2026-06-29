@@ -95,7 +95,7 @@
     {
       "workday_id": "wid-inactive-vendor-006",
       "type": "supplier",
-      "content": "Company Name: Inactive Vendor LLC\nPhone: 555-867-5309\nEmail: old@inactive.com\nStatus: Inactive",
+      "content": "Company Name: Inactive Vendor LLC\nPhone: 555-999-0000\nEmail: old@inactive.com\nStatus: Inactive",
       "metadata": { "supplierName": "Inactive Vendor LLC", "supplierStatus": "Inactive" }
     }
   ]

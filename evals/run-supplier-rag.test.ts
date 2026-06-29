@@ -2,6 +2,7 @@ import './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { queryDocuments } from '../src/lib/rag.js';
+import { getDatabaseConnection } from '../src/lib/database.js';
 import { assertReport, buildReport, type EvalCaseResult } from './runner.js';
 import {
   aggregateHitRate,
@@ -22,6 +23,13 @@ describeEval('supplier RAG eval', () => {
 
     if (!process.env.EVAL_DATABASE_URL) {
       throw new Error('supplier RAG eval requires EVAL_DATABASE_URL (run npm run eval:seed first)');
+    }
+  });
+
+  afterAll(async () => {
+    if (process.env.EVAL_DATABASE_URL) {
+      const db = await getDatabaseConnection(process.env);
+      await db.close();
     }
   });
 
