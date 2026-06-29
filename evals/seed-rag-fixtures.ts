@@ -2,8 +2,9 @@ import './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { error, info } from '@pga/logger';
-import { bulkInsertDocuments, getDatabaseConnection } from '../src/lib/database.js';
+import { bulkInsertDocuments } from '../src/lib/database.js';
 import { createEmbedding } from '../src/lib/rag.js';
+import { getEvalDatabaseConnection } from './database.js';
 import { requireEvalEnv } from './setup.js';
 
 const fixturePath = join(process.cwd(), 'evals/fixtures/supplier-rag.json');
@@ -20,15 +21,15 @@ async function main(): Promise<void> {
   process.env.RUN_EVALS = '1';
   requireEvalEnv();
 
-  if (!process.env.DATABASE_URL) {
-    throw new Error('eval:seed requires EVAL_DATABASE_URL (or DATABASE_URL)');
+  if (!process.env.EVAL_DATABASE_URL) {
+    throw new Error('eval:seed requires EVAL_DATABASE_URL');
   }
 
   const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
     documents: SupplierFixtureDocument[];
   };
 
-  const db = await getDatabaseConnection(process.env);
+  const db = await getEvalDatabaseConnection();
   try {
     await db.query(`DELETE FROM documents WHERE type = 'supplier'`);
 

@@ -6,7 +6,8 @@ import { classifyWorkdayValidationField } from '../src/lib/workday_validation_fi
 import { buildFinalInvoiceLines } from '../src/lib/invoice_lines.js';
 import type { PurchaseOrderLine } from '../src/lib/workday.js';
 import { queryDocuments } from '../src/lib/rag.js';
-import { getDatabaseConnection } from '../src/lib/database.js';
+import type { DatabaseConnection } from '../src/lib/database.js';
+import { getEvalDatabaseConnection } from './database.js';
 import { assertReport, buildReport, printReport, type EvalCaseResult } from './runner.js';
 import {
   aggregateFieldAccuracy,
@@ -91,14 +92,13 @@ describeEval('live model evals', () => {
   });
 
   describe('supplier RAG', () => {
-    beforeAll(() => {
-      if (!process.env.DATABASE_URL) {
-        throw new Error('supplier RAG eval requires EVAL_DATABASE_URL (run npm run eval:seed first)');
-      }
+    let db: DatabaseConnection;
+
+    beforeAll(async () => {
+      db = await getEvalDatabaseConnection();
     });
 
     afterAll(async () => {
-      const db = await getDatabaseConnection(process.env);
       await db.close();
     });
 
@@ -117,7 +117,7 @@ describeEval('live model evals', () => {
           documentType: 'supplier',
           limit: testCase.matchRank ?? 3,
           similarityThreshold: 0,
-        });
+        }, db);
 
         const score = scoreSupplierRagCase(testCase, ragResults);
         hitScores.push(score);

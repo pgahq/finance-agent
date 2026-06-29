@@ -1,7 +1,3 @@
-if (process.env.EVAL_DATABASE_URL) {
-  process.env.DATABASE_URL ??= process.env.EVAL_DATABASE_URL;
-}
-
 export function requireEvalEnv(): void {
   if (process.env.RUN_EVALS !== '1') {
     return;
