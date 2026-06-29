@@ -3,6 +3,7 @@ import { openai } from '@ai-sdk/openai';
 import { ToolLoopAgent, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 import type { WorkdayValidationDetails } from './invoice_validation_failures.js';
+import { temperatureOption } from './model_generation_options.js';
 
 export type WorkdayValidationRetryField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
 
@@ -32,8 +33,9 @@ function getValidationFieldModel(): string {
 export async function classifyWorkdayValidationField(
   input: WorkdayValidationFieldInput
 ): Promise<WorkdayValidationFieldDecision> {
+  const model = getValidationFieldModel();
   const agent = new ToolLoopAgent({
-    model: openai(getValidationFieldModel()),
+    model: openai(model),
     instructions: `You classify Workday Supplier Invoice validation faults.
 
 Use only the validation message, detail message, and XPath returned by inspectValidationError.
@@ -58,7 +60,7 @@ When finished, call done exactly once.`,
     },
     toolChoice: 'required',
     stopWhen: stepCountIs(3),
-    temperature: 0,
+    ...temperatureOption(model, 0),
     prepareStep: ({ stepNumber }) => {
       if (stepNumber === 0) {
         return {

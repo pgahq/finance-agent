@@ -66,7 +66,6 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
@@ -87,7 +86,6 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
@@ -133,7 +131,6 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }],
         system: expect.stringContaining('Test prompt'),
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
@@ -147,7 +144,6 @@ describe('AI utilities', () => {
         ]),
         system: expect.any(String),
         output: 'mocked-output-object',
-        temperature: 0.1
       });
       expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
 
@@ -186,9 +182,21 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'payload' }],
         system: 'Merge lines',
         output: 'mocked-output-object',
-        temperature: 0.1,
       });
       expect(result).toEqual({ lines: [] });
+    });
+
+    it('should pass temperature for models that support it', async () => {
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: undefined,
+        messages: [{ role: 'user', content: 'Test message' }],
+        model: 'gpt-4o',
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledWith(expect.objectContaining({
+        temperature: 0.2,
+      }));
     });
 
     it('should handle API errors', async () => {

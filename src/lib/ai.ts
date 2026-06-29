@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
+import { temperatureOption } from './model_generation_options.js';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 
 // Set OpenAI API key globally
@@ -33,7 +34,7 @@ export async function getAiResponse({
         messages,
         system: prompt,
         output: Output.object({ schema }),
-        temperature: 0.1,
+        ...temperatureOption(model, 0.1),
       });
 
       return structuredResult.output;
@@ -62,7 +63,7 @@ export async function getAiResponse({
       messages,
       system: systemPrompt,
       stopWhen: stepCountIs(10),
-      temperature: 0.2,
+      ...temperatureOption(model, 0.2),
       tools: tools ?? {
         findSuppliers: findSuppliersTool,
         findCompanies: findCompaniesTool,
@@ -92,7 +93,7 @@ export async function getAiResponse({
       ],
       system: prompt,
       output: Output.object({ schema }),
-      temperature: 0.1
+      ...temperatureOption(model, 0.1)
     });
 
     return structuredResult.output;
