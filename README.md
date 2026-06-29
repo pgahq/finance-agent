@@ -239,6 +239,31 @@ npm run test:coverage      # Run with coverage
 
 Tests cover all core functions including supplier sync, invoice processing, AI integration, handler architecture, and Workday API interactions.
 
+### AI evals
+
+Unit tests mock all OpenAI calls. Evals run live model checks against JSON fixtures in `evals/`.
+
+```bash
+# Start local eval database (pgvector on port 5433)
+npm run eval:db:up
+
+export EVAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finance_agent_eval
+export EVALS_API_KEY=sk-...   # or OPENAI_API_KEY
+
+npm run eval:seed             # embed + load supplier fixtures
+npm run eval                  # RUN_EVALS=1 jest evals
+```
+
+Eval suites:
+
+| Suite | What it measures |
+| --- | --- |
+| `validation-field-classifier` | Workday fault → retry field classification |
+| `invoice-line-merge` | Invoice line → PO worktag mapping |
+| `supplier-rag` | Supplier query → correct `workday_id` in top 3 |
+
+CircleCI runs evals nightly on `main` via the `eval` job (`EVALS_API_KEY` + ephemeral pgvector). Evals are skipped during `npm test` unless `RUN_EVALS=1`.
+
 ## 🚀 Deployment
 
 Deployment is automated via CircleCI:

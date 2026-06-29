@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "id": "one-line-matches-po-by-description",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "PGA Championship catering", "quantity": 1, "totalPrice": "$5,000.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-001",
+            "description": "2026 PGA Championship - catering services",
+            "costCenterId": "72200",
+            "fundId": "FD-001",
+            "spendCategoryId": "SC-EVENT",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-001",
+            "costCenterId": "72200",
+            "fundId": "FD-001",
+            "spendCategoryId": "SC-EVENT",
+            "extendedAmount": 5000
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-invoice-lines-one-po-line",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Software license renewal", "totalPrice": "$1,200.00" },
+          { "description": "Annual support plan", "totalPrice": "$800.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-100",
+            "description": "Technology software subscription",
+            "costCenterId": "71000",
+            "fundId": "FD-TECH",
+            "spendCategoryId": "SC-SOFTWARE",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-100",
+            "costCenterId": "71000",
+            "fundId": "FD-TECH",
+            "spendCategoryId": "SC-SOFTWARE",
+            "extendedAmount": 1200
+          },
+          {
+            "lineOrder": 2,
+            "purchaseOrderLineId": "PO-LINE-100",
+            "costCenterId": "71000",
+            "fundId": "FD-TECH",
+            "spendCategoryId": "SC-SOFTWARE",
+            "extendedAmount": 800
+          }
+        ]
+      }
+    },
+    {
+      "id": "email-only-cost-center",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Consulting services", "totalPrice": "$2,500.00" }
+        ],
+        "purchaseOrderLines": [],
+        "emailBody": "Please code this to cost center 72200 for membership services.",
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "costCenterId": "72200",
+            "extendedAmount": 2500
+          }
+        ]
+      }
+    },
+    {
+      "id": "shared-po-worktags-applied-to-all-lines",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Printing services", "totalPrice": "$300.00" },
+          { "description": "Shipping and handling", "totalPrice": "$50.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-200",
+            "description": "Office printing",
+            "costCenterId": "73000",
+            "fundId": "FD-GEN",
+            "spendCategoryId": "SC-OFFICE",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          },
+          {
+            "lineOrder": 2,
+            "purchaseOrderLineId": "PO-LINE-201",
+            "description": "Office printing",
+            "costCenterId": "73000",
+            "fundId": "FD-GEN",
+            "spendCategoryId": "SC-OFFICE",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "costCenterId": "73000",
+            "fundId": "FD-GEN",
+            "spendCategoryId": "SC-OFFICE",
+            "extendedAmount": 300
+          },
+          {
+            "lineOrder": 2,
+            "costCenterId": "73000",
+            "fundId": "FD-GEN",
+            "spendCategoryId": "SC-OFFICE",
+            "extendedAmount": 50
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-worktag-from-po",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "2026 PGA Championship signage", "totalPrice": "$4,500.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-300",
+            "description": "Championship event signage",
+            "costCenterId": "72200",
+            "fundId": "FD-EVENT",
+            "spendCategoryId": "SC-EVENT",
+            "worktagsReference": [
+              {
+                "ID": [
+                  { "$attributes": { "type": "Organization_Reference_ID" }, "$value": "2026-PGA_Championship" }
+                ]
+              },
+              {
+                "ID": [
+                  { "$attributes": { "type": "Organization_Reference_ID" }, "$value": "LOB-Technology_Services" }
+                ]
+              }
+            ],
+            "shipToAddressId": "ADDR-001"
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-300",
+            "costCenterId": "72200",
+            "fundId": "FD-EVENT",
+            "spendCategoryId": "SC-EVENT",
+            "lineOfBusinessId": "LOB-Technology_Services",
+            "eventId": "2026-PGA_Championship",
+            "extendedAmount": 4500
+          }
+        ]
+      }
+    },
+    {
+      "id": "amount-parsing-with-commas",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Equipment rental", "unitCost": "$1,000.00", "totalPrice": "$1,000.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-400",
+            "description": "Equipment rental services",
+            "costCenterId": "74000",
+            "fundId": "FD-OPS",
+            "spendCategoryId": "SC-EQUIP",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-400",
+            "costCenterId": "74000",
+            "fundId": "FD-OPS",
+            "spendCategoryId": "SC-EQUIP",
+            "extendedAmount": 1000
+          }
+        ]
+      }
+    },
+    {
+      "id": "best-match-po-among-multiple-lines",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Legal review for membership agreement", "totalPrice": "$3,200.00" }
+        ],
+        "purchaseOrderLines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-501",
+            "description": "Catering for board meeting",
+            "costCenterId": "72100",
+            "fundId": "FD-GEN",
+            "spendCategoryId": "SC-CATERING",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          },
+          {
+            "lineOrder": 2,
+            "purchaseOrderLineId": "PO-LINE-502",
+            "description": "Outside legal counsel - membership",
+            "costCenterId": "72500",
+            "fundId": "FD-LEGAL",
+            "spendCategoryId": "SC-LEGAL",
+            "worktagsReference": [],
+            "shipToAddressId": null
+          }
+        ],
+        "emailBody": null,
+        "fallbackIds": {}
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "purchaseOrderLineId": "PO-LINE-502",
+            "costCenterId": "72500",
+            "fundId": "FD-LEGAL",
+            "spendCategoryId": "SC-LEGAL",
+            "extendedAmount": 3200
+          }
+        ]
+      }
+    },
+    {
+      "id": "fallback-ids-fill-missing-worktags",
+      "input": {
+        "extractedInvoiceLines": [
+          { "description": "Miscellaneous supplies", "totalPrice": "$125.00" }
+        ],
+        "purchaseOrderLines": [],
+        "emailBody": null,
+        "fallbackIds": {
+          "fundId": "FD-FALLBACK",
+          "costCenterId": "CC-FALLBACK",
+          "spendCategoryId": "SC-FALLBACK"
+        }
+      },
+      "expected": {
+        "lines": [
+          {
+            "lineOrder": 1,
+            "costCenterId": "CC-FALLBACK",
+            "fundId": "FD-FALLBACK",
+            "spendCategoryId": "SC-FALLBACK",
+            "extendedAmount": 125
+          }
+        ]
+      }
+    }
+  ]
+}

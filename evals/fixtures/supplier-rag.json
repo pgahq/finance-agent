@@ -1,0 +1,102 @@
+{
+  "cases": [
+    {
+      "id": "exact-company-name",
+      "query": "Acme Office Supplies Inc",
+      "expectedWorkdayId": "wid-acme-001",
+      "matchRank": 3
+    },
+    {
+      "id": "phone-number-lookup",
+      "query": "555-867-5309",
+      "expectedWorkdayId": "wid-acme-001",
+      "matchRank": 3
+    },
+    {
+      "id": "email-lookup",
+      "query": "billing@acme.com",
+      "expectedWorkdayId": "wid-acme-001",
+      "matchRank": 3
+    },
+    {
+      "id": "partial-company-name",
+      "query": "Acme Office",
+      "expectedWorkdayId": "wid-acme-001",
+      "matchRank": 3
+    },
+    {
+      "id": "alternate-name-dba",
+      "query": "Acme Office DBA Quick Supply",
+      "expectedWorkdayId": "wid-acme-001",
+      "matchRank": 3
+    },
+    {
+      "id": "near-duplicate-picks-correct-supplier",
+      "query": "Summit Golf Equipment LLC",
+      "expectedWorkdayId": "wid-summit-golf-002",
+      "matchRank": 3
+    },
+    {
+      "id": "summit-not-summit-services",
+      "query": "Summit Golf",
+      "expectedWorkdayId": "wid-summit-golf-002",
+      "matchRank": 3
+    },
+    {
+      "id": "green-lawn-by-phone",
+      "query": "555-123-4567",
+      "expectedWorkdayId": "wid-green-lawn-003",
+      "matchRank": 3
+    },
+    {
+      "id": "pacific-events-exact",
+      "query": "Pacific Events Group",
+      "expectedWorkdayId": "wid-pacific-events-004",
+      "matchRank": 3
+    },
+    {
+      "id": "pacific-events-partial",
+      "query": "Pacific Events",
+      "expectedWorkdayId": "wid-pacific-events-004",
+      "matchRank": 3
+    }
+  ],
+  "documents": [
+    {
+      "workday_id": "wid-acme-001",
+      "type": "supplier",
+      "content": "Company Name: Acme Office Supplies Inc\nAlternate Names: Acme Office DBA Quick Supply\nPhone: 555-867-5309\nEmail: billing@acme.com\nStatus: Active",
+      "metadata": { "supplierName": "Acme Office Supplies Inc", "supplierStatus": "Active" }
+    },
+    {
+      "workday_id": "wid-summit-golf-002",
+      "type": "supplier",
+      "content": "Company Name: Summit Golf Equipment LLC\nPhone: 555-222-3333\nEmail: orders@summitgolf.com\nStatus: Active",
+      "metadata": { "supplierName": "Summit Golf Equipment LLC", "supplierStatus": "Active" }
+    },
+    {
+      "workday_id": "wid-summit-services-005",
+      "type": "supplier",
+      "content": "Company Name: Summit Services Group\nPhone: 555-222-4444\nEmail: ap@summitservices.com\nStatus: Active",
+      "metadata": { "supplierName": "Summit Services Group", "supplierStatus": "Active" }
+    },
+    {
+      "workday_id": "wid-green-lawn-003",
+      "type": "supplier",
+      "content": "Company Name: Green Lawn Maintenance Co\nPhone: 555-123-4567\nEmail: invoices@greenlawn.com\nStatus: Active",
+      "metadata": { "supplierName": "Green Lawn Maintenance Co", "supplierStatus": "Active" }
+    },
+    {
+      "workday_id": "wid-pacific-events-004",
+      "type": "supplier",
+      "content": "Company Name: Pacific Events Group\nPhone: 555-444-5555\nEmail: events@pacificevents.com\nStatus: Active",
+      "metadata": { "supplierName": "Pacific Events Group", "supplierStatus": "Active" }
+    },
+    {
+      "workday_id": "wid-inactive-vendor-006",
+      "type": "supplier",
+      "content": "Company Name: Inactive Vendor LLC\nPhone: 555-867-5309\nEmail: old@inactive.com\nStatus: Inactive",
+      "metadata": { "supplierName": "Inactive Vendor LLC", "supplierStatus": "Inactive" }
+    }
+  ]
+}

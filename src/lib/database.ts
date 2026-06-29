@@ -62,6 +62,18 @@ export const ENABLE_PGVECTOR = `CREATE EXTENSION IF NOT EXISTS vector;`;
 
 // Get database configuration from environment and Secrets Manager
 export async function getDatabaseConfig(env: NodeJS.ProcessEnv): Promise<DatabaseConfig> {
+  if (env.EVAL_DATABASE_URL) {
+    const url = new URL(env.EVAL_DATABASE_URL);
+
+    return {
+      host: url.hostname,
+      port: Number(url.port || 5432),
+      database: url.pathname.slice(1),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+    };
+  }
+
   const secretArn = env.DATABASE_SECRET_ARN;
   const clusterEndpoint = env.DATABASE_CLUSTER_ENDPOINT;
   const databaseName = env.DATABASE_NAME || 'finance_agent';

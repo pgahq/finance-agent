@@ -124,6 +124,39 @@ jobs:
       INVOICE_MOD_ENABLED: "false"
       FALLBACK_SPEND_CATEGORY_ID: ""
 
+  eval:
+    working_directory: ~/app
+    docker:
+      - image: cimg/node:20.11.0
+        environment:
+          RUN_EVALS: "1"
+          EVALS_API_KEY: $EVALS_API_KEY
+          EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_agent_eval
+      - image: pgvector/pgvector:pg15
+        environment:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finance_agent_eval
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Wait for Postgres
+          command: |
+            sudo apt-get update && sudo apt-get install -y postgresql-client
+            for i in $(seq 1 30); do
+              pg_isready -h localhost -p 5432 -U postgres && break
+              sleep 1
+            done
+      - run:
+          name: Seed eval database
+          command: npm run eval:seed
+      - run:
+          name: Run evals
+          command: npm run eval
+
 workflows:
   version: 2
   build-deploy:
@@ -143,3 +176,14 @@ workflows:
           filters:
             branches:
               only: main
+
+  eval-nightly:
+    triggers:
+      - schedule:
+          cron: "0 6 * * *"
+          filters:
+            branches:
+              only: main
+    jobs:
+      - eval:
+          context: chatbot-development
