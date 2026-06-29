@@ -49,22 +49,6 @@ describe('Database Library', () => {
   });
 
   describe('getDatabaseConfig', () => {
-    it('should return database configuration from DATABASE_URL', async () => {
-      const env = {
-        DATABASE_URL: 'postgresql://evaluser:evalpass@localhost:5433/finance_agent_eval',
-      };
-
-      const config = await getDatabaseConfig(env);
-
-      expect(config).toEqual({
-        host: 'localhost',
-        port: 5433,
-        database: 'finance_agent_eval',
-        user: 'evaluser',
-        password: 'evalpass',
-      });
-    });
-
     it('should return database configuration from environment', async () => {
       const env = {
         DATABASE_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',

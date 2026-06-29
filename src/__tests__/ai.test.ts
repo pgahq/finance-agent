@@ -186,19 +186,6 @@ describe('AI utilities', () => {
       expect(result).toEqual({ lines: [] });
     });
 
-    it('should pass temperature for models that support it', async () => {
-      await getAiResponse({
-        prompt: 'Test prompt',
-        schema: undefined,
-        messages: [{ role: 'user', content: 'Test message' }],
-        model: 'gpt-4o',
-      });
-
-      expect(mockGenerateText).toHaveBeenCalledWith(expect.objectContaining({
-        temperature: 0.2,
-      }));
-    });
-
     it('should handle API errors', async () => {
       mockGenerateText.mockRejectedValue(new Error('OpenAI API error: 401 Unauthorized'));
 

@@ -76,16 +76,13 @@ jobs:
             - ./node_modules
       - run:
           name: Run tests
-          no_output_timeout: 15m
           environment:
             JEST_JUNIT_OUTPUT_DIR: reports
-            RUN_EVALS: "0"
           command: |
-            mkdir -p reports
             if [ "$CIRCLE_BRANCH" = "sandbox" ]; then
-              RUN_EVALS=0 npm run test:coverage -- --ci --maxWorkers=2 --reporters=default --reporters=jest-junit || true
+              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit || true
             else
-              RUN_EVALS=0 npm run test:coverage -- --ci --maxWorkers=2 --reporters=default --reporters=jest-junit
+              npm run test:coverage -- --ci --reporters=default --reporters=jest-junit
             fi
       - store_test_results:
           path: reports
@@ -168,7 +165,6 @@ jobs:
               exit 1
             fi
             npm run eval:seed
-            mkdir -p reports
             RUN_EVALS=1 npm run eval
       - store_test_results:
           path: reports

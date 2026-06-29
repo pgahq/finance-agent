@@ -48,10 +48,8 @@ export const CREATE_DOCUMENTS_TABLE = `
 export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(type);`,
   `CREATE INDEX IF NOT EXISTS idx_documents_workday_id ON documents(workday_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`,
 ];
-
-const CREATE_IVFFLAT_INDEX =
-  `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`;
 
 // Migrations to run on every cold start (idempotent)
 export const MIGRATIONS = [
@@ -145,12 +143,6 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       // Create indexes
       for (const indexSql of CREATE_INDEXES) {
         await pool.query(indexSql);
-      }
-
-      try {
-        await pool.query(CREATE_IVFFLAT_INDEX);
-      } catch (error) {
-        debug('IVFFlat embedding index not created (often due to insufficient rows):', error);
       }
 
       // Run migrations

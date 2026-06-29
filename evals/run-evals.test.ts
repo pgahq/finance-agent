@@ -1,5 +1,5 @@
 import { info } from '@pga/logger';
-import './setup.js';
+import { requireEvalEnv } from './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyWorkdayValidationField } from '../src/lib/workday_validation_field_agent.js';
@@ -22,7 +22,6 @@ import {
   scoreValidationFieldCase,
   type ValidationFieldCase,
 } from './scorers/validation-field.js';
-import { requireEvalEnv } from './setup.js';
 
 const describeEval = process.env.RUN_EVALS === '1' ? describe : describe.skip;
 
@@ -99,10 +98,8 @@ describeEval('live model evals', () => {
     });
 
     afterAll(async () => {
-      if (process.env.DATABASE_URL) {
-        const db = await getDatabaseConnection(process.env);
-        await db.close();
-      }
+      const db = await getDatabaseConnection(process.env);
+      await db.close();
     });
 
     it('retrieves the expected supplier workday_id', async () => {
