@@ -5,14 +5,18 @@ function toGatewayModelId(model: string): string {
   return model.includes('/') ? model : `openai/${model}`;
 }
 
-function hasDirectOpenAiKey(): boolean {
-  return Boolean(process.env.EVALS_API_KEY || process.env.OPENAI_API_KEY);
+function hasUsableOpenAiKey(): boolean {
+  return Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'MISSING_KEY');
 }
 
-export function resolveEvalLanguageModel(model: string) {
+export function getConfiguredModel(defaultModel: string): string {
+  return (process.env.LLM_MODEL || defaultModel).replace(/^openai\//, '');
+}
+
+export function resolveLanguageModel(model: string) {
   const normalizedModel = model.replace(/^openai\//, '');
 
-  if (hasDirectOpenAiKey()) {
+  if (hasUsableOpenAiKey()) {
     return openai(normalizedModel);
   }
 
@@ -23,24 +27,20 @@ export function resolveEvalLanguageModel(model: string) {
   return openai(normalizedModel);
 }
 
-export function getEvalLanguageModel(): string {
-  return (process.env.EVAL_LLM_MODEL || 'gpt-5.4-mini').replace(/^openai\//, '');
-}
-
 export function getEmbeddingRequestConfig(): {
   url: string;
   apiKey: string;
   model: string;
 } {
-  if (process.env.RUN_EVALS === '1' && hasDirectOpenAiKey()) {
+  if (hasUsableOpenAiKey()) {
     return {
       url: 'https://api.openai.com/v1/embeddings',
-      apiKey: process.env.EVALS_API_KEY || process.env.OPENAI_API_KEY || 'MISSING_KEY',
+      apiKey: process.env.OPENAI_API_KEY!,
       model: 'text-embedding-3-small',
     };
   }
 
-  if (process.env.RUN_EVALS === '1' && process.env.AI_GATEWAY_API_KEY) {
+  if (process.env.AI_GATEWAY_API_KEY) {
     return {
       url: 'https://ai-gateway.vercel.sh/v1/embeddings',
       apiKey: process.env.AI_GATEWAY_API_KEY,
@@ -50,7 +50,7 @@ export function getEmbeddingRequestConfig(): {
 
   return {
     url: 'https://api.openai.com/v1/embeddings',
-    apiKey: process.env.OPENAI_API_KEY || 'MISSING_KEY',
+    apiKey: 'MISSING_KEY',
     model: 'text-embedding-3-small',
   };
 }

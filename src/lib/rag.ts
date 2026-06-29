@@ -2,7 +2,7 @@ import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { getDatabaseConnection, searchDocuments } from './database.js';
-import { getEmbeddingRequestConfig } from './eval_model.js';
+import { getEmbeddingRequestConfig } from './language_model.js';
 export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI

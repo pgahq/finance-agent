@@ -1,8 +1,7 @@
 import { debug } from '@pga/logger';
-import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { getEvalLanguageModel, resolveEvalLanguageModel } from './eval_model.js';
+import { getConfiguredModel, resolveLanguageModel } from './language_model.js';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 
 // Set OpenAI API key globally
@@ -23,12 +22,8 @@ export async function getAiResponse({
   tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
-    const resolvedModel = process.env.RUN_EVALS === '1'
-      ? getEvalLanguageModel()
-      : model;
-    const languageModel = process.env.RUN_EVALS === '1'
-      ? resolveEvalLanguageModel(resolvedModel)
-      : openai(resolvedModel);
+    const resolvedModel = getConfiguredModel(model);
+    const languageModel = resolveLanguageModel(resolvedModel);
     const hasTools = tools !== undefined
       ? Object.keys(tools).length > 0
       : true;
