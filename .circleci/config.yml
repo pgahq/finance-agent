@@ -132,6 +132,7 @@ jobs:
         environment:
           RUN_EVALS: "1"
           EVALS_API_KEY: $EVALS_API_KEY
+          OPENAI_API_KEY: $OPENAI_API_KEY
           EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_agent_eval
       - image: pgvector/pgvector:pg15
         environment:
@@ -161,14 +162,14 @@ jobs:
               echo "Skipping live evals (no AI-related diff)"
               exit 0
             fi
-            if [ -z "$EVALS_API_KEY" ]; then
-              echo "EVALS_API_KEY is not set in the CircleCI context"
+            if [ -z "$EVALS_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+              echo "Neither EVALS_API_KEY nor OPENAI_API_KEY is set in the CircleCI context"
               exit 1
             fi
             npm run eval:seed
-            npm run eval -- --ci --reporters=default --reporters=jest-junit --testPathPattern=run-validation-field || exit 1
-            npm run eval -- --ci --reporters=default --reporters=jest-junit --testPathPattern=run-invoice-line-merge || exit 1
-            npm run eval -- --ci --reporters=default --reporters=jest-junit --testPathPattern=run-supplier-rag || exit 1
+            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-validation-field.test.ts || exit 1
+            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-invoice-line-merge.test.ts || exit 1
+            RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-supplier-rag.test.ts || exit 1
       - store_test_results:
           path: reports
           when: always
