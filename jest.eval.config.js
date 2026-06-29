@@ -2,6 +2,6 @@ import baseConfig from './jest.config.js';
 
 export default {
   ...baseConfig,
-  testMatch: ['**/evals/run-*.test.ts'],
+  testMatch: ['**/evals/run-evals.test.ts'],
   testPathIgnorePatterns: [],
 };

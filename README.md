@@ -251,7 +251,7 @@ export EVAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finance_a
 export EVALS_API_KEY=sk-...   # required for live evals
 
 npm run eval:seed             # embed + load supplier fixtures
-npm run eval                  # RUN_EVALS=1 jest evals/run-*
+npm run eval                  # RUN_EVALS=1 jest evals/run-evals.test.ts
 ```
 
 Eval suites:
@@ -276,7 +276,7 @@ export EVAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finance_a
 export EVALS_API_KEY=sk-...   # required for live evals
 
 npm run eval:seed             # embed + load supplier fixtures
-npm run eval                  # RUN_EVALS=1 jest evals/run-*
+npm run eval                  # RUN_EVALS=1 jest evals/run-evals.test.ts
 ```
 
 Eval suites:
