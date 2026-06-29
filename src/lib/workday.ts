@@ -597,7 +597,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
               ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
             }
           : {
-              ...(line.quantity != null && { Quantity: line.quantity }),
+              Quantity: line.quantity ?? 1,
               ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
               ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
             }

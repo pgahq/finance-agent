@@ -1907,8 +1907,7 @@ describe('Workday utilities', () => {
         });
 
         const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
-        expect(lines[0]).toEqual({ Line_Order: 1, Item_Description: 'Simple Service' });
-        expect(lines[0].Quantity).toBeUndefined();
+        expect(lines[0]).toEqual({ Line_Order: 1, Item_Description: 'Simple Service', Quantity: 1 });
         expect(lines[0].Unit_Cost).toBeUndefined();
         expect(lines[0].Extended_Amount).toBeUndefined();
         expect(lines[0].Worktags_Reference).toBeUndefined();

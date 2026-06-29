@@ -42,7 +42,8 @@ Your task is to produce final invoice lines by:
 10. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 
 Guidelines:
-- Return exactly one output line per extracted invoice line, in the same order
+- CRITICAL: The output array MUST contain exactly as many lines as extractedInvoiceLines — no more, no fewer. Even if a line has no item name, is missing amounts, or seems like a sub-item or continuation, it is a separate invoice line and must appear as a separate output line. Never collapse, skip, or combine invoice lines.
+- Return the lines in the same order as extractedInvoiceLines
 - Line order is sequential starting at 1
 - Convert unitCost and totalPrice strings to decimal numbers (e.g. "$1,000.00" → 1000.00). Strip currency symbols and commas
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
