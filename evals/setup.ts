@@ -1,6 +1,5 @@
 if (process.env.EVAL_DATABASE_URL) {
   process.env.DATABASE_URL ??= process.env.EVAL_DATABASE_URL;
-  process.env.DATABASE_SKIP_IVFFLAT_INDEX = '1';
 }
 
 export function requireEvalEnv(): void {
