@@ -51,7 +51,7 @@ export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
 ];
 
-export const CREATE_EVAL_INDEXES = [
+export const CREATE_INDEXES_WITHOUT_IVFFLAT = [
   `CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(type);`,
   `CREATE INDEX IF NOT EXISTS idx_documents_workday_id ON documents(workday_id);`,
 ];
@@ -67,8 +67,8 @@ export const ENABLE_PGVECTOR = `CREATE EXTENSION IF NOT EXISTS vector;`;
 
 // Get database configuration from environment and Secrets Manager
 export async function getDatabaseConfig(env: NodeJS.ProcessEnv): Promise<DatabaseConfig> {
-  if (env.EVAL_DATABASE_URL) {
-    const url = new URL(env.EVAL_DATABASE_URL);
+  if (env.DATABASE_URL) {
+    const url = new URL(env.DATABASE_URL);
 
     return {
       host: url.hostname,
@@ -146,7 +146,9 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       await pool.query(CREATE_DOCUMENTS_TABLE);
 
       // Create indexes
-      const indexStatements = env.EVAL_DATABASE_URL ? CREATE_EVAL_INDEXES : CREATE_INDEXES;
+      const skipIvfflatIndex = env.DATABASE_SKIP_IVFFLAT_INDEX === '1'
+        || env.DATABASE_SKIP_IVFFLAT_INDEX === 'true';
+      const indexStatements = skipIvfflatIndex ? CREATE_INDEXES_WITHOUT_IVFFLAT : CREATE_INDEXES;
       for (const indexSql of indexStatements) {
         await pool.query(indexSql);
       }

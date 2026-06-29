@@ -49,9 +49,9 @@ describe('Database Library', () => {
   });
 
   describe('getDatabaseConfig', () => {
-    it('should return database configuration from EVAL_DATABASE_URL', async () => {
+    it('should return database configuration from DATABASE_URL', async () => {
       const env = {
-        EVAL_DATABASE_URL: 'postgresql://evaluser:evalpass@localhost:5433/finance_agent_eval',
+        DATABASE_URL: 'postgresql://evaluser:evalpass@localhost:5433/finance_agent_eval',
       };
 
       const config = await getDatabaseConfig(env);

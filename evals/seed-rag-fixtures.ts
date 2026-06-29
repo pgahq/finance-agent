@@ -19,8 +19,8 @@ async function main(): Promise<void> {
   process.env.RUN_EVALS = '1';
   requireEvalEnv();
 
-  if (!process.env.EVAL_DATABASE_URL) {
-    throw new Error('eval:seed requires EVAL_DATABASE_URL');
+  if (!process.env.DATABASE_URL) {
+    throw new Error('eval:seed requires EVAL_DATABASE_URL (or DATABASE_URL)');
   }
 
   const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {

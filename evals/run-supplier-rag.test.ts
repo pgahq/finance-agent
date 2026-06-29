@@ -21,13 +21,13 @@ describeEval('supplier RAG eval', () => {
   beforeAll(() => {
     requireEvalEnv();
 
-    if (!process.env.EVAL_DATABASE_URL) {
+    if (!process.env.DATABASE_URL) {
       throw new Error('supplier RAG eval requires EVAL_DATABASE_URL (run npm run eval:seed first)');
     }
   });
 
   afterAll(async () => {
-    if (process.env.EVAL_DATABASE_URL) {
+    if (process.env.DATABASE_URL) {
       const db = await getDatabaseConnection(process.env);
       await db.close();
     }

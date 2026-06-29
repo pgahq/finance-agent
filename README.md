@@ -266,7 +266,7 @@ CircleCI runs unit tests on every push. Live evals run **only when AI-related fi
 
 **Ensure `EVALS_API_KEY` is in the `chatbot-development` CircleCI context** (the eval job uses that context). `OPENAI_API_KEY` and `AI_GATEWAY_API_KEY` are fallbacks when `EVALS_API_KEY` is not set.
 
-When evals run, they use `gpt-5.4-mini` via `LLM_MODEL` (set in `evals/setup.ts` from `EVALS_API_KEY` / `OPENAI_API_KEY`, with AI Gateway as fallback), a single structured-output call for line merge (no tool pass), and skip IVFFlat indexing on the ephemeral eval database. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
+When evals run, `evals/setup.ts` maps `EVAL_DATABASE_URL` → `DATABASE_URL` and sets `DATABASE_SKIP_IVFFLAT_INDEX` for the ephemeral pgvector sidecar. Model calls use `gpt-5.4-mini` via `LLM_MODEL`. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
 
 ```bash
 # Start local eval database (pgvector on port 5433)
