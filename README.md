@@ -264,9 +264,9 @@ Eval suites:
 
 CircleCI runs unit tests on every push. Live evals run **only when AI-related files change** and still block merge when triggered.
 
-**Ensure `EVALS_API_KEY`, `OPENAI_API_KEY`, or `AI_GATEWAY_API_KEY` is in the `chatbot-development` CircleCI context** (the eval job uses that context, not just project-level env vars).
+**Ensure `EVALS_API_KEY` is in the `chatbot-development` CircleCI context** (the eval job uses that context). `OPENAI_API_KEY` and `AI_GATEWAY_API_KEY` are fallbacks when `EVALS_API_KEY` is not set.
 
-When evals run, they use `openai/gpt-5.4-mini` via `EVAL_LLM_MODEL` (through Vercel AI Gateway when `AI_GATEWAY_API_KEY` is set), a single structured-output call for line merge (no tool pass), and skip IVFFlat indexing on the ephemeral eval database. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
+When evals run, they use `gpt-5.4-mini` via `EVAL_LLM_MODEL` (direct OpenAI when `EVALS_API_KEY` is set, otherwise Vercel AI Gateway when `AI_GATEWAY_API_KEY` is available), a single structured-output call for line merge (no tool pass), and skip IVFFlat indexing on the ephemeral eval database. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
 
 ```bash
 # Start local eval database (pgvector on port 5433)

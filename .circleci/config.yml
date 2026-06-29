@@ -167,6 +167,13 @@ jobs:
               echo "Neither EVALS_API_KEY, OPENAI_API_KEY, nor AI_GATEWAY_API_KEY is set in the CircleCI context"
               exit 1
             fi
+            if [ -n "$EVALS_API_KEY" ]; then
+              echo "Eval auth: EVALS_API_KEY (direct OpenAI)"
+            elif [ -n "$OPENAI_API_KEY" ]; then
+              echo "Eval auth: OPENAI_API_KEY (direct OpenAI)"
+            else
+              echo "Eval auth: AI_GATEWAY_API_KEY"
+            fi
             npm run eval:seed
             RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-validation-field.test.ts || exit 1
             RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-invoice-line-merge.test.ts || exit 1
