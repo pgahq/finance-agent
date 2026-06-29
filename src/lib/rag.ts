@@ -2,21 +2,20 @@ import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { getDatabaseConnection, searchDocuments } from './database.js';
-import { getEmbeddingRequestConfig } from './language_model.js';
 export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI
 export async function createEmbedding(text: string): Promise<number[]> {
-  const { url, apiKey, model } = getEmbeddingRequestConfig();
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
 
-  const response = await fetch(url, {
+  const response = await fetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model,
+      model: 'text-embedding-3-small',
       input: text
     })
   });

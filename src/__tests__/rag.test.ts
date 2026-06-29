@@ -22,8 +22,6 @@ describe('rag', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.EVALS_API_KEY;
-    delete process.env.AI_GATEWAY_API_KEY;
-    delete process.env.LLM_MODEL;
     process.env.OPENAI_API_KEY = 'test-api-key';
   });
 

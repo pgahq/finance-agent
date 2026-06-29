@@ -132,8 +132,6 @@ jobs:
         environment:
           RUN_EVALS: "1"
           EVALS_API_KEY: $EVALS_API_KEY
-          OPENAI_API_KEY: $OPENAI_API_KEY
-          AI_GATEWAY_API_KEY: $AI_GATEWAY_API_KEY
           EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_agent_eval
       - image: pgvector/pgvector:pg15
         environment:
@@ -163,16 +161,9 @@ jobs:
               echo "Skipping live evals (no AI-related diff)"
               exit 0
             fi
-            if [ -z "$EVALS_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$AI_GATEWAY_API_KEY" ]; then
-              echo "Neither EVALS_API_KEY, OPENAI_API_KEY, nor AI_GATEWAY_API_KEY is set in the CircleCI context"
+            if [ -z "$EVALS_API_KEY" ]; then
+              echo "EVALS_API_KEY is not set in the chatbot-development CircleCI context"
               exit 1
-            fi
-            if [ -n "$EVALS_API_KEY" ]; then
-              echo "Eval auth: EVALS_API_KEY (direct OpenAI)"
-            elif [ -n "$OPENAI_API_KEY" ]; then
-              echo "Eval auth: OPENAI_API_KEY (direct OpenAI)"
-            else
-              echo "Eval auth: AI_GATEWAY_API_KEY"
             fi
             npm run eval:seed
             RUN_EVALS=1 npx jest --runInBand --forceExit --testTimeout=180000 evals/run-validation-field.test.ts || exit 1
