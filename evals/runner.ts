@@ -1,5 +1,3 @@
-import { info } from '@pga/logger';
-
 export interface EvalCaseResult {
   id: string;
   passed: boolean;
@@ -15,6 +13,8 @@ export interface EvalReport {
   results: EvalCaseResult[];
 }
 
+export type EvalMetrics = Record<string, number>;
+
 export function buildReport(name: string, results: EvalCaseResult[]): EvalReport {
   const passed = results.filter(result => result.passed).length;
   const total = results.length;
@@ -29,16 +29,29 @@ export function buildReport(name: string, results: EvalCaseResult[]): EvalReport
   };
 }
 
-export function printReport(report: EvalReport): void {
-  info(`\n=== ${report.name} ===`);
-  info(`Passed: ${report.passed}/${report.total} (${(report.accuracy * 100).toFixed(1)}%)`);
+export function formatEvalResults(report: EvalReport, metrics?: EvalMetrics): string {
+  const lines = [
+    `${report.name}: ${report.passed}/${report.total} passed (${(report.accuracy * 100).toFixed(1)}% accuracy)`,
+  ];
+
+  if (metrics) {
+    for (const [label, value] of Object.entries(metrics)) {
+      lines.push(`${label}: ${(value * 100).toFixed(1)}%`);
+    }
+  }
 
   for (const result of report.results.filter(r => !r.passed)) {
-    info(`  FAIL ${result.id}: ${result.details ?? 'no details'}`);
+    lines.push(`  FAIL ${result.id}: ${result.details ?? 'no details'}`);
   }
+
+  return lines.join('\n');
 }
 
-export function assertReport(report: EvalReport, minAccuracy: number): void {
-  printReport(report);
+export function logEvalResults(report: EvalReport, metrics?: EvalMetrics): void {
+  console.log(`\n${formatEvalResults(report, metrics)}`);
+}
+
+export function assertReport(report: EvalReport, minAccuracy: number, metrics?: EvalMetrics): void {
+  logEvalResults(report, metrics);
   expect(report.accuracy).toBeGreaterThanOrEqual(minAccuracy);
 }

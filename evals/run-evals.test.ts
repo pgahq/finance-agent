@@ -1,4 +1,3 @@
-import { info } from '@pga/logger';
 import { requireEvalEnv } from './setup.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,7 +7,7 @@ import type { PurchaseOrderLine } from '../src/lib/workday.js';
 import { queryDocuments } from '../src/lib/rag.js';
 import type { DatabaseConnection } from '../src/lib/database.js';
 import { getEvalDatabaseConnection } from './database.js';
-import { assertReport, buildReport, printReport, type EvalCaseResult } from './runner.js';
+import { assertReport, buildReport, logEvalResults, type EvalCaseResult, type EvalReport } from './runner.js';
 import {
   aggregateFieldAccuracy,
   scoreInvoiceLineMergeCase,
@@ -32,7 +31,9 @@ describeEval('live model evals', () => {
   });
 
   describe('validation field classifier', () => {
-    it('classifies Workday validation faults into retry fields', async () => {
+    let report: EvalReport;
+
+    beforeAll(async () => {
       const fixturePath = join(process.cwd(), 'evals/fixtures/validation-field-classifier.json');
       const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
         cases: ValidationFieldCase[];
@@ -50,13 +51,19 @@ describeEval('live model evals', () => {
         });
       }
 
-      const report = buildReport('validation-field-classifier', results);
-      assertReport(report, 0.85);
+      report = buildReport('validation-field-classifier', results);
     }, 120000);
+
+    it('meets retryField accuracy threshold (>= 85%)', () => {
+      assertReport(report, 0.85);
+    });
   });
 
   describe('invoice line merge', () => {
-    it('maps extracted invoice lines to PO worktags', async () => {
+    let report: EvalReport;
+    let fieldAccuracy: number;
+
+    beforeAll(async () => {
       const fixturePath = join(process.cwd(), 'evals/fixtures/invoice-line-merge.json');
       const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
         cases: InvoiceLineMergeCase[];
@@ -83,26 +90,25 @@ describeEval('live model evals', () => {
         });
       }
 
-      const report = buildReport('invoice-line-merge', results);
-      const fieldAccuracy = aggregateFieldAccuracy(allFieldScores);
-      info(`\nPer-field accuracy: ${(fieldAccuracy * 100).toFixed(1)}%`);
-      printReport(report);
-      expect(fieldAccuracy).toBeGreaterThanOrEqual(0.75);
+      report = buildReport('invoice-line-merge', results);
+      fieldAccuracy = aggregateFieldAccuracy(allFieldScores);
     }, 300000);
+
+    it('meets per-field accuracy threshold (>= 75%)', () => {
+      logEvalResults(report, { 'per-field accuracy': fieldAccuracy });
+      expect(fieldAccuracy).toBeGreaterThanOrEqual(0.75);
+    });
   });
 
   describe('supplier RAG', () => {
     let db: DatabaseConnection;
+    let report: EvalReport;
+    let hitAt1: number;
+    let hitAt3: number;
 
     beforeAll(async () => {
       db = await getEvalDatabaseConnection();
-    });
 
-    afterAll(async () => {
-      await db.close();
-    });
-
-    it('retrieves the expected supplier workday_id', async () => {
       const fixturePath = join(process.cwd(), 'evals/fixtures/supplier-rag.json');
       const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
         cases: SupplierRagCase[];
@@ -128,15 +134,21 @@ describeEval('live model evals', () => {
         });
       }
 
-      const report = buildReport('supplier-rag', results);
-      const hitAt1 = aggregateHitRate(hitScores, 1);
-      const hitAt3 = aggregateHitRate(hitScores, 3);
-
-      info(`\nHit@1: ${(hitAt1 * 100).toFixed(1)}%`);
-      info(`Hit@3: ${(hitAt3 * 100).toFixed(1)}%`);
-
-      assertReport(report, 0.75);
-      expect(hitAt1).toBeGreaterThanOrEqual(0.60);
+      report = buildReport('supplier-rag', results);
+      hitAt1 = aggregateHitRate(hitScores, 1);
+      hitAt3 = aggregateHitRate(hitScores, 3);
     }, 120000);
+
+    afterAll(async () => {
+      await db.close();
+    });
+
+    it('meets Hit@3 threshold (>= 75%)', () => {
+      assertReport(report, 0.75, { 'Hit@1': hitAt1, 'Hit@3': hitAt3 });
+    });
+
+    it('meets Hit@1 threshold (>= 60%)', () => {
+      expect(hitAt1).toBeGreaterThanOrEqual(0.60);
+    });
   });
 });
