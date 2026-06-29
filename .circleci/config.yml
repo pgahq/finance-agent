@@ -152,8 +152,6 @@ jobs:
             done
       - run:
           name: Run evals when AI paths change
-          environment:
-            JEST_JUNIT_OUTPUT_DIR: reports
           command: |
             chmod +x evals/should-run-eval.sh
             if ! evals/should-run-eval.sh; then
@@ -166,9 +164,6 @@ jobs:
             fi
             npm run eval:seed
             RUN_EVALS=1 npm run eval
-      - store_test_results:
-          path: reports
-          when: always
 
 workflows:
   version: 2
