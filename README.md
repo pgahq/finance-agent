@@ -251,7 +251,7 @@ export EVAL_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/finance_a
 export EVALS_API_KEY=sk-...   # or OPENAI_API_KEY
 
 npm run eval:seed             # embed + load supplier fixtures
-npm run eval                  # RUN_EVALS=1 jest evals
+npm run eval                  # RUN_EVALS=1 jest evals/run-*
 ```
 
 Eval suites:
@@ -262,7 +262,7 @@ Eval suites:
 | `invoice-line-merge` | Invoice line → PO worktag mapping |
 | `supplier-rag` | Supplier query → correct `workday_id` in top 3 |
 
-CircleCI runs evals nightly on `main` via the `eval` job (`EVALS_API_KEY` + ephemeral pgvector). Evals are skipped during `npm test` unless `RUN_EVALS=1`.
+CircleCI runs unit tests and evals on every push (`build` + `eval` jobs in `build-deploy`). A failing eval blocks the workflow and merge. The `eval` job uses `EVALS_API_KEY` from the `chatbot-development` context and an ephemeral pgvector sidecar. Local `npm test` skips live evals unless `RUN_EVALS=1`.
 
 ## 🚀 Deployment
 

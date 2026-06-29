@@ -163,10 +163,13 @@ workflows:
   build-deploy:
     jobs:
       - build
+      - eval:
+          context: chatbot-development
       - deploy-to-dev:
           context: chatbot-development
           requires:
             - build
+            - eval
           filters:
             branches:
               only: development
@@ -174,17 +177,7 @@ workflows:
           context: chatbot-production
           requires:
             - build
+            - eval
           filters:
             branches:
               only: main
-
-  eval-nightly:
-    triggers:
-      - schedule:
-          cron: "0 6 * * *"
-          filters:
-            branches:
-              only: main
-    jobs:
-      - eval:
-          context: chatbot-development
