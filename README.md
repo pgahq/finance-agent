@@ -262,7 +262,9 @@ Eval suites:
 | `invoice-line-merge` | Invoice line → PO worktag mapping |
 | `supplier-rag` | Supplier query → correct `workday_id` in top 3 |
 
-CircleCI runs unit tests on every push. Live evals run **only when AI-related files change** (see `evals/should-run-eval.sh`) — they still block merge/deploy when triggered, but skip on docs-only or unrelated PRs to save API cost.
+CircleCI runs unit tests on every push. Live evals run **only when AI-related files change** and still block merge when triggered.
+
+**Ensure `EVALS_API_KEY` is in the `chatbot-development` CircleCI context** (the eval job uses that context, not just project-level env vars).
 
 When evals run, they use `gpt-5.4-mini` via `EVAL_LLM_MODEL`, a single structured-output call for line merge (no tool pass), and skip IVFFlat indexing on the ephemeral eval database. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
 

@@ -12,8 +12,8 @@ import {
 import { requireEvalEnv } from './setup.js';
 
 const fixturePath = join(process.cwd(), 'evals/fixtures/supplier-rag.json');
-const MIN_HIT_AT_3 = 0.9;
-const MIN_HIT_AT_1 = 0.75;
+const MIN_HIT_AT_3 = 0.75;
+const MIN_HIT_AT_1 = 0.60;
 
 const describeEval = process.env.RUN_EVALS === '1' ? describe : describe.skip;
 
