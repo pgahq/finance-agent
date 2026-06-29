@@ -8,6 +8,7 @@ export interface ExtractedInvoiceLine {
   quantity?: number | null;
   unitCost?: string | null;
   totalPrice?: string | null;
+  hasDiscount?: boolean | null;
 }
 
 export interface FinalInvoiceLine {
@@ -17,6 +18,7 @@ export interface FinalInvoiceLine {
   quantity?: number | null;
   unitCost?: number | null;
   extendedAmount?: number | null;
+  hasDiscount?: boolean | null;
   costCenterId?: string | null;
   fundId?: string | null;
   spendCategoryId?: string | null;
@@ -78,6 +80,7 @@ function applyFallbacks(
       quantity: line.quantity,
       unitCost: line.unitCost,
       extendedAmount: line.extendedAmount,
+      hasDiscount: line.hasDiscount ?? null,
       costCenterId,
       fundId,
       spendCategoryId,
@@ -101,6 +104,7 @@ function buildFallbackLines(
     quantity: line.quantity,
     unitCost: line.unitCost ? (parseExtractedAmount(line.unitCost) ?? null) : null,
     extendedAmount: line.totalPrice ? (parseExtractedAmount(line.totalPrice) ?? null) : null,
+    hasDiscount: line.hasDiscount ?? null,
     costCenterId: fallbackIds.costCenterId ?? null,
     fundId: fallbackIds.fundId ?? null,
     spendCategoryId: fallbackIds.spendCategoryId ?? null,

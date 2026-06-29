@@ -586,12 +586,22 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
         ...(line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []),
       ]);
+      const isDiscountOverride = line.hasDiscount === true;
       return {
         Line_Order: line.lineOrder,
         Item_Description: line.description,
-        ...(line.quantity != null && { Quantity: line.quantity }),
-        ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
-        ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+        ...(isDiscountOverride
+          ? {
+              Quantity: 0,
+              Unit_Cost: 0,
+              ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+            }
+          : {
+              ...(line.quantity != null && { Quantity: line.quantity }),
+              ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
+              ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+            }
+        ),
         ...(worktags.length && { Worktags_Reference: worktags }),
         ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
         ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
