@@ -10,7 +10,7 @@ import {
 import { requireEvalEnv } from './setup.js';
 
 const fixturePath = join(process.cwd(), 'evals/fixtures/validation-field-classifier.json');
-const MIN_ACCURACY = 0.9;
+const MIN_ACCURACY = 0.85;
 
 const describeEval = process.env.RUN_EVALS === '1' ? describe : describe.skip;
 

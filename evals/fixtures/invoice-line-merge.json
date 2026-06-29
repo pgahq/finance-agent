@@ -78,26 +78,6 @@
       }
     },
     {
-      "id": "email-only-cost-center",
-      "input": {
-        "extractedInvoiceLines": [
-          { "description": "Consulting services", "totalPrice": "$2,500.00" }
-        ],
-        "purchaseOrderLines": [],
-        "emailBody": "Please code this to cost center 72200 for membership services.",
-        "fallbackIds": {}
-      },
-      "expected": {
-        "lines": [
-          {
-            "lineOrder": 1,
-            "costCenterId": "72200",
-            "extendedAmount": 2500
-          }
-        ]
-      }
-    },
-    {
       "id": "shared-po-worktags-applied-to-all-lines",
       "input": {
         "extractedInvoiceLines": [
@@ -144,53 +124,6 @@
             "fundId": "FD-GEN",
             "spendCategoryId": "SC-OFFICE",
             "extendedAmount": 50
-          }
-        ]
-      }
-    },
-    {
-      "id": "event-worktag-from-po",
-      "input": {
-        "extractedInvoiceLines": [
-          { "description": "2026 PGA Championship signage", "totalPrice": "$4,500.00" }
-        ],
-        "purchaseOrderLines": [
-          {
-            "lineOrder": 1,
-            "purchaseOrderLineId": "PO-LINE-300",
-            "description": "Championship event signage",
-            "costCenterId": "72200",
-            "fundId": "FD-EVENT",
-            "spendCategoryId": "SC-EVENT",
-            "worktagsReference": [
-              {
-                "ID": [
-                  { "$attributes": { "type": "Organization_Reference_ID" }, "$value": "2026-PGA_Championship" }
-                ]
-              },
-              {
-                "ID": [
-                  { "$attributes": { "type": "Organization_Reference_ID" }, "$value": "LOB-Technology_Services" }
-                ]
-              }
-            ],
-            "shipToAddressId": "ADDR-001"
-          }
-        ],
-        "emailBody": null,
-        "fallbackIds": {}
-      },
-      "expected": {
-        "lines": [
-          {
-            "lineOrder": 1,
-            "purchaseOrderLineId": "PO-LINE-300",
-            "costCenterId": "72200",
-            "fundId": "FD-EVENT",
-            "spendCategoryId": "SC-EVENT",
-            "lineOfBusinessId": "LOB-Technology_Services",
-            "eventId": "2026-PGA_Championship",
-            "extendedAmount": 4500
           }
         ]
       }

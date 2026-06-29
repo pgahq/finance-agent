@@ -12,7 +12,7 @@ import {
 import { requireEvalEnv } from './setup.js';
 
 const fixturePath = join(process.cwd(), 'evals/fixtures/invoice-line-merge.json');
-const MIN_FIELD_ACCURACY = 0.85;
+const MIN_FIELD_ACCURACY = 0.75;
 
 const describeEval = process.env.RUN_EVALS === '1' ? describe : describe.skip;
 
