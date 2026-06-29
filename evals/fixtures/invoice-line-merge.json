@@ -11,10 +11,13 @@
             "lineOrder": 1,
             "purchaseOrderLineId": "PO-LINE-001",
             "description": "2026 PGA Championship - catering services",
-            "costCenterId": "72200",
-            "fundId": "FD-001",
-            "spendCategoryId": "SC-EVENT",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "72200" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-001" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-EVENT" }]
+            },
             "shipToAddressId": null
           }
         ],
@@ -46,10 +49,13 @@
             "lineOrder": 1,
             "purchaseOrderLineId": "PO-LINE-100",
             "description": "Technology software subscription",
-            "costCenterId": "71000",
-            "fundId": "FD-TECH",
-            "spendCategoryId": "SC-SOFTWARE",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "71000" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-TECH" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-SOFTWARE" }]
+            },
             "shipToAddressId": null
           }
         ],
@@ -89,20 +95,26 @@
             "lineOrder": 1,
             "purchaseOrderLineId": "PO-LINE-200",
             "description": "Office printing",
-            "costCenterId": "73000",
-            "fundId": "FD-GEN",
-            "spendCategoryId": "SC-OFFICE",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "73000" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-GEN" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-OFFICE" }]
+            },
             "shipToAddressId": null
           },
           {
             "lineOrder": 2,
             "purchaseOrderLineId": "PO-LINE-201",
             "description": "Office printing",
-            "costCenterId": "73000",
-            "fundId": "FD-GEN",
-            "spendCategoryId": "SC-OFFICE",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "73000" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-GEN" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-OFFICE" }]
+            },
             "shipToAddressId": null
           }
         ],
@@ -139,10 +151,13 @@
             "lineOrder": 1,
             "purchaseOrderLineId": "PO-LINE-400",
             "description": "Equipment rental services",
-            "costCenterId": "74000",
-            "fundId": "FD-OPS",
-            "spendCategoryId": "SC-EQUIP",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "74000" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-OPS" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-EQUIP" }]
+            },
             "shipToAddressId": null
           }
         ],
@@ -173,20 +188,26 @@
             "lineOrder": 1,
             "purchaseOrderLineId": "PO-LINE-501",
             "description": "Catering for board meeting",
-            "costCenterId": "72100",
-            "fundId": "FD-GEN",
-            "spendCategoryId": "SC-CATERING",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "72100" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-GEN" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-CATERING" }]
+            },
             "shipToAddressId": null
           },
           {
             "lineOrder": 2,
             "purchaseOrderLineId": "PO-LINE-502",
             "description": "Outside legal counsel - membership",
-            "costCenterId": "72500",
-            "fundId": "FD-LEGAL",
-            "spendCategoryId": "SC-LEGAL",
-            "worktagsReference": [],
+            "worktagsReference": [
+              { "ID": [{ "$attributes": { "type": "Cost_Center_Reference_ID" }, "$value": "72500" }] },
+              { "ID": [{ "$attributes": { "type": "Fund_ID" }, "$value": "FD-LEGAL" }] }
+            ],
+            "spendCategoryReference": {
+              "ID": [{ "$attributes": { "type": "Spend_Category_ID" }, "$value": "SC-LEGAL" }]
+            },
             "shipToAddressId": null
           }
         ],

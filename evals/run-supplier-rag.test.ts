@@ -46,6 +46,7 @@ describeEval('supplier RAG eval', () => {
         query: testCase.query,
         documentType: 'supplier',
         limit: testCase.matchRank ?? 3,
+        similarityThreshold: 0,
       });
 
       const score = scoreSupplierRagCase(testCase, ragResults);

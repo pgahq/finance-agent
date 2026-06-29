@@ -133,6 +133,7 @@ jobs:
           RUN_EVALS: "1"
           EVALS_API_KEY: $EVALS_API_KEY
           OPENAI_API_KEY: $OPENAI_API_KEY
+          AI_GATEWAY_API_KEY: $AI_GATEWAY_API_KEY
           EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_agent_eval
       - image: pgvector/pgvector:pg15
         environment:
@@ -162,8 +163,8 @@ jobs:
               echo "Skipping live evals (no AI-related diff)"
               exit 0
             fi
-            if [ -z "$EVALS_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
-              echo "Neither EVALS_API_KEY nor OPENAI_API_KEY is set in the CircleCI context"
+            if [ -z "$EVALS_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$AI_GATEWAY_API_KEY" ]; then
+              echo "Neither EVALS_API_KEY, OPENAI_API_KEY, nor AI_GATEWAY_API_KEY is set in the CircleCI context"
               exit 1
             fi
             npm run eval:seed

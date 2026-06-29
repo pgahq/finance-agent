@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
+import { getEvalLanguageModel, resolveEvalLanguageModel } from './eval_model.js';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 
 // Set OpenAI API key globally
@@ -22,16 +23,19 @@ export async function getAiResponse({
   tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
-    const resolvedModel = process.env.RUN_EVALS === '1' && process.env.EVAL_LLM_MODEL
-      ? process.env.EVAL_LLM_MODEL
+    const resolvedModel = process.env.RUN_EVALS === '1'
+      ? getEvalLanguageModel()
       : model;
+    const languageModel = process.env.RUN_EVALS === '1'
+      ? resolveEvalLanguageModel(resolvedModel)
+      : openai(resolvedModel);
     const hasTools = tools !== undefined
       ? Object.keys(tools).length > 0
       : true;
 
     if (schema && !hasTools) {
       const structuredResult = await generateText({
-        model: openai(resolvedModel),
+        model: languageModel,
         messages,
         system: prompt,
         output: Output.object({ schema }),
@@ -60,7 +64,7 @@ export async function getAiResponse({
     }
     
     const generateTextOptions: any = {
-      model: openai(resolvedModel),
+      model: languageModel,
       messages,
       system: systemPrompt,
       stopWhen: stepCountIs(10),
@@ -86,7 +90,7 @@ export async function getAiResponse({
 
     // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
     const structuredResult = await generateText({
-      model: openai(resolvedModel),
+      model: languageModel,
       messages: [
         ...messages,
         ...textResult.response.messages,
