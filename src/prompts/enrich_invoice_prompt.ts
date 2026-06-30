@@ -71,6 +71,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping" or "delivery" charges. Null if no freight amount could be found or if it is ambiguous.'),
 
+  extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear.'),
 
   extractedPaymentTerms: z.object({
@@ -248,6 +250,12 @@ Read the invoice attachment and extract the freight amount, which may also be la
 
 ---
 
+## Part 5.5: Tax Amount
+
+Read the invoice attachment and extract the tax amount. It may be labeled as "Tax", "VAT", "GST", "HST", "Sales Tax", or similar. Populate \`extractedTaxAmount\` with this value (e.g. "$45.00"). If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no tax amount can be found or if it is ambiguous, omit the field.
+
+---
+
 ## Part 6: Supplier's Invoice Number
 
 Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
@@ -282,7 +290,9 @@ Extract the individual line items from the invoice document:
    - **Unit Cost**: The price per unit (if stated)
    - **Total Price**: The total/extended price for the line (if stated)
 
-Populate \`extractedInvoiceLines\` with all line items found. If no line items can be extracted, omit the field.
+Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
+
+Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 
 ---
 
