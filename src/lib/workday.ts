@@ -325,6 +325,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
 }
@@ -535,13 +536,16 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, filterInvoiceLines, finalLines, applyFallbackWorktags } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFallbackWorktags } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
   const freightAmount = extractedFreightAmount
     ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount)
     : currentInvoice.Freight_Amount;
+  const taxAmount = extractedTaxAmount
+    ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
+    : (currentInvoice.Tax_Amount ?? 0);
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
@@ -636,7 +640,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
-    ...(currentInvoice.Tax_Amount && { Tax_Amount: currentInvoice.Tax_Amount }),
+    Tax_Amount: taxAmount,
+    Default_Tax_Option_Reference: { ID: [{ $attributes: { type: 'Tax_Option_ID' }, $value: 'ENTER_TAX_DUE' }] },
     ...(freightAmount && { Freight_Amount: freightAmount }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
@@ -654,7 +659,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
     ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
     ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
-    ...(currentInvoice.Default_Tax_Option_Reference && { Default_Tax_Option_Reference: currentInvoice.Default_Tax_Option_Reference }),
 
     ...((workQueueTags || notes) && {
       Work_Queue_Information_Data: {
@@ -1133,6 +1137,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
   paymentTermsId?: string;
 }
@@ -1149,6 +1154,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
+    extractedTaxAmount,
     finalLines,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
@@ -1196,6 +1202,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      extractedTaxAmount,
       finalLines,
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true

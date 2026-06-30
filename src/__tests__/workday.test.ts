@@ -1181,7 +1181,8 @@ describe('Workday utilities', () => {
             Supplier_Invoice_Data: expect.objectContaining({
               Payment_Terms_Reference: { ID: 'payment-terms-wid' },
               Due_Date_Override: '2024-02-01',
-              Default_Tax_Option_Reference: { ID: 'tax-option-wid' }
+              Tax_Amount: 0,
+              Default_Tax_Option_Reference: { ID: [{ $attributes: { type: 'Tax_Option_ID' }, $value: 'ENTER_TAX_DUE' }] }
             })
           })
         }),

@@ -164,6 +164,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
+    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -212,7 +213,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -232,6 +233,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
+        extractedTaxAmount,
         finalLines,
         paymentTermsId
       });
@@ -532,6 +534,11 @@ function formatAmountNotes(result: InvoiceEnrichmentResult): string {
 function formatFreightAmountNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedFreightAmount) return '';
   return `\n\nFreight Amount (from document): ${result.extractedFreightAmount}`;
+}
+
+function formatTaxAmountNotes(result: InvoiceEnrichmentResult): string {
+  if (!result.extractedTaxAmount) return '';
+  return `\n\nTax Amount (from document): ${result.extractedTaxAmount}`;
 }
 
 function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
