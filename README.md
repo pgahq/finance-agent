@@ -266,7 +266,7 @@ CircleCI runs unit tests on every push. Live evals run **only when AI-related fi
 
 **Ensure `EVALS_API_KEY` is in the `chatbot-development` CircleCI context** (the eval job uses that context).
 
-When evals run, `evals/setup.ts` maps `EVALS_API_KEY` → `OPENAI_API_KEY`. Supplier RAG evals connect via `EVAL_DATABASE_URL` in `evals/database.ts`. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
+When evals run, `evals/setup.ts` maps `EVALS_API_KEY` → `OPENAI_API_KEY` and sets `LOG_LEVEL=INFO` (override with `LOG_LEVEL=DEBUG` or `SILENT`). Supplier RAG evals connect via `EVAL_DATABASE_URL` in `evals/database.ts`. Commit cached supplier embeddings with `npm run eval:embeddings` after changing `supplier-rag.json` to avoid re-embedding documents on every CI run.
 
 The `eval` job uses `EVALS_API_KEY` from the `chatbot-development` context and an ephemeral pgvector sidecar. Local `npm test` skips live evals unless `RUN_EVALS=1`.
 

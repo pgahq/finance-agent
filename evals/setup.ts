@@ -1,3 +1,7 @@
+if (process.env.RUN_EVALS === '1') {
+  process.env.LOG_LEVEL ??= 'INFO';
+}
+
 export function requireEvalEnv(): void {
   if (process.env.RUN_EVALS !== '1') {
     return;

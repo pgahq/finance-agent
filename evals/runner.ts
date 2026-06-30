@@ -1,3 +1,5 @@
+import { info } from '@pga/logger';
+
 export interface EvalCaseResult {
   id: string;
   passed: boolean;
@@ -48,7 +50,7 @@ export function formatEvalResults(report: EvalReport, metrics?: EvalMetrics): st
 }
 
 export function logEvalResults(report: EvalReport, metrics?: EvalMetrics): void {
-  console.log(`\n${formatEvalResults(report, metrics)}`);
+  info(`\n${formatEvalResults(report, metrics)}`);
 }
 
 export function assertReport(report: EvalReport, minAccuracy: number, metrics?: EvalMetrics): void {
