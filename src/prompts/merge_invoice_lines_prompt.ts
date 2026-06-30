@@ -15,6 +15,7 @@ export const MergeInvoiceLinesSchema = z.object({
     eventId: z.string().nullable().describe('Organization_Reference_ID value of an event worktag from the matched PO line, if one can be identified. Inspect the matched PO line\'s worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Do not confuse events with line-of-business worktags. Null if no PO line was matched, no event-like worktag is present, or you are unsure.'),
     shipToAddressId: z.string().nullable().describe('The shipToAddressId from the matched PO line. Copy it directly from the matched PO line\'s shipToAddressId field. Null if no PO line was matched or the PO line has no shipToAddressId.'),
     purchaseOrderLineId: z.string().nullable().describe('The purchaseOrderLineId from the matched PO line. Copy it directly from the matched PO line\'s purchaseOrderLineId field. Null if no PO line was matched.'),
+    hasDiscount: z.boolean().nullable().describe('True if a discount is explicitly shown on this line in the invoice document. Copy the value directly from the matching extracted invoice line. Null if not stated.'),
   })).describe('Final merged invoice lines with worktag data filled in from available sources'),
 });
 
@@ -35,12 +36,14 @@ Your task is to produce final invoice lines by:
 4. For eventId: inspect the matched PO line's worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Set null if you are unsure or no event-like worktag is present
 5. For shipToAddressId: copy the shipToAddressId value directly from the matched PO line
 6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
-7. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize
-8. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
-9. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
+7. For hasDiscount: copy the value directly from the matching extracted invoice line
+8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize
+9. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
+10. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 
 Guidelines:
-- Return exactly one output line per extracted invoice line, in the same order
+- CRITICAL: The output array MUST contain exactly as many lines as extractedInvoiceLines — no more, no fewer. Even if a line has no item name, is missing amounts, or seems like a sub-item or continuation, it is a separate invoice line and must appear as a separate output line. Never collapse, skip, or combine invoice lines.
+- Return the lines in the same order as extractedInvoiceLines
 - Line order is sequential starting at 1
 - Convert unitCost and totalPrice strings to decimal numbers (e.g. "$1,000.00" → 1000.00). Strip currency symbols and commas
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
