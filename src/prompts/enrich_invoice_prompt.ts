@@ -298,34 +298,34 @@ Populate \`extractedInvoiceLines\` with all remaining line items found. If no li
 
 ## Part 10: Email Worktag Extraction
 
-If email context is provided, scan the email body for any mentions of cost centers, events, lines of business (LOBs), or funds that should be applied as invoice worktags. These take priority over any worktags derived from the purchase order — PO values are used only as a fallback when email worktags are absent.
+If email context is provided, scan the email body for any contextual mentions of cost centers, events, lines of business (LOBs), funds, or spend categories that could be suggested as invoice worktags. These are suggestions — you do not need strict prefixes or labels, just reasonable signals from the email content. These take priority over any worktags derived from the purchase order — PO values are used only as a fallback when email worktags are absent.
 
-1. **Cost Centers**: Look for references to a cost center code or name. These are typically prefaced with "cost center", "cc:", or "CC:" (e.g., "CC: 72200", "cost center: Marketing Communications"). If found:
+1. **Cost Centers**: Look for any mention of a cost center, department, or team that might correspond to a Workday cost center — whether prefaced with "CC:", "cost center:", or referenced contextually (e.g., "charge this to Marketing", "72200"). If found:
    - Call **findCostCenters** with the cost center name or code to resolve it in Workday
    - Populate emailWorktags.costCenter.extracted with what you found in the email
    - Populate emailWorktags.costCenter.name with the matched cost center name from the top result's metadata
    - Populate emailWorktags.costCenter.code with the matched cost center's code (Cost_Center_Reference_ID) from the top result's metadata
    - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
 
-2. **Events**: Look for references explicitly labeled as an event — typically prefaced with the word "event:" (e.g., "Event: 2026 PGA Championship"). Do NOT classify something as an event just because it sounds like a tournament or occasion — it must be explicitly labeled as an event. If found:
+2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
    - Call **findEvents** with the event name to resolve it in Workday
    - Populate emailWorktags.event.extracted with what you found in the email
    - Populate emailWorktags.event.name with the matched event name from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
    - If no match is found, set emailWorktags.event.name to null
 
-3. **Lines of Business**: Look for references to a line of business, business unit, or LOB (e.g., "Golf", "Technology Services", "Media"). If found:
+3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
    - Call **findLobs** with the LOB name to resolve it in Workday
    - Populate emailWorktags.lineOfBusiness.extracted with what you found in the email
    - Populate emailWorktags.lineOfBusiness.referenceId with the matched LOB's referenceId from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
    - If no match is found, set emailWorktags.lineOfBusiness.referenceId to null
 
-4. **Funds**: Look for references to a fund or fund code (e.g., "FD-001", "Operating Fund"). If found:
+4. **Funds**: Look for any mention of a fund, fund code, or funding source — whether labeled explicitly (e.g., "FD-001") or referenced contextually (e.g., "Operating Fund"). If found:
    - Call **findFunds** with the fund name or reference to resolve it in Workday
    - Populate emailWorktags.fund.extracted with what you found in the email
    - Populate emailWorktags.fund.referenceId with the matched fund's referenceId from the top result's metadata (this is the value used as the Fund_ID worktag)
    - If no match is found, set emailWorktags.fund.referenceId to null
 
-5. **Spend Categories**: Look for references explicitly prefaced with "spend category:", "spend cat:", or "SC:" (e.g., "SC: Office Supplies", "spend cat: Professional Services"). If found:
+5. **Spend Categories**: Look for any mention of a category of expense or type of spend — whether prefaced with "SC:", "spend category:", "spend cat:", or referenced in any other form (e.g., "SC - Advertising and Promotion", "this is for office supplies"). If found:
    - Call **findSpendCategories** with the spend category name or reference to resolve it in Workday
    - Populate emailWorktags.spendCategory.extracted with what you found in the email
    - Populate emailWorktags.spendCategory.name with the matched spend category name from the top result's metadata
