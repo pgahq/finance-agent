@@ -24,6 +24,7 @@ export interface FinalInvoiceLine {
   spendCategoryId?: string | null;
   lineOfBusinessId?: string | null;
   eventId?: string | null;
+  eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
 }
@@ -86,6 +87,7 @@ function applyFallbacks(
       spendCategoryId,
       lineOfBusinessId: line.lineOfBusinessId ?? null,
       eventId: line.eventId ?? null,
+      eventWid: null,
       shipToAddressId: line.shipToAddressId ?? null,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
     };
@@ -127,7 +129,7 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   return lines.map(line => ({
     ...line,
     ...(emailWorktags.costCenterId != null && { costCenterId: emailWorktags.costCenterId }),
-    ...(emailWorktags.eventName != null && { eventId: emailWorktags.eventName }),
+    ...(emailWorktags.eventWid != null && { eventWid: emailWorktags.eventWid }),
     ...(emailWorktags.lobReferenceId != null && { lineOfBusinessId: emailWorktags.lobReferenceId }),
     ...(emailWorktags.fundReferenceId != null && { fundId: emailWorktags.fundReferenceId }),
   }));
@@ -135,7 +137,7 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
 
 export interface EmailWorktags {
   costCenterId?: string | null;
-  eventName?: string | null;
+  eventWid?: string | null;
   lobReferenceId?: string | null;
   fundReferenceId?: string | null;
 }
