@@ -189,7 +189,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     } : undefined;
 
     const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
-      ? (result.extractedInvoiceLines ?? []).filter(l => l.description && l.quantity != null && l.unitCost && l.totalPrice)
+      ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
       : [];
 
     let finalLines: FinalInvoiceLine[] | undefined;
