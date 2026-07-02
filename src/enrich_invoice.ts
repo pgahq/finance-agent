@@ -183,7 +183,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
       costCenterId: result.emailWorktags.costCenter?.code ?? null,
-      eventName: result.emailWorktags.event?.name ?? null,
+      eventWid: result.emailWorktags.event?.workdayId ?? null,
       lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
       fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
     } : undefined;
@@ -579,7 +579,7 @@ function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string {
     parts.push(`Cost Center: ${wt.costCenter.extracted}${resolved}`);
   }
   if (wt.event?.extracted) {
-    const resolved = wt.event.name ? ` (resolved: ${wt.event.name})` : ' (no Workday match found)';
+    const resolved = wt.event.workdayId ? ' (resolved)' : ' (no Workday match found)';
     parts.push(`Event: ${wt.event.extracted}${resolved}`);
   }
   if (wt.lineOfBusiness?.extracted) {

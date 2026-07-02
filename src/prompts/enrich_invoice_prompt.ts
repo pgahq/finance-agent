@@ -91,7 +91,7 @@ export const InvoiceEnrichmentSchema = z.object({
   emailWorktags: z.object({
     event: z.object({
       extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
-      name: z.string().nullable().describe('The matched event name from Workday (used as Organization_Reference_ID). Populate after calling findEvents.'),
+      workdayId: z.string().nullable().describe('The workdayId from the top result returned by findEvents (a WID used to reference the event in Workday). Populate after calling findEvents.'),
     }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
     lineOfBusiness: z.object({
       extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
@@ -312,8 +312,8 @@ If email context is provided, scan the email body for any contextual mentions of
 2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
    - Call **findEvents** with the event name to resolve it in Workday
    - Populate emailWorktags.event.extracted with what you found in the email
-   - Populate emailWorktags.event.name with the matched event name from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
-   - If no match is found, set emailWorktags.event.name to null
+   - Populate emailWorktags.event.workdayId with the workdayId from the top result (this WID is used to reference the event in Workday)
+   - If no match is found, set emailWorktags.event.workdayId to null
 
 3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
    - Call **findLobs** with the LOB name to resolve it in Workday
