@@ -4,7 +4,7 @@ import { createSpendCategoryContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
 
 const QUERY = `
-  SELECT spendCategoryObject, referenceID1, workdayID
+  SELECT referenceID1, workdayID
   FROM spendCategories
   ORDER BY spendCategoryObject ASC
 `;
