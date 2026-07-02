@@ -449,10 +449,11 @@ interface Fallbacks extends UpfrontFallbacks {
 }
 
 function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
+  const worktagsApplied = submissionFallbacks.some(f => f.field === 'worktags');
   return {
     defaultSupplier: upfront.defaultSupplier || submissionFallbacks.some(f => f.field === 'supplier'),
-    fund: upfront.fund,
-    costCenter: upfront.costCenter,
+    fund: upfront.fund || worktagsApplied,
+    costCenter: upfront.costCenter || worktagsApplied,
     spendCategory: upfront.spendCategory,
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
   };
