@@ -186,6 +186,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       eventWid: result.emailWorktags.event?.workdayId ?? null,
       lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
       fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
+      spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
     const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
