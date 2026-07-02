@@ -10,7 +10,7 @@ export const MergeInvoiceLinesSchema = z.object({
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
     costCenterId: z.string().nullable().describe('Cost_Center_Reference_ID from PO lines or email context. Null if not determinable.'),
     fundId: z.string().nullable().describe('Fund_ID from PO lines or email context. Null if not determinable.'),
-    spendCategoryId: z.string().nullable().describe('Spend_Category_ID from PO lines or email context. Null if not determinable.'),
+    spendCategoryId: z.string().nullable().describe('Spend_Category_ID from PO lines only. Never infer this from email text — spend category is resolved upstream and applied separately. Null if no PO line was matched.'),
     lineOfBusinessId: z.string().nullable().describe('Organization_Reference_ID value of the line of business worktag from the matched PO line. Find the worktag reference in the PO line\'s worktagsReference whose ID array contains an Organization_Reference_ID or Custom_Organization_Reference_ID that identifies a line of business, then return that ID value (e.g. "LOB-Technology_Services"). Null if no PO line was matched or no line of business worktag is present.'),
     eventId: z.string().nullable().describe('Organization_Reference_ID value of an event worktag from the matched PO line, if one can be identified. Inspect the matched PO line\'s worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Do not confuse events with line-of-business worktags. Null if no PO line was matched, no event-like worktag is present, or you are unsure.'),
     shipToAddressId: z.string().nullable().describe('The shipToAddressId from the matched PO line. Copy it directly from the matched PO line\'s shipToAddressId field. Null if no PO line was matched or the PO line has no shipToAddressId.'),
@@ -49,5 +49,5 @@ Guidelines:
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
 - If all PO lines share the same worktags, apply those worktags to all invoice lines
 - If the invoice has fewer lines than the PO, match each invoice line to the single best-matching PO line
-- Cost center IDs, fund IDs, and spend category IDs are alphanumeric strings (e.g. "72200", "FD-001")
+- Cost center IDs and fund IDs are alphanumeric strings (e.g. "72200", "FD-001"). Spend category IDs come from PO lines only — never construct them from email text
 - Set null for any worktag field you cannot confidently determine from the available sources`;

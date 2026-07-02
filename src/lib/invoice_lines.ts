@@ -132,6 +132,7 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
     ...(emailWorktags.eventWid != null && { eventWid: emailWorktags.eventWid }),
     ...(emailWorktags.lobReferenceId != null && { lineOfBusinessId: emailWorktags.lobReferenceId }),
     ...(emailWorktags.fundReferenceId != null && { fundId: emailWorktags.fundReferenceId }),
+    ...(emailWorktags.spendCategoryReferenceId != null && { spendCategoryId: emailWorktags.spendCategoryReferenceId }),
   }));
 }
 
@@ -140,6 +141,7 @@ export interface EmailWorktags {
   eventWid?: string | null;
   lobReferenceId?: string | null;
   fundReferenceId?: string | null;
+  spendCategoryReferenceId?: string | null;
 }
 
 export async function buildFinalInvoiceLines(
