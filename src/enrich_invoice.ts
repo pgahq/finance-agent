@@ -169,7 +169,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
       : undefined;
-    const extractedPurchaseOrderNumber = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
+    let extractedPurchaseOrderNumber: string | undefined = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
       ? normalizedPurchaseOrderNumber
       : undefined;
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
@@ -179,6 +179,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
       poLines = parsePurchaseOrderLines(poResponse);
       debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
+      const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
+      if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
+        debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - will not submit as PO reference`);
+        poLines = undefined;
+        extractedPurchaseOrderNumber = undefined;
+      }
     }
 
     const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
