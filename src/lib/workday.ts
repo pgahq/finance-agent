@@ -321,7 +321,11 @@ interface buildSubmitInvoiceDataOptions {
   memo?: string;
   invoiceDate?: string;
   paymentTermsWID?: string;
-  applyFallbackWorktags?: boolean;
+  applyFundFallback?: boolean;
+  applyCostCenterFallback?: boolean;
+  applySpendCategoryFallback?: boolean;
+  omitEventWorktag?: boolean;
+  omitLobWorktag?: boolean;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -330,8 +334,8 @@ interface buildSubmitInvoiceDataOptions {
   finalLines?: FinalInvoiceLine[];
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
-const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktags'];
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
+const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
   field: FallbackField;
@@ -400,7 +404,7 @@ function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions)
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
-  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFallbackWorktags } = options;
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -412,15 +416,28 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
     fallbacks.push({ field: 'invoiceDate', label: 'default invoice date' });
   }
 
-  if (
-    process.env.FALLBACK_PAYMENT_TERMS_ID
-    && paymentTermsWID === process.env.FALLBACK_PAYMENT_TERMS_ID
-  ) {
+  if (process.env.FALLBACK_PAYMENT_TERMS_ID && paymentTermsWID === process.env.FALLBACK_PAYMENT_TERMS_ID) {
     fallbacks.push({ field: 'paymentTerms', label: 'fallback payment terms' });
   }
 
-  if (applyFallbackWorktags) {
-    fallbacks.push({ field: 'worktags', label: 'fallback worktags' });
+  if (applyFundFallback && process.env.FALLBACK_FUND_ID) {
+    fallbacks.push({ field: 'worktag:fund', label: 'fallback fund' });
+  }
+
+  if (applyCostCenterFallback && process.env.FALLBACK_COST_CENTER_ID) {
+    fallbacks.push({ field: 'worktag:costCenter', label: 'fallback cost center' });
+  }
+
+  if (applySpendCategoryFallback && process.env.FALLBACK_SPEND_CATEGORY_ID) {
+    fallbacks.push({ field: 'worktag:spendCategory', label: 'fallback spend category' });
+  }
+
+  if (omitEventWorktag) {
+    fallbacks.push({ field: 'worktag:event', label: 'omitted Event worktag' });
+  }
+
+  if (omitLobWorktag) {
+    fallbacks.push({ field: 'worktag:lob', label: 'omitted Line of Business worktag' });
   }
 
   return fallbacks;
@@ -452,10 +469,6 @@ async function getValidationFallbackField(
 
     if (decision.retryField !== 'unknown') {
       return decision.retryField;
-    }
-
-    if (decision.workdayField?.includes('Worktags_Reference') && retryableFallbackFields.includes('worktags')) {
-      return 'worktags';
     }
 
     return undefined;
@@ -518,17 +531,38 @@ function getFallbackRetryBuildOptions(
     };
   }
 
-  if (
-    field === 'worktags'
-    && !options.applyFallbackWorktags
-    && (process.env.FALLBACK_FUND_ID || process.env.FALLBACK_COST_CENTER_ID)
-  ) {
+  if (field === 'worktag:fund' && !options.applyFundFallback && process.env.FALLBACK_FUND_ID) {
     return {
-      buildOptions: {
-        ...options,
-        applyFallbackWorktags: true,
-      },
-      fallbackLabel: 'fallback worktags',
+      buildOptions: { ...options, applyFundFallback: true },
+      fallbackLabel: 'fallback fund',
+    };
+  }
+
+  if (field === 'worktag:costCenter' && !options.applyCostCenterFallback && process.env.FALLBACK_COST_CENTER_ID) {
+    return {
+      buildOptions: { ...options, applyCostCenterFallback: true },
+      fallbackLabel: 'fallback cost center',
+    };
+  }
+
+  if (field === 'worktag:spendCategory' && !options.applySpendCategoryFallback && process.env.FALLBACK_SPEND_CATEGORY_ID) {
+    return {
+      buildOptions: { ...options, applySpendCategoryFallback: true },
+      fallbackLabel: 'fallback spend category',
+    };
+  }
+
+  if (field === 'worktag:event' && !options.omitEventWorktag && options.finalLines?.some(l => l.eventId || l.eventWid)) {
+    return {
+      buildOptions: { ...options, omitEventWorktag: true },
+      fallbackLabel: 'omitted Event worktag',
+    };
+  }
+
+  if (field === 'worktag:lob' && !options.omitLobWorktag && options.finalLines?.some(l => l.lineOfBusinessId)) {
+    return {
+      buildOptions: { ...options, omitLobWorktag: true },
+      fallbackLabel: 'omitted Line of Business worktag',
     };
   }
 
@@ -536,7 +570,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFallbackWorktags } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -555,9 +589,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ? createReference('WID', resolvedSupplierWID)
     : currentInvoice.Supplier_Reference;
 
-  const fallbackWorktags = [
-    ...(fallbackFundId ? [createReference('Fund_ID', fallbackFundId)] : []),
-    ...(fallbackCostCenterId ? [createReference('Cost_Center_Reference_ID', fallbackCostCenterId)] : []),
+  const fallbackFundRef = fallbackFundId ? createReference('Fund_ID', fallbackFundId) : null;
+  const fallbackCostCenterRef = fallbackCostCenterId ? createReference('Cost_Center_Reference_ID', fallbackCostCenterId) : null;
+  const defaultFallbackWorktags = [
+    ...(fallbackFundRef ? [fallbackFundRef] : []),
+    ...(fallbackCostCenterRef ? [fallbackCostCenterRef] : []),
   ];
 
   const paymentTermsRef = paymentTermsWID
@@ -565,20 +601,29 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     : currentInvoice.Payment_Terms_Reference;
 
   const withFallbackWorktags = (worktags: any[]): any[] => {
-    if (!fallbackWorktags.length) return worktags;
-    if (applyFallbackWorktags) {
-      const fallbackTypes = new Set(fallbackWorktags.map(t => t.ID[0].$attributes?.type).filter(Boolean));
+    const replaceTypes = new Set([
+      ...(applyFundFallback && fallbackFundRef ? ['Fund_ID'] : []),
+      ...(applyCostCenterFallback && fallbackCostCenterRef ? ['Cost_Center_Reference_ID'] : []),
+    ]);
+
+    if (replaceTypes.size > 0) {
       const remaining = worktags.filter((t: any) =>
-        ([] as any[]).concat(t.ID ?? []).every((id: any) => !fallbackTypes.has(id.$attributes?.type))
+        ([] as any[]).concat(t.ID ?? []).every((id: any) => !replaceTypes.has(id.$attributes?.type))
       );
-      return [...remaining, ...fallbackWorktags];
+      return [
+        ...remaining,
+        ...(applyFundFallback && fallbackFundRef ? [fallbackFundRef] : []),
+        ...(applyCostCenterFallback && fallbackCostCenterRef ? [fallbackCostCenterRef] : []),
+      ];
     }
+
+    if (!defaultFallbackWorktags.length) return worktags;
     const existingTypes = new Set(
       worktags.flatMap((t: any) =>
         ([] as any[]).concat(t.ID ?? []).map((id: any) => id.$attributes?.type)
       ).filter(Boolean)
     );
-    const additions = fallbackWorktags.filter(t => !existingTypes.has(t.ID[0].$attributes?.type));
+    const additions = defaultFallbackWorktags.filter(t => !existingTypes.has(t.ID[0].$attributes?.type));
     return additions.length ? [...worktags, ...additions] : worktags;
   };
 
@@ -587,8 +632,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
-        ...(line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []),
+        ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+        ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ]);
       const isDiscountOverride = line.hasDiscount === true;
       return {
@@ -607,7 +652,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
             }
         ),
         ...(worktags.length && { Worktags_Reference: worktags }),
-        ...(line.spendCategoryId && { Spend_Category_Reference: createReference('Spend_Category_ID', line.spendCategoryId) }),
+        ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
+          Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
+        }),
         ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
         ...(line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
         ...(line.memo && { Memo: line.memo }),
@@ -615,13 +662,16 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     })
     : currentInvoice.Invoice_Line_Replacement_Data
       ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
-        const missingSpendCategory = filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference;
         const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
+        const applySpendCategory = defaultSpendCategoryId && (
+          applySpendCategoryFallback
+          || (filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference)
+        );
         return {
           ...line,
           Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
-          ...(missingSpendCategory && defaultSpendCategoryId && {
-            Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId),
+          ...(applySpendCategory && {
+            Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId!),
           }),
         };
       });

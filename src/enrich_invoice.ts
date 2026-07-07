@@ -447,16 +447,20 @@ interface UpfrontFallbacks {
 
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
+  omittedWorktags?: string[];
 }
 
 function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
-  const worktagsApplied = submissionFallbacks.some(f => f.field === 'worktags');
+  const omittedWorktags: string[] = [];
+  if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
+  if (submissionFallbacks.some(f => f.field === 'worktag:lob')) omittedWorktags.push('Line of Business');
   return {
     defaultSupplier: upfront.defaultSupplier || submissionFallbacks.some(f => f.field === 'supplier'),
-    fund: upfront.fund || worktagsApplied,
-    costCenter: upfront.costCenter || worktagsApplied,
-    spendCategory: upfront.spendCategory,
+    fund: upfront.fund || submissionFallbacks.some(f => f.field === 'worktag:fund'),
+    costCenter: upfront.costCenter || submissionFallbacks.some(f => f.field === 'worktag:costCenter'),
+    spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
+    omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
   };
 }
 
@@ -516,6 +520,9 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
   }
   if (fallbacks.paymentTerms && process.env.FALLBACK_PAYMENT_TERMS_ID) {
     parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied after validation error)`);
+  }
+  if (fallbacks.omittedWorktags?.length) {
+    parts.push(`${fallbacks.omittedWorktags.join(', ')} worktag(s) removed (no fallback available, validation error)`);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;

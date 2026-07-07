@@ -56,8 +56,28 @@ describe('Workday utilities', () => {
         return Promise.resolve({ retryField: 'invoiceDate', reason: 'test invoice date classification' });
       }
 
-      if (/worktags?|\bfund\b|cost[_\s-]*center|spend[_\s-]*category/.test(text)) {
-        return Promise.resolve({ retryField: 'worktags', reason: 'test worktag classification' });
+      if (/cost[_\s-]*center/.test(text)) {
+        return Promise.resolve({ retryField: 'worktag:costCenter', reason: 'test cost center classification' });
+      }
+
+      if (/\bfund\b/.test(text)) {
+        return Promise.resolve({ retryField: 'worktag:fund', reason: 'test fund classification' });
+      }
+
+      if (/spend[_\s-]*category/.test(text)) {
+        return Promise.resolve({ retryField: 'worktag:spendCategory', reason: 'test spend category classification' });
+      }
+
+      if (/\bevent\b/.test(text)) {
+        return Promise.resolve({ retryField: 'worktag:event', reason: 'test event classification' });
+      }
+
+      if (/line[_\s-]*of[_\s-]*business|\blob\b/.test(text)) {
+        return Promise.resolve({ retryField: 'worktag:lob', reason: 'test LOB classification' });
+      }
+
+      if (/worktags?/.test(text)) {
+        return Promise.resolve({ retryField: 'unknown', reason: 'cannot identify specific worktag type' });
       }
 
       if (/supplier/.test(text)) {
