@@ -601,12 +601,6 @@ Resources:
         SubnetIds:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
-      Events:
-        Schedule:
-          Type: Schedule
-          Properties:
-            Schedule: cron(0 * * * ? *)
-
   # Enrich Invoice Supplier Processor - Individual record processing
   EnrichInvoiceProcessor:
     Type: AWS::Serverless::Function
