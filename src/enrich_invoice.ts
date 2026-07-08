@@ -175,14 +175,19 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
-      const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
-      debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
-      poLines = parsePurchaseOrderLines(poResponse);
-      debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
-      const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
-      if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
-        debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - will not submit as PO reference`);
-        poLines = undefined;
+      try {
+        const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
+        debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
+        poLines = parsePurchaseOrderLines(poResponse);
+        debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
+        const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
+        if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
+          debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
+          poLines = undefined;
+          extractedPurchaseOrderNumber = undefined;
+        }
+      } catch (poError) {
+        debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
         extractedPurchaseOrderNumber = undefined;
       }
     }
