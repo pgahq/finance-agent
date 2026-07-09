@@ -651,7 +651,10 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.On_Hold !== undefined && { On_Hold: currentInvoice.On_Hold }),
     ...(currentInvoice.Prepaid !== undefined && { Prepaid: currentInvoice.Prepaid }),
 
-    ...(currentInvoice.Currency_Rate_Data && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
+    // Omit Currency_Rate_Data when Rate_Override is false — we never provide custom rates,
+    // and sending this block causes Workday to validate Ledger_Currency against the company
+    // setup, which fails for placeholder companies like Default_OCR_Company.
+    ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 
