@@ -240,8 +240,9 @@ export async function deleteAllDocumentsByType(
 ): Promise<number> {
   try {
     const result = await db.query(`
-      DELETE FROM documents 
+      DELETE FROM documents
       WHERE type = $1
+      RETURNING workday_id
     `, [type]);
 
     const deletedCount = result.length || 0;
@@ -355,8 +356,9 @@ export async function bulkDeleteDocuments(
 
   try {
     const result = await db.query(`
-      DELETE FROM documents 
+      DELETE FROM documents
       WHERE workday_id = ANY($1) AND type = $2
+      RETURNING workday_id
     `, [workdayIds, type]);
 
     const deletedCount = result.length || 0;

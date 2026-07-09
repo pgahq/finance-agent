@@ -588,6 +588,21 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
+  RefreshSpendCategoriesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-RefreshSpendCategories"
+      Handler: dist/refresh_spend_categories.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
   # Enrich Invoice Supplier - Query handler
   EnrichInvoiceFunction:
     Type: AWS::Serverless::Function

@@ -4,12 +4,12 @@ import { ToolLoopAgent, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 import type { WorkdayValidationDetails } from './invoice_validation_failures.js';
 
-export type WorkdayValidationRetryField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktags';
+export type WorkdayValidationRetryField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'unknown';
 
 const inspectValidationErrorSchema = z.object({});
 
 const workdayValidationFieldDecisionSchema = z.object({
-  retryField: z.enum(['supplier', 'invoiceDate', 'paymentTerms', 'worktags', 'unknown'])
+  retryField: z.enum(['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob', 'unknown'])
     .describe('The configured retry field this validation error points to, or unknown when no configured retry field is clearly implicated.'),
   workdayField: z.string().min(1).optional()
     .describe('The exact Workday field name or XPath segment that appears to have failed validation, if identifiable.'),
@@ -41,9 +41,14 @@ Map the failing Workday field to one of the configured retry fields only when th
 - supplier: supplier references or supplier identity fields
 - invoiceDate: invoice date fields or date restrictions
 - paymentTerms: payment terms fields
-- worktags: fund, cost center, spend category, worktag, accounting worktag fields, or any error whose XPath includes Worktags_Reference — classify as worktags even when the specific missing worktag type (e.g. Line of Business) is not one of the configured fallback types, since applying fallback worktags may still resolve the conflict
+- worktag:fund: fund worktag errors — message or XPath references Fund or Fund_ID
+- worktag:costCenter: cost center worktag errors — message or XPath references Cost Center or Cost_Center_Reference_ID
+- worktag:spendCategory: spend category errors — message or XPath references Spend Category or Spend_Category_Reference
+- worktag:event: event worktag errors — message or XPath references Event
+- worktag:lob: line of business worktag errors — message or XPath references Line of Business or LOB
 
-Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, or when changing the field would require inventing new invoice line/contact/company data.
+Only classify as a specific worktag type when the evidence clearly identifies that type.
+Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, when you cannot identify the specific worktag type, or when changing the field would require inventing new data.
 When finished, call done exactly once.`,
     tools: {
       inspectValidationError: tool({
