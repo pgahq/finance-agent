@@ -340,6 +340,7 @@ const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTer
 export interface AppliedFallback {
   field: FallbackField;
   label: string;
+  dueToValidationError?: boolean;
 }
 
 function stripRichText(text: string): string {
@@ -810,9 +811,12 @@ async function submitSupplierInvoiceWithRepair({
 }: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
   let attemptBuildOptions = { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
+  const validationTriggeredFields = new Set<FallbackField>();
 
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
-    const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions);
+    const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
+      validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
+    );
     const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks) };
     const invoiceData = buildSubmitInvoiceData(optionsWithNotes) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
@@ -874,6 +878,7 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       attemptBuildOptions = nextBuildOptions;
+      if (validationFallbackField) validationTriggeredFields.add(validationFallbackField);
       debug(
         `Retrying Supplier Invoice submit (${attemptNumber + 1}/${MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS}) with ${fallbackRetry.fallbackLabel}`,
         { operationName, validationError }
