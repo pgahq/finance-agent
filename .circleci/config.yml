@@ -118,11 +118,11 @@ jobs:
       LOG_LEVEL: DEBUG
       WORKDAY_DOMAIN: services1.myworkday.com
       WORKDAY_TENANT: pgahq
-      FALLBACK_FUND_ID: ""
-      FALLBACK_PAYMENT_TERMS_ID: ""
-      FALLBACK_COST_CENTER_ID: ""
-      INVOICE_MOD_ENABLED: "false"
-      FALLBACK_SPEND_CATEGORY_ID: ""
+      FALLBACK_FUND_ID: FUND-General_Fund_Unrestricted
+      FALLBACK_PAYMENT_TERMS_ID: FALLBACK_PAYMENT_TERMS
+      FALLBACK_COST_CENTER_ID: CC0000
+      INVOICE_MOD_ENABLED: "true"
+      FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
 
 workflows:
   version: 2
