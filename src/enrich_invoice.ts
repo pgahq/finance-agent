@@ -459,12 +459,16 @@ interface UpfrontFallbacks {
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
   omittedWorktags?: string[];
+  validationErrorFields?: Set<string>;
 }
 
 function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
   const omittedWorktags: string[] = [];
   if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
   if (submissionFallbacks.some(f => f.field === 'worktag:lob')) omittedWorktags.push('Line of Business');
+  const validationErrorFields = new Set(
+    submissionFallbacks.filter(f => f.dueToValidationError).map(f => f.field)
+  );
   return {
     defaultSupplier: upfront.defaultSupplier || submissionFallbacks.some(f => f.field === 'supplier'),
     fund: upfront.fund || submissionFallbacks.some(f => f.field === 'worktag:fund'),
@@ -472,6 +476,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
+    validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
 }
 
@@ -517,17 +522,22 @@ function getUpfrontFallbacks(
 
 function formatFallbackNotes(fallbacks: Fallbacks): string {
   const parts: string[] = [];
+  const isValidationError = (field: string) => fallbacks.validationErrorFields?.has(field) ?? false;
   if (fallbacks.defaultSupplier && DEFAULT_SUPPLIER_WID) {
-    parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (no match found, default applied)`);
+    const reason = isValidationError('supplier') ? 'applied after validation error' : 'no match found, default applied';
+    parts.push(`Supplier: ${DEFAULT_SUPPLIER_WID} (${reason})`);
   }
   if (fallbacks.fund && process.env.FALLBACK_FUND_ID) {
-    parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (applied to lines without an existing fund)`);
+    const reason = isValidationError('worktag:fund') ? 'applied after validation error' : 'applied to lines without an existing fund';
+    parts.push(`Fund: ${process.env.FALLBACK_FUND_ID} (${reason})`);
   }
   if (fallbacks.costCenter && process.env.FALLBACK_COST_CENTER_ID) {
-    parts.push(`Cost Center: ${process.env.FALLBACK_COST_CENTER_ID} (applied to lines without an existing cost center)`);
+    const reason = isValidationError('worktag:costCenter') ? 'applied after validation error' : 'applied to lines without an existing cost center';
+    parts.push(`Cost Center: ${process.env.FALLBACK_COST_CENTER_ID} (${reason})`);
   }
   if (fallbacks.spendCategory && process.env.FALLBACK_SPEND_CATEGORY_ID) {
-    parts.push(`Spend Category: ${process.env.FALLBACK_SPEND_CATEGORY_ID} (applied to lines without an existing spend category)`);
+    const reason = isValidationError('worktag:spendCategory') ? 'applied after validation error' : 'applied to lines without an existing spend category';
+    parts.push(`Spend Category: ${process.env.FALLBACK_SPEND_CATEGORY_ID} (${reason})`);
   }
   if (fallbacks.paymentTerms && process.env.FALLBACK_PAYMENT_TERMS_ID) {
     parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied after validation error)`);
