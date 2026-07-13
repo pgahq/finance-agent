@@ -878,7 +878,7 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       attemptBuildOptions = nextBuildOptions;
-      validationTriggeredFields.add(validationFallbackField);
+      validationTriggeredFields.add(validationFallbackField!);
       debug(
         `Retrying Supplier Invoice submit (${attemptNumber + 1}/${MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS}) with ${fallbackRetry.fallbackLabel}`,
         { operationName, validationError }
