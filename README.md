@@ -4,7 +4,7 @@
 > Serverless system for intelligent invoice processing and supplier management
 
 [![Version](https://img.shields.io/badge/version-v0.0.1--a-blue.svg)](https://github.com/pgahq/finance-agent)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.2-blue.svg)](https://www.typescriptlang.org/)
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-orange.svg)](https://aws.amazon.com/lambda/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
@@ -272,15 +272,15 @@ Deployment is automated via CircleCI:
 
 ## 📄 Open Source
 
-Finance Agent is released as **v0.0.1-a** under the [GNU Affero General Public License v3.0](LICENSE).
+Finance Agent is released as **v0.0.1-a** under the [GNU Affero General Public License v3.0 or later](LICENSE) (SPDX: `AGPL-3.0-or-later`).
 
-Because this project uses the **AGPL-3.0**, if you modify this software and run it as a network service (for example, as a hosted API or SaaS), you must offer users of that service access to the corresponding source code of your modified version.
+Because this project uses the **AGPL-3.0-or-later**, if you modify this software and run it as a network service (for example, as a hosted API or SaaS), you must offer users of that service access to the corresponding source code of your modified version.
 
 ### Legal and community
 
 | Document | Purpose |
 | --- | --- |
-| [LICENSE](LICENSE) | AGPL-3.0 software license |
+| [LICENSE](LICENSE) | AGPL-3.0-or-later software license (SPDX: `AGPL-3.0-or-later`) |
 | [TRADEMARKS.md](TRADEMARKS.md) | PGA of America trademark policy |
 | [CLA.md](CLA.md) | Contributor License Agreement |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute (includes CLA signing steps) |

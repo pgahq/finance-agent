@@ -1,6 +1,6 @@
 # Contributing to Finance Agent
 
-Thank you for your interest in contributing. This project is licensed under the [GNU Affero General Public License v3.0](LICENSE) and is maintained by the PGA of America.
+Thank you for your interest in contributing. This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (SPDX: `AGPL-3.0-or-later`) and is maintained by the PGA of America.
 
 ## Contributor License Agreement
 
