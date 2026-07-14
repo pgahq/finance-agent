@@ -12,7 +12,7 @@ If you discover a security vulnerability in Finance Agent, please report it resp
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, email [legal@pgahq.com](mailto:legal@pgahq.com) with:
+Instead, email [security@pgahq.com](mailto:security@pgahq.com) with:
 
 - A description of the vulnerability
 - Steps to reproduce the issue
