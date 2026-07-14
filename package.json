@@ -1,7 +1,8 @@
 {
   "name": "finance-agent",
-  "version": "1.0.0",
+  "version": "0.0.1-a",
   "description": "Finance AI Automation for Workday",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "build": "tsc && npm run copy:assets",
