@@ -1,6 +1,6 @@
 {
   "name": "finance-agent",
-  "version": "1.0.0",
+  "version": "0.0.1-a",
   "description": "Finance AI Automation for Workday",
   "type": "module",
   "scripts": {
