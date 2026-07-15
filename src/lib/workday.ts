@@ -332,7 +332,6 @@ interface buildSubmitInvoiceDataOptions {
   extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
-  purchaseOrderNumber?: string;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
@@ -572,7 +571,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, purchaseOrderNumber } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -688,7 +687,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
-    ...(purchaseOrderNumber && { Purchase_Order_Reference: createReference('Document_Number', purchaseOrderNumber) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
@@ -1199,7 +1197,6 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
   paymentTermsId?: string;
-  purchaseOrderNumber?: string;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1216,8 +1213,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
-    paymentTermsId,
-    purchaseOrderNumber
+    paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
   debug('Updating Supplier Invoice supplier via SOAP');
@@ -1266,7 +1262,6 @@ export async function submitSupplierInvoiceUpdate(
       extractedTaxAmount,
       finalLines,
       paymentTermsWID: paymentTermsId,
-      purchaseOrderNumber,
       filterInvoiceLines: true
     },
     buildNotes,
