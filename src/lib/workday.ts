@@ -688,8 +688,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
-    ...(purchaseOrderNumber && { Purchase_Order_Reference: { ID: [{ $attributes: { type: 'Document_Number' }, $value: purchaseOrderNumber }] } }),
-
+    ...(purchaseOrderNumber && { Purchase_Order_Reference: createReference('Document_Number', purchaseOrderNumber) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
