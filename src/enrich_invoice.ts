@@ -247,8 +247,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         extractedTaxAmount,
         finalLines,
-        paymentTermsId,
-        purchaseOrderNumber: extractedPurchaseOrderNumber
+        paymentTermsId
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
