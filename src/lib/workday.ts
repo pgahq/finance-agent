@@ -636,7 +636,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ]);
-      const isDiscountOverride = line.hasDiscount === true;
+      const isDiscountOverride = line.hasDiscount === true && !line.purchaseOrderLineId;
       return {
         Line_Order: line.lineOrder,
         Item_Description: line.description,

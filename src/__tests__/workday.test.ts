@@ -1936,6 +1936,31 @@ describe('Workday utilities', () => {
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
+      it('should set Quantity and Unit_Cost to 0 for discount lines without a PO line', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -50 }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(-50);
+      });
+
+      it('should use non-zero quantity for discount lines linked to a PO line', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -50, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(1);
+        expect(lines[0].Extended_Amount).toBe(-50);
+      });
+
       it('should include Purchase_Order_Line_Reference when purchaseOrderLineId is present', async () => {
         const { getCapturedRequest } = setupMockClient();
 
