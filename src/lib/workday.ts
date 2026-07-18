@@ -636,7 +636,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ]);
-      const isDiscountOverride = line.hasDiscount === true && !line.purchaseOrderLineId;
+      const isDiscountOverride = line.hasDiscount === true;
       return {
         Line_Order: line.lineOrder,
         Item_Description: line.description,
@@ -657,7 +657,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
           Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
         }),
         ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-        ...(line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+        ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
         ...(line.memo && { Memo: line.memo }),
       };
     })
