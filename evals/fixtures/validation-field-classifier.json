@@ -1,0 +1,124 @@
+{
+  "cases": [
+    {
+      "id": "invoice-date-first-of-month",
+      "input": {
+        "validation": {
+          "message": "The entered information does not meet the restrictions defined for this field.",
+          "detailMessage": "The invoice date must be the first day of the month.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Invoice_Date"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "invoiceDate" }
+    },
+    {
+      "id": "supplier-reference-invalid",
+      "input": {
+        "validation": {
+          "message": "Invalid supplier reference.",
+          "detailMessage": "The supplier you entered is not valid for this company.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Supplier_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "supplier" }
+    },
+    {
+      "id": "payment-terms-missing",
+      "input": {
+        "validation": {
+          "message": "The field Payment Terms is required.",
+          "detailMessage": "Enter a value for Payment Terms.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Payment_Terms_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "paymentTerms" }
+    },
+    {
+      "id": "worktags-reference-missing-lob",
+      "input": {
+        "validation": {
+          "message": "The Line of Business worktag is required.",
+          "detailMessage": "A required worktag is missing for this invoice line.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Invoice_Line_Replacement_Data/Worktags_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "worktags" }
+    },
+    {
+      "id": "fund-worktag-invalid",
+      "input": {
+        "validation": {
+          "message": "Invalid worktag value.",
+          "detailMessage": "The Fund worktag is not valid for this company.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Invoice_Line_Replacement_Data/Fund_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "worktags" }
+    },
+    {
+      "id": "spend-category-worktag",
+      "input": {
+        "validation": {
+          "message": "The entered information does not meet the restrictions defined for this field.",
+          "detailMessage": "Spend Category is required for this invoice line.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Invoice_Line_Replacement_Data/Spend_Category_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "worktags" }
+    },
+    {
+      "id": "company-field-not-retryable",
+      "input": {
+        "validation": {
+          "message": "Invalid company reference.",
+          "detailMessage": "The company on this invoice is not valid.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Company_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "unknown" }
+    },
+    {
+      "id": "contact-field-not-retryable",
+      "input": {
+        "validation": {
+          "message": "Invalid contact reference.",
+          "detailMessage": "The remit-to contact is not valid for this supplier.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Remit-To_Contact_Reference"
+        },
+        "allowedRetryFields": ["supplier", "invoiceDate", "paymentTerms", "worktags"]
+      },
+      "expected": { "retryField": "unknown" }
+    },
+    {
+      "id": "supplier-when-only-worktags-allowed",
+      "input": {
+        "validation": {
+          "message": "Invalid supplier reference.",
+          "detailMessage": "Supplier is not valid.",
+          "xpath": "/Submit_Supplier_Invoice_Request/Supplier_Invoice_Data/Supplier_Reference"
+        },
+        "allowedRetryFields": ["worktags"]
+      },
+      "expected": { "retryField": "unknown" }
+    },
+    {
+      "id": "invoice-date-restricted-allowed-list",
+      "input": {
+        "validation": {
+          "message": "Validation error on invoice date.",
+          "detailMessage": "Invoice Date must be within the open accounting period.",
+          "xpath": "Supplier_Invoice_Data/Invoice_Date"
+        },
+        "allowedRetryFields": ["invoiceDate", "paymentTerms"]
+      },
+      "expected": { "retryField": "invoiceDate" }
+    }
+  ]
+}

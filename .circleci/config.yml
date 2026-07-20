@@ -124,15 +124,59 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
 
+  eval:
+    working_directory: ~/app
+    docker:
+      - image: cimg/node:20.11.0
+        environment:
+          RUN_EVALS: "1"
+          EVALS_API_KEY: $EVALS_API_KEY
+          EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_agent_eval
+      - image: pgvector/pgvector:pg15
+        environment:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finance_agent_eval
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: npm install
+      - run:
+          name: Wait for Postgres
+          command: |
+            sudo apt-get update && sudo apt-get install -y postgresql-client
+            for i in $(seq 1 30); do
+              pg_isready -h localhost -p 5432 -U postgres && break
+              sleep 1
+            done
+      - run:
+          name: Run evals when AI paths change
+          command: |
+            chmod +x evals/should-run-eval.sh
+            if ! evals/should-run-eval.sh; then
+              echo "Skipping live evals (no AI-related diff)"
+              exit 0
+            fi
+            if [ -z "$EVALS_API_KEY" ]; then
+              echo "EVALS_API_KEY is not set in the chatbot-development CircleCI context"
+              exit 1
+            fi
+            npm run eval:seed
+            RUN_EVALS=1 npm run eval
+
 workflows:
   version: 2
   build-deploy:
     jobs:
       - build
+      - eval:
+          context: chatbot-development
       - deploy-to-dev:
           context: chatbot-development
           requires:
             - build
+            - eval
           filters:
             branches:
               only: development
@@ -140,6 +184,7 @@ workflows:
           context: chatbot-production
           requires:
             - build
+            - eval
           filters:
             branches:
               only: main

@@ -66,7 +66,6 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
@@ -87,7 +86,6 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
@@ -106,8 +104,6 @@ describe('AI utilities', () => {
         }
       } as any;
 
-      // Mock Step 1: generateText with tools
-      // Mock Step 2: generateText with Output.object
       mockGenerateText
         .mockResolvedValueOnce({
           text: 'JSON response with supplier data',
@@ -130,19 +126,16 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }]
       });
 
-      // Verify Step 1: generateText was called with enhanced system prompt
       expect(mockGenerateText).toHaveBeenCalledWith({
         model: 'mocked-openai-model',
         messages: [{ role: 'user', content: 'Test message' }],
         system: expect.stringContaining('Test prompt'),
         stopWhen: 'mocked-step-count-is',
-        temperature: 0.2,
         tools: {
           findSuppliers: expect.any(Object)
         }
       });
 
-      // Verify Step 2: structured output via generateText + Output.object
       expect(mockGenerateText).toHaveBeenNthCalledWith(2, {
         model: 'mocked-openai-model',
         messages: expect.arrayContaining([
@@ -151,7 +144,6 @@ describe('AI utilities', () => {
         ]),
         system: expect.any(String),
         output: 'mocked-output-object',
-        temperature: 0.1
       });
       expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
 
@@ -161,6 +153,37 @@ describe('AI utilities', () => {
         confidence: 0.9,
         reasoning: 'Test reasoning'
       });
+    });
+
+    it('should use a single structured call when schema is provided without tools', async () => {
+      const mockSchema = {
+        _def: {
+          shape: jest.fn().mockReturnValue({
+            lines: { type: 'array' }
+          })
+        }
+      } as any;
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        output: { lines: [] }
+      });
+
+      const result = await getAiResponse({
+        prompt: 'Merge lines',
+        schema: mockSchema,
+        messages: [{ role: 'user', content: 'payload' }],
+        tools: {},
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateText).toHaveBeenCalledWith({
+        model: 'mocked-openai-model',
+        messages: [{ role: 'user', content: 'payload' }],
+        system: 'Merge lines',
+        output: 'mocked-output-object',
+      });
+      expect(result).toEqual({ lines: [] });
     });
 
     it('should handle API errors', async () => {

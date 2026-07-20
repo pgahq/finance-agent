@@ -3,6 +3,7 @@ import { openai } from '@ai-sdk/openai';
 import { ToolLoopAgent, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
 import type { ParsedValidationRule } from './workday.js';
+import { temperatureOption } from './model_generation_options.js';
 
 const inspectPreviousAttemptSchema = z.object({});
 
@@ -89,9 +90,10 @@ export async function proposeWorkdaySubmitRepair(
   input: WorkdaySubmitRepairInput
 ): Promise<WorkdaySubmitRepairPlan> {
   let cachedRules: ParsedValidationRule[] | undefined;
+  const model = getRepairModel();
 
   const agent = new ToolLoopAgent({
-    model: openai(getRepairModel()),
+    model: openai(model),
     instructions: `You repair Workday Supplier Invoice submit validation faults.
 
 Always inspect the latest failed attempt before deciding what to do.
@@ -143,7 +145,7 @@ When finished, call done exactly once with your final repair plan.`,
     },
     toolChoice: 'required',
     stopWhen: stepCountIs(4),
-    temperature: 0,
+    ...temperatureOption(model, 0),
     prepareStep: ({ stepNumber }) => {
       if (stepNumber === 0) {
         return {

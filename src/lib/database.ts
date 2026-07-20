@@ -48,7 +48,7 @@ export const CREATE_DOCUMENTS_TABLE = `
 export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(type);`,
   `CREATE INDEX IF NOT EXISTS idx_documents_workday_id ON documents(workday_id);`,
-  `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
+  `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`,
 ];
 
 // Migrations to run on every cold start (idempotent)
@@ -100,61 +100,26 @@ export async function getDatabaseConfig(env: NodeJS.ProcessEnv): Promise<Databas
 // Global connection pool
 let pool: Pool | null = null;
 
-// Initialize database connection
-export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<DatabaseConnection> {
-  if (!pool) {
-    debug('Creating new database connection pool');
+async function initializeDatabaseSchema(databasePool: Pool): Promise<void> {
+  await databasePool.query(ENABLE_PGVECTOR);
+  await databasePool.query(CREATE_DOCUMENTS_TABLE);
 
-    const config = await getDatabaseConfig(env);
-
-    pool = new Pool({
-      host: config.host,
-      port: config.port,
-      database: config.database,
-      user: config.user,
-      password: config.password,
-      max: 10, // Maximum number of connections in the pool
-      idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
-      connectionTimeoutMillis: 2000, // Return error after 2 seconds if connection could not be established
-    });
-
-    debug('Database connection established');
-    debug('Initializing database schema...');
-
-    try {
-      // Enable pgvector extension
-      await pool.query(ENABLE_PGVECTOR);
-
-      // Create documents table
-      await pool.query(CREATE_DOCUMENTS_TABLE);
-
-      // Create indexes
-      for (const indexSql of CREATE_INDEXES) {
-        await pool.query(indexSql);
-      }
-
-      // Run migrations
-      for (const migrationSql of MIGRATIONS) {
-        await pool.query(migrationSql);
-      }
-
-    } catch (error) {
-      debug('Error initializing database schema:', error);
-      throw error;
-    }
-
-    // Handle pool errors
-    pool.on('error', (err: Error) => {
-      debug('Database pool error:', err);
-    });
+  for (const indexSql of CREATE_INDEXES) {
+    await databasePool.query(indexSql);
   }
 
+  for (const migrationSql of MIGRATIONS) {
+    await databasePool.query(migrationSql);
+  }
+}
+
+function createDatabaseConnection(databasePool: Pool): DatabaseConnection {
   return {
     query: async (sql: string, params?: any[]) => {
       debug('Executing database query:', sql.substring(0, 100) + '...');
 
       try {
-        const result = await pool!.query(sql, params);
+        const result = await databasePool.query(sql, params);
         debug(`Query executed successfully, returned ${result.rows.length} rows`);
         return result.rows;
       } catch (error) {
@@ -170,6 +135,44 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       }
     }
   };
+}
+
+export async function connectDatabase(config: DatabaseConfig): Promise<DatabaseConnection> {
+  if (!pool) {
+    debug('Creating new database connection pool');
+
+    pool = new Pool({
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      user: config.user,
+      password: config.password,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+
+    debug('Database connection established');
+    debug('Initializing database schema...');
+
+    try {
+      await initializeDatabaseSchema(pool);
+    } catch (error) {
+      debug('Error initializing database schema:', error);
+      throw error;
+    }
+
+    pool.on('error', (err: Error) => {
+      debug('Database pool error:', err);
+    });
+  }
+
+  return createDatabaseConnection(pool);
+}
+
+// Initialize database connection
+export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<DatabaseConnection> {
+  return connectDatabase(await getDatabaseConfig(env));
 }
 
 // Document CRUD operations
