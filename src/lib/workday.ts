@@ -1364,6 +1364,26 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     return wid?.$value ?? null;
   };
 
+  const worktagKey = (worktags: any[]): string =>
+    worktags
+      .flatMap(wt => ([] as any[]).concat(wt.ID ?? []))
+      .filter(id => id.$attributes?.type !== 'WID')
+      .map(id => `${id.$attributes?.type}:${id.$value}`)
+      .sort()
+      .join('|');
+
+  const resolveLineWorktags = (line: any, splitField: string): any[] => {
+    const splits = ([] as any[]).concat(line[splitField] ?? []);
+    if (!splits.length) return ([] as any[]).concat(line.Worktags_Reference ?? []);
+    const firstWorktags = ([] as any[]).concat(splits[0].Worktag_Reference ?? []);
+    const firstKey = worktagKey(firstWorktags);
+    for (let i = 1; i < splits.length; i++) {
+      const splitWorktags = ([] as any[]).concat(splits[i].Worktag_Reference ?? []);
+      if (worktagKey(splitWorktags) !== firstKey) return [];
+    }
+    return firstWorktags;
+  };
+
   const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
     lineOrder: line.Line_Number,
     purchaseOrderLineId: line.Service_Order_Line_ID,
@@ -1372,7 +1392,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     memo: line.Memo,
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
-    worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    worktagsReference: resolveLineWorktags(line, 'Service_Purchase_Order_Line_Split_Data'),
     shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 
@@ -1386,7 +1406,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     quantity: line.Quantity !== undefined ? Number(line.Quantity) : undefined,
     unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
     extendedAmount: line.Extended_Amount,
-    worktagsReference: ([] as any[]).concat(line.Worktags_Reference ?? []),
+    worktagsReference: resolveLineWorktags(line, 'Goods_Purchase_Order_Line_Split_Data'),
     shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
   }));
 

@@ -2250,6 +2250,91 @@ describe('Workday utilities', () => {
       expect(lines[0].extendedAmount).toBeUndefined();
       expect(lines[0].worktagsReference).toEqual([]);
     });
+
+    it('should use split worktags when all splits share the same worktags', () => {
+      const sharedWorktags = [
+        makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
+        makeWorktag('Cost_Center_Reference_ID', 'CC-Benefits_Administration'),
+      ];
+      const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'Split line',
+        Extended_Amount: 11000,
+        Service_Purchase_Order_Line_Split_Data: [makeSplit(sharedWorktags), makeSplit(sharedWorktags)],
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual(sharedWorktags);
+    });
+
+    it('should return empty worktags when splits have differing worktags', () => {
+      const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'Split line with differing worktags',
+        Extended_Amount: 11000,
+        Service_Purchase_Order_Line_Split_Data: [
+          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
+          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+        ],
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual([]);
+    });
+
+    it('should use split worktags for goods lines when all splits share the same worktags', () => {
+      const sharedWorktags = [makeWorktag('Fund_ID', 'FUND-A'), makeWorktag('Cost_Center_Reference_ID', 'CC-A')];
+      const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const response = {
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Goods_Line_Data: {
+                Line_Number: 1,
+                Item_Description: 'Goods with splits',
+                Extended_Amount: 5000,
+                Goods_Purchase_Order_Line_Split_Data: [makeSplit(sharedWorktags), makeSplit(sharedWorktags)],
+              },
+            },
+          },
+        },
+      };
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual(sharedWorktags);
+    });
+
+    it('should return empty worktags for goods lines when splits differ', () => {
+      const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const response = {
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Goods_Line_Data: {
+                Line_Number: 1,
+                Item_Description: 'Goods with differing splits',
+                Extended_Amount: 5000,
+                Goods_Purchase_Order_Line_Split_Data: [
+                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
+                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+                ],
+              },
+            },
+          },
+        },
+      };
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual([]);
+    });
   });
 
   describe('annotateSupplierInvoice', () => {
