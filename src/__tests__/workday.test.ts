@@ -1949,7 +1949,7 @@ describe('Workday utilities', () => {
         expect(lines[0].Extended_Amount).toBe(-50);
       });
 
-      it('should use non-zero quantity for discount lines linked to a PO line', async () => {
+      it('should use discount override and drop PO line reference for discount lines linked to a PO line', async () => {
         const { getCapturedRequest } = setupMockClient();
 
         await submitSupplierInvoiceUpdateForTest({
@@ -1957,8 +1957,10 @@ describe('Workday utilities', () => {
         });
 
         const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
-        expect(lines[0].Quantity).toBe(1);
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
         expect(lines[0].Extended_Amount).toBe(-50);
+        expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
       it('should include Purchase_Order_Line_Reference when purchaseOrderLineId is present', async () => {
