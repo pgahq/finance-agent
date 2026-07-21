@@ -14,6 +14,7 @@ export const MergeInvoiceLinesSchema = z.object({
     lineOfBusinessId: z.string().nullable().describe('Organization_Reference_ID value of the line of business worktag from the matched PO line. Find the worktag reference in the PO line\'s worktagsReference whose ID array contains an Organization_Reference_ID or Custom_Organization_Reference_ID that identifies a line of business, then return that ID value (e.g. "LOB-Technology_Services"). Null if no PO line was matched or no line of business worktag is present.'),
     eventId: z.string().nullable().describe('Organization_Reference_ID value of an event worktag from the matched PO line, if one can be identified. Inspect the matched PO line\'s worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Do not confuse events with line-of-business worktags. Null if no PO line was matched, no event-like worktag is present, or you are unsure.'),
     shipToAddressId: z.string().nullable().describe('The shipToAddressId from the matched PO line. Copy it directly from the matched PO line\'s shipToAddressId field. Null if no PO line was matched or the PO line has no shipToAddressId.'),
+    shipToAddressWid: z.string().nullable().describe('The shipToAddressWid from the matched PO line. Copy it directly from the matched PO line\'s shipToAddressWid field. Only set this if shipToAddressId is null — a PO line has at most one of the two. Null if no PO line was matched or the PO line has neither.'),
     purchaseOrderLineId: z.string().nullable().describe('The purchaseOrderLineId from the matched PO line. Copy it directly from the matched PO line\'s purchaseOrderLineId field. Null if no PO line was matched.'),
     hasDiscount: z.boolean().nullable().describe('True if a discount is explicitly shown on this line in the invoice document. Copy the value directly from the matching extracted invoice line. Null if not stated.'),
   })).describe('Final merged invoice lines with worktag data filled in from available sources'),
@@ -25,7 +26,7 @@ export const mergeInvoiceLinesPrompt = `You are an expert at mapping invoice lin
 
 You will receive a JSON object with the following fields:
 - **extractedInvoiceLines**: Line items extracted from the invoice document (description, quantity, unitCost as string, totalPrice as string)
-- **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId (extracted ID strings), and worktagsReference (the full array of raw Workday worktag reference objects for that line)
+- **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId (extracted ID strings), shipToAddressId/shipToAddressWid, and worktagsReference (the full array of raw Workday worktag reference objects for that line)
 - **emailBody** (optional): The plain-text email body that accompanied this invoice, which may contain cost center references
 
 Your task is to produce final invoice lines by:
@@ -34,7 +35,7 @@ Your task is to produce final invoice lines by:
 2. Matching each extracted line to a PO line by semantic similarity of description and applying the PO line's worktag IDs (costCenterId, fundId, spendCategoryId) to the matched invoice line
 3. For lineOfBusinessId: inspect the matched PO line's worktagsReference array and copy the full worktag reference object that represents a line of business (e.g. an entry whose ID array contains an Organization_Reference_ID or Custom_Organization_Reference_ID value that identifies a line of business)
 4. For eventId: inspect the matched PO line's worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Set null if you are unsure or no event-like worktag is present
-5. For shipToAddressId: copy the shipToAddressId value directly from the matched PO line
+5. For shipToAddressId and shipToAddressWid: copy both values directly from the matched PO line's own shipToAddressId/shipToAddressWid fields. Do not swap them or invent one from the other — a PO line has at most one of the two populated, and they are not interchangeable (Address_ID and WID are different Workday reference types)
 6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
 7. For hasDiscount: copy the value directly from the matching extracted invoice line
 8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize

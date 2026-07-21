@@ -7,7 +7,9 @@ import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidati
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, createReference, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { getDocumentMetadataByWorkdayId } from './lib/rag.js';
+import { getDatabaseConnection } from './lib/database.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from './prompts/enrich_invoice_prompt.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -172,19 +174,24 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     let extractedPurchaseOrderNumber: string | undefined = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
       ? normalizedPurchaseOrderNumber
       : undefined;
-    let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
+    let poLines: PurchaseOrderLine[] | undefined;
+    let poHeaderShipToAddressId: string | null = null;
+    let poHeaderShipToAddressWid: string | null = null;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
       try {
         const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
         debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
-        poLines = parsePurchaseOrderLines(poResponse);
-        debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
-        const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
-        if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
+        const parsed = parsePurchaseOrderLines(poResponse);
+        debug(`Parsed ${parsed.lines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
+        const returnedPoNumber = parsed.lines[0]?.purchaseOrderDocumentNumber;
+        if (parsed.lines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
           debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
-          poLines = undefined;
           extractedPurchaseOrderNumber = undefined;
+        } else {
+          poLines = parsed.lines;
+          poHeaderShipToAddressId = parsed.headerShipToAddressId;
+          poHeaderShipToAddressWid = parsed.headerShipToAddressWid;
         }
       } catch (poError) {
         debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
@@ -199,6 +206,25 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
+
+    // Ship-to address priority: P2/P3 from enrichment (email preferred over attachment),
+    // P4 from supplier cache. P1 (PO) is applied per-line in the merge prompt and at header
+    // level via poHeaderShipToAddressId.
+    const extractedShipToWid = result.extractedShipToAddress?.addressWid ?? null;
+    const supplierAddressWid = await getSupplierPrimaryAddressWid(resolvedSupplierWID);
+    const fallbackShipToAddressWid = extractedShipToWid ?? supplierAddressWid;
+
+    const headerShipToRef = poHeaderShipToAddressId
+      ? createReference('Address_ID', poHeaderShipToAddressId)
+      : poHeaderShipToAddressWid
+      ? createReference('WID', poHeaderShipToAddressWid)
+      : extractedShipToWid
+      ? createReference('WID', extractedShipToWid)
+      : supplierAddressWid
+      ? createReference('WID', supplierAddressWid)
+      : null;
+
+    debug(`Ship-to resolution: po=${poHeaderShipToAddressId ?? poHeaderShipToAddressWid ?? 'none'}, extracted=${extractedShipToWid ?? 'none'}, supplier=${supplierAddressWid ?? 'none'}`);
 
     const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
       ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
@@ -217,7 +243,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           costCenterId: process.env.FALLBACK_COST_CENTER_ID,
           spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
         },
-        emailWorktags
+        emailWorktags,
+        fallbackShipToAddressWid
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -247,7 +274,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         extractedTaxAmount,
         finalLines,
-        paymentTermsId
+        paymentTermsId,
+        headerShipToRef: headerShipToRef ?? undefined,
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -435,6 +463,22 @@ async function enrichInvoice(
   }
 }
 
+async function getSupplierPrimaryAddressWid(supplierWid: string | undefined): Promise<string | null> {
+  if (!supplierWid) return null;
+  try {
+    const db = await getDatabaseConnection(process.env);
+    try {
+      const metadata = await getDocumentMetadataByWorkdayId(db, 'supplier', supplierWid);
+      return metadata?.primaryAddressWid ?? null;
+    } finally {
+      await db.close();
+    }
+  } catch (error) {
+    debug('Failed to look up supplier address WID from cache:', error);
+    return null;
+  }
+}
+
 function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
   return `Supplier: ${result.supplier.reason}`;
 }
@@ -459,6 +503,7 @@ interface UpfrontFallbacks {
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
   omittedWorktags?: string[];
+  shipToAddressOmitted?: boolean;
   validationErrorFields?: Set<string>;
 }
 
@@ -466,6 +511,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
   const omittedWorktags: string[] = [];
   if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
   if (submissionFallbacks.some(f => f.field === 'worktag:lob')) omittedWorktags.push('Line of Business');
+  const shipToAddressOmitted = submissionFallbacks.some(f => f.field === 'shipToAddress');
   const validationErrorFields = new Set(
     submissionFallbacks.filter(f => f.dueToValidationError).map(f => f.field)
   );
@@ -476,6 +522,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
+    shipToAddressOmitted: shipToAddressOmitted || undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
 }
@@ -544,6 +591,9 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
   }
   if (fallbacks.omittedWorktags?.length) {
     parts.push(`${fallbacks.omittedWorktags.join(', ')} worktag(s) removed (no fallback available, validation error)`);
+  }
+  if (fallbacks.shipToAddressOmitted) {
+    parts.push('Ship-To Address removed (validation error from workday)');
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;
