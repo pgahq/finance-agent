@@ -11,7 +11,7 @@ export interface DatabaseConfig {
   password: string;
 }
 
-export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category';
+export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category' | 'address';
 
 // Document interface
 export interface Document {
@@ -35,7 +35,7 @@ export const CREATE_DOCUMENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workday_id VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category', 'address')),
     content TEXT NOT NULL,
     metadata JSONB,
     embedding VECTOR(1536),
@@ -54,7 +54,7 @@ export const CREATE_INDEXES = [
 // Migrations to run on every cold start (idempotent)
 export const MIGRATIONS = [
   `ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`,
-  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category'))`,
+  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category', 'address'))`,
 ];
 
 // Enable pgvector extension
@@ -250,6 +250,22 @@ export async function deleteAllDocumentsByType(
     return deletedCount;
   } catch (error) {
     debug(`Error deleting all documents of type ${type}:`, error);
+    throw error;
+  }
+}
+
+export async function getDocumentMetadataByWorkdayId(
+  db: DatabaseConnection,
+  type: DocumentType,
+  workdayId: string
+): Promise<Record<string, any> | null> {
+  try {
+    const results = await db.query(`
+      SELECT metadata FROM documents WHERE workday_id = $1 AND type = $2 LIMIT 1
+    `, [workdayId, type]);
+    return results[0]?.metadata ?? null;
+  } catch (error) {
+    debug(`Error getting ${type} document for workday_id ${workdayId}:`, error);
     throw error;
   }
 }

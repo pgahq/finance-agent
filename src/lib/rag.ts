@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { getDatabaseConnection, searchDocuments } from './database.js';
+export { getDocumentMetadataByWorkdayId } from './database.js';
 export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI
@@ -31,16 +32,24 @@ export async function createEmbedding(text: string): Promise<number[]> {
 
 // Create document content for suppliers
 export function createSupplierContent(supplier: any): string {
+  const addressDescriptors = supplier.allAddresses?.length > 0
+    ? supplier.allAddresses.map((a: any) => (typeof a === 'string' ? a : a.descriptor)).filter(Boolean)
+    : [];
+
   const content = [
     `Company Name: ${supplier.supplierName}`,
     supplier.allAlternateNames?.length > 0 ? `Alternate Names: ${supplier.allAlternateNames.join(', ')}` : null,
     supplier.allPhoneNumbers?.length > 0 ? `Phone: ${supplier.allPhoneNumbers.join(', ')}` : null,
     supplier.allEmailAddresses?.length > 0 ? `Email: ${supplier.allEmailAddresses.join(', ')}` : null,
-    supplier.allAddresses?.length > 0 ? `Address: ${supplier.allAddresses.join(', ')}` : null,
+    addressDescriptors.length > 0 ? `Address: ${addressDescriptors.join(', ')}` : null,
     `Status: ${supplier.supplierStatus}`
   ].filter(Boolean).join('\n');
 
   return content;
+}
+
+export function createAddressContent(address: { descriptor: string }): string {
+  return `Address: ${address.descriptor}`;
 }
 
 export function createCompanyContent(company: any): string {
@@ -98,7 +107,7 @@ export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
 // RAG query interface
 export interface RAGQuery {
   query: string;
-  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category';
+  documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category' | 'address';
   limit?: number;
   similarityThreshold?: number;
 }
@@ -429,6 +438,38 @@ export const findSpendCategoriesTool = tool({
         workdayId: result.workday_id,
         content: result.content,
         metadata: result.metadata,
+        similarity: result.similarity
+      }))
+    };
+  }
+});
+
+export const findAddressesTool = tool({
+  description: `Search for Workday addresses using semantic similarity and exact text matching.
+
+  Use this tool to look up a ship-to or delivery address by its text description when one is mentioned in an email or on an invoice attachment.
+
+  Examples: "123 Main Street, Augusta, GA 30901", "TPC Sawgrass, Ponte Vedra Beach FL"`,
+  inputSchema: z.object({
+    query: z.string().describe('Address text to search for'),
+    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
+    similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
+  }),
+  execute: async ({ query, limit, similarityThreshold }) => {
+    const results = await queryDocuments({
+      query,
+      documentType: 'address',
+      limit,
+      similarityThreshold
+    });
+
+    debug(`Find Addresses Tool: Found ${results.length} addresses`);
+
+    return {
+      success: true,
+      results: results.map(result => ({
+        wid: result.workday_id,
+        descriptor: result.content,
         similarity: result.similarity
       }))
     };
