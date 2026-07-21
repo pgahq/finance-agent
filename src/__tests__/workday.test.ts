@@ -2126,7 +2126,7 @@ describe('Workday utilities', () => {
         ]
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0]).toEqual({
@@ -2141,6 +2141,7 @@ describe('Workday utilities', () => {
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
         ],
         shipToAddressId: null,
+        shipToAddressWid: null,
       });
     });
 
@@ -2162,7 +2163,7 @@ describe('Workday utilities', () => {
         }
       ]);
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(2);
       expect(lines[0].lineOrder).toBe(1);
@@ -2189,7 +2190,7 @@ describe('Workday utilities', () => {
         }
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].lineOrder).toBe(1);
@@ -2197,19 +2198,19 @@ describe('Workday utilities', () => {
     });
 
     it('should return empty array when Response_Data is missing', () => {
-      expect(parsePurchaseOrderLines({})).toEqual([]);
-      expect(parsePurchaseOrderLines(null)).toEqual([]);
-      expect(parsePurchaseOrderLines(undefined)).toEqual([]);
+      expect(parsePurchaseOrderLines({}).lines).toEqual([]);
+      expect(parsePurchaseOrderLines(null).lines).toEqual([]);
+      expect(parsePurchaseOrderLines(undefined).lines).toEqual([]);
     });
 
     it('should return empty array when Purchase_Order_Data is missing', () => {
       const response = { Response_Data: { Purchase_Order: {} } };
-      expect(parsePurchaseOrderLines(response)).toEqual([]);
+      expect(parsePurchaseOrderLines(response).lines).toEqual([]);
     });
 
     it('should return empty array when no service lines exist', () => {
       const response = makePoResponse(undefined);
-      expect(parsePurchaseOrderLines(response)).toEqual([]);
+      expect(parsePurchaseOrderLines(response).lines).toEqual([]);
     });
 
     it('should handle a line with no worktags', () => {
@@ -2219,7 +2220,7 @@ describe('Workday utilities', () => {
         Extended_Amount: 100
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].worktagsReference).toEqual([]);
@@ -2233,7 +2234,7 @@ describe('Workday utilities', () => {
         Worktags_Reference: singleWorktag
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([singleWorktag]);
     });
@@ -2241,7 +2242,7 @@ describe('Workday utilities', () => {
     it('should handle a line missing optional fields', () => {
       const response = makePoResponse({ Line_Number: 3 });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].lineOrder).toBe(3);
@@ -2264,7 +2265,7 @@ describe('Workday utilities', () => {
         Service_Purchase_Order_Line_Split_Data: [makeSplit(sharedWorktags), makeSplit(sharedWorktags)],
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
@@ -2281,7 +2282,7 @@ describe('Workday utilities', () => {
         ],
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([]);
     });
@@ -2305,7 +2306,7 @@ describe('Workday utilities', () => {
         },
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
@@ -2331,7 +2332,7 @@ describe('Workday utilities', () => {
         },
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([]);
     });

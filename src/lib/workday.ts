@@ -309,6 +309,7 @@ export interface PurchaseOrderLine {
   unitCost?: number;
   worktagsReference?: any[];
   shipToAddressId?: string | null;
+  shipToAddressWid?: string | null;
 }
 
 interface buildSubmitInvoiceDataOptions {
@@ -332,6 +333,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
+  headerShipToRef?: any;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
@@ -396,7 +398,7 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
   return normalizeInvoiceDate(invoiceDate) ?? getFirstDayOfCurrentMonth();
 }
 
-function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
+export function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
   return { ID: [{ $attributes: { type }, $value: value }] };
 }
 
@@ -571,7 +573,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, headerShipToRef } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -656,7 +658,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
           Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
         }),
-        ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
+        ...(line.shipToAddressId
+          ? { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }
+          : line.shipToAddressWid
+          ? { 'Ship_To_Address_Reference': createReference('WID', line.shipToAddressWid) }
+          : {}),
         ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
         ...(line.memo && { Memo: line.memo }),
       };
@@ -696,7 +702,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
-    ...(currentInvoice['Ship-To_Address_Reference'] && { 'Ship-To_Address_Reference': currentInvoice['Ship-To_Address_Reference'] }),
+    ...(headerShipToRef
+      ? { 'Ship-To_Address_Reference': headerShipToRef }
+      : currentInvoice['Ship-To_Address_Reference']
+      ? { 'Ship-To_Address_Reference': currentInvoice['Ship-To_Address_Reference'] }
+      : {}),
 
     ...(currentInvoice.On_Hold !== undefined && { On_Hold: currentInvoice.On_Hold }),
     ...(currentInvoice.Prepaid !== undefined && { Prepaid: currentInvoice.Prepaid }),
@@ -1197,6 +1207,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
   paymentTermsId?: string;
+  headerShipToRef?: any;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1213,7 +1224,8 @@ export async function submitSupplierInvoiceUpdate(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
-    paymentTermsId
+    paymentTermsId,
+    headerShipToRef,
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
   debug('Updating Supplier Invoice supplier via SOAP');
@@ -1262,7 +1274,8 @@ export async function submitSupplierInvoiceUpdate(
       extractedTaxAmount,
       finalLines,
       paymentTermsWID: paymentTermsId,
-      filterInvoiceLines: true
+      filterInvoiceLines: true,
+      headerShipToRef,
     },
     buildNotes,
     operationName: 'submitSupplierInvoiceUpdate',
@@ -1342,26 +1355,31 @@ export async function annotateSupplierInvoice(
   };
 }
 
-export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
+export interface ParsedPurchaseOrder {
+  lines: PurchaseOrderLine[];
+  headerShipToAddressId: string | null;
+  headerShipToAddressWid: string | null;
+}
+
+export function parsePurchaseOrderLines(poResponse: any): ParsedPurchaseOrder {
   const purchaseOrderRaw = poResponse?.Response_Data?.Purchase_Order;
   const purchaseOrder = Array.isArray(purchaseOrderRaw) ? purchaseOrderRaw[0] : purchaseOrderRaw;
   const poDataRaw = purchaseOrder?.Purchase_Order_Data;
   const poData = Array.isArray(poDataRaw) ? poDataRaw[0] : poDataRaw;
 
-  if (!poData) return [];
+  if (!poData) return { lines: [], headerShipToAddressId: null, headerShipToAddressWid: null };
 
   const serviceLines = ([] as any[]).concat(poData.Service_Line_Data ?? []);
   const goodsLines = ([] as any[]).concat(poData.Goods_Line_Data ?? []);
 
   const purchaseOrderDocumentNumber = poData.Document_Number;
 
-  const extractShipToAddressId = (shipToRef: any): string | null => {
-    if (!shipToRef) return null;
+  const extractShipToAddressRef = (shipToRef: any): { shipToAddressId: string | null; shipToAddressWid: string | null } => {
+    if (!shipToRef) return { shipToAddressId: null, shipToAddressWid: null };
     const ids = ([] as any[]).concat(shipToRef.ID ?? []);
     const addressId = ids.find((id: any) => id.$attributes?.type === 'Address_ID');
-    if (addressId) return addressId.$value;
     const wid = ids.find((id: any) => id.$attributes?.type === 'WID');
-    return wid?.$value ?? null;
+    return { shipToAddressId: addressId?.$value ?? null, shipToAddressWid: wid?.$value ?? null };
   };
 
   const worktagKey = (worktags: any[]): string =>
@@ -1393,7 +1411,7 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     spendCategoryReference: line.Resource_Category_Reference,
     extendedAmount: line.Extended_Amount,
     worktagsReference: resolveLineWorktags(line, 'Service_Purchase_Order_Line_Split_Data'),
-    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+    ...extractShipToAddressRef(line.Ship_To_Address_Reference),
   }));
 
   const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
@@ -1407,10 +1425,36 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
     extendedAmount: line.Extended_Amount,
     worktagsReference: resolveLineWorktags(line, 'Goods_Purchase_Order_Line_Split_Data'),
-    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+    ...extractShipToAddressRef(line.Ship_To_Address_Reference),
   }));
 
-  return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
+  const allLines = [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
+
+  const headerFromPoData = extractShipToAddressRef(poData.Ship_To_Address_Reference ?? null);
+  const headerHasRef = headerFromPoData.shipToAddressId != null || headerFromPoData.shipToAddressWid != null;
+  const { shipToAddressId: headerShipToAddressId, shipToAddressWid: headerShipToAddressWid } = headerHasRef
+    ? headerFromPoData
+    : getMostCommonShipTo(allLines);
+
+  return { lines: allLines, headerShipToAddressId, headerShipToAddressWid };
+}
+
+function getMostCommonShipTo(lines: PurchaseOrderLine[]): { shipToAddressId: string | null; shipToAddressWid: string | null } {
+  const mostCommon = (values: (string | null | undefined)[]): string | null => {
+    const counts = new Map<string, number>();
+    for (const v of values) {
+      if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    let best: string | null = null, bestCount = 0;
+    for (const [v, count] of counts) {
+      if (count > bestCount) { best = v; bestCount = count; }
+    }
+    return best;
+  };
+
+  const shipToAddressId = mostCommon(lines.map(l => l.shipToAddressId));
+  const shipToAddressWid = shipToAddressId ? null : mostCommon(lines.map(l => l.shipToAddressWid));
+  return { shipToAddressId, shipToAddressWid };
 }
 
 export async function getPurchaseOrder(

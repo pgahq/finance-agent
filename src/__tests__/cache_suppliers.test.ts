@@ -18,6 +18,7 @@ jest.mock('@pga/logger', () => ({
 
 jest.mock('../lib/rag.js', () => ({
   createSupplierContent: jest.fn().mockReturnValue('Supplier content'),
+  createAddressContent: jest.fn().mockReturnValue('Address content'),
   createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
@@ -106,7 +107,7 @@ describe('cache_suppliers', () => {
     await expect(processor({ data: mockSuppliers })).resolves.not.toThrow();
 
     const { bulkInsertDocuments } = require('../lib/database.js');
-    expect(bulkInsertDocuments).toHaveBeenCalledTimes(1);
+    expect(bulkInsertDocuments).toHaveBeenCalledTimes(2);
     expect(bulkInsertDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
         query: expect.any(Function),
@@ -122,6 +123,20 @@ describe('cache_suppliers', () => {
             workdayId: 'supplier-1',
             lastUpdatedDateTime: '2024-01-01T00:00:00Z'
           }),
+          embedding: [0.1, 0.2, 0.3]
+        })
+      ])
+    );
+    expect(bulkInsertDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'address-1',
+          type: 'address',
+          metadata: expect.objectContaining({ wid: 'address-1' }),
           embedding: [0.1, 0.2, 0.3]
         })
       ])
@@ -213,7 +228,7 @@ describe('cache_suppliers', () => {
     await expect(processor({ data: mockSuppliers })).resolves.not.toThrow();
 
     const { bulkInsertDocuments } = require('../lib/database.js');
-    expect(bulkInsertDocuments).toHaveBeenCalledTimes(1);
+    expect(bulkInsertDocuments).toHaveBeenCalledTimes(2);
     expect(bulkInsertDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
         query: expect.any(Function),
@@ -229,6 +244,26 @@ describe('cache_suppliers', () => {
             workdayId: 'supplier-complex',
             lastUpdatedDateTime: '2024-01-01T00:00:00Z'
           }),
+          embedding: [0.1, 0.2, 0.3]
+        })
+      ])
+    );
+    expect(bulkInsertDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'address-1',
+          type: 'address',
+          metadata: expect.objectContaining({ wid: 'address-1' }),
+          embedding: [0.1, 0.2, 0.3]
+        }),
+        expect.objectContaining({
+          workdayId: 'address-2',
+          type: 'address',
+          metadata: expect.objectContaining({ wid: 'address-2' }),
           embedding: [0.1, 0.2, 0.3]
         })
       ])
