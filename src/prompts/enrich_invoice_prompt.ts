@@ -88,6 +88,11 @@ export const InvoiceEnrichmentSchema = z.object({
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.')
   })).nullable().describe('Line items extracted from the invoice document. Null if no line items could be extracted.'),
 
+  extractedShipToAddress: z.object({
+    extracted: z.string().nullable().describe('The ship-to or delivery address text as found in the source (email or invoice attachment)'),
+    addressWid: z.string().nullable().describe('The Workday address WID resolved via findAddresses. Null if no matching address was found.'),
+  }).nullable().describe('Ship-to or delivery address found in the email (preferred) or invoice attachment. Null if no ship-to address is present in either source.'),
+
   emailWorktags: z.object({
     event: z.object({
       extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
@@ -119,7 +124,7 @@ export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
 
 export const invoiceEnrichmentPrompt = `You are an expert at matching invoices to suppliers and verifying company information in a Workday system. Your task is to analyze an invoice, identify or verify the supplier, and verify the company assignment.
 
-You have access to eight search tools:
+You have access to nine search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
@@ -128,6 +133,7 @@ You have access to eight search tools:
 - **findLobs**: Search our lines of business database by name or reference to look up LOBs in Workday.
 - **findFunds**: Search our funds database by reference ID or name to look up funds in Workday.
 - **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
+- **findAddresses**: Search our address database using semantic similarity to resolve a ship-to or delivery address to a Workday address WID.
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
 
@@ -335,6 +341,22 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.spendCategory.name and emailWorktags.spendCategory.referenceId to null
 
 6. If no email context is provided, or none of the above worktags were mentioned, omit emailWorktags entirely.
+
+---
+
+## Part 11: Ship-To Address Extraction
+
+Look for an explicit ship-to, "deliver to", or delivery address across both sources, in this order of preference:
+
+1. **Email content first (preferred)**: Scan the email body for any ship-to or delivery address (e.g., "Please ship to:", "Deliver to:", or an address block separate from the supplier's own address).
+2. **Invoice attachment second**: If no ship-to address was found in the email, look for a ship-to or delivery address in the invoice PDF or image (a field labeled "Ship To:", "Deliver To:", "Delivery Address:", or similar that is distinct from the billing address and supplier address).
+
+If a ship-to address is found from either source:
+- Populate extractedShipToAddress.extracted with the address text as it appears in the source.
+- Call **findAddresses** with that address text to look up the Workday address WID.
+- Populate extractedShipToAddress.addressWid with the wid from the top result. If findAddresses returns no results, set addressWid to null.
+
+If no ship-to address is present in either source, set extractedShipToAddress to null.
 
 ---
 

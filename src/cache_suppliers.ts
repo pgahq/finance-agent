@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
-import { createSupplierContent } from './lib/rag.js';
+import { createAddressContent, createSupplierContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
 
 const QUERY = `
@@ -47,7 +47,7 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
           ? supplier.allEmailAddresses.map((e: any) => e.descriptor)
           : undefined,
         allAddresses: supplier.allAddresses?.length > 0
-          ? supplier.allAddresses.map((a: any) => a.descriptor)
+          ? supplier.allAddresses.map((a: any) => ({ descriptor: a.descriptor, wid: a.id }))
           : undefined,
         allAlternateNames: supplier.payeeAlternateNames?.length > 0
           ? supplier.payeeAlternateNames.map((n: any) => n.descriptor)
@@ -66,10 +66,36 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       workdayId: supplier.workdayId,
       supplierName: supplier.supplierName,
       lastUpdatedDateTime: supplier.lastUpdatedDateTime,
+      primaryAddressWid: supplier.allAddresses?.[0]?.wid ?? null,
     }),
     isUpdated: (existingMetadata, supplier) =>
       existingMetadata?.lastUpdatedDateTime !== supplier.lastUpdatedDateTime,
     notifyLabel: 'cache_suppliers',
     itemLabel: 'suppliers',
   });
+
+  // Sync each supplier's addresses into the address document store so findAddressesTool
+  // can resolve ship-to addresses from email/attachment content to Workday WIDs.
+  const addressItems = new Map<string, { wid: string; descriptor: string }>();
+  for (const [, supplier] of items) {
+    for (const addr of supplier.allAddresses ?? []) {
+      if (addr.wid) {
+        addressItems.set(addr.wid, { wid: addr.wid, descriptor: addr.descriptor });
+      }
+    }
+  }
+
+  if (addressItems.size > 0) {
+    debug(`Syncing ${addressItems.size} supplier addresses to address document store`);
+    await syncDataSource({
+      dbConnection: context.dbConnection,
+      type: 'address',
+      items: addressItems,
+      totalCount: addressItems.size,
+      createContent: createAddressContent,
+      createMetadata: (addr) => ({ wid: addr.wid, descriptor: addr.descriptor }),
+      notifyLabel: 'cache_addresses',
+      itemLabel: 'addresses',
+    });
+  }
 });

@@ -26,6 +26,7 @@ export interface FinalInvoiceLine {
   eventId?: string | null;
   eventWid?: string | null;
   shipToAddressId?: string | null;
+  shipToAddressWid?: string | null;
   purchaseOrderLineId?: string | null;
 }
 
@@ -89,6 +90,7 @@ function applyFallbacks(
       eventId: line.eventId ?? null,
       eventWid: null,
       shipToAddressId: line.shipToAddressId ?? null,
+      shipToAddressWid: line.shipToAddressWid ?? null,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
     };
   });
@@ -113,6 +115,7 @@ function buildFallbackLines(
     lineOfBusinessId: null,
     eventId: null,
     shipToAddressId: null,
+    shipToAddressWid: null,
   }));
   return {
     lines,
@@ -149,7 +152,8 @@ export async function buildFinalInvoiceLines(
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
   fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string },
-  emailWorktags?: EmailWorktags
+  emailWorktags?: EmailWorktags,
+  fallbackShipToAddressWid?: string | null
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
   const mergeInput = {
     extractedInvoiceLines: extractedLines,
@@ -165,6 +169,7 @@ export async function buildFinalInvoiceLines(
         spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
         worktagsReference: worktags,
         shipToAddressId: l.shipToAddressId ?? null,
+        shipToAddressWid: l.shipToAddressWid ?? null,
       };
     }),
     emailBody: emailBody ?? null,
@@ -180,15 +185,25 @@ export async function buildFinalInvoiceLines(
     }) as MergeInvoiceLinesResult;
   } catch (error) {
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
-    return buildFallbackLines(extractedLines, fallbackIds);
+    const fallback = buildFallbackLines(extractedLines, fallbackIds);
+    const fallbackWithShipTo = fallbackShipToAddressWid
+      ? { ...fallback, lines: fallback.lines.map(l => ({ ...l, shipToAddressWid: fallbackShipToAddressWid })) }
+      : fallback;
+    return { lines: applyEmailWorktags(fallbackWithShipTo.lines, emailWorktags), appliedFallbacks: fallbackWithShipTo.appliedFallbacks };
   }
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return { lines: applyEmailWorktags(fallback.lines, emailWorktags), appliedFallbacks: fallback.appliedFallbacks };
+    const fallbackWithShipTo = fallbackShipToAddressWid
+      ? { ...fallback, lines: fallback.lines.map(l => ({ ...l, shipToAddressWid: fallbackShipToAddressWid })) }
+      : fallback;
+    return { lines: applyEmailWorktags(fallbackWithShipTo.lines, emailWorktags), appliedFallbacks: fallbackWithShipTo.appliedFallbacks };
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  return { lines: applyEmailWorktags(lines, emailWorktags), appliedFallbacks };
+  const linesWithShipTo = fallbackShipToAddressWid
+    ? lines.map(l => (!l.shipToAddressId && !l.shipToAddressWid) ? { ...l, shipToAddressWid: fallbackShipToAddressWid } : l)
+    : lines;
+  return { lines: applyEmailWorktags(linesWithShipTo, emailWorktags), appliedFallbacks };
 }
