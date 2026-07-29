@@ -76,6 +76,10 @@ describe('Workday utilities', () => {
         return Promise.resolve({ retryField: 'worktag:lob', reason: 'test LOB classification' });
       }
 
+      if (/ship[_\s-]*to[_\s-]*address/.test(text)) {
+        return Promise.resolve({ retryField: 'shipToAddress', reason: 'test ship-to address classification' });
+      }
+
       if (/worktags?/.test(text)) {
         return Promise.resolve({ retryField: 'unknown', reason: 'cannot identify specific worktag type' });
       }
@@ -2049,6 +2053,109 @@ describe('Workday utilities', () => {
         ]);
       });
 
+      it('should omit the line ship-to address on a ship-to address validation fault retry', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Ship-To Address is invalid for this transaction.',
+                  Detail_Message: 'Ship_To_Address_Reference is not valid for this Company.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Ship_To_Address_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, shipToAddressWid: 'address-wid' }
+          ]
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+
+        const firstLine = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(firstLine.Ship_To_Address_Reference).toEqual({
+          ID: [{ $attributes: { type: 'WID' }, $value: 'address-wid' }]
+        });
+
+        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(retryLine.Ship_To_Address_Reference).toBeUndefined();
+
+        expect(result.appliedFallbacks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ field: 'shipToAddress', label: 'omitted ship-to address' })
+          ])
+        );
+      });
+
+      it('should omit the header ship-to address on a ship-to address validation fault retry', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Ship-To Address is invalid for this transaction.',
+                  Detail_Message: 'Ship_To_Address_Reference is not valid for this Company.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Ship-To_Address_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const result = await submitSupplierInvoiceUpdateForTest({
+          headerShipToRef: { ID: [{ $attributes: { type: 'WID' }, $value: 'header-address-wid' }] }
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+
+        expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data['Ship-To_Address_Reference']).toEqual({
+          ID: [{ $attributes: { type: 'WID' }, $value: 'header-address-wid' }]
+        });
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data['Ship-To_Address_Reference']).toBeUndefined();
+      });
+
     });
 
     it('should not include Purchase_Order_Reference when purchaseOrderNumber is not provided', async () => {
@@ -2126,7 +2233,7 @@ describe('Workday utilities', () => {
         ]
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0]).toEqual({
@@ -2141,6 +2248,7 @@ describe('Workday utilities', () => {
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
         ],
         shipToAddressId: null,
+        shipToAddressWid: null,
       });
     });
 
@@ -2162,7 +2270,7 @@ describe('Workday utilities', () => {
         }
       ]);
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(2);
       expect(lines[0].lineOrder).toBe(1);
@@ -2189,7 +2297,7 @@ describe('Workday utilities', () => {
         }
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].lineOrder).toBe(1);
@@ -2197,19 +2305,19 @@ describe('Workday utilities', () => {
     });
 
     it('should return empty array when Response_Data is missing', () => {
-      expect(parsePurchaseOrderLines({})).toEqual([]);
-      expect(parsePurchaseOrderLines(null)).toEqual([]);
-      expect(parsePurchaseOrderLines(undefined)).toEqual([]);
+      expect(parsePurchaseOrderLines({}).lines).toEqual([]);
+      expect(parsePurchaseOrderLines(null).lines).toEqual([]);
+      expect(parsePurchaseOrderLines(undefined).lines).toEqual([]);
     });
 
     it('should return empty array when Purchase_Order_Data is missing', () => {
       const response = { Response_Data: { Purchase_Order: {} } };
-      expect(parsePurchaseOrderLines(response)).toEqual([]);
+      expect(parsePurchaseOrderLines(response).lines).toEqual([]);
     });
 
     it('should return empty array when no service lines exist', () => {
       const response = makePoResponse(undefined);
-      expect(parsePurchaseOrderLines(response)).toEqual([]);
+      expect(parsePurchaseOrderLines(response).lines).toEqual([]);
     });
 
     it('should handle a line with no worktags', () => {
@@ -2219,7 +2327,7 @@ describe('Workday utilities', () => {
         Extended_Amount: 100
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].worktagsReference).toEqual([]);
@@ -2233,7 +2341,7 @@ describe('Workday utilities', () => {
         Worktags_Reference: singleWorktag
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([singleWorktag]);
     });
@@ -2241,7 +2349,7 @@ describe('Workday utilities', () => {
     it('should handle a line missing optional fields', () => {
       const response = makePoResponse({ Line_Number: 3 });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines).toHaveLength(1);
       expect(lines[0].lineOrder).toBe(3);
@@ -2264,7 +2372,7 @@ describe('Workday utilities', () => {
         Service_Purchase_Order_Line_Split_Data: [makeSplit(sharedWorktags), makeSplit(sharedWorktags)],
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
@@ -2281,7 +2389,7 @@ describe('Workday utilities', () => {
         ],
       });
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([]);
     });
@@ -2305,7 +2413,7 @@ describe('Workday utilities', () => {
         },
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
@@ -2331,7 +2439,7 @@ describe('Workday utilities', () => {
         },
       };
 
-      const lines = parsePurchaseOrderLines(response);
+      const { lines } = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([]);
     });
