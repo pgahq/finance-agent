@@ -74,6 +74,13 @@ export async function putJsonToS3(config: S3Config, key: string, data: unknown):
   await s3Client.send(command);
 }
 
+export async function getBinaryFromS3(config: S3Config, key: string): Promise<Buffer> {
+  const command = new GetObjectCommand({ Bucket: config.bucketName, Key: key });
+  const response = await s3Client.send(command);
+  const bytes = await response.Body?.transformToByteArray();
+  return Buffer.from(bytes ?? []);
+}
+
 export async function getJsonFromS3<T>(config: S3Config, key: string): Promise<T | null> {
   try {
     const command = new GetObjectCommand({ Bucket: config.bucketName, Key: key });

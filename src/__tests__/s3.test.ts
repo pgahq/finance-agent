@@ -1,4 +1,4 @@
-import { getS3Config, putBinaryToS3, getPresignedUrl, uploadAttachmentToS3 } from '../lib/s3.js';
+import { getS3Config, putBinaryToS3, getPresignedUrl, uploadAttachmentToS3, getBinaryFromS3 } from '../lib/s3.js';
 
 // Mock AWS SDK
 jest.mock('@aws-sdk/client-s3', () => {
@@ -76,6 +76,44 @@ describe('S3 Library', () => {
       mockSend.mockRejectedValue(new Error('S3 upload failed'));
 
       await expect(putBinaryToS3(config, key, buffer, contentType)).rejects.toThrow('S3 upload failed');
+    });
+  });
+
+  describe('getBinaryFromS3', () => {
+    it('should download an object from S3 as a Buffer', async () => {
+      const config = { bucketName: 'test-bucket' };
+      const key = 'new-invoices/req-1/invoice.pdf';
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+
+      mockSend.mockResolvedValue({
+        Body: { transformToByteArray: jest.fn().mockResolvedValue(bytes) }
+      });
+
+      const result = await getBinaryFromS3(config, key);
+
+      expect(mockSend).toHaveBeenCalledWith(expect.any(Object));
+      expect(Buffer.isBuffer(result)).toBe(true);
+      expect(result).toEqual(Buffer.from(bytes));
+    });
+
+    it('should return an empty Buffer when the response has no Body', async () => {
+      const config = { bucketName: 'test-bucket' };
+      const key = 'new-invoices/req-1/invoice.pdf';
+
+      mockSend.mockResolvedValue({});
+
+      const result = await getBinaryFromS3(config, key);
+
+      expect(result).toEqual(Buffer.from([]));
+    });
+
+    it('should propagate S3 download errors', async () => {
+      const config = { bucketName: 'test-bucket' };
+      const key = 'new-invoices/req-1/invoice.pdf';
+
+      mockSend.mockRejectedValue(new Error('Download failed'));
+
+      await expect(getBinaryFromS3(config, key)).rejects.toThrow('Download failed');
     });
   });
 

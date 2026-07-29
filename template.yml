@@ -661,7 +661,51 @@ Resources:
             Path: /enrich-invoice
             Method: POST
 
+  # Create Invoice Processor - enriches and submits a brand-new Supplier Invoice from an uploaded attachment
+  CreateInvoiceProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
+      Handler: dist/create_invoice.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300 # 5 minutes for single invoice
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Trigger Create Invoice - HTTP API endpoint accepting a file blob for a not-yet-existing invoice
+  TriggerCreateInvoiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-TriggerCreateInvoice"
+      Handler: dist/trigger_create_invoice.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        CreateInvoiceApi:
+          Type: HttpApi
+          Properties:
+            Path: /create-invoice
+            Method: POST
+
 Outputs:
   EnrichInvoiceApiUrl:
     Description: POST endpoint to trigger invoice enrichment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/enrich-invoice"
+  CreateInvoiceApiUrl:
+    Description: POST endpoint to create a new invoice from an uploaded attachment
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice"

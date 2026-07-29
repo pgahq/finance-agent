@@ -1,4 +1,4 @@
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -2093,6 +2093,199 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Purchase_Order_Reference).toBeUndefined();
     });
 
+  });
+
+  describe('submitNewSupplierInvoice', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    const mockSupplierID = 'abc123supplierWID';
+    const mockCompanyID = 'company-wid-123';
+
+    const submitNewSupplierInvoiceForTest = (overrides: Partial<Parameters<typeof submitNewSupplierInvoice>[1]> = {}) => submitNewSupplierInvoice(mockContext, {
+      supplierWID: mockSupplierID,
+      companyWID: mockCompanyID,
+      buildNotes: () => '',
+      finalLines: [{
+        lineOrder: 1,
+        description: 'Test line',
+        quantity: 1,
+        unitCost: 100
+      }],
+      attachment: {
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        base64Content: 'ZmFrZS1wZGYtY29udGVudA=='
+      },
+      ...overrides
+    });
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'cwd', {
+        value: jest.fn(() => '/test/path'),
+        writable: true
+      });
+
+      delete process.env.FALLBACK_PAYMENT_TERMS_ID;
+      delete process.env.FALLBACK_FUND_ID;
+      delete process.env.FALLBACK_COST_CENTER_ID;
+      delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+      delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+
+      const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
+      proposeWorkdaySubmitRepair.mockResolvedValue({
+        decision: 'give_up',
+        reason: 'No safe repair available',
+        supplierMode: 'preserve'
+      });
+    });
+
+    const mockSoapClient = () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      return mockClient;
+    };
+
+    it('should submit a request without a Supplier_Invoice_Reference so Workday creates a new invoice', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+          }
+        });
+      });
+
+      const result = await submitNewSupplierInvoiceForTest();
+
+      expect(result.success).toBe(true);
+      expect(result.invoiceWID).toBe('new-invoice-wid');
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
+        ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
+      });
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
+        ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
+      });
+    });
+
+    it('should embed the attachment as Attachment_Data on the request', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest();
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([{
+        $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
+        File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
+      }]);
+    });
+
+    it('should set Currency_Reference when currencyWID is provided', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({ currencyWID: 'USD-WID' });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD-WID' }]
+      });
+    });
+
+    it('should omit Currency_Reference when currencyWID is not provided', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest();
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toBeUndefined();
+    });
+
+    it('should build Company_Reference with a non-WID reference type (e.g. Company_Reference_ID for Default_OCR_Company)', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({ companyWID: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'Default_OCR_Company' }]
+      });
+    });
+
+    it('should include Invoice_Line_Replacement_Data built from finalLines', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest();
+
+      const lines = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        Line_Order: 1,
+        Item_Description: 'Test line',
+        Quantity: 1
+      });
+    });
+
+    it('should propagate SOAP errors', async () => {
+      const mockClient = mockSoapClient();
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(new Error('Create failed'), null);
+      });
+
+      await expect(submitNewSupplierInvoiceForTest()).rejects.toThrow('Create failed');
+    });
   });
 
   describe('parsePurchaseOrderLines', () => {
