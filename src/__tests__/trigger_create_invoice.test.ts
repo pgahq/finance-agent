@@ -163,6 +163,29 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('decodes a base64-encoded JSON body from API Gateway', async () => {
+    const jsonBody = JSON.stringify({ conversationId: '1234567890' });
+    const response = await handler(buildEvent({
+      isBase64Encoded: true,
+      body: Buffer.from(jsonBody, 'utf8').toString('base64'),
+    }));
+
+    expect(response).toEqual({
+      statusCode: 202,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'accepted',
+        message: 'Invoice creation triggered',
+        requestId: 'fixed-request-id',
+        conversationId: '1234567890',
+      }),
+    });
+    expect(mockFetchConversationInvoiceData).toHaveBeenCalledWith(
+      expect.anything(),
+      '1234567890',
+    );
+  });
+
   it('returns 404 when the Intercom conversation is not found', async () => {
     mockFetchConversationInvoiceData.mockRejectedValue(new IntercomNotFoundError('1234567890'));
 

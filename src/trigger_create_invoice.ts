@@ -34,6 +34,16 @@ function jsonResponse(statusCode: number, body: Record<string, string>): APIGate
   };
 }
 
+function readRequestBody(event: APIGatewayProxyEventV2): string {
+  if (!event.body) {
+    return '';
+  }
+  if (event.isBase64Encoded) {
+    return Buffer.from(event.body, 'base64').toString('utf8');
+  }
+  return event.body;
+}
+
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   debug('Trigger create invoice request received');
   process.env = await loadEnv();
@@ -54,9 +64,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   let requestBody: TriggerCreateInvoiceRequest;
   try {
-    requestBody = event.body ? JSON.parse(event.body) as TriggerCreateInvoiceRequest : {};
+    const rawBody = readRequestBody(event);
+    requestBody = rawBody ? JSON.parse(rawBody) as TriggerCreateInvoiceRequest : {};
   } catch (error) {
-    debug('Invalid JSON body', { error: formatError(error) });
+    debug('Invalid JSON body', { error: formatError(error), isBase64Encoded: event.isBase64Encoded });
     return jsonResponse(400, { status: 'error', message: 'Invalid JSON body' });
   }
 
