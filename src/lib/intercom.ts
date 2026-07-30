@@ -216,7 +216,8 @@ export async function downloadAttachment(url: string): Promise<Buffer> {
 
   let response: Response;
   try {
-    response = await fetch(parsed.toString());
+    // Do not follow redirects — an allowlisted URL that redirects elsewhere would bypass the host check.
+    response = await fetch(parsed.toString(), { redirect: 'error' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new IntercomUpstreamError(`Failed to download Intercom attachment: ${message}`);

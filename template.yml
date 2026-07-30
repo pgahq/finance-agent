@@ -677,14 +677,15 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Trigger Create Invoice - HTTP API endpoint that creates a new invoice from an Intercom conversation
+  # Trigger Create Invoice - HTTP API endpoint that creates a new invoice from an Intercom conversation.
+  # Timeout is 30s to match API Gateway HTTP API's default integration timeout ceiling.
   TriggerCreateInvoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-TriggerCreateInvoice"
       Handler: dist/trigger_create_invoice.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Timeout: 60
+      Timeout: 30
       MemorySize: 1024
       Environment:
         Variables:

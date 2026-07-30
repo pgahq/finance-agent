@@ -60,9 +60,9 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
-- Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` (SSRF allowlist)
+- Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
 - Only `application/pdf` attachments are accepted; missing PDF → 400
-- Max download size 20MB (`Content-Length` and body checked)
+- Max download size 20MB (`Content-Length` and body checked); trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
 - Workday `Attachment_Data` base64 is produced in `create_invoice` after `getBinaryFromS3`

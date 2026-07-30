@@ -207,7 +207,7 @@ describe('intercom', () => {
   });
 
   describe('downloadAttachment', () => {
-    it('downloads raw binary bytes from an allowed CDN host', async () => {
+    it('downloads raw binary bytes from an allowed CDN host without following redirects', async () => {
       const bytes = Buffer.from('pdf-bytes');
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -218,6 +218,17 @@ describe('intercom', () => {
       }) as unknown as typeof fetch;
 
       await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf')).resolves.toEqual(bytes);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://downloads.intercomcdn.com/invoice.pdf',
+        { redirect: 'error' },
+      );
+    });
+
+    it('surfaces redirect errors as IntercomUpstreamError', async () => {
+      global.fetch = jest.fn().mockRejectedValue(new TypeError('redirect mode is set to error')) as unknown as typeof fetch;
+
+      await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))
+        .rejects.toBeInstanceOf(IntercomUpstreamError);
     });
 
     it('rejects disallowed hosts before fetching', async () => {
