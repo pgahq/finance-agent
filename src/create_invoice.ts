@@ -17,7 +17,7 @@ import {
 import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
-import type { PresignedAttachment, WorkdayInvoice } from './lib/types.js';
+import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback } from './lib/workday.js';
 import { getPurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
 
@@ -31,6 +31,8 @@ export interface CreateInvoiceRequest {
   s3Key: string;
   fileName: string;
   contentType: string;
+  conversationId?: string;
+  emailContext?: InvoiceData['emailContext'];
 }
 
 // Processor function - invoked by trigger_create_invoice
@@ -42,7 +44,7 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType } = request;
+  const { s3Key, fileName, contentType, emailContext } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -77,7 +79,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     const stubInvoice: WorkdayInvoice = {};
     const existingCompany = { descriptor: 'Default Company', id: DEFAULT_COMPANY_REFERENCE_ID };
 
-    const result = await enrichInvoiceFromAttachments(stubInvoice, [attachment], undefined, existingCompany, undefined);
+    const result = await enrichInvoiceFromAttachments(stubInvoice, [attachment], undefined, existingCompany, emailContext);
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
