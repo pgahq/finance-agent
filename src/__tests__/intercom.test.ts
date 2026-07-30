@@ -1,11 +1,15 @@
 import {
+  assertAllowedAttachmentUrl,
   buildEmailContext,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
+  IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
   IntercomNotFoundError,
   IntercomUpstreamError,
+  MAX_ATTACHMENT_BYTES,
+  sanitizeFileName,
   selectAttachment,
   type IntercomAttachment,
 } from '../lib/intercom.js';
@@ -40,26 +44,48 @@ describe('intercom', () => {
   });
 
   describe('selectAttachment', () => {
-    it('prefers the first PDF attachment', () => {
+    it('returns the first PDF attachment', () => {
       const attachments: IntercomAttachment[] = [
-        { name: 'photo.png', url: 'https://cdn.example/a.png', contentType: 'image/png' },
-        { name: 'invoice.pdf', url: 'https://cdn.example/a.pdf', contentType: 'application/pdf' },
-        { name: 'other.pdf', url: 'https://cdn.example/b.pdf', contentType: 'application/pdf' },
+        { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
+        { name: 'invoice.pdf', url: 'https://downloads.intercomcdn.com/a.pdf', contentType: 'application/pdf' },
+        { name: 'other.pdf', url: 'https://downloads.intercomcdn.com/b.pdf', contentType: 'application/pdf' },
       ];
 
       expect(selectAttachment(attachments)).toEqual(attachments[1]);
     });
 
-    it('falls back to the first attachment with a URL when no PDF exists', () => {
+    it('returns undefined when no PDF exists', () => {
       const attachments: IntercomAttachment[] = [
-        { name: 'photo.png', url: 'https://cdn.example/a.png', contentType: 'image/png' },
+        { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
       ];
 
-      expect(selectAttachment(attachments)).toEqual(attachments[0]);
+      expect(selectAttachment(attachments)).toBeUndefined();
+    });
+  });
+
+  describe('sanitizeFileName', () => {
+    it('strips path separators and traversal segments', () => {
+      expect(sanitizeFileName('../../etc/passwd.pdf')).toBe('passwd.pdf');
+      expect(sanitizeFileName('folder\\nested\\invoice.pdf')).toBe('invoice.pdf');
+      expect(sanitizeFileName('')).toBe('attachment.pdf');
+    });
+  });
+
+  describe('assertAllowedAttachmentUrl', () => {
+    it('allows https Intercom CDN hosts', () => {
+      expect(assertAllowedAttachmentUrl('https://downloads.intercomcdn.com/i/o/file.pdf').host)
+        .toBe('downloads.intercomcdn.com');
+      expect(assertAllowedAttachmentUrl('https://intercomcdn.com/file.pdf').host)
+        .toBe('intercomcdn.com');
     });
 
-    it('returns undefined when there are no attachments', () => {
-      expect(selectAttachment([])).toBeUndefined();
+    it('rejects non-https and non-Intercom hosts', () => {
+      expect(() => assertAllowedAttachmentUrl('http://downloads.intercomcdn.com/file.pdf'))
+        .toThrow(IntercomUpstreamError);
+      expect(() => assertAllowedAttachmentUrl('https://evil.example/file.pdf'))
+        .toThrow(IntercomUpstreamError);
+      expect(() => assertAllowedAttachmentUrl('https://intercomcdn.com.evil.example/file.pdf'))
+        .toThrow(IntercomUpstreamError);
     });
   });
 
@@ -82,7 +108,7 @@ describe('intercom', () => {
   describe('fetchConversationInvoiceData', () => {
     const config = { accessToken: 'token', apiBaseUrl: 'https://api.intercom.io' };
 
-    it('fetches the conversation, prefers a PDF, and maps email context', async () => {
+    it('fetches the conversation, requires a PDF, sanitizes the name, and maps email context', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
@@ -93,13 +119,17 @@ describe('intercom', () => {
             body: 'Please process this invoice',
             author: { email: 'ap@vendor.com' },
             attachments: [
-              { name: 'shot.png', url: 'https://cdn.example/shot.png', content_type: 'image/png' },
+              { name: 'shot.png', url: 'https://downloads.intercomcdn.com/shot.png', content_type: 'image/png' },
             ],
           },
           conversation_parts: {
             conversation_parts: [{
               attachments: [
-                { name: 'invoice.pdf', url: 'https://cdn.example/invoice.pdf', content_type: 'application/pdf' },
+                {
+                  name: '../../nested/invoice.pdf',
+                  url: 'https://downloads.intercomcdn.com/invoice.pdf',
+                  content_type: 'application/pdf',
+                },
               ],
             }],
           },
@@ -110,7 +140,7 @@ describe('intercom', () => {
         conversationId: '123',
         attachment: {
           name: 'invoice.pdf',
-          url: 'https://cdn.example/invoice.pdf',
+          url: 'https://downloads.intercomcdn.com/invoice.pdf',
           contentType: 'application/pdf',
         },
         emailContext: {
@@ -142,13 +172,20 @@ describe('intercom', () => {
       await expect(fetchConversationInvoiceData(config, 'missing')).rejects.toBeInstanceOf(IntercomNotFoundError);
     });
 
-    it('throws IntercomNoAttachmentError when no attachments have URLs', async () => {
+    it('throws IntercomNoAttachmentError when no PDF is present', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
         json: async () => await Promise.resolve({
           id: '123',
-          source: { subject: 'Hi', body: 'No files', author: { email: 'a@b.com' }, attachments: [] },
+          source: {
+            subject: 'Hi',
+            body: 'No files',
+            author: { email: 'a@b.com' },
+            attachments: [
+              { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', content_type: 'image/png' },
+            ],
+          },
           conversation_parts: { conversation_parts: [] },
         }),
       }) as unknown as typeof fetch;
@@ -170,25 +207,46 @@ describe('intercom', () => {
   });
 
   describe('downloadAttachment', () => {
-    it('downloads raw binary bytes', async () => {
+    it('downloads raw binary bytes from an allowed CDN host', async () => {
       const bytes = Buffer.from('pdf-bytes');
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
+        headers: { get: () => null },
         arrayBuffer: async () => await Promise.resolve(
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
         ),
       }) as unknown as typeof fetch;
 
-      await expect(downloadAttachment('https://cdn.example/invoice.pdf')).resolves.toEqual(bytes);
+      await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf')).resolves.toEqual(bytes);
+    });
+
+    it('rejects disallowed hosts before fetching', async () => {
+      global.fetch = jest.fn() as unknown as typeof fetch;
+
+      await expect(downloadAttachment('https://evil.example/invoice.pdf')).rejects.toBeInstanceOf(IntercomUpstreamError);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('throws when Content-Length exceeds the max size', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: (name: string) => (name === 'content-length' ? String(MAX_ATTACHMENT_BYTES + 1) : null) },
+        arrayBuffer: async () => await Promise.resolve(new ArrayBuffer(0)),
+      }) as unknown as typeof fetch;
+
+      await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))
+        .rejects.toBeInstanceOf(IntercomAttachmentTooLargeError);
     });
 
     it('throws IntercomUpstreamError when the CDN returns an error', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         ok: false,
         status: 403,
+        headers: { get: () => null },
       }) as unknown as typeof fetch;
 
-      await expect(downloadAttachment('https://cdn.example/invoice.pdf')).rejects.toBeInstanceOf(IntercomUpstreamError);
+      await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))
+        .rejects.toBeInstanceOf(IntercomUpstreamError);
     });
   });
 });

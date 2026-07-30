@@ -2,6 +2,7 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { InvokeCommand } from '@aws-sdk/client-lambda';
 import { handler } from '../trigger_create_invoice.js';
 import {
+  IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
   IntercomNotFoundError,
   IntercomUpstreamError,
@@ -94,11 +95,11 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
 
 const conversationInvoiceData = {
   conversationId: '1234567890',
-  attachment: {
-    name: 'invoice.pdf',
-    url: 'https://cdn.example/invoice.pdf',
-    contentType: 'application/pdf',
-  },
+    attachment: {
+      name: 'invoice.pdf',
+      url: 'https://downloads.intercomcdn.com/invoice.pdf',
+      contentType: 'application/pdf',
+    },
   emailContext: {
     emailFrom: 'ap@vendor.com',
     subject: 'Please process',
@@ -178,7 +179,7 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 400 when the conversation has no usable attachment', async () => {
+  it('returns 400 when the conversation has no PDF attachment', async () => {
     mockFetchConversationInvoiceData.mockRejectedValue(new IntercomNoAttachmentError('1234567890'));
 
     const response = await handler(buildEvent());
@@ -188,7 +189,23 @@ describe('trigger_create_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        message: 'No usable attachment found on conversation',
+        message: 'No PDF attachment found on conversation',
+        conversationId: '1234567890',
+      }),
+    });
+  });
+
+  it('returns 400 when the attachment exceeds the max size', async () => {
+    mockDownloadAttachment.mockRejectedValue(new IntercomAttachmentTooLargeError(21 * 1024 * 1024));
+
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'error',
+        message: 'Attachment exceeds maximum allowed size',
         conversationId: '1234567890',
       }),
     });

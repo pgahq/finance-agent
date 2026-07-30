@@ -8,6 +8,7 @@ import {
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
+  IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
   IntercomNotFoundError,
   IntercomUpstreamError,
@@ -88,10 +89,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
     }
     if (error instanceof IntercomNoAttachmentError) {
-      debug('No usable Intercom attachment', { conversationId });
+      debug('No PDF Intercom attachment', { conversationId });
       return jsonResponse(400, {
         status: 'error',
-        message: 'No usable attachment found on conversation',
+        message: 'No PDF attachment found on conversation',
         conversationId,
       });
     }
@@ -122,6 +123,17 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   try {
     buffer = await downloadAttachment(attachment.url);
   } catch (error) {
+    if (error instanceof IntercomAttachmentTooLargeError) {
+      debug('Intercom attachment too large', {
+        conversationId,
+        sizeBytes: error.sizeBytes,
+      });
+      return jsonResponse(400, {
+        status: 'error',
+        message: 'Attachment exceeds maximum allowed size',
+        conversationId,
+      });
+    }
     if (error instanceof IntercomUpstreamError) {
       debug('Intercom attachment download failed', {
         conversationId,

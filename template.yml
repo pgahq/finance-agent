@@ -677,15 +677,15 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Trigger Create Invoice - HTTP API endpoint accepting a file blob for a not-yet-existing invoice
+  # Trigger Create Invoice - HTTP API endpoint that creates a new invoice from an Intercom conversation
   TriggerCreateInvoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-TriggerCreateInvoice"
       Handler: dist/trigger_create_invoice.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
-      Timeout: 30
-      MemorySize: 512
+      Timeout: 60
+      MemorySize: 1024
       Environment:
         Variables:
           ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token

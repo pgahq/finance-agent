@@ -26,16 +26,16 @@ Request body:
 Flow:
 
 1. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
-2. Pick first `application/pdf` attachment (else first attachment with a URL) from `source` + conversation parts
-3. Download the signed CDN URL as **raw binary** immediately (URLs expire ~30 minutes)
-4. Upload binary to S3 (`new-invoices/{requestId}/{fileName}`)
+2. Pick the first `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
+3. Download the signed CDN URL as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; max 20MB)
+4. Upload binary to S3 (`new-invoices/{requestId}/{sanitizedFileName}`)
 5. Async-invoke `CreateInvoiceProcessor` with `s3Key`, `fileName`, `contentType`, `conversationId`, `emailContext`
 6. Return HTTP status to the Data Connector (Workday create is async; Slack notifies that outcome)
 
 | HTTP | Meaning |
 | --- | --- |
 | 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, `conversationId` |
-| 400 | Missing `conversationId`, invalid JSON, or no usable attachment |
+| 400 | Missing `conversationId`, invalid JSON, no PDF, or attachment too large |
 | 401 | Bad/missing finance-agent bearer token |
 | 404 | Intercom conversation not found |
 | 502 | Intercom API or CDN download failed |
@@ -60,5 +60,9 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
+- Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` (SSRF allowlist)
+- Only `application/pdf` attachments are accepted; missing PDF → 400
+- Max download size 20MB (`Content-Length` and body checked)
+- Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
 - Workday `Attachment_Data` base64 is produced in `create_invoice` after `getBinaryFromS3`
