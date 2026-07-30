@@ -4,12 +4,18 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
+import {
+  downloadAttachment,
+  fetchConversationInvoiceData,
+  getIntercomConfig,
+  IntercomNoAttachmentError,
+  IntercomNotFoundError,
+  IntercomUpstreamError,
+} from './lib/intercom.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
-  fileName?: string;
-  contentType?: string;
-  fileContent?: string; // base64
+  conversationId?: string;
 }
 
 function formatError(error: unknown): string {
@@ -34,7 +40,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const expectedToken = process.env.ENRICH_INVOICE_API_TOKEN;
   if (!expectedToken) {
     debug('ENRICH_INVOICE_API_TOKEN is not configured');
-    return jsonResponse(500, { message: 'Internal server error' });
+    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
   const providedToken = extractBearerToken(event.headers?.authorization);
@@ -42,7 +48,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     debug('Unauthorized create invoice trigger request', {
       hasAuthorizationHeader: Boolean(event.headers?.authorization),
     });
-    return jsonResponse(401, { message: 'Unauthorized' });
+    return jsonResponse(401, { status: 'error', message: 'Unauthorized' });
   }
 
   let requestBody: TriggerCreateInvoiceRequest;
@@ -50,25 +56,89 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     requestBody = event.body ? JSON.parse(event.body) as TriggerCreateInvoiceRequest : {};
   } catch (error) {
     debug('Invalid JSON body', { error: formatError(error) });
-    return jsonResponse(400, { message: 'Invalid JSON body' });
+    return jsonResponse(400, { status: 'error', message: 'Invalid JSON body' });
   }
 
-  const { fileName, contentType, fileContent } = requestBody;
-  if (!fileName || !contentType || !fileContent) {
-    debug('Missing required fields in create invoice trigger request', {
-      hasFileName: Boolean(fileName),
-      hasContentType: Boolean(contentType),
-      hasFileContent: Boolean(fileContent),
-    });
-    return jsonResponse(400, { message: 'fileName, contentType, and fileContent (base64) are required' });
+  const conversationId = typeof requestBody.conversationId === 'string'
+    ? requestBody.conversationId.trim()
+    : '';
+  if (!conversationId) {
+    debug('Missing conversationId in create invoice trigger request');
+    return jsonResponse(400, { status: 'error', message: 'conversationId is required' });
   }
+
+  let intercomConfig;
+  try {
+    intercomConfig = getIntercomConfig(process.env);
+  } catch (error) {
+    debug('INTERCOM_ACCESS_TOKEN is not configured', { error: formatError(error) });
+    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
+  }
+
+  let conversationData;
+  try {
+    conversationData = await fetchConversationInvoiceData(intercomConfig, conversationId);
+  } catch (error) {
+    if (error instanceof IntercomNotFoundError) {
+      debug('Intercom conversation not found', { conversationId });
+      return jsonResponse(404, {
+        status: 'error',
+        message: 'Conversation not found',
+        conversationId,
+      });
+    }
+    if (error instanceof IntercomNoAttachmentError) {
+      debug('No usable Intercom attachment', { conversationId });
+      return jsonResponse(400, {
+        status: 'error',
+        message: 'No usable attachment found on conversation',
+        conversationId,
+      });
+    }
+    if (error instanceof IntercomUpstreamError) {
+      debug('Intercom upstream error fetching conversation', {
+        conversationId,
+        error: formatError(error),
+        statusCode: error.statusCode,
+      });
+      return jsonResponse(502, {
+        status: 'error',
+        message: 'Failed to fetch conversation from Intercom',
+        conversationId,
+      });
+    }
+    debug('Unexpected error fetching Intercom conversation', {
+      conversationId,
+      error: formatError(error),
+    });
+    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
+  }
+
+  const { attachment, emailContext } = conversationData;
+  const fileName = attachment.name;
+  const contentType = attachment.contentType;
 
   let buffer: Buffer;
   try {
-    buffer = Buffer.from(fileContent, 'base64');
+    buffer = await downloadAttachment(attachment.url);
   } catch (error) {
-    debug('Invalid base64 fileContent', { error: formatError(error) });
-    return jsonResponse(400, { message: 'fileContent must be valid base64' });
+    if (error instanceof IntercomUpstreamError) {
+      debug('Intercom attachment download failed', {
+        conversationId,
+        error: formatError(error),
+        statusCode: error.statusCode,
+      });
+      return jsonResponse(502, {
+        status: 'error',
+        message: 'Failed to download conversation attachment',
+        conversationId,
+      });
+    }
+    debug('Unexpected error downloading Intercom attachment', {
+      conversationId,
+      error: formatError(error),
+    });
+    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
   try {
@@ -76,10 +146,16 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const requestId = randomUUID();
     const s3Key = `new-invoices/${requestId}/${fileName}`;
 
-    debug('Uploading new invoice attachment to S3', { s3Key, contentType, size: buffer.length });
+    debug('Uploading new invoice attachment to S3', {
+      s3Key,
+      contentType,
+      size: buffer.length,
+      conversationId,
+    });
     await putBinaryToS3(s3Config, s3Key, buffer, contentType, {
       'original-filename': fileName,
       'upload-timestamp': new Date().toISOString(),
+      'intercom-conversation-id': conversationId,
     });
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
@@ -89,7 +165,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       FunctionName: processorFunctionName,
       InvocationType: 'Event',
       Payload: JSON.stringify({
-        data: [{ s3Key, fileName, contentType }],
+        data: [{
+          s3Key,
+          fileName,
+          contentType,
+          conversationId,
+          emailContext,
+        }],
         page: 1,
         totalPages: 1,
       }),
@@ -102,15 +184,17 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
           ? Buffer.from(invokeResult.Payload).toString('utf8')
           : undefined,
       });
-      return jsonResponse(500, { message: 'Internal server error' });
+      return jsonResponse(500, { status: 'error', message: 'Internal server error' });
     }
 
     return jsonResponse(202, {
+      status: 'accepted',
       message: 'Invoice creation triggered',
       requestId,
+      conversationId,
     });
   } catch (error) {
-    debug('Error triggering invoice creation', { error: formatError(error) });
-    return jsonResponse(500, { message: 'Internal server error' });
+    debug('Error triggering invoice creation', { error: formatError(error), conversationId });
+    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 }

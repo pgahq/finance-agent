@@ -144,11 +144,30 @@ describe('create_invoice', () => {
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
+    const emailContext = {
+      emailFrom: 'ap@vendor.com',
+      subject: 'Please process',
+      plainTextBody: 'Invoice attached',
+    };
     const event = {
-      data: [{ s3Key: 'new-invoices/req-1/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+      data: [{
+        s3Key: 'new-invoices/req-1/invoice.pdf',
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        conversationId: '1234567890',
+        emailContext,
+      }]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();
+
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([expect.objectContaining({ s3Key: 'new-invoices/req-1/invoice.pdf' })]),
+      undefined,
+      { descriptor: 'Default Company', id: 'Default_OCR_Company' },
+      emailContext,
+    );
 
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];

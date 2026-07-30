@@ -689,6 +689,8 @@ Resources:
       Environment:
         Variables:
           ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+          INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
+          INTERCOM_API_BASE_URL: https://api.intercom.io
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -707,5 +709,5 @@ Outputs:
     Description: POST endpoint to trigger invoice enrichment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/enrich-invoice"
   CreateInvoiceApiUrl:
-    Description: POST endpoint to create a new invoice from an uploaded attachment
+    Description: POST endpoint to create a new invoice from an Intercom conversation attachment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice"
