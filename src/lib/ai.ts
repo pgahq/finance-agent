@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
+import { temperatureOption } from './model_generation_options.js';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 
 // Set OpenAI API key globally
@@ -22,6 +23,23 @@ export async function getAiResponse({
   tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
+    const languageModel = openai(model);
+    const hasTools = tools !== undefined
+      ? Object.keys(tools).length > 0
+      : true;
+
+    if (schema && !hasTools) {
+      const structuredResult = await generateText({
+        model: languageModel,
+        messages,
+        system: prompt,
+        output: Output.object({ schema }),
+        ...temperatureOption(model, 0.1),
+      });
+
+      return structuredResult.output;
+    }
+
     // Step 1: Generate text with tools (if needed)
     let systemPrompt = prompt;
     
@@ -41,11 +59,11 @@ export async function getAiResponse({
     }
     
     const generateTextOptions: any = {
-      model: openai(model),
+      model: languageModel,
       messages,
       system: systemPrompt,
       stopWhen: stepCountIs(10),
-      temperature: 0.2,
+      ...temperatureOption(model, 0.2),
       tools: tools ?? {
         findSuppliers: findSuppliersTool,
         findCompanies: findCompaniesTool,
@@ -67,7 +85,7 @@ export async function getAiResponse({
 
     // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
     const structuredResult = await generateText({
-      model: openai(model),
+      model: languageModel,
       messages: [
         ...messages,
         ...textResult.response.messages,
@@ -75,7 +93,7 @@ export async function getAiResponse({
       ],
       system: prompt,
       output: Output.object({ schema }),
-      temperature: 0.1
+      ...temperatureOption(model, 0.1)
     });
 
     return structuredResult.output;

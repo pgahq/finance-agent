@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { getDatabaseConnection, searchDocuments } from './database.js';
+import { getDatabaseConnection, searchDocuments, type DatabaseConnection } from './database.js';
 export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI
@@ -116,7 +116,10 @@ export interface RAGResult {
  * Query documents using RAG (Retrieval-Augmented Generation)
  * This function can be used by other Lambda functions to retrieve relevant documents
  */
-export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
+export async function queryDocuments(
+  ragQuery: RAGQuery,
+  dbConnection?: DatabaseConnection
+): Promise<RAGResult[]> {
   try {
     const {
       query,
@@ -133,7 +136,8 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     const queryEmbedding = await createEmbedding(query);
 
     // Get database connection
-    const db = await getDatabaseConnection(process.env);
+    const db = dbConnection ?? await getDatabaseConnection(process.env);
+    const shouldCloseDb = !dbConnection;
 
     try {
       // Use hybrid search that combines semantic similarity with exact text matching
@@ -177,7 +181,9 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
       return ragResults;
 
     } finally {
-      await db.close();
+      if (shouldCloseDb) {
+        await db.close();
+      }
     }
 
   } catch (error) {

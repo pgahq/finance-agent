@@ -13,7 +13,12 @@
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
     "test": "jest",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "eval": "RUN_EVALS=1 jest --config jest.eval.config.js --runInBand --forceExit --testTimeout=300000",
+    "eval:embeddings": "RUN_EVALS=1 tsx evals/generate-fixture-embeddings.ts",
+    "eval:db:up": "docker compose -f docker-compose.eval.yml up -d",
+    "eval:db:down": "docker compose -f docker-compose.eval.yml down -v",
+    "eval:seed": "RUN_EVALS=1 tsx evals/seed-rag-fixtures.ts"
   },
   "keywords": [
     "finance",
@@ -34,6 +39,7 @@
     "jest": "^29.7.0",
     "jest-junit": "^16.0.0",
     "ts-jest": "^29.1.2",
+    "tsx": "^4.19.4",
     "typescript": "^5.5.2"
   },
   "dependencies": {

@@ -8,6 +8,7 @@ export default {
   },
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.ts'],
+  testPathIgnorePatterns: ['<rootDir>/evals/run-'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',
