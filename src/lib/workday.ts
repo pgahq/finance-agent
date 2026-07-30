@@ -316,6 +316,7 @@ interface buildSubmitInvoiceDataOptions {
   supplierWID?: string;
   defaultSupplierWID?: string;
   companyWID?: string;
+  companyReferenceType?: string;
   workQueueTags?: WorkQueueTag[];
   notes?: string;
   memo?: string;
@@ -332,6 +333,8 @@ interface buildSubmitInvoiceDataOptions {
   extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
+  currencyWID?: string;
+  attachment?: { fileName: string; contentType: string; base64Content: string };
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
@@ -571,7 +574,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -680,9 +683,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   return {
     Submit: false,
     Company_Reference: companyWID
-      ? { ID: [{ $attributes: { type: 'WID' }, $value: companyWID }] }
+      ? createReference(companyReferenceType ?? 'WID', companyWID)
       : currentInvoice.Company_Reference,
-    Currency_Reference: currentInvoice.Currency_Reference,
+    Currency_Reference: currencyWID
+      ? createReference('Currency_ID', currencyWID)
+      : currentInvoice.Currency_Reference,
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
@@ -705,6 +710,13 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // and sending this block causes Workday to validate Ledger_Currency against the company
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
+
+    ...(attachment && {
+      Attachment_Data: [{
+        $attributes: { Content_Type: attachment.contentType, Filename: attachment.fileName },
+        File_Content: attachment.base64Content
+      }]
+    }),
 
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 
@@ -736,7 +748,7 @@ const MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS = 3;
 
 interface SubmitSupplierInvoiceRequest {
   Submit_Supplier_Invoice_Request: {
-    Supplier_Invoice_Reference: {
+    Supplier_Invoice_Reference?: {
       ID: Array<{ $attributes: { type: string }; $value: string }>;
     };
     Supplier_Invoice_Data: Record<string, unknown>;
@@ -753,7 +765,7 @@ interface ResourceManagementClient {
 
 interface SubmitSupplierInvoiceWithRepairOptions {
   client: ResourceManagementClient;
-  invoiceWorkdayID: string;
+  invoiceWorkdayID: string | undefined;
   currentInvoice: any;
   buildOptions: buildSubmitInvoiceDataOptions;
   buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
@@ -762,15 +774,18 @@ interface SubmitSupplierInvoiceWithRepairOptions {
   requestDebugLabel?: string;
 }
 
+// invoiceWorkdayID undefined => create a new Supplier Invoice; provided => update the existing one
 function createSubmitSupplierInvoiceRequest(
-  invoiceWorkdayID: string,
+  invoiceWorkdayID: string | undefined,
   invoiceData: Record<string, unknown>
 ): SubmitSupplierInvoiceRequest {
   return {
     Submit_Supplier_Invoice_Request: {
-      Supplier_Invoice_Reference: {
-        ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
-      },
+      ...(invoiceWorkdayID && {
+        Supplier_Invoice_Reference: {
+          ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]
+        }
+      }),
       Supplier_Invoice_Data: invoiceData
     }
   };
@@ -808,6 +823,7 @@ async function submitSupplierInvoiceWithRepair({
   submitLogMessage,
   requestDebugLabel,
 }: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
+  const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   let attemptBuildOptions = { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
   const validationTriggeredFields = new Set<FallbackField>();
@@ -842,7 +858,7 @@ async function submitSupplierInvoiceWithRepair({
 
       if (appliedFallbacksForField.length > 0) {
         debug(
-          `Validation fault occurred after applying fallback/default value for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          `Validation fault occurred after applying fallback/default value for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacksForField.map(fallback => fallback.label), validationError }
         );
         throw error;
@@ -857,7 +873,7 @@ async function submitSupplierInvoiceWithRepair({
         : undefined;
       if (!fallbackRetry) {
         debug(
-          `Validation fault did not match a configured fallback/default retry for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          `Validation fault did not match a configured fallback/default retry for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacks.map(fallback => fallback.label), validationError }
         );
         throw error;
@@ -870,7 +886,7 @@ async function submitSupplierInvoiceWithRepair({
 
       if (failedRequestFingerprints.has(nextRequestFingerprint)) {
         debug(
-          `Fallback/default retry repeated a previously failed payload for invoice ${invoiceWorkdayID}; skipping repair retries`,
+          `Fallback/default retry repeated a previously failed payload for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, fallbackLabel: fallbackRetry.fallbackLabel, validationError }
         );
         throw error;
@@ -885,7 +901,7 @@ async function submitSupplierInvoiceWithRepair({
     }
   }
 
-  throw new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceWorkdayID}`);
+  throw new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceLabel}`);
 }
 
 
@@ -1275,6 +1291,94 @@ export async function submitSupplierInvoiceUpdate(
   return {
     success: true,
     message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
+    appliedFallbacks,
+  };
+}
+
+export interface SubmitNewSupplierInvoiceParams {
+  supplierWID?: string;
+  companyWID: string;
+  companyReferenceType?: string;
+  currencyWID?: string;
+  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  memo?: string;
+  invoiceDate?: string;
+  extractedAmountDue?: string;
+  suppliersInvoiceNumber?: string;
+  extractedFreightAmount?: string;
+  extractedTaxAmount?: string;
+  finalLines: FinalInvoiceLine[];
+  paymentTermsId?: string;
+  attachment: { fileName: string; contentType: string; base64Content: string };
+}
+
+// Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
+export async function submitNewSupplierInvoice(
+  context: { workdayConfig: WorkdayConfig },
+  {
+    supplierWID,
+    companyWID,
+    companyReferenceType,
+    currencyWID,
+    buildNotes,
+    memo,
+    invoiceDate,
+    extractedAmountDue,
+    suppliersInvoiceNumber,
+    extractedFreightAmount,
+    extractedTaxAmount,
+    finalLines,
+    paymentTermsId,
+    attachment
+  }: SubmitNewSupplierInvoiceParams
+): Promise<{ success: boolean; message?: string; invoiceWID?: string; appliedFallbacks: AppliedFallback[] }> {
+  debug('Creating new Supplier Invoice via SOAP');
+  debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
+  debug(`Company WID: ${companyWID}`);
+
+  const client = await buildResourceManagementClient(context);
+
+  const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+
+  if (agentModifiedTagID) {
+    debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
+  }
+
+  const { result, finalBuildOptions } = await submitSupplierInvoiceWithRepair({
+    client: client as ResourceManagementClient,
+    invoiceWorkdayID: undefined,
+    currentInvoice: {},
+    buildOptions: {
+      currentInvoice: {},
+      supplierWID,
+      companyWID,
+      companyReferenceType,
+      currencyWID,
+      workQueueTags,
+      memo,
+      invoiceDate,
+      extractedAmountDue,
+      suppliersInvoiceNumber,
+      extractedFreightAmount,
+      extractedTaxAmount,
+      finalLines,
+      paymentTermsWID: paymentTermsId,
+      attachment
+    },
+    buildNotes,
+    operationName: 'submitNewSupplierInvoice',
+    submitLogMessage: 'Submitting new Supplier Invoice to Workday',
+  });
+
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  const invoiceWID = extractIdsByType(result, 'WID')[0];
+  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks });
+
+  return {
+    success: true,
+    message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
+    invoiceWID,
     appliedFallbacks,
   };
 }

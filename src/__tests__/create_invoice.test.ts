@@ -1,0 +1,302 @@
+// create_invoice.ts reads WORKDAY_DEFAULT_COMPANY_REFERENCE_ID / WORKDAY_DEFAULT_SUPPLIER_WID /
+// INVOICE_MOD_ENABLED as module-level constants at import time. Each test sets the env
+// vars it needs, resets the module registry, and re-requires the module (and its mocked
+// dependencies) fresh so those constants are re-evaluated against the current env.
+
+jest.mock('@pga/lambda-env', () => ({
+  __esModule: true,
+  default: jest.fn().mockResolvedValue({})
+}));
+
+jest.mock('@pga/logger', () => ({
+  debug: jest.fn(),
+  error: jest.fn(),
+  warn: jest.fn(),
+  info: jest.fn()
+}));
+
+jest.mock('../lib/workday.js', () => ({
+  getWorkdayConfig: jest.fn().mockReturnValue({
+    domain: 'test.workday.com',
+    tenant: 'test-tenant',
+    clientId: 'test-client-id',
+    clientSecret: 'test-client-secret',
+    refreshToken: 'test-refresh-token'
+  }),
+  getPurchaseOrder: jest.fn(),
+  parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] })
+}));
+
+jest.mock('../lib/database.js', () => ({
+  getDatabaseConnection: jest.fn().mockResolvedValue({
+    query: jest.fn().mockResolvedValue([]),
+    close: jest.fn().mockResolvedValue({})
+  }),
+  searchSimilarDocuments: jest.fn().mockResolvedValue([])
+}));
+
+jest.mock('../lib/s3.js', () => ({
+  getS3Config: jest.fn().mockReturnValue({
+    bucketName: 'test-bucket'
+  }),
+  getBinaryFromS3: jest.fn().mockResolvedValue(Buffer.from('fake-pdf-content')),
+  getPresignedUrl: jest.fn().mockResolvedValue('https://example.com/invoice.pdf')
+}));
+
+jest.mock('../lib/slack.js', () => ({
+  notifyResult: jest.fn().mockResolvedValue(undefined)
+}));
+
+jest.mock('../lib/invoice_validation_failures.js', () => ({
+  getInvoiceValidationFailuresConfig: jest.fn().mockReturnValue(undefined)
+}));
+
+jest.mock('../lib/invoice_enrichment.js', () => {
+  const actual = jest.requireActual('../lib/invoice_enrichment.js');
+  return {
+    ...actual,
+    enrichInvoiceFromAttachments: jest.fn()
+  };
+});
+
+jest.mock('../lib/invoice_lines.js', () => ({
+  buildFinalInvoiceLines: jest.fn()
+}));
+
+const baseEnrichmentResult = {
+  supplier: {
+    status: 'found',
+    confidence: 0.9,
+    extractedInformation: {
+      supplierName: 'Test Supplier',
+      memo: 'Office supplies'
+    },
+    resolvedSupplier: {
+      workdayId: 'supplier-wid-1',
+      supplierName: 'Test Supplier',
+      confidence: 0.9,
+      reason: 'Exact match'
+    },
+    potentialDuplicateSuppliers: null,
+    recommendation: {
+      action: 'update_invoice',
+      reason: 'High confidence match'
+    },
+    reason: 'High confidence match'
+  },
+  companyVerification: {
+    status: 'matching',
+    confidence: 0.85,
+    extractedInformation: {},
+    recommended: null,
+    reason: 'Company matches default assignment'
+  },
+  extractedInvoiceDate: '2026-01-15',
+  extractedAmountDue: '$100.00',
+  extractedSuppliersInvoiceNumber: 'INV-001',
+  extractedFreightAmount: null,
+  extractedTaxAmount: null,
+  extractedPurchaseOrderNumber: null,
+  extractedPaymentTerms: null,
+  extractedInvoiceLines: [
+    { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+  ],
+  emailWorktags: null,
+  emailSummary: null
+};
+
+const defaultFinalLines = {
+  lines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }],
+  appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+};
+
+// Resets the module registry and re-requires create_invoice.js and its mocked dependencies,
+// so module-level env constants (e.g. WORKDAY_DEFAULT_COMPANY_REFERENCE_ID) reflect the current env.
+function freshRequire() {
+  jest.resetModules();
+  const { processor } = require('../create_invoice.js');
+  return {
+    processor,
+    workday: require('../lib/workday.js'),
+    slack: require('../lib/slack.js'),
+    invoiceEnrichment: require('../lib/invoice_enrichment.js'),
+    invoiceLines: require('../lib/invoice_lines.js'),
+  };
+}
+
+describe('create_invoice', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.WORKDAY_DEFAULT_COMPANY_REFERENCE_ID;
+    delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+    delete process.env.INVOICE_MOD_ENABLED;
+  });
+
+  afterEach(() => {
+    delete process.env.WORKDAY_DEFAULT_COMPANY_REFERENCE_ID;
+    delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+    delete process.env.INVOICE_MOD_ENABLED;
+  });
+
+  it('should create a new supplier invoice from an uploaded attachment', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-1/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.supplierWID).toBe('supplier-wid-1');
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
+    expect(submitArgs.attachment).toEqual({
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      base64Content: Buffer.from('fake-pdf-content').toString('base64')
+    });
+
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({ invoiceWID: 'new-invoice-wid' })
+    );
+  });
+
+  it('should fall back to the default supplier WID when none is resolved', async () => {
+    process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      supplier: { ...baseEnrichmentResult.supplier, status: 'not_found', resolvedSupplier: null }
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-2/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.supplierWID).toBe('default-supplier-wid');
+  });
+
+  it('should synthesize a single invoice line when none can be extracted or matched to a PO', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedInvoiceLines: null
+    });
+    invoiceLines.buildFinalInvoiceLines
+      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false } })
+      .mockResolvedValueOnce({
+        lines: [{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      });
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-3/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.finalLines).toEqual([{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }]);
+  });
+
+  it('should notify an error and not submit when enrichment returns an error status', async () => {
+    const { processor, workday, slack, invoiceEnrichment } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
+    });
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-4/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).rejects.toThrow('Invoice enrichment returned error status');
+
+    expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
+      expect.any(Error)
+    );
+  });
+
+  it('should not submit when invoice modification is disabled', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'false';
+
+    const { processor, workday, slack } = freshRequire();
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-5/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ s3Key: 'new-invoices/req-5/invoice.pdf' }),
+      expect.any(Error)
+    );
+  });
+
+  it('should use the recommended company WID (type WID) when company verification finds a different company', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'company-wid-1', companyName: 'Real Company', confidence: 0.9, reason: 'Better match' },
+        reason: 'Extracted company differs from the default placeholder'
+      }
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-6/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('company-wid-1');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+  });
+
+  it('should allow overriding the default company reference id via WORKDAY_DEFAULT_COMPANY_REFERENCE_ID', async () => {
+    process.env.WORKDAY_DEFAULT_COMPANY_REFERENCE_ID = 'Custom_Placeholder_Company';
+
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    const event = {
+      data: [{ s3Key: 'new-invoices/req-7/invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' }]
+    };
+
+    await expect(processor(event as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('Custom_Placeholder_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
+  });
+});
