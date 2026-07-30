@@ -72,11 +72,16 @@ describe('intercom', () => {
   });
 
   describe('assertAllowedAttachmentUrl', () => {
-    it('allows https Intercom CDN hosts', () => {
+    it('allows https Intercom CDN and attachment hosts', () => {
       expect(assertAllowedAttachmentUrl('https://downloads.intercomcdn.com/i/o/file.pdf').host)
         .toBe('downloads.intercomcdn.com');
       expect(assertAllowedAttachmentUrl('https://intercomcdn.com/file.pdf').host)
         .toBe('intercomcdn.com');
+      expect(assertAllowedAttachmentUrl(
+        'https://pga-of-america-test-19f825af3239.intercom-attachments-5.com/file.pdf',
+      ).host).toBe('pga-of-america-test-19f825af3239.intercom-attachments-5.com');
+      expect(assertAllowedAttachmentUrl('https://intercom-attachments-1.com/file.pdf').host)
+        .toBe('intercom-attachments-1.com');
     });
 
     it('rejects non-https and non-Intercom hosts', () => {
@@ -85,6 +90,8 @@ describe('intercom', () => {
       expect(() => assertAllowedAttachmentUrl('https://evil.example/file.pdf'))
         .toThrow(IntercomUpstreamError);
       expect(() => assertAllowedAttachmentUrl('https://intercomcdn.com.evil.example/file.pdf'))
+        .toThrow(IntercomUpstreamError);
+      expect(() => assertAllowedAttachmentUrl('https://evil.intercom-attachments-5.com.attacker.com/file.pdf'))
         .toThrow(IntercomUpstreamError);
     });
   });

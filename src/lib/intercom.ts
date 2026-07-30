@@ -136,6 +136,9 @@ export function buildEmailContext(
   };
 }
 
+const INTERCOM_CDN_HOST_PATTERN = /^(?:[a-z0-9-]+\.)*intercomcdn\.com$/i;
+const INTERCOM_ATTACHMENTS_HOST_PATTERN = /^(?:[a-z0-9-]+\.)*intercom-attachments-\d+\.com$/i;
+
 export function assertAllowedAttachmentUrl(url: string): URL {
   let parsed: URL;
   try {
@@ -150,8 +153,8 @@ export function assertAllowedAttachmentUrl(url: string): URL {
 
   const host = parsed.hostname.toLowerCase();
   const allowed =
-    host === 'intercomcdn.com'
-    || host.endsWith('.intercomcdn.com');
+    INTERCOM_CDN_HOST_PATTERN.test(host)
+    || INTERCOM_ATTACHMENTS_HOST_PATTERN.test(host);
 
   if (!allowed) {
     throw new IntercomUpstreamError(`Attachment URL host is not an allowed Intercom CDN: ${host}`);
@@ -194,6 +197,8 @@ export async function fetchConversationInvoiceData(
   }
 
   const conversation = await response.json() as IntercomConversationResponse;
+  debug('Intercom conversation response', { conversationId, conversation });
+
   const attachments = collectAttachments(conversation);
   const attachment = selectAttachment(attachments);
   if (!attachment) {
