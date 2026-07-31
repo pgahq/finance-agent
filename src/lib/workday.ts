@@ -1,4 +1,5 @@
 import { debug } from '@pga/logger';
+import { createHash } from 'node:crypto';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
@@ -42,7 +43,16 @@ const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clien
   return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 };
 
+const credentialFingerprint = (value: string | undefined): string =>
+  value ? createHash('sha256').update(value).digest('hex').slice(0, 12) : 'missing';
+
 const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
+  debug('Workday OAuth credential fingerprints', {
+    clientId: credentialFingerprint(config.clientId),
+    clientSecret: credentialFingerprint(config.clientSecret),
+    refreshToken: credentialFingerprint(config.refreshToken)
+  });
+
   const authToken = generateAuthToken({ clientId: config.clientId, clientSecret: config.clientSecret });
   const headers = { Authorization: `Basic ${authToken}` };
 

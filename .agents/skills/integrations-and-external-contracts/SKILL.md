@@ -68,6 +68,11 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 
+Each OAuth token request logs 12-character SHA-256 fingerprints for the resolved
+client ID, client secret, and refresh token. Compare these with fingerprints
+computed directly from SSM when diagnosing runtime secret resolution; never log
+the credential values or access token.
+
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
