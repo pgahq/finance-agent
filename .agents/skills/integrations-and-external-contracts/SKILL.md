@@ -26,10 +26,10 @@ Request body:
 Flow:
 
 1. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
-2. Pick the first `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
-3. Download the signed CDN URL as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; max 20MB)
-4. Upload binary to S3 (`new-invoices/{requestId}/{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` with `s3Key`, `fileName`, `contentType`, `emailContext`
+2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
+3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
+4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
+5. Async-invoke `CreateInvoiceProcessor` with the attachment metadata array and `emailContext`
 6. Return HTTP status to the Data Connector (Workday create is async; Slack notifies that outcome)
 
 | HTTP | Meaning |
@@ -78,10 +78,10 @@ containing only the original name/message.
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
 - Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
 - Only `application/pdf` attachments are accepted; missing PDF → 400
-- Max download size 20MB (`Content-Length` and body checked); trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
+- Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Workday `Attachment_Data` base64 is produced in `create_invoice` after `getBinaryFromS3`
+- Workday receives one `Attachment_Data` entry per PDF
 - If Workday accepts the same invoice without `File_Content` but returns an
   authentication fault when it is present, inspect attachment-specific security.
   `Put_Procurement_Document_Attachment` is the supported two-step alternative.

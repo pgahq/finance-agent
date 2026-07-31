@@ -12,6 +12,7 @@ import {
   IntercomNoAttachmentError,
   IntercomNotFoundError,
   IntercomUpstreamError,
+  MAX_ATTACHMENT_BYTES,
 } from './lib/intercom.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
@@ -126,13 +127,16 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
-  const { attachment, emailContext } = conversationData;
-  const fileName = attachment.name;
-  const contentType = attachment.contentType;
-
-  let buffer: Buffer;
+  const { attachments, emailContext } = conversationData;
+  let buffers: Buffer[];
   try {
-    buffer = await downloadAttachment(attachment.url);
+    buffers = await Promise.all(
+      attachments.map((attachment) => downloadAttachment(attachment.url))
+    );
+    const totalBytes = buffers.reduce((total, buffer) => total + buffer.length, 0);
+    if (totalBytes > MAX_ATTACHMENT_BYTES) {
+      throw new IntercomAttachmentTooLargeError(totalBytes);
+    }
   } catch (error) {
     if (error instanceof IntercomAttachmentTooLargeError) {
       debug('Intercom attachment too large', {
@@ -167,18 +171,25 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   try {
     const s3Config = getS3Config(process.env);
     const requestId = randomUUID();
-    const s3Key = `new-invoices/${requestId}/${fileName}`;
+    const uploadedAttachments = await Promise.all(attachments.map(async (attachment, index) => {
+      const s3Key = `new-invoices/${requestId}/${index + 1}-${attachment.name}`;
+      const buffer = buffers[index];
+      await putBinaryToS3(s3Config, s3Key, buffer, attachment.contentType, {
+        'original-filename': attachment.name,
+        'upload-timestamp': new Date().toISOString(),
+        'intercom-conversation-id': conversationId,
+      });
+      return {
+        s3Key,
+        fileName: attachment.name,
+        contentType: attachment.contentType,
+      };
+    }));
 
-    debug('Uploading new invoice attachment to S3', {
-      s3Key,
-      contentType,
-      size: buffer.length,
+    debug('Uploaded new invoice attachments to S3', {
+      attachmentCount: uploadedAttachments.length,
+      totalBytes: buffers.reduce((total, buffer) => total + buffer.length, 0),
       conversationId,
-    });
-    await putBinaryToS3(s3Config, s3Key, buffer, contentType, {
-      'original-filename': fileName,
-      'upload-timestamp': new Date().toISOString(),
-      'intercom-conversation-id': conversationId,
     });
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
@@ -189,9 +200,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       InvocationType: 'Event',
       Payload: JSON.stringify({
         data: [{
-          s3Key,
-          fileName,
-          contentType,
+          attachments: uploadedAttachments,
           emailContext,
         }],
         page: 1,

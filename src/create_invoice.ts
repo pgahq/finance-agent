@@ -17,7 +17,7 @@ import {
 import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
-import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
+import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback } from './lib/workday.js';
 import { getPurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
 
@@ -28,9 +28,11 @@ const DEFAULT_COMPANY_REFERENCE_ID = process.env.WORKDAY_DEFAULT_COMPANY_REFEREN
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
 export interface CreateInvoiceRequest {
-  s3Key: string;
-  fileName: string;
-  contentType: string;
+  attachments: Array<{
+    s3Key: string;
+    fileName: string;
+    contentType: string;
+  }>;
   emailContext?: InvoiceData['emailContext'];
 }
 
@@ -43,42 +45,47 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext } = request;
+  const { attachments, emailContext } = request;
 
   if (!INVOICE_MOD_ENABLED) {
-    debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
+    debug('Invoice modification is disabled - skipping new invoice creation');
     await notifyResult(
       'create_invoice',
       'error',
       Date.now() - startTime,
-      { s3Key, fileName },
+      { fileNames: attachments.map(({ fileName }) => fileName) },
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     return;
   }
 
   try {
-    debug(`Processing new invoice from S3: ${s3Key}`);
+    debug(`Processing new invoice with ${attachments.length} attachments`);
 
-    const buffer = await getBinaryFromS3(context.s3Config, s3Key);
-    const presignedUrl = await getPresignedUrl(context.s3Config, s3Key);
-
-    const attachment: PresignedAttachment = {
-      id: s3Key,
-      fileName,
-      contentType,
-      presignedUrl,
-      expiresAt: new Date(Date.now() + 3600 * 1000),
-      s3Key,
-      buffer,
-    };
+    const processedAttachments = await Promise.all(
+      attachments.map(async ({ s3Key, fileName, contentType }) => {
+        const [buffer, presignedUrl] = await Promise.all([
+          getBinaryFromS3(context.s3Config, s3Key),
+          getPresignedUrl(context.s3Config, s3Key),
+        ]);
+        return {
+          id: s3Key,
+          fileName,
+          contentType,
+          presignedUrl,
+          expiresAt: new Date(Date.now() + 3600 * 1000),
+          s3Key,
+          buffer,
+        };
+      })
+    );
 
     // There's no existing Workday invoice yet, so enrich against a stub with no
     // existing supplier and the default placeholder company (to be verified/corrected).
     const stubInvoice: WorkdayInvoice = {};
     const existingCompany = { descriptor: 'Default Company', id: DEFAULT_COMPANY_REFERENCE_ID };
 
-    const result = await enrichInvoiceFromAttachments(stubInvoice, [attachment], undefined, existingCompany, emailContext);
+    const result = await enrichInvoiceFromAttachments(stubInvoice, processedAttachments, undefined, existingCompany, emailContext);
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -162,7 +169,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
-    const base64Content = buffer.toString('base64');
 
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
@@ -177,14 +183,18 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       extractedTaxAmount,
       finalLines,
       paymentTermsId,
-      attachment: { fileName, contentType, base64Content },
+      attachments: processedAttachments.map(({ fileName, contentType, buffer }) => ({
+        fileName,
+        contentType,
+        base64Content: buffer.toString('base64'),
+      })),
     });
 
     const processingTime = Date.now() - startTime;
 
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
-      fileName,
+      fileNames: attachments.map(({ fileName }) => fileName),
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
@@ -208,7 +218,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
-    await notifyResult('create_invoice', 'error', processingTime, { s3Key, fileName }, error);
+    await notifyResult(
+      'create_invoice',
+      'error',
+      processingTime,
+      { fileNames: attachments.map(({ fileName }) => fileName) },
+      error
+    );
     throw error;
   }
 }

@@ -91,11 +91,18 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
 }
 
 const conversationInvoiceData = {
-  attachment: {
-    name: 'invoice.pdf',
-    url: 'https://downloads.intercomcdn.com/invoice.pdf',
-    contentType: 'application/pdf',
-  },
+  attachments: [
+    {
+      name: 'invoice.pdf',
+      url: 'https://downloads.intercomcdn.com/invoice.pdf',
+      contentType: 'application/pdf',
+    },
+    {
+      name: 'support.pdf',
+      url: 'https://downloads.intercomcdn.com/support.pdf',
+      contentType: 'application/pdf',
+    },
+  ],
   emailContext: {
     emailFrom: 'ap@vendor.com',
     subject: 'Please process',
@@ -113,7 +120,9 @@ describe('trigger_create_invoice handler', () => {
       apiBaseUrl: 'https://api.intercom.io',
     });
     mockFetchConversationInvoiceData.mockResolvedValue(conversationInvoiceData);
-    mockDownloadAttachment.mockResolvedValue(Buffer.from('fake-pdf-content'));
+    mockDownloadAttachment.mockImplementation(async (url: string) =>
+      Buffer.from(url.includes('support') ? 'support-content' : 'invoice-content')
+    );
   });
 
   it('returns 401 when Authorization header is missing', async () => {
@@ -221,6 +230,22 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('returns 400 when the combined attachments exceed the max size', async () => {
+    mockDownloadAttachment.mockResolvedValue(Buffer.alloc(11 * 1024 * 1024));
+
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'error',
+        message: 'Attachment exceeds maximum allowed size',
+        conversationId: '1234567890',
+      }),
+    });
+  });
+
   it('returns 502 when Intercom Conversations API fails', async () => {
     mockFetchConversationInvoiceData.mockRejectedValue(
       new IntercomUpstreamError('Intercom Conversations API returned 503', 503),
@@ -271,7 +296,7 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 202 and invokes the processor with S3 metadata and emailContext', async () => {
+  it('uploads every PDF and invokes the processor with all attachment metadata', async () => {
     const response = await handler(buildEvent());
 
     expect(response).toEqual({
@@ -285,13 +310,25 @@ describe('trigger_create_invoice handler', () => {
       }),
     });
 
-    expect(mockPutBinaryToS3).toHaveBeenCalledWith(
+    expect(mockPutBinaryToS3).toHaveBeenNthCalledWith(
+      1,
       { bucketName: 'test-bucket' },
-      'new-invoices/fixed-request-id/invoice.pdf',
-      Buffer.from('fake-pdf-content'),
+      'new-invoices/fixed-request-id/1-invoice.pdf',
+      Buffer.from('invoice-content'),
       'application/pdf',
       expect.objectContaining({
         'original-filename': 'invoice.pdf',
+        'intercom-conversation-id': '1234567890',
+      }),
+    );
+    expect(mockPutBinaryToS3).toHaveBeenNthCalledWith(
+      2,
+      { bucketName: 'test-bucket' },
+      'new-invoices/fixed-request-id/2-support.pdf',
+      Buffer.from('support-content'),
+      'application/pdf',
+      expect.objectContaining({
+        'original-filename': 'support.pdf',
         'intercom-conversation-id': '1234567890',
       }),
     );
@@ -301,9 +338,18 @@ describe('trigger_create_invoice handler', () => {
       InvocationType: 'Event',
       Payload: JSON.stringify({
         data: [{
-          s3Key: 'new-invoices/fixed-request-id/invoice.pdf',
-          fileName: 'invoice.pdf',
-          contentType: 'application/pdf',
+          attachments: [
+            {
+              s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+              fileName: 'invoice.pdf',
+              contentType: 'application/pdf',
+            },
+            {
+              s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
+              fileName: 'support.pdf',
+              contentType: 'application/pdf',
+            },
+          ],
           emailContext: conversationInvoiceData.emailContext,
         }],
         page: 1,

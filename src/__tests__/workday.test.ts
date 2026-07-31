@@ -2120,11 +2120,18 @@ describe('Workday utilities', () => {
         quantity: 1,
         unitCost: 100
       }],
-      attachment: {
-        fileName: 'invoice.pdf',
-        contentType: 'application/pdf',
-        base64Content: 'ZmFrZS1wZGYtY29udGVudA=='
-      },
+      attachments: [
+        {
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          base64Content: 'ZmFrZS1wZGYtY29udGVudA=='
+        },
+        {
+          fileName: 'support.pdf',
+          contentType: 'application/pdf',
+          base64Content: 'c3VwcG9ydA=='
+        },
+      ],
       ...overrides
     });
 
@@ -2200,7 +2207,7 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should embed the attachment as Attachment_Data on the request', async () => {
+    it('should embed every attachment as Attachment_Data on the request', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -2211,10 +2218,16 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest();
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([{
-        $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
-        File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
-      }]);
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([
+        {
+          $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
+          File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
+        },
+        {
+          $attributes: { Content_Type: 'application/pdf', Filename: 'support.pdf' },
+          File_Content: 'c3VwcG9ydA=='
+        },
+      ]);
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {
