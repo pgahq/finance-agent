@@ -74,9 +74,10 @@ computed directly from SSM when diagnosing runtime secret resolution; never log
 the credential values or access token.
 
 `CreateInvoiceProcessor` currently sets `WORKDAY_CREATE_SOAP_AUTH_PROBE=true`.
-Immediately before the strong-soap submit, it sends a non-mutating all-zero WID
-request with native `fetch` and the same access token, then logs only HTTP status,
-fault code, and fault string. Remove this temporary probe after transport
+Immediately before the strong-soap submit, it sends an empty
+`Submit_Supplier_Invoice_Request` with native `fetch` and the same access token,
+then logs only HTTP status, fault code, and fault string. The probe includes no
+invoice reference or data and cannot create an invoice. Remove it after transport
 authentication is diagnosed.
 
 Submit logging must not include `client.lastRequest` or raw strong-soap error
