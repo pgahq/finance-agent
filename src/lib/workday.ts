@@ -801,6 +801,7 @@ const MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS = 3;
 
 interface SubmitSupplierInvoiceRequest {
   Submit_Supplier_Invoice_Request: {
+    $attributes: { version: string };
     Supplier_Invoice_Reference?: {
       ID: Array<{ $attributes: { type: string }; $value: string }>;
     };
@@ -834,6 +835,7 @@ function createSubmitSupplierInvoiceRequest(
 ): SubmitSupplierInvoiceRequest {
   return {
     Submit_Supplier_Invoice_Request: {
+      $attributes: { version: 'v44.1' },
       ...(invoiceWorkdayID && {
         Supplier_Invoice_Reference: {
           ID: [{ $attributes: { type: 'WID' }, $value: invoiceWorkdayID }]

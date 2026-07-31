@@ -67,6 +67,8 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 - OAuth refresh-token grant, `strong-soap` `BearerSecurity`, and the Resource Management v44.1 endpoint
 
 Do not add a separate Workday auth path or secret set for create-invoice.
+All `Submit_Supplier_Invoice_Request` payloads must include the WSDL root
+attribute `wd:version="v44.1"` via `$attributes: { version: 'v44.1' }`.
 
 Each OAuth token request logs 12-character SHA-256 fingerprints for the resolved
 client ID, client secret, and refresh token. Compare these with fingerprints
