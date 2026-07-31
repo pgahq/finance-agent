@@ -2342,14 +2342,31 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should propagate SOAP errors', async () => {
+    it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(new Error('Create failed'), null);
+      const soapError = Object.assign(new Error('Create failed'), {
+        response: {
+          statusCode: 500,
+          request: {
+            headers: { Authorization: 'Bearer secret-access-token' }
+          }
+        },
+        body: '<secret-response-body/>'
       });
 
-      await expect(submitNewSupplierInvoiceForTest()).rejects.toThrow('Create failed');
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(soapError, null);
+      });
+
+      const rejected = submitNewSupplierInvoiceForTest();
+      await expect(rejected).rejects.toThrow('Create failed');
+      await expect(rejected).rejects.not.toHaveProperty('response');
+      await expect(rejected).rejects.not.toHaveProperty('body');
+      expect(debug).toHaveBeenCalledWith('Error from Workday SOAP (Submit_Supplier_Invoice)', {
+        name: 'Error',
+        message: 'Create failed',
+        statusCode: 500
+      });
     });
   });
 

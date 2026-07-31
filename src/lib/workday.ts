@@ -852,6 +852,31 @@ function serializeSubmitSupplierInvoiceRequest(request: SubmitSupplierInvoiceReq
   return JSON.stringify(request);
 }
 
+function summarizeSoapError(error: unknown): {
+  name: string;
+  message: string;
+  statusCode?: number;
+} {
+  const soapError = error as {
+    name?: string;
+    message?: string;
+    response?: { statusCode?: number };
+  };
+
+  return {
+    name: soapError?.name ?? 'Error',
+    message: soapError?.message ?? String(error),
+    statusCode: soapError?.response?.statusCode
+  };
+}
+
+function sanitizeSoapError(error: unknown): Error {
+  const summary = summarizeSoapError(error);
+  const sanitizedError = new Error(summary.message);
+  sanitizedError.name = summary.name;
+  return sanitizedError;
+}
+
 async function submitSupplierInvoiceSoap(
   client: ResourceManagementClient,
   request: SubmitSupplierInvoiceRequest,
@@ -860,9 +885,12 @@ async function submitSupplierInvoiceSoap(
   return new Promise((resolve, reject) => {
     debug(submitLogMessage);
     client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
-      debug('Submit_Supplier_Invoice XML:', client.lastRequest);
+      debug('Submit_Supplier_Invoice request sent', {
+        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8'),
+        attachmentContentLogged: false
+      });
       if (err) {
-        debug('Error from Workday SOAP (Submit_Supplier_Invoice):', err);
+        debug('Error from Workday SOAP (Submit_Supplier_Invoice)', summarizeSoapError(err));
         return reject(err);
       }
       debug('Workday SOAP update response received');
@@ -902,7 +930,7 @@ async function submitSupplierInvoiceWithRepair({
       return { result, finalBuildOptions: attemptBuildOptions };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
-        throw error;
+        throw sanitizeSoapError(error);
       }
 
       const validationError = summarizeValidationError(error);
@@ -918,11 +946,11 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault occurred after applying fallback/default value for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacksForField.map(fallback => fallback.label), validationError }
         );
-        throw error;
+        throw sanitizeSoapError(error);
       }
 
       if (attemptNumber === MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS) {
-        throw error;
+        throw sanitizeSoapError(error);
       }
 
       const fallbackRetry = validationFallbackField
@@ -933,7 +961,7 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault did not match a configured fallback/default retry for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacks.map(fallback => fallback.label), validationError }
         );
-        throw error;
+        throw sanitizeSoapError(error);
       }
 
       const nextBuildOptions = fallbackRetry.buildOptions;
@@ -946,7 +974,7 @@ async function submitSupplierInvoiceWithRepair({
           `Fallback/default retry repeated a previously failed payload for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, fallbackLabel: fallbackRetry.fallbackLabel, validationError }
         );
-        throw error;
+        throw sanitizeSoapError(error);
       }
 
       attemptBuildOptions = nextBuildOptions;

@@ -79,6 +79,11 @@ request with native `fetch` and the same access token, then logs only HTTP statu
 fault code, and fault string. Remove this temporary probe after transport
 authentication is diagnosed.
 
+Submit logging must not include `client.lastRequest` or raw strong-soap error
+objects. Those structures contain attachment bytes and the HTTP Authorization
+header. Log request byte count plus a safe error summary, and throw a new error
+containing only the original name/message.
+
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
