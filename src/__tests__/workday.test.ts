@@ -2247,9 +2247,14 @@ describe('Workday utilities', () => {
             Accept: 'text/xml',
             SOAPAction: '""'
           },
-          body: expect.stringContaining('00000000000000000000000000000000')
+          body: expect.stringContaining(
+            '<wd:Submit_Supplier_Invoice_Request wd:version="v44.1"/>'
+          )
         })
       );
+      const probeBody = (global.fetch as jest.Mock).mock.calls[1][1].body as string;
+      expect(probeBody).not.toContain('Supplier_Invoice_Reference');
+      expect(probeBody).not.toContain('wd:type="WID"');
       expect(debug).toHaveBeenCalledWith('Workday native SOAP authentication probe', {
         status: 500,
         faultCode: 'wd:Validation_Fault',

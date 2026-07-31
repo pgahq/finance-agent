@@ -285,11 +285,7 @@ async function probeResourceManagementAuthentication(
   const probeRequest = `<?xml version="1.0" encoding="utf-8"?>
 <env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wd="urn:com.workday/bsvc">
   <env:Body>
-    <wd:Submit_Supplier_Invoice_Request wd:version="v44.1">
-      <wd:Supplier_Invoice_Reference>
-        <wd:ID wd:type="WID">00000000000000000000000000000000</wd:ID>
-      </wd:Supplier_Invoice_Reference>
-    </wd:Submit_Supplier_Invoice_Request>
+    <wd:Submit_Supplier_Invoice_Request wd:version="v44.1"/>
   </env:Body>
 </env:Envelope>`;
 
