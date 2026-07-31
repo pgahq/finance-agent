@@ -275,13 +275,61 @@ export async function getCustomValidationRules(
   return parseValidationRules(rules);
 }
 
+const getResourceManagementEndpoint = (config: WorkdayConfig): string =>
+  `https://${config.domain}/ccx/service/${config.tenant}/Resource_Management/v44.1`;
+
+async function probeResourceManagementAuthentication(
+  config: WorkdayConfig,
+  accessToken: string
+): Promise<void> {
+  const probeRequest = `<?xml version="1.0" encoding="utf-8"?>
+<env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wd="urn:com.workday/bsvc">
+  <env:Body>
+    <wd:Submit_Supplier_Invoice_Request wd:version="v44.1">
+      <wd:Supplier_Invoice_Reference>
+        <wd:ID wd:type="WID">00000000000000000000000000000000</wd:ID>
+      </wd:Supplier_Invoice_Reference>
+    </wd:Submit_Supplier_Invoice_Request>
+  </env:Body>
+</env:Envelope>`;
+
+  try {
+    const response = await fetch(getResourceManagementEndpoint(config), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'text/xml; charset=utf-8',
+        Accept: 'text/xml',
+        SOAPAction: '""'
+      },
+      body: probeRequest
+    });
+    const responseBody = await response.text();
+    const faultCode = responseBody.match(/<faultcode>([^<]+)<\/faultcode>/)?.[1];
+    const faultString = responseBody.match(/<faultstring>([^<]+)<\/faultstring>/)?.[1];
+
+    debug('Workday native SOAP authentication probe', {
+      status: response.status,
+      faultCode,
+      faultString
+    });
+  } catch (error) {
+    debug('Workday native SOAP authentication probe failed', error);
+  }
+}
+
 async function buildResourceManagementClient(
-  context: { workdayConfig: WorkdayConfig }
+  context: { workdayConfig: WorkdayConfig },
+  options: { runAuthProbe?: boolean } = {}
 ): Promise<any> {
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   // Get OAuth access token
   const accessToken = await getAccessToken(context.workdayConfig);
+
+  if (options.runAuthProbe) {
+    await probeResourceManagementAuthentication(context.workdayConfig, accessToken);
+  }
 
   const strongSoap = await getStrongSoap();
 
@@ -295,8 +343,7 @@ async function buildResourceManagementClient(
       // Use OAuth bearer token authentication
       client.setSecurity(new strongSoap.BearerSecurity(accessToken));
 
-      const endpoint = `https://${context.workdayConfig.domain}/ccx/service/${context.workdayConfig.tenant}/Resource_Management/v44.1`;
-      client.setEndpoint(endpoint);
+      client.setEndpoint(getResourceManagementEndpoint(context.workdayConfig));
 
       resolve(client);
     });
@@ -1346,7 +1393,9 @@ export async function submitNewSupplierInvoice(
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
   debug(`Company WID: ${companyWID}`);
 
-  const client = await buildResourceManagementClient(context);
+  const client = await buildResourceManagementClient(context, {
+    runAuthProbe: process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE === 'true'
+  });
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
   const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;

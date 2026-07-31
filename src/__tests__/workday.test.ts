@@ -529,6 +529,7 @@ describe('Workday utilities', () => {
       delete process.env.FALLBACK_COST_CENTER_ID;
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      delete process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE;
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
 
       // Mock fetch for OAuth token
@@ -2206,6 +2207,53 @@ describe('Workday utilities', () => {
       });
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
+      });
+    });
+
+    it('should probe SOAP authentication with native fetch and the same access token', async () => {
+      process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE = 'true';
+      (global.fetch as jest.Mock)
+        .mockReset()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+        })
+        .mockResolvedValueOnce({
+          status: 500,
+          text: jest.fn().mockResolvedValue(
+            '<faultcode>wd:Validation_Fault</faultcode><faultstring>Invalid supplier invoice reference</faultstring>'
+          )
+        });
+
+      const mockClient = mockSoapClient();
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+          }
+        });
+      });
+
+      await submitNewSupplierInvoiceForTest();
+
+      expect(global.fetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer mock-access-token',
+            'Content-Type': 'text/xml; charset=utf-8',
+            Accept: 'text/xml',
+            SOAPAction: '""'
+          },
+          body: expect.stringContaining('00000000000000000000000000000000')
+        })
+      );
+      expect(debug).toHaveBeenCalledWith('Workday native SOAP authentication probe', {
+        status: 500,
+        faultCode: 'wd:Validation_Fault',
+        faultString: 'Invalid supplier invoice reference'
       });
     });
 
