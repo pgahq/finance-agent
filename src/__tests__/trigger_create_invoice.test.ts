@@ -166,7 +166,7 @@ describe('trigger_create_invoice handler', () => {
       body: Buffer.from(jsonBody, 'utf8').toString('base64'),
     }));
 
-    expect(response.statusCode).toBe(202);
+    expect(response).toMatchObject({ statusCode: 202 });
     expect(mockFetchConversationInvoiceData).toHaveBeenCalledWith(
       expect.anything(),
       '1234567890',
