@@ -277,12 +277,9 @@ async function buildResourceManagementClient(
   const accessToken = await getAccessToken(context.workdayConfig);
 
   const strongSoap = await getStrongSoap();
-  const clientOptions = options.useNativeFetchTransport
-    ? { request: nativeFetchSoapRequest }
-    : {};
 
   return new Promise((resolve, reject) => {
-    strongSoap.createClient(wsdlPath, clientOptions, (err: any, client: any) => {
+    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
       if (err) {
         debug('Failed to create SOAP client:', err);
         return reject(err);
