@@ -57,6 +57,17 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
+## Workday SOAP authentication
+
+`CreateInvoiceProcessor` and `EnrichInvoiceProcessor` deliberately share:
+
+- `EnrichInvoiceProcessorRole`
+- Global `WORKDAY_DOMAIN`, `WORKDAY_TENANT`, `WORKDAY_CLIENT_ID`, `WORKDAY_CLIENT_SECRET`, and `WORKDAY_REFRESH_TOKEN` environment sources
+- `buildResourceManagementClient` in `src/lib/workday.ts`
+- OAuth refresh-token grant, `strong-soap` `BearerSecurity`, and the Resource Management v44.1 endpoint
+
+Do not add a separate Workday auth path or secret set for create-invoice.
+
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
