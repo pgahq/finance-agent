@@ -29,8 +29,8 @@ Flow:
 2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` with the attachment metadata array and `emailContext`
-6. Return HTTP status to the Data Connector (Workday create is async; Slack notifies that outcome)
+5. Async-invoke `CreateInvoiceProcessor` once per attachment, each carrying `emailContext`
+6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
 | HTTP | Meaning |
 | --- | --- |
@@ -81,7 +81,7 @@ containing only the original name/message.
 - Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Workday receives one `Attachment_Data` entry per PDF
+- Each Workday invoice receives its corresponding PDF as `Attachment_Data`
 - If Workday accepts the same invoice without `File_Content` but returns an
   authentication fault when it is present, inspect attachment-specific security.
   `Put_Procurement_Document_Attachment` is the supported two-step alternative.
