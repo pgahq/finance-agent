@@ -73,6 +73,12 @@ client ID, client secret, and refresh token. Compare these with fingerprints
 computed directly from SSM when diagnosing runtime secret resolution; never log
 the credential values or access token.
 
+`CreateInvoiceProcessor` currently sets `WORKDAY_CREATE_SOAP_AUTH_PROBE=true`.
+Immediately before the strong-soap submit, it sends a non-mutating all-zero WID
+request with native `fetch` and the same access token, then logs only HTTP status,
+fault code, and fault string. Remove this temporary probe after transport
+authentication is diagnosed.
+
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`

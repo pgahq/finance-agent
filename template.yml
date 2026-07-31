@@ -670,6 +670,9 @@ Resources:
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
+      Environment:
+        Variables:
+          WORKDAY_CREATE_SOAP_AUTH_PROBE: "true"
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
