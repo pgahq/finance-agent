@@ -1,3 +1,4 @@
+import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
@@ -153,7 +154,6 @@ describe('Workday utilities', () => {
       const result = await executeWorkdayQuery(mockConfig, mockQuery);
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
-      const { debug } = require('@pga/logger');
       expect(debug).toHaveBeenCalledWith('Workday OAuth credential fingerprints', {
         clientId: '8d4cdc7bc940',
         clientSecret: '8ac950188678',
