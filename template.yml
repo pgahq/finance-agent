@@ -667,7 +667,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
       Handler: dist/create_invoice.processor
-      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
       VpcConfig:
