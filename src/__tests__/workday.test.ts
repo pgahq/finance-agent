@@ -1091,6 +1091,7 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledWith(
         expect.objectContaining({
           Submit_Supplier_Invoice_Request: expect.objectContaining({
+            $attributes: { version: 'v44.1' },
             Supplier_Invoice_Reference: expect.objectContaining({
               ID: expect.arrayContaining([
                 expect.objectContaining({
@@ -2201,6 +2202,9 @@ describe('Workday utilities', () => {
       expect(mockClient.setEndpoint).toHaveBeenCalledWith(
         'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1'
       );
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.$attributes).toEqual({
+        version: 'v44.1'
+      });
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
