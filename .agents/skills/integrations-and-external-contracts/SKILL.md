@@ -68,6 +68,11 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 
+Create-invoice uses `nativeFetchSoapRequest` as strong-soap's request adapter.
+This keeps WSDL serialization and SOAP response parsing while replacing the
+legacy `@cypress/request` transport. Enrich-invoice remains on the existing
+transport because its update flow is known to work.
+
 Each OAuth token request logs 12-character SHA-256 fingerprints for the resolved
 client ID, client secret, and refresh token. Compare these with fingerprints
 computed directly from SSM when diagnosing runtime secret resolution; never log
