@@ -2168,7 +2168,7 @@ describe('Workday utilities', () => {
       return mockClient;
     };
 
-    it('should submit the diagnostic dummy Supplier_Invoice_Reference', async () => {
+    it('should submit a request without a Supplier_Invoice_Reference so Workday creates a new invoice', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -2185,12 +2185,7 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toEqual({
-        ID: [{
-          $attributes: { type: 'WID' },
-          $value: '00000000000000000000000000000000'
-        }]
-      });
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
       });
