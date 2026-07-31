@@ -68,11 +68,6 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 
-Create-invoice uses `nativeFetchSoapRequest` as strong-soap's request adapter.
-This keeps WSDL serialization and SOAP response parsing while replacing the
-legacy `@cypress/request` transport. Enrich-invoice remains on the existing
-transport because its update flow is known to work.
-
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
 header. Log request byte count plus a safe error summary, and throw a new error
@@ -87,3 +82,6 @@ containing only the original name/message.
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
 - Workday `Attachment_Data` base64 is produced in `create_invoice` after `getBinaryFromS3`
+- If Workday accepts the same invoice without `File_Content` but returns an
+  authentication fault when it is present, inspect attachment-specific security.
+  `Put_Procurement_Document_Attachment` is the supported two-step alternative.
