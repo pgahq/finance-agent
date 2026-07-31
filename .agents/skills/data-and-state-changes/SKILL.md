@@ -20,6 +20,12 @@ description: >-
 
 `CREATE TABLE IF NOT EXISTS` does **not** alter an existing table. Type allowlist changes must go through the migration helper, not only the CREATE TABLE DDL.
 
+## Shared pool lifetime
+
+The Postgres `Pool` is process-global for the Lambda container. Callers of `getDatabaseConnection` (including `queryDocuments` / find* RAG tools) must **not** call `db.close()` / `closeDatabasePool()` after a single query. Closing ends the shared pool; parallel enrichment tools then race and fail with `Called end on pool more than once` or dead connections, which the model reports as findSuppliers tool errors.
+
+Use `closeDatabasePool` only in tests or intentional shutdown paths.
+
 ## Document types
 
 `DOCUMENT_TYPES` / `DocumentType` in `src/lib/database.ts` is the source of truth for types the app reads and writes. Keep cache Lambdas, RAG tools, and the CHECK allowlist aligned with that list.
