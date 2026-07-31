@@ -17,7 +17,7 @@ export interface IntercomAttachment {
 }
 
 export interface IntercomConversationInvoiceData {
-  attachment: IntercomAttachment;
+  attachments: IntercomAttachment[];
   emailContext: NonNullable<InvoiceData['emailContext']>;
 }
 
@@ -107,8 +107,8 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
     }));
 }
 
-export function selectAttachment(attachments: IntercomAttachment[]): IntercomAttachment | undefined {
-  return attachments.find((attachment) => attachment.contentType === 'application/pdf');
+export function selectAttachments(attachments: IntercomAttachment[]): IntercomAttachment[] {
+  return attachments.filter((attachment) => attachment.contentType === 'application/pdf');
 }
 
 export function sanitizeFileName(fileName: string): string {
@@ -196,21 +196,20 @@ export async function fetchConversationInvoiceData(
 
   const conversation = await response.json() as IntercomConversationResponse;
   const attachments = collectAttachments(conversation);
-  const attachment = selectAttachment(attachments);
-  if (!attachment) {
+  const invoiceAttachments = selectAttachments(attachments);
+  if (invoiceAttachments.length === 0) {
     throw new IntercomNoAttachmentError(conversationId);
   }
-  debug('Selected Intercom invoice attachment', {
+  debug('Selected Intercom invoice attachments', {
     conversationId,
-    attachmentCount: attachments.length,
-    contentType: attachment.contentType,
+    attachmentCount: invoiceAttachments.length,
   });
 
   return {
-    attachment: {
+    attachments: invoiceAttachments.map((attachment) => ({
       ...attachment,
       name: sanitizeFileName(attachment.name),
-    },
+    })),
     emailContext: buildEmailContext(conversation),
   };
 }

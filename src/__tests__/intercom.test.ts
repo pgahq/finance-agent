@@ -8,7 +8,7 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
-  selectAttachment,
+  selectAttachments,
   type IntercomAttachment,
 } from '../lib/intercom.js';
 
@@ -41,15 +41,15 @@ describe('intercom', () => {
     });
   });
 
-  describe('selectAttachment', () => {
-    it('returns the first PDF attachment', () => {
+  describe('selectAttachments', () => {
+    it('returns every PDF attachment', () => {
       const attachments: IntercomAttachment[] = [
         { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
         { name: 'invoice.pdf', url: 'https://downloads.intercomcdn.com/a.pdf', contentType: 'application/pdf' },
         { name: 'other.pdf', url: 'https://downloads.intercomcdn.com/b.pdf', contentType: 'application/pdf' },
       ];
 
-      expect(selectAttachment(attachments)).toEqual(attachments[1]);
+      expect(selectAttachments(attachments)).toEqual([attachments[1], attachments[2]]);
     });
 
     it('returns undefined when no PDF exists', () => {
@@ -57,7 +57,7 @@ describe('intercom', () => {
         { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
       ];
 
-      expect(selectAttachment(attachments)).toBeUndefined();
+      expect(selectAttachments(attachments)).toEqual([]);
     });
   });
 
@@ -101,6 +101,7 @@ describe('intercom', () => {
             author: { email: 'ap@vendor.com' },
             attachments: [
               { name: 'shot.png', url: 'https://downloads.intercomcdn.com/shot.png', content_type: 'image/png' },
+              { name: 'support.pdf', url: 'https://downloads.intercomcdn.com/support.pdf', content_type: 'application/pdf' },
             ],
           },
           conversation_parts: {
@@ -118,11 +119,18 @@ describe('intercom', () => {
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
-        attachment: {
-          name: 'invoice.pdf',
-          url: 'https://downloads.intercomcdn.com/invoice.pdf',
-          contentType: 'application/pdf',
-        },
+        attachments: [
+          {
+            name: 'support.pdf',
+            url: 'https://downloads.intercomcdn.com/support.pdf',
+            contentType: 'application/pdf',
+          },
+          {
+            name: 'invoice.pdf',
+            url: 'https://downloads.intercomcdn.com/invoice.pdf',
+            contentType: 'application/pdf',
+          },
+        ],
         emailContext: {
           emailFrom: 'ap@vendor.com',
           subject: 'Invoice',

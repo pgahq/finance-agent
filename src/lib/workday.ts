@@ -336,7 +336,7 @@ interface buildSubmitInvoiceDataOptions {
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   currencyWID?: string;
-  attachment?: { fileName: string; contentType: string; base64Content: string };
+  attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
@@ -576,7 +576,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachments } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -713,11 +713,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    ...(attachment && {
-      Attachment_Data: [{
+    ...(attachments?.length && {
+      Attachment_Data: attachments.map((attachment) => ({
         $attributes: { Content_Type: attachment.contentType, Filename: attachment.fileName },
         File_Content: attachment.base64Content
-      }]
+      }))
     }),
 
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
@@ -1338,7 +1338,7 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
   paymentTermsId?: string;
-  attachment: { fileName: string; contentType: string; base64Content: string };
+  attachments: Array<{ fileName: string; contentType: string; base64Content: string }>;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -1358,7 +1358,7 @@ export async function submitNewSupplierInvoice(
     extractedTaxAmount,
     finalLines,
     paymentTermsId,
-    attachment
+    attachments
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{ success: boolean; message?: string; invoiceWID?: string; appliedFallbacks: AppliedFallback[] }> {
   debug('Creating new Supplier Invoice via SOAP');
@@ -1393,7 +1393,7 @@ export async function submitNewSupplierInvoice(
       extractedTaxAmount,
       finalLines,
       paymentTermsWID: paymentTermsId,
-      attachment
+      attachments
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',
