@@ -1312,7 +1312,10 @@ export interface SubmitNewSupplierInvoiceParams {
   attachment: { fileName: string; contentType: string; base64Content: string };
 }
 
-// Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
+// Temporary diagnostic: a syntactically valid but nonexistent WID lets us verify
+// whether Workday authenticates the same operation when a reference is present.
+const DIAGNOSTIC_SUPPLIER_INVOICE_WID = '00000000000000000000000000000000';
+
 export async function submitNewSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   {
@@ -1347,7 +1350,7 @@ export async function submitNewSupplierInvoice(
 
   const { result, finalBuildOptions } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
-    invoiceWorkdayID: undefined,
+    invoiceWorkdayID: DIAGNOSTIC_SUPPLIER_INVOICE_WID,
     currentInvoice: {},
     buildOptions: {
       currentInvoice: {},

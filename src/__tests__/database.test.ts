@@ -1,5 +1,7 @@
-import { 
-  getDatabaseConfig, 
+import {
+  DOCUMENT_TYPES,
+  closeDatabasePool,
+  getDatabaseConfig,
   getDatabaseConnection,
   insertDocument,
   updateDocument,
@@ -7,7 +9,8 @@ import {
   searchDocuments,
   bulkInsertDocuments,
   bulkUpdateDocuments,
-  bulkDeleteDocuments
+  bulkDeleteDocuments,
+  migrateDocumentsTypeCheck,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -19,33 +22,32 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
   GetSecretValueCommand: jest.fn()
 }));
 
-// Mock pg
+const mockQuery = jest.fn();
+const mockEnd = jest.fn();
+const mockOn = jest.fn();
+const mockPool = {
+  query: mockQuery,
+  end: mockEnd,
+  on: mockOn,
+};
+
+// Mock pg — return a shared pool so module-level pool + test mocks stay aligned
 jest.mock('pg', () => ({
-  Pool: jest.fn().mockImplementation(() => ({
-    query: jest.fn(),
-    end: jest.fn(),
-    on: jest.fn()
-  }))
+  Pool: jest.fn().mockImplementation(() => mockPool)
 }));
 
 describe('Database Library', () => {
-  let mockPool: any;
-  let mockQuery: jest.MockedFunction<any>;
-
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
-    
-    const pgModule = require('pg');
-    mockPool = new pgModule.Pool();
-    mockQuery = mockPool.query;
-    
-    // Mock successful secrets retrieval
+    mockEnd.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue({ rows: [] });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         username: 'testuser',
         password: 'testpass'
       })
     });
+    await closeDatabasePool();
   });
 
   describe('getDatabaseConfig', () => {
@@ -83,6 +85,48 @@ describe('Database Library', () => {
     });
   });
 
+  describe('migrateDocumentsTypeCheck', () => {
+    it('recreates the type check with only known document types', async () => {
+      const query = jest.fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await migrateDocumentsTypeCheck(query);
+
+      expect(query).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('SELECT DISTINCT type FROM documents'),
+        [[...DOCUMENT_TYPES]]
+      );
+      expect(query).toHaveBeenNthCalledWith(
+        2,
+        'ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check'
+      );
+      expect(query).toHaveBeenNthCalledWith(
+        3,
+        expect.stringMatching(
+          /ADD CONSTRAINT documents_type_check CHECK \(type IN \('supplier'.*'spend_category'\)\)/
+        )
+      );
+      expect(query.mock.calls[2][0]).not.toContain('shipping_address');
+    });
+
+    it('includes unexpected existing types so ADD CONSTRAINT does not fail', async () => {
+      const query = jest.fn()
+        .mockResolvedValueOnce({ rows: [{ type: 'shipping_address' }, { type: 'address' }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await migrateDocumentsTypeCheck(query);
+
+      const addSql = query.mock.calls[2][0] as string;
+      expect(addSql).toContain("'shipping_address'");
+      expect(addSql).toContain("'address'");
+      expect(addSql).toContain("'supplier'");
+    });
+  });
+
   describe('getDatabaseConnection', () => {
     it('should create database connection successfully', async () => {
       const env = {
@@ -91,9 +135,7 @@ describe('Database Library', () => {
         DATABASE_NAME: 'test_db'
       };
 
-      const mockSecretsClient = require('@aws-sdk/client-secrets-manager').SecretsManagerClient;
-      const mockSend = mockSecretsClient().send;
-      mockSend.mockResolvedValue({
+      mockSecretsSend.mockResolvedValue({
         SecretString: JSON.stringify({
           username: 'testuser',
           password: 'testpass'
@@ -106,6 +148,34 @@ describe('Database Library', () => {
 
       expect(connection).toBeDefined();
       expect(connection.query).toBeDefined();
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SELECT DISTINCT type FROM documents'),
+        [[...DOCUMENT_TYPES]]
+      );
+    });
+
+    it('resets the pool when schema initialization fails', async () => {
+      const env = {
+        DATABASE_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',
+        DATABASE_CLUSTER_ENDPOINT: 'test-cluster.cluster-xyz.us-east-1.rds.amazonaws.com',
+        DATABASE_NAME: 'test_db'
+      };
+
+      mockSecretsSend.mockResolvedValue({ SecretString: 'plain-password' });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] }) // ENABLE_PGVECTOR
+        .mockResolvedValueOnce({ rows: [] }) // CREATE TABLE
+        .mockResolvedValueOnce({ rows: [] }) // index type
+        .mockResolvedValueOnce({ rows: [] }) // index workday_id
+        .mockResolvedValueOnce({ rows: [] }) // index embedding
+        .mockRejectedValueOnce(new Error('check constraint "documents_type_check" of relation "documents" is violated by some row'));
+
+      await expect(getDatabaseConnection(env)).rejects.toThrow('documents_type_check');
+      expect(mockEnd).toHaveBeenCalled();
+
+      mockQuery.mockResolvedValue({ rows: [] });
+      const connection = await getDatabaseConnection(env);
+      expect(connection).toBeDefined();
     });
   });
 
