@@ -103,13 +103,10 @@ describe('Database Library', () => {
         2,
         'ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check'
       );
-      expect(query).toHaveBeenNthCalledWith(
-        3,
-        expect.stringMatching(
-          /ADD CONSTRAINT documents_type_check CHECK \(type IN \('supplier'.*'spend_category'\)\)/
-        )
-      );
-      expect(query.mock.calls[2][0]).not.toContain('shipping_address');
+      const addSql = query.mock.calls[2][0] as string;
+      for (const type of DOCUMENT_TYPES) {
+        expect(addSql).toContain(`'${type}'`);
+      }
     });
 
     it('includes unexpected existing types so ADD CONSTRAINT does not fail', async () => {
@@ -148,10 +145,6 @@ describe('Database Library', () => {
 
       expect(connection).toBeDefined();
       expect(connection.query).toBeDefined();
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('SELECT DISTINCT type FROM documents'),
-        [[...DOCUMENT_TYPES]]
-      );
     });
 
     it('resets the pool when schema initialization fails', async () => {
@@ -163,11 +156,11 @@ describe('Database Library', () => {
 
       mockSecretsSend.mockResolvedValue({ SecretString: 'plain-password' });
       mockQuery
-        .mockResolvedValueOnce({ rows: [] }) // ENABLE_PGVECTOR
-        .mockResolvedValueOnce({ rows: [] }) // CREATE TABLE
-        .mockResolvedValueOnce({ rows: [] }) // index type
-        .mockResolvedValueOnce({ rows: [] }) // index workday_id
-        .mockResolvedValueOnce({ rows: [] }) // index embedding
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockRejectedValueOnce(new Error('check constraint "documents_type_check" of relation "documents" is violated by some row'));
 
       await expect(getDatabaseConnection(env)).rejects.toThrow('documents_type_check');

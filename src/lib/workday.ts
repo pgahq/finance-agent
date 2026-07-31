@@ -1,5 +1,4 @@
 import { debug } from '@pga/logger';
-import { createHash } from 'node:crypto';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
@@ -43,16 +42,7 @@ const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clien
   return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 };
 
-const credentialFingerprint = (value: string | undefined): string =>
-  value ? createHash('sha256').update(value).digest('hex').slice(0, 12) : 'missing';
-
 const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
-  debug('Workday OAuth credential fingerprints', {
-    clientId: credentialFingerprint(config.clientId),
-    clientSecret: credentialFingerprint(config.clientSecret),
-    refreshToken: credentialFingerprint(config.refreshToken)
-  });
-
   const authToken = generateAuthToken({ clientId: config.clientId, clientSecret: config.clientSecret });
   const headers = { Authorization: `Basic ${authToken}` };
 
@@ -278,113 +268,13 @@ export async function getCustomValidationRules(
 const getResourceManagementEndpoint = (config: WorkdayConfig): string =>
   `https://${config.domain}/ccx/service/${config.tenant}/Resource_Management/v44.1`;
 
-interface StrongSoapRequestOptions {
-  uri: string | URL | { href?: string; toString: () => string };
-  method?: string;
-  headers?: Record<string, string | number | undefined>;
-  body?: string;
-}
-
-interface StrongSoapFetchResponse {
-  statusCode: number;
-  statusMessage: string;
-  headers: Record<string, string>;
-  body: string;
-  elapsedTime: number;
-}
-
-type StrongSoapRequestCallback = (
-  error: Error | null,
-  response?: StrongSoapFetchResponse,
-  body?: string
-) => void;
-
-export function nativeFetchSoapRequest(
-  options: StrongSoapRequestOptions,
-  callback: StrongSoapRequestCallback
-): { abort: () => void } {
-  const controller = new AbortController();
-  const startedAt = Date.now();
-  const requestUrl = typeof options.uri === 'string'
-    ? options.uri
-    : options.uri.href ?? options.uri.toString();
-  const allowedHeaders = new Set(['accept', 'authorization', 'content-type', 'soapaction']);
-  const headers = Object.fromEntries(
-    Object.entries(options.headers ?? {})
-      .filter(([name, value]) => value !== undefined && allowedHeaders.has(name.toLowerCase()))
-      .map(([name, value]) => [name, String(value)])
-  );
-
-  fetch(requestUrl, {
-    method: options.method ?? 'POST',
-    headers,
-    body: options.body,
-    redirect: 'error',
-    signal: controller.signal
-  }).then(async response => {
-    const body = await response.text();
-    callback(null, {
-      statusCode: response.status,
-      statusMessage: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
-      body,
-      elapsedTime: Date.now() - startedAt
-    }, body);
-  }).catch((error: Error) => {
-    callback(error);
-  });
-
-  return { abort: () => controller.abort() };
-}
-
-async function probeResourceManagementAuthentication(
-  config: WorkdayConfig,
-  accessToken: string
-): Promise<void> {
-  const probeRequest = `<?xml version="1.0" encoding="utf-8"?>
-<env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wd="urn:com.workday/bsvc">
-  <env:Body>
-    <wd:Submit_Supplier_Invoice_Request wd:version="v44.1"/>
-  </env:Body>
-</env:Envelope>`;
-
-  try {
-    const response = await fetch(getResourceManagementEndpoint(config), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'text/xml; charset=utf-8',
-        Accept: 'text/xml',
-        SOAPAction: '""'
-      },
-      body: probeRequest
-    });
-    const responseBody = await response.text();
-    const faultCode = responseBody.match(/<faultcode>([^<]+)<\/faultcode>/)?.[1];
-    const faultString = responseBody.match(/<faultstring>([^<]+)<\/faultstring>/)?.[1];
-
-    debug('Workday native SOAP authentication probe', {
-      status: response.status,
-      faultCode,
-      faultString
-    });
-  } catch (error) {
-    debug('Workday native SOAP authentication probe failed', error);
-  }
-}
-
 async function buildResourceManagementClient(
-  context: { workdayConfig: WorkdayConfig },
-  options: { runAuthProbe?: boolean; useNativeFetchTransport?: boolean } = {}
+  context: { workdayConfig: WorkdayConfig }
 ): Promise<any> {
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   // Get OAuth access token
   const accessToken = await getAccessToken(context.workdayConfig);
-
-  if (options.runAuthProbe) {
-    await probeResourceManagementAuthentication(context.workdayConfig, accessToken);
-  }
 
   const strongSoap = await getStrongSoap();
   const clientOptions = options.useNativeFetchTransport
@@ -944,8 +834,7 @@ async function submitSupplierInvoiceSoap(
     debug(submitLogMessage);
     client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
       debug('Submit_Supplier_Invoice request sent', {
-        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8'),
-        attachmentContentLogged: false
+        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
       });
       if (err) {
         debug('Error from Workday SOAP (Submit_Supplier_Invoice)', summarizeSoapError(err));
@@ -1479,10 +1368,7 @@ export async function submitNewSupplierInvoice(
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
   debug(`Company WID: ${companyWID}`);
 
-  const client = await buildResourceManagementClient(context, {
-    runAuthProbe: process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE === 'true',
-    useNativeFetchTransport: true
-  });
+  const client = await buildResourceManagementClient(context);
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
   const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;

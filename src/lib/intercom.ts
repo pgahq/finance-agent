@@ -17,7 +17,6 @@ export interface IntercomAttachment {
 }
 
 export interface IntercomConversationInvoiceData {
-  conversationId: string;
   attachment: IntercomAttachment;
   emailContext: NonNullable<InvoiceData['emailContext']>;
 }
@@ -108,7 +107,6 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
     }));
 }
 
-/** Fin invoice intake requires a PDF — non-PDF attachments are rejected. */
 export function selectAttachment(attachments: IntercomAttachment[]): IntercomAttachment | undefined {
   return attachments.find((attachment) => attachment.contentType === 'application/pdf');
 }
@@ -197,16 +195,18 @@ export async function fetchConversationInvoiceData(
   }
 
   const conversation = await response.json() as IntercomConversationResponse;
-  debug('Intercom conversation response', { conversationId, conversation });
-
   const attachments = collectAttachments(conversation);
   const attachment = selectAttachment(attachments);
   if (!attachment) {
     throw new IntercomNoAttachmentError(conversationId);
   }
+  debug('Selected Intercom invoice attachment', {
+    conversationId,
+    attachmentCount: attachments.length,
+    contentType: attachment.contentType,
+  });
 
   return {
-    conversationId,
     attachment: {
       ...attachment,
       name: sanitizeFileName(attachment.name),

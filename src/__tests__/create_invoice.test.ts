@@ -154,7 +154,6 @@ describe('create_invoice', () => {
         s3Key: 'new-invoices/req-1/invoice.pdf',
         fileName: 'invoice.pdf',
         contentType: 'application/pdf',
-        conversationId: '1234567890',
         emailContext,
       }]
     };
