@@ -333,30 +333,35 @@ describe('trigger_create_invoice handler', () => {
       }),
     );
 
-    expect(InvokeCommand).toHaveBeenCalledWith({
+    expect(InvokeCommand).toHaveBeenNthCalledWith(1, {
       FunctionName: 'finance-agent-CreateInvoiceProcessor',
       InvocationType: 'Event',
       Payload: JSON.stringify({
         data: [{
-          attachments: [
-            {
-              s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
-              fileName: 'invoice.pdf',
-              contentType: 'application/pdf',
-            },
-            {
-              s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
-              fileName: 'support.pdf',
-              contentType: 'application/pdf',
-            },
-          ],
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
           emailContext: conversationInvoiceData.emailContext,
         }],
         page: 1,
         totalPages: 1,
       }),
     });
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(InvokeCommand).toHaveBeenNthCalledWith(2, {
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
+          fileName: 'support.pdf',
+          contentType: 'application/pdf',
+          emailContext: conversationInvoiceData.emailContext,
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
 });

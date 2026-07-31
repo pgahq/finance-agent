@@ -155,10 +155,7 @@ describe('create_invoice', () => {
     };
     const event = {
       data: [{
-        attachments: [
-          attachmentRequest('new-invoices/req-1/1-invoice.pdf'),
-          attachmentRequest('new-invoices/req-1/2-support.pdf', 'support.pdf'),
-        ],
+        ...attachmentRequest('new-invoices/req-1/invoice.pdf'),
         emailContext,
       }]
     };
@@ -167,10 +164,7 @@ describe('create_invoice', () => {
 
     expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledWith(
       {},
-      expect.arrayContaining([
-        expect.objectContaining({ s3Key: 'new-invoices/req-1/1-invoice.pdf' }),
-        expect.objectContaining({ s3Key: 'new-invoices/req-1/2-support.pdf' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ s3Key: 'new-invoices/req-1/invoice.pdf' })]),
       undefined,
       { descriptor: 'Default Company', id: 'Default_OCR_Company' },
       emailContext,
@@ -181,18 +175,11 @@ describe('create_invoice', () => {
     expect(submitArgs.supplierWID).toBe('supplier-wid-1');
     expect(submitArgs.companyWID).toBe('Default_OCR_Company');
     expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(submitArgs.attachments).toEqual([
-      {
-        fileName: 'invoice.pdf',
-        contentType: 'application/pdf',
-        base64Content: Buffer.from('fake-pdf-content').toString('base64')
-      },
-      {
-        fileName: 'support.pdf',
-        contentType: 'application/pdf',
-        base64Content: Buffer.from('fake-pdf-content').toString('base64')
-      },
-    ]);
+    expect(submitArgs.attachment).toEqual({
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      base64Content: Buffer.from('fake-pdf-content').toString('base64')
+    });
 
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',
@@ -213,7 +200,7 @@ describe('create_invoice', () => {
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-2/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-2/invoice.pdf')]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();
@@ -236,7 +223,7 @@ describe('create_invoice', () => {
       });
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-3/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-3/invoice.pdf')]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();
@@ -254,7 +241,7 @@ describe('create_invoice', () => {
     });
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-4/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-4/invoice.pdf')]
     };
 
     await expect(processor(event as any)).rejects.toThrow('Invoice enrichment returned error status');
@@ -264,7 +251,7 @@ describe('create_invoice', () => {
       'create_invoice',
       'error',
       expect.any(Number),
-      { fileNames: ['invoice.pdf'] },
+      expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
       expect.any(Error)
     );
   });
@@ -275,7 +262,7 @@ describe('create_invoice', () => {
     const { processor, workday, slack } = freshRequire();
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-5/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-5/invoice.pdf')]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();
@@ -285,7 +272,7 @@ describe('create_invoice', () => {
       'create_invoice',
       'error',
       expect.any(Number),
-      { fileNames: ['invoice.pdf'] },
+      expect.objectContaining({ s3Key: 'new-invoices/req-5/invoice.pdf' }),
       expect.any(Error)
     );
   });
@@ -305,7 +292,7 @@ describe('create_invoice', () => {
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-6/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-6/invoice.pdf')]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();
@@ -323,7 +310,7 @@ describe('create_invoice', () => {
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
     const event = {
-      data: [{ attachments: [attachmentRequest('new-invoices/req-7/invoice.pdf')] }]
+      data: [attachmentRequest('new-invoices/req-7/invoice.pdf')]
     };
 
     await expect(processor(event as any)).resolves.not.toThrow();

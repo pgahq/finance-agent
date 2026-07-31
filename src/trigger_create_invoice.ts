@@ -195,18 +195,17 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
 
-    await lambda.send(new InvokeCommand({
-      FunctionName: processorFunctionName,
-      InvocationType: 'Event',
-      Payload: JSON.stringify({
-        data: [{
-          attachments: uploadedAttachments,
-          emailContext,
-        }],
-        page: 1,
-        totalPages: 1,
-      }),
-    }));
+    await Promise.all(uploadedAttachments.map((attachment) =>
+      lambda.send(new InvokeCommand({
+        FunctionName: processorFunctionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({
+          data: [{ ...attachment, emailContext }],
+          page: 1,
+          totalPages: 1,
+        }),
+      }))
+    ));
 
     return jsonResponse(202, {
       status: 'accepted',
