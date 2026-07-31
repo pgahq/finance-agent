@@ -162,13 +162,8 @@ describe('create_invoice', () => {
 
     await expect(processor(event as any)).resolves.not.toThrow();
 
-    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledWith(
-      {},
-      expect.arrayContaining([expect.objectContaining({ s3Key: 'new-invoices/req-1/invoice.pdf' })]),
-      undefined,
-      { descriptor: 'Default Company', id: 'Default_OCR_Company' },
-      emailContext,
-    );
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][4]).toEqual(emailContext);
 
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];

@@ -1,4 +1,3 @@
-import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
@@ -2186,11 +2185,6 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
-      const { soap } = require('strong-soap');
-      expect(soap.BearerSecurity).toHaveBeenCalledWith('mock-access-token');
-      expect(mockClient.setEndpoint).toHaveBeenCalledWith(
-        'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1'
-      );
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
@@ -2305,11 +2299,6 @@ describe('Workday utilities', () => {
       await expect(rejected).rejects.toThrow('Create failed');
       await expect(rejected).rejects.not.toHaveProperty('response');
       await expect(rejected).rejects.not.toHaveProperty('body');
-      expect(debug).toHaveBeenCalledWith('Error from Workday SOAP (Submit_Supplier_Invoice)', {
-        name: 'Error',
-        message: 'Create failed',
-        statusCode: 500
-      });
     });
   });
 

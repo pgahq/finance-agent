@@ -107,7 +107,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
     }));
 }
 
-export function selectAttachments(attachments: IntercomAttachment[]): IntercomAttachment[] {
+function selectAttachments(attachments: IntercomAttachment[]): IntercomAttachment[] {
   return attachments.filter((attachment) => attachment.contentType === 'application/pdf');
 }
 

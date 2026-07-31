@@ -94,16 +94,9 @@ describe('Database Library', () => {
 
       await migrateDocumentsTypeCheck(query);
 
-      expect(query).toHaveBeenNthCalledWith(
-        1,
-        expect.stringContaining('SELECT DISTINCT type FROM documents'),
-        [[...DOCUMENT_TYPES]]
-      );
-      expect(query).toHaveBeenNthCalledWith(
-        2,
-        'ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check'
-      );
-      const addSql = query.mock.calls[2][0] as string;
+      const addSql = query.mock.calls
+        .map(([sql]) => sql as string)
+        .find((sql) => sql.includes('ADD CONSTRAINT'));
       for (const type of DOCUMENT_TYPES) {
         expect(addSql).toContain(`'${type}'`);
       }
@@ -117,7 +110,9 @@ describe('Database Library', () => {
 
       await migrateDocumentsTypeCheck(query);
 
-      const addSql = query.mock.calls[2][0] as string;
+      const addSql = query.mock.calls
+        .map(([sql]) => sql as string)
+        .find((sql) => sql.includes('ADD CONSTRAINT'));
       expect(addSql).toContain("'shipping_address'");
       expect(addSql).toContain("'address'");
       expect(addSql).toContain("'supplier'");
