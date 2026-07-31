@@ -278,6 +278,65 @@ export async function getCustomValidationRules(
 const getResourceManagementEndpoint = (config: WorkdayConfig): string =>
   `https://${config.domain}/ccx/service/${config.tenant}/Resource_Management/v44.1`;
 
+interface StrongSoapRequestOptions {
+  uri: string | URL | { href?: string; toString: () => string };
+  method?: string;
+  headers?: Record<string, string | number | undefined>;
+  body?: string;
+}
+
+interface StrongSoapFetchResponse {
+  statusCode: number;
+  statusMessage: string;
+  headers: Record<string, string>;
+  body: string;
+  elapsedTime: number;
+}
+
+type StrongSoapRequestCallback = (
+  error: Error | null,
+  response?: StrongSoapFetchResponse,
+  body?: string
+) => void;
+
+export function nativeFetchSoapRequest(
+  options: StrongSoapRequestOptions,
+  callback: StrongSoapRequestCallback
+): { abort: () => void } {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const requestUrl = typeof options.uri === 'string'
+    ? options.uri
+    : options.uri.href ?? options.uri.toString();
+  const allowedHeaders = new Set(['accept', 'authorization', 'content-type', 'soapaction']);
+  const headers = Object.fromEntries(
+    Object.entries(options.headers ?? {})
+      .filter(([name, value]) => value !== undefined && allowedHeaders.has(name.toLowerCase()))
+      .map(([name, value]) => [name, String(value)])
+  );
+
+  fetch(requestUrl, {
+    method: options.method ?? 'POST',
+    headers,
+    body: options.body,
+    redirect: 'error',
+    signal: controller.signal
+  }).then(async response => {
+    const body = await response.text();
+    callback(null, {
+      statusCode: response.status,
+      statusMessage: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+      elapsedTime: Date.now() - startedAt
+    }, body);
+  }).catch((error: Error) => {
+    callback(error);
+  });
+
+  return { abort: () => controller.abort() };
+}
+
 async function probeResourceManagementAuthentication(
   config: WorkdayConfig,
   accessToken: string
@@ -316,7 +375,7 @@ async function probeResourceManagementAuthentication(
 
 async function buildResourceManagementClient(
   context: { workdayConfig: WorkdayConfig },
-  options: { runAuthProbe?: boolean } = {}
+  options: { runAuthProbe?: boolean; useNativeFetchTransport?: boolean } = {}
 ): Promise<any> {
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
@@ -328,9 +387,12 @@ async function buildResourceManagementClient(
   }
 
   const strongSoap = await getStrongSoap();
+  const clientOptions = options.useNativeFetchTransport
+    ? { request: nativeFetchSoapRequest }
+    : {};
 
   return new Promise((resolve, reject) => {
-    strongSoap.createClient(wsdlPath, {}, (err: any, client: any) => {
+    strongSoap.createClient(wsdlPath, clientOptions, (err: any, client: any) => {
       if (err) {
         debug('Failed to create SOAP client:', err);
         return reject(err);
@@ -1418,7 +1480,8 @@ export async function submitNewSupplierInvoice(
   debug(`Company WID: ${companyWID}`);
 
   const client = await buildResourceManagementClient(context, {
-    runAuthProbe: process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE === 'true'
+    runAuthProbe: process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE === 'true',
+    useNativeFetchTransport: true
   });
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;

@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, nativeFetchSoapRequest, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -119,6 +119,55 @@ describe('Workday utilities', () => {
       expect(config.clientId).toBeUndefined();
       expect(config.clientSecret).toBeUndefined();
       expect(config.refreshToken).toBeUndefined();
+    });
+  });
+
+  describe('nativeFetchSoapRequest', () => {
+    it('adapts native fetch to strong-soap without legacy request headers', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({ 'content-type': 'text/xml' }),
+        text: jest.fn().mockResolvedValue('<soap:Envelope/>')
+      });
+
+      const resultPromise = new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+        nativeFetchSoapRequest({
+          uri: new URL('https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1'),
+          method: 'POST',
+          headers: {
+            Accept: 'text/xml',
+            Authorization: 'Bearer mock-access-token',
+            'Content-Type': 'text/xml; charset=utf-8',
+            SOAPAction: '""',
+            Host: 'test.workday.com',
+            'Content-Length': 123
+          },
+          body: '<soap:Envelope/>'
+        }, (error, response, body) => {
+          if (error) return reject(error);
+          resolve({ statusCode: response!.statusCode, body: body! });
+        });
+      });
+
+      await expect(resultPromise).resolves.toEqual({
+        statusCode: 200,
+        body: '<soap:Envelope/>'
+      });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            Accept: 'text/xml',
+            Authorization: 'Bearer mock-access-token',
+            'Content-Type': 'text/xml; charset=utf-8',
+            SOAPAction: '""'
+          },
+          body: '<soap:Envelope/>',
+          redirect: 'error'
+        })
+      );
     });
   });
 
@@ -2198,6 +2247,11 @@ describe('Workday utilities', () => {
       expect(result.invoiceWID).toBe('new-invoice-wid');
       const { soap } = require('strong-soap');
       expect(soap.BearerSecurity).toHaveBeenCalledWith('mock-access-token');
+      expect(soap.createClient).toHaveBeenCalledWith(
+        '/test/path/dist/soap/Resource_Management.wsdl',
+        { request: nativeFetchSoapRequest },
+        expect.any(Function)
+      );
       expect(mockClient.setEndpoint).toHaveBeenCalledWith(
         'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1'
       );
