@@ -687,7 +687,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       : currentInvoice.Company_Reference,
     Currency_Reference: currencyWID
       ? createReference('Currency_ID', currencyWID)
-      : currentInvoice.Currency_Reference,
+      : currentInvoice.Currency_Reference ?? createReference('Currency_ID', 'USD'),
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 

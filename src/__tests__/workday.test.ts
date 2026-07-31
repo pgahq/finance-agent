@@ -2227,7 +2227,7 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should omit Currency_Reference when currencyWID is not provided', async () => {
+    it('should default Currency_Reference to USD when currencyWID is not provided', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -2238,7 +2238,9 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest();
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toBeUndefined();
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }]
+      });
     });
 
     it('should build Company_Reference with a non-WID reference type (e.g. Company_Reference_ID for Default_OCR_Company)', async () => {
