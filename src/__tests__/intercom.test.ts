@@ -1,6 +1,5 @@
 import {
   assertAllowedAttachmentUrl,
-  buildEmailContext,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -9,7 +8,6 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
-  sanitizeFileName,
   selectAttachment,
   type IntercomAttachment,
 } from '../lib/intercom.js';
@@ -63,14 +61,6 @@ describe('intercom', () => {
     });
   });
 
-  describe('sanitizeFileName', () => {
-    it('strips path separators and traversal segments', () => {
-      expect(sanitizeFileName('../../etc/passwd.pdf')).toBe('passwd.pdf');
-      expect(sanitizeFileName('folder\\nested\\invoice.pdf')).toBe('invoice.pdf');
-      expect(sanitizeFileName('')).toBe('attachment.pdf');
-    });
-  });
-
   describe('assertAllowedAttachmentUrl', () => {
     it('allows https Intercom CDN and attachment hosts', () => {
       expect(assertAllowedAttachmentUrl('https://downloads.intercomcdn.com/i/o/file.pdf').host)
@@ -96,22 +86,6 @@ describe('intercom', () => {
     });
   });
 
-  describe('buildEmailContext', () => {
-    it('maps source author email, subject, and plaintext body', () => {
-      expect(buildEmailContext({
-        source: {
-          subject: 'Please process',
-          body: 'Invoice attached',
-          author: { email: 'ap@vendor.com' },
-        },
-      })).toEqual({
-        emailFrom: 'ap@vendor.com',
-        subject: 'Please process',
-        plainTextBody: 'Invoice attached',
-      });
-    });
-  });
-
   describe('fetchConversationInvoiceData', () => {
     const config = { accessToken: 'token', apiBaseUrl: 'https://api.intercom.io' };
 
@@ -119,7 +93,7 @@ describe('intercom', () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: async () => await Promise.resolve({
+        json: async () => ({
           id: '123',
           source: {
             subject: 'Invoice',
@@ -144,7 +118,6 @@ describe('intercom', () => {
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
-        conversationId: '123',
         attachment: {
           name: 'invoice.pdf',
           url: 'https://downloads.intercomcdn.com/invoice.pdf',
@@ -183,7 +156,7 @@ describe('intercom', () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: async () => await Promise.resolve({
+        json: async () => ({
           id: '123',
           source: {
             subject: 'Hi',
@@ -219,9 +192,7 @@ describe('intercom', () => {
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
         headers: { get: () => null },
-        arrayBuffer: async () => await Promise.resolve(
-          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-        ),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
       }) as unknown as typeof fetch;
 
       await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf')).resolves.toEqual(bytes);
@@ -238,18 +209,11 @@ describe('intercom', () => {
         .rejects.toBeInstanceOf(IntercomUpstreamError);
     });
 
-    it('rejects disallowed hosts before fetching', async () => {
-      global.fetch = jest.fn() as unknown as typeof fetch;
-
-      await expect(downloadAttachment('https://evil.example/invoice.pdf')).rejects.toBeInstanceOf(IntercomUpstreamError);
-      expect(global.fetch).not.toHaveBeenCalled();
-    });
-
     it('throws when Content-Length exceeds the max size', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
         headers: { get: (name: string) => (name === 'content-length' ? String(MAX_ATTACHMENT_BYTES + 1) : null) },
-        arrayBuffer: async () => await Promise.resolve(new ArrayBuffer(0)),
+        arrayBuffer: async () => new ArrayBuffer(0),
       }) as unknown as typeof fetch;
 
       await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))

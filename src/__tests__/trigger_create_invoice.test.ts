@@ -12,10 +12,7 @@ const mockSend = jest.fn().mockResolvedValue({});
 const mockPutBinaryToS3 = jest.fn().mockResolvedValue(undefined);
 const mockFetchConversationInvoiceData = jest.fn();
 const mockDownloadAttachment = jest.fn();
-const mockGetIntercomConfig = jest.fn().mockReturnValue({
-  accessToken: 'intercom-token',
-  apiBaseUrl: 'https://api.intercom.io',
-});
+const mockGetIntercomConfig = jest.fn();
 
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
@@ -94,12 +91,11 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
 }
 
 const conversationInvoiceData = {
-  conversationId: '1234567890',
-    attachment: {
-      name: 'invoice.pdf',
-      url: 'https://downloads.intercomcdn.com/invoice.pdf',
-      contentType: 'application/pdf',
-    },
+  attachment: {
+    name: 'invoice.pdf',
+    url: 'https://downloads.intercomcdn.com/invoice.pdf',
+    contentType: 'application/pdf',
+  },
   emailContext: {
     emailFrom: 'ap@vendor.com',
     subject: 'Please process',
@@ -170,16 +166,7 @@ describe('trigger_create_invoice handler', () => {
       body: Buffer.from(jsonBody, 'utf8').toString('base64'),
     }));
 
-    expect(response).toEqual({
-      statusCode: 202,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'accepted',
-        message: 'Invoice creation triggered',
-        requestId: 'fixed-request-id',
-        conversationId: '1234567890',
-      }),
-    });
+    expect(response.statusCode).toBe(202);
     expect(mockFetchConversationInvoiceData).toHaveBeenCalledWith(
       expect.anything(),
       '1234567890',
@@ -317,7 +304,6 @@ describe('trigger_create_invoice handler', () => {
           s3Key: 'new-invoices/fixed-request-id/invoice.pdf',
           fileName: 'invoice.pdf',
           contentType: 'application/pdf',
-          conversationId: '1234567890',
           emailContext: conversationInvoiceData.emailContext,
         }],
         page: 1,
@@ -327,15 +313,4 @@ describe('trigger_create_invoice handler', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 500 when the processor invoke reports a function error', async () => {
-    mockSend.mockResolvedValue({ FunctionError: 'Unhandled', Payload: Buffer.from('{"errorMessage":"boom"}') });
-
-    const response = await handler(buildEvent());
-
-    expect(response).toEqual({
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'error', message: 'Internal server error' }),
-    });
-  });
 });

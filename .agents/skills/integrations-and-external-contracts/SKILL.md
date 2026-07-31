@@ -29,7 +29,7 @@ Flow:
 2. Pick the first `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download the signed CDN URL as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; max 20MB)
 4. Upload binary to S3 (`new-invoices/{requestId}/{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` with `s3Key`, `fileName`, `contentType`, `conversationId`, `emailContext`
+5. Async-invoke `CreateInvoiceProcessor` with `s3Key`, `fileName`, `contentType`, `emailContext`
 6. Return HTTP status to the Data Connector (Workday create is async; Slack notifies that outcome)
 
 | HTTP | Meaning |
@@ -72,18 +72,6 @@ Create-invoice uses `nativeFetchSoapRequest` as strong-soap's request adapter.
 This keeps WSDL serialization and SOAP response parsing while replacing the
 legacy `@cypress/request` transport. Enrich-invoice remains on the existing
 transport because its update flow is known to work.
-
-Each OAuth token request logs 12-character SHA-256 fingerprints for the resolved
-client ID, client secret, and refresh token. Compare these with fingerprints
-computed directly from SSM when diagnosing runtime secret resolution; never log
-the credential values or access token.
-
-`CreateInvoiceProcessor` currently sets `WORKDAY_CREATE_SOAP_AUTH_PROBE=true`.
-Immediately before the strong-soap submit, it sends an empty
-`Submit_Supplier_Invoice_Request` with native `fetch` and the same access token,
-then logs only HTTP status, fault code, and fault string. The probe includes no
-invoice reference or data and cannot create an invoice. Remove it after transport
-authentication is diagnosed.
 
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization

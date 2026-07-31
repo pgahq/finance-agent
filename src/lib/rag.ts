@@ -132,9 +132,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     // Create embedding for the query
     const queryEmbedding = await createEmbedding(query);
 
-    // Reuse the process-wide pool — do not close it here. find* tools often run in
-    // parallel during enrichment; closing the shared pool causes "Called end on pool
-    // more than once" / dead connections and surfaces as AI tool errors.
+    // The pool is shared by concurrent RAG tools.
     const db = await getDatabaseConnection(process.env);
 
     // Use hybrid search that combines semantic similarity with exact text matching

@@ -670,9 +670,6 @@ Resources:
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
-      Environment:
-        Variables:
-          WORKDAY_CREATE_SOAP_AUTH_PROBE: "true"
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -681,7 +678,6 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-2
 
   # Trigger Create Invoice - HTTP API endpoint that creates a new invoice from an Intercom conversation.
-  # Timeout is 30s to match API Gateway HTTP API's default integration timeout ceiling.
   TriggerCreateInvoiceFunction:
     Type: AWS::Serverless::Function
     Properties:

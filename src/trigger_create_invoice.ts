@@ -184,7 +184,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
 
-    const invokeResult = await lambda.send(new InvokeCommand({
+    await lambda.send(new InvokeCommand({
       FunctionName: processorFunctionName,
       InvocationType: 'Event',
       Payload: JSON.stringify({
@@ -192,23 +192,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
           s3Key,
           fileName,
           contentType,
-          conversationId,
           emailContext,
         }],
         page: 1,
         totalPages: 1,
       }),
     }));
-
-    if (invokeResult.FunctionError) {
-      debug('Create invoice processor invoke error', {
-        functionError: invokeResult.FunctionError,
-        payload: invokeResult.Payload
-          ? Buffer.from(invokeResult.Payload).toString('utf8')
-          : undefined,
-      });
-      return jsonResponse(500, { status: 'error', message: 'Internal server error' });
-    }
 
     return jsonResponse(202, {
       status: 'accepted',

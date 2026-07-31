@@ -71,11 +71,6 @@ export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
 ];
 
-/**
- * Recreate documents_type_check without failing cold start when orphan rows exist
- * (e.g. types inserted by a preview deploy of an unmerged feature branch).
- * Unexpected existing types are logged and temporarily included in the CHECK.
- */
 export async function migrateDocumentsTypeCheck(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
 ): Promise<void> {
@@ -180,7 +175,6 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       await migrateDocumentsTypeCheck((sql, params) => pool!.query(sql, params));
     } catch (error) {
       debug('Error initializing database schema:', error);
-      // Avoid warm retries skipping migrations after a partial DROP CONSTRAINT
       try {
         await pool.end();
       } catch (closeError) {
@@ -215,7 +209,6 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
   };
 }
 
-/** Ends the shared pool so the next getDatabaseConnection re-runs schema init. */
 export async function closeDatabasePool(): Promise<void> {
   if (!pool) return;
   debug('Closing database connection pool');

@@ -1,5 +1,4 @@
 import { debug } from '@pga/logger';
-import { createHash } from 'node:crypto';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
@@ -43,16 +42,7 @@ const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clien
   return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 };
 
-const credentialFingerprint = (value: string | undefined): string =>
-  value ? createHash('sha256').update(value).digest('hex').slice(0, 12) : 'missing';
-
 const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
-  debug('Workday OAuth credential fingerprints', {
-    clientId: credentialFingerprint(config.clientId),
-    clientSecret: credentialFingerprint(config.clientSecret),
-    refreshToken: credentialFingerprint(config.refreshToken)
-  });
-
   const authToken = generateAuthToken({ clientId: config.clientId, clientSecret: config.clientSecret });
   const headers = { Authorization: `Basic ${authToken}` };
 
@@ -337,54 +327,14 @@ export function nativeFetchSoapRequest(
   return { abort: () => controller.abort() };
 }
 
-async function probeResourceManagementAuthentication(
-  config: WorkdayConfig,
-  accessToken: string
-): Promise<void> {
-  const probeRequest = `<?xml version="1.0" encoding="utf-8"?>
-<env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wd="urn:com.workday/bsvc">
-  <env:Body>
-    <wd:Submit_Supplier_Invoice_Request wd:version="v44.1"/>
-  </env:Body>
-</env:Envelope>`;
-
-  try {
-    const response = await fetch(getResourceManagementEndpoint(config), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'text/xml; charset=utf-8',
-        Accept: 'text/xml',
-        SOAPAction: '""'
-      },
-      body: probeRequest
-    });
-    const responseBody = await response.text();
-    const faultCode = responseBody.match(/<faultcode>([^<]+)<\/faultcode>/)?.[1];
-    const faultString = responseBody.match(/<faultstring>([^<]+)<\/faultstring>/)?.[1];
-
-    debug('Workday native SOAP authentication probe', {
-      status: response.status,
-      faultCode,
-      faultString
-    });
-  } catch (error) {
-    debug('Workday native SOAP authentication probe failed', error);
-  }
-}
-
 async function buildResourceManagementClient(
   context: { workdayConfig: WorkdayConfig },
-  options: { runAuthProbe?: boolean; useNativeFetchTransport?: boolean } = {}
+  options: { useNativeFetchTransport?: boolean } = {}
 ): Promise<any> {
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   // Get OAuth access token
   const accessToken = await getAccessToken(context.workdayConfig);
-
-  if (options.runAuthProbe) {
-    await probeResourceManagementAuthentication(context.workdayConfig, accessToken);
-  }
 
   const strongSoap = await getStrongSoap();
   const clientOptions = options.useNativeFetchTransport
@@ -944,8 +894,7 @@ async function submitSupplierInvoiceSoap(
     debug(submitLogMessage);
     client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
       debug('Submit_Supplier_Invoice request sent', {
-        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8'),
-        attachmentContentLogged: false
+        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
       });
       if (err) {
         debug('Error from Workday SOAP (Submit_Supplier_Invoice)', summarizeSoapError(err));
@@ -1480,7 +1429,6 @@ export async function submitNewSupplierInvoice(
   debug(`Company WID: ${companyWID}`);
 
   const client = await buildResourceManagementClient(context, {
-    runAuthProbe: process.env.WORKDAY_CREATE_SOAP_AUTH_PROBE === 'true',
     useNativeFetchTransport: true
   });
 
