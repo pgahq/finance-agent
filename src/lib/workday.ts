@@ -763,6 +763,7 @@ interface ResourceManagementClient {
     callback: (err: unknown, result: unknown) => void
   ) => void;
   lastRequest?: string;
+  lastRequestHeaders?: Record<string, unknown>;
 }
 
 interface SubmitSupplierInvoiceWithRepairOptions {
@@ -822,6 +823,58 @@ function sanitizeSoapError(error: unknown): Error {
   return sanitizedError;
 }
 
+export function submitRequestHasAttachmentData(request: {
+  Submit_Supplier_Invoice_Request?: {
+    Supplier_Invoice_Data?: Record<string, unknown>;
+  };
+}): boolean {
+  return Boolean(request.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Attachment_Data);
+}
+
+/** Redact Authorization (and similar) credential values while preserving scheme for debugging. */
+export function redactOutboundHttpHeaders(
+  headers: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!headers) return undefined;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === 'authorization') {
+      const raw = String(value ?? '');
+      const scheme = raw.split(/\s+/)[0] || 'present';
+      redacted[key] = `${scheme} <redacted>`;
+      continue;
+    }
+    redacted[key] = value;
+  }
+  return redacted;
+}
+
+/** Extract the SOAP envelope Header element from a serialized request XML string. */
+export function extractSoapEnvelopeHeaderXml(envelopeXml: string | undefined): string | undefined {
+  if (!envelopeXml) return undefined;
+  const match = envelopeXml.match(/<(?:\w+:)?Header\b[^>]*>[\s\S]*?<\/(?:\w+:)?Header>/i);
+  return match?.[0];
+}
+
+function logSubmitSupplierInvoiceOutboundWhenAttachmentPresent(
+  client: ResourceManagementClient,
+  request: SubmitSupplierInvoiceRequest
+): void {
+  if (!submitRequestHasAttachmentData(request)) return;
+
+  debug(
+    'Submit_Supplier_Invoice outbound HTTP headers (attachment present):',
+    redactOutboundHttpHeaders(client.lastRequestHeaders)
+  );
+
+  const soapHeaderXml = extractSoapEnvelopeHeaderXml(client.lastRequest);
+  debug(
+    'Submit_Supplier_Invoice SOAP envelope Header (attachment present):',
+    soapHeaderXml ?? '<none>'
+  );
+}
+
 async function submitSupplierInvoiceSoap(
   client: ResourceManagementClient,
   request: SubmitSupplierInvoiceRequest,
@@ -830,6 +883,9 @@ async function submitSupplierInvoiceSoap(
   return new Promise((resolve, reject) => {
     debug(submitLogMessage);
     client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
+      logSubmitSupplierInvoiceOutboundWhenAttachmentPresent(client, request);
+      // Full SOAP envelope including File_Content — needed to compare against Dev Portal payloads.
+      debug('Submit_Supplier_Invoice XML:', client.lastRequest);
       debug('Submit_Supplier_Invoice request sent', {
         requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
       });

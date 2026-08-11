@@ -1,5 +1,17 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import {
+  annotateSupplierInvoice,
+  executeWorkdayQuery,
+  extractSoapEnvelopeHeaderXml,
+  getAllPaymentTerms,
+  getSupplierInvoiceWithAttachments,
+  getWorkdayConfig,
+  parsePurchaseOrderLines,
+  redactOutboundHttpHeaders,
+  submitNewSupplierInvoice,
+  submitRequestHasAttachmentData,
+  submitSupplierInvoiceUpdate
+} from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -43,6 +55,40 @@ jest.mock('../lib/workday_validation_field_agent.js', () => ({
 }));
 
 describe('Workday utilities', () => {
+  describe('submit outbound logging helpers', () => {
+    it('detects Attachment_Data on submit requests', () => {
+      expect(submitRequestHasAttachmentData({
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Data: {
+            Attachment_Data: [{ File_Content: 'abc' }]
+          }
+        }
+      })).toBe(true);
+
+      expect(submitRequestHasAttachmentData({
+        Submit_Supplier_Invoice_Request: {
+          Supplier_Invoice_Data: {}
+        }
+      })).toBe(false);
+    });
+
+    it('redacts Authorization values but keeps the scheme', () => {
+      expect(redactOutboundHttpHeaders({
+        'Content-Type': 'text/xml; charset=utf-8',
+        Authorization: 'Bearer secret-token'
+      })).toEqual({
+        'Content-Type': 'text/xml; charset=utf-8',
+        Authorization: 'Bearer <redacted>'
+      });
+    });
+
+    it('extracts the SOAP envelope Header element', () => {
+      const xml = '<soap:Envelope><soap:Header><wd:X>1</wd:X></soap:Header><soap:Body/></soap:Envelope>';
+      expect(extractSoapEnvelopeHeaderXml(xml)).toBe('<soap:Header><wd:X>1</wd:X></soap:Header>');
+      expect(extractSoapEnvelopeHeaderXml('<soap:Envelope><soap:Body/></soap:Envelope>')).toBeUndefined();
+    });
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -2155,10 +2201,12 @@ describe('Workday utilities', () => {
     });
 
     const mockSoapClient = () => {
-      const mockClient = {
+      const mockClient: any = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
+        Submit_Supplier_Invoice: jest.fn(),
+        lastRequestHeaders: undefined,
+        lastRequest: undefined
       };
 
       const { soap } = require('strong-soap');
@@ -2198,6 +2246,47 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
       });
+    });
+
+    it('should log redacted outbound HTTP and SOAP headers when Attachment_Data is present, and keep full XML', async () => {
+      const mockClient = mockSoapClient();
+      const fullXml = [
+        '<?xml version="1.0"?>',
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">',
+        '<soap:Header><wd:Workday_Common_Header xmlns:wd="urn:com.workday/bsvc">',
+        '<wd:Include_Reference_Descriptors_In_Response>true</wd:Include_Reference_Descriptors_In_Response>',
+        '</wd:Workday_Common_Header></soap:Header>',
+        '<soap:Body><File_Content>ZmFrZS1wZGYtY29udGVudA==</File_Content></soap:Body>',
+        '</soap:Envelope>'
+      ].join('');
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        mockClient.lastRequestHeaders = {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '"Submit_Supplier_Invoice"',
+          Authorization: 'Bearer mock-access-token-secret'
+        };
+        mockClient.lastRequest = fullXml;
+        callback(null, {
+          Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] }
+        });
+      });
+
+      await submitNewSupplierInvoiceForTest();
+
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice outbound HTTP headers (attachment present):',
+        {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '"Submit_Supplier_Invoice"',
+          Authorization: 'Bearer <redacted>'
+        }
+      );
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice SOAP envelope Header (attachment present):',
+        expect.stringContaining('Workday_Common_Header')
+      );
+      expect(debug).toHaveBeenCalledWith('Submit_Supplier_Invoice XML:', fullXml);
     });
 
     it('should embed the attachment as Attachment_Data on the request', async () => {
