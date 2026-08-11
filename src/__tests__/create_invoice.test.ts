@@ -25,7 +25,8 @@ jest.mock('../lib/workday.js', () => ({
   }),
   getPurchaseOrder: jest.fn(),
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
-  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] })
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] }),
+  INCLUDE_ATTACHMENT_DATA_IN_SUBMIT: false
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -185,7 +186,13 @@ describe('create_invoice', () => {
       'create_invoice',
       'success',
       expect.any(Number),
-      expect.objectContaining({ invoiceWID: 'new-invoice-wid' })
+      expect.objectContaining({
+        invoiceWID: 'new-invoice-wid',
+        attachmentIncludedInWorkdayPayload: false,
+      }),
+      undefined,
+      undefined,
+      'Attachment *omitted* from Workday payload (temporary)'
     );
   });
 
@@ -251,8 +258,13 @@ describe('create_invoice', () => {
       'create_invoice',
       'error',
       expect.any(Number),
-      expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
-      expect.any(Error)
+      expect.objectContaining({
+        s3Key: 'new-invoices/req-4/invoice.pdf',
+        attachmentIncludedInWorkdayPayload: false,
+      }),
+      expect.any(Error),
+      undefined,
+      'Attachment *omitted* from Workday payload (temporary)'
     );
   });
 

@@ -339,6 +339,9 @@ interface buildSubmitInvoiceDataOptions {
   attachment?: { fileName: string; contentType: string; base64Content: string };
 }
 
+// TEMPORARY: set true to restore inline Attachment_Data / File_Content on Submit_Supplier_Invoice.
+export const INCLUDE_ATTACHMENT_DATA_IN_SUBMIT = false;
+
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
 const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
@@ -713,12 +716,23 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    ...(attachment && {
+    // TEMPORARY: omit Attachment_Data while diagnosing Workday attach auth faults.
+    // Flip INCLUDE_ATTACHMENT_DATA_IN_SUBMIT back to true to restore inline file upload.
+    ...(attachment && INCLUDE_ATTACHMENT_DATA_IN_SUBMIT ? {
       Attachment_Data: [{
         $attributes: { Content_Type: attachment.contentType, Filename: attachment.fileName },
         File_Content: attachment.base64Content
       }]
-    }),
+    } : (() => {
+      if (attachment) {
+        debug('TEMPORARY: omitting Attachment_Data from Submit_Supplier_Invoice payload', {
+          fileName: attachment.fileName,
+          contentType: attachment.contentType,
+          base64Length: attachment.base64Content.length
+        });
+      }
+      return {};
+    })()),
 
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 

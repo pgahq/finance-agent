@@ -2249,24 +2249,18 @@ describe('Workday utilities', () => {
     });
 
     it('should log redacted outbound HTTP and SOAP headers when Attachment_Data is present, and keep full XML', async () => {
+      // TEMPORARY: Attachment_Data is currently omitted from submit payloads.
+      // Re-enable this assertion path when INCLUDE_ATTACHMENT_DATA_IN_SUBMIT is restored.
       const mockClient = mockSoapClient();
-      const fullXml = [
-        '<?xml version="1.0"?>',
-        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">',
-        '<soap:Header><wd:Workday_Common_Header xmlns:wd="urn:com.workday/bsvc">',
-        '<wd:Include_Reference_Descriptors_In_Response>true</wd:Include_Reference_Descriptors_In_Response>',
-        '</wd:Workday_Common_Header></soap:Header>',
-        '<soap:Body><File_Content>ZmFrZS1wZGYtY29udGVudA==</File_Content></soap:Body>',
-        '</soap:Envelope>'
-      ].join('');
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
         mockClient.lastRequestHeaders = {
           'Content-Type': 'text/xml; charset=utf-8',
           SOAPAction: '"Submit_Supplier_Invoice"',
           Authorization: 'Bearer mock-access-token-secret'
         };
-        mockClient.lastRequest = fullXml;
+        mockClient.lastRequest = '<soap:Envelope><soap:Body/></soap:Envelope>';
         callback(null, {
           Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] }
         });
@@ -2274,19 +2268,18 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest();
 
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
       expect(debug).toHaveBeenCalledWith(
+        'TEMPORARY: omitting Attachment_Data from Submit_Supplier_Invoice payload',
+        expect.objectContaining({
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf'
+        })
+      );
+      expect(debug).not.toHaveBeenCalledWith(
         'Submit_Supplier_Invoice outbound HTTP headers (attachment present):',
-        {
-          'Content-Type': 'text/xml; charset=utf-8',
-          SOAPAction: '"Submit_Supplier_Invoice"',
-          Authorization: 'Bearer <redacted>'
-        }
+        expect.anything()
       );
-      expect(debug).toHaveBeenCalledWith(
-        'Submit_Supplier_Invoice SOAP envelope Header (attachment present):',
-        expect.stringContaining('Workday_Common_Header')
-      );
-      expect(debug).toHaveBeenCalledWith('Submit_Supplier_Invoice XML:', fullXml);
     });
 
     it('should embed the attachment as Attachment_Data on the request', async () => {
@@ -2300,10 +2293,8 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest();
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([{
-        $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
-        File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
-      }]);
+      // TEMPORARY: Attachment_Data omitted while diagnosing Workday attach auth faults.
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {
