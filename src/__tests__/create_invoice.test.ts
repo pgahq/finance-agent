@@ -145,7 +145,6 @@ describe('create_invoice', () => {
 
   it('should create a new supplier invoice from an uploaded attachment', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
     const emailContext = {
@@ -153,6 +152,16 @@ describe('create_invoice', () => {
       subject: 'Please process',
       plainTextBody: 'Invoice attached',
     };
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      emailWorktags: {
+        costCenter: { extracted: 'Technology', name: 'Technology', code: '72200' },
+        event: { extracted: 'Championship', workdayId: 'event-wid' },
+        lineOfBusiness: { extracted: 'Championships', referenceId: 'lob-id' },
+        fund: { extracted: 'General', referenceId: 'fund-id' },
+        spendCategory: { extracted: 'Services', name: 'Services', referenceId: 'spend-id' },
+      },
+    });
     const event = {
       data: [{
         ...attachmentRequest('new-invoices/req-1/invoice.pdf'),
@@ -164,6 +173,14 @@ describe('create_invoice', () => {
 
     expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
     expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][4]).toEqual(emailContext);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][2]).toBe('Invoice attached');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual({
+      costCenterId: '72200',
+      eventWid: 'event-wid',
+      lobReferenceId: 'lob-id',
+      fundReferenceId: 'fund-id',
+      spendCategoryReferenceId: 'spend-id',
+    });
 
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];

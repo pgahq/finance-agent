@@ -180,7 +180,8 @@ export async function buildFinalInvoiceLines(
     }) as MergeInvoiceLinesResult;
   } catch (error) {
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
-    return buildFallbackLines(extractedLines, fallbackIds);
+    const fallback = buildFallbackLines(extractedLines, fallbackIds);
+    return { lines: applyEmailWorktags(fallback.lines, emailWorktags), appliedFallbacks: fallback.appliedFallbacks };
   }
 
   if (!mergeResult?.lines?.length) {

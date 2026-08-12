@@ -84,6 +84,8 @@ describe('intercom', () => {
           },
           conversation_parts: {
             conversation_parts: [{
+              body: 'Use cost center 72200',
+              author: { email: 'approver@pgahq.com' },
               attachments: [
                 {
                   name: '../../nested/invoice.pdf',
@@ -102,18 +104,23 @@ describe('intercom', () => {
             name: 'support.pdf',
             url: 'https://downloads.intercomcdn.com/support.pdf',
             contentType: 'application/pdf',
+            emailContext: {
+              emailFrom: 'ap@vendor.com',
+              subject: 'Invoice',
+              plainTextBody: 'Please process this invoice',
+            },
           },
           {
             name: 'invoice.pdf',
             url: 'https://downloads.intercomcdn.com/invoice.pdf',
             contentType: 'application/pdf',
+            emailContext: {
+              emailFrom: 'approver@pgahq.com',
+              subject: 'Invoice',
+              plainTextBody: 'Use cost center 72200',
+            },
           },
         ],
-        emailContext: {
-          emailFrom: 'ap@vendor.com',
-          subject: 'Invoice',
-          plainTextBody: 'Please process this invoice',
-        },
       });
 
       expect(global.fetch).toHaveBeenCalledWith(

@@ -29,7 +29,7 @@ Flow:
 2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` once per attachment, each carrying `emailContext`
+5. Async-invoke `CreateInvoiceProcessor` once with one record per attachment and its owning message's `emailContext`
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
 | HTTP | Meaning |

@@ -90,24 +90,31 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
   };
 }
 
+const invoiceEmailContext = {
+  emailFrom: 'ap@vendor.com',
+  subject: 'Please process',
+  plainTextBody: 'Invoice attached',
+};
+const supportEmailContext = {
+  emailFrom: 'approver@pgahq.com',
+  subject: 'Please process',
+  plainTextBody: 'Use cost center 72200',
+};
 const conversationInvoiceData = {
   attachments: [
     {
       name: 'invoice.pdf',
       url: 'https://downloads.intercomcdn.com/invoice.pdf',
       contentType: 'application/pdf',
+      emailContext: invoiceEmailContext,
     },
     {
       name: 'support.pdf',
       url: 'https://downloads.intercomcdn.com/support.pdf',
       contentType: 'application/pdf',
+      emailContext: supportEmailContext,
     },
   ],
-  emailContext: {
-    emailFrom: 'ap@vendor.com',
-    subject: 'Please process',
-    plainTextBody: 'Invoice attached',
-  },
 };
 
 describe('trigger_create_invoice handler', () => {
@@ -319,35 +326,29 @@ describe('trigger_create_invoice handler', () => {
       }),
     );
 
-    expect(InvokeCommand).toHaveBeenNthCalledWith(1, {
+    expect(InvokeCommand).toHaveBeenCalledWith({
       FunctionName: 'finance-agent-CreateInvoiceProcessor',
       InvocationType: 'Event',
       Payload: JSON.stringify({
-        data: [{
-          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
-          fileName: 'invoice.pdf',
-          contentType: 'application/pdf',
-          emailContext: conversationInvoiceData.emailContext,
-        }],
+        data: [
+          {
+            s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+            fileName: 'invoice.pdf',
+            contentType: 'application/pdf',
+            emailContext: invoiceEmailContext,
+          },
+          {
+            s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
+            fileName: 'support.pdf',
+            contentType: 'application/pdf',
+            emailContext: supportEmailContext,
+          },
+        ],
         page: 1,
         totalPages: 1,
       }),
     });
-    expect(InvokeCommand).toHaveBeenNthCalledWith(2, {
-      FunctionName: 'finance-agent-CreateInvoiceProcessor',
-      InvocationType: 'Event',
-      Payload: JSON.stringify({
-        data: [{
-          s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
-          fileName: 'support.pdf',
-          contentType: 'application/pdf',
-          emailContext: conversationInvoiceData.emailContext,
-        }],
-        page: 1,
-        totalPages: 1,
-      }),
-    });
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
 });
