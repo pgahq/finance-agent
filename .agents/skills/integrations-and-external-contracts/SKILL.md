@@ -72,6 +72,8 @@ Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
 header. Log request byte count plus a safe error summary, and throw a new error
 containing only the original name/message.
+For attachment submissions, log redacted outbound headers and only the SOAP
+envelope `Header` element.
 
 ## Attachment bytes
 

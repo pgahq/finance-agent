@@ -763,6 +763,7 @@ interface ResourceManagementClient {
     callback: (err: unknown, result: unknown) => void
   ) => void;
   lastRequest?: string;
+  lastRequestHeaders?: Record<string, unknown>;
 }
 
 interface SubmitSupplierInvoiceWithRepairOptions {
@@ -822,6 +823,43 @@ function sanitizeSoapError(error: unknown): Error {
   return sanitizedError;
 }
 
+function submitRequestHasAttachmentData(request: SubmitSupplierInvoiceRequest): boolean {
+  return Boolean(request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data);
+}
+
+function redactOutboundHttpHeaders(
+  headers: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!headers) return undefined;
+
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => {
+    if (key.toLowerCase() !== 'authorization') return [key, value];
+    const scheme = String(value ?? '').split(/\s+/)[0] || 'present';
+    return [key, `${scheme} <redacted>`];
+  }));
+}
+
+function extractSoapEnvelopeHeaderXml(envelopeXml: string | undefined): string | undefined {
+  const match = envelopeXml?.match(/<(?:\w+:)?Header\b[^>]*>[\s\S]*?<\/(?:\w+:)?Header>/i);
+  return match?.[0];
+}
+
+function logAttachmentSubmitDiagnostics(
+  client: ResourceManagementClient,
+  request: SubmitSupplierInvoiceRequest
+): void {
+  if (!submitRequestHasAttachmentData(request)) return;
+
+  debug(
+    'Submit_Supplier_Invoice outbound HTTP headers (attachment present)',
+    redactOutboundHttpHeaders(client.lastRequestHeaders)
+  );
+  debug(
+    'Submit_Supplier_Invoice SOAP envelope Header (attachment present)',
+    extractSoapEnvelopeHeaderXml(client.lastRequest) ?? '<none>'
+  );
+}
+
 async function submitSupplierInvoiceSoap(
   client: ResourceManagementClient,
   request: SubmitSupplierInvoiceRequest,
@@ -830,6 +868,7 @@ async function submitSupplierInvoiceSoap(
   return new Promise((resolve, reject) => {
     debug(submitLogMessage);
     client.Submit_Supplier_Invoice(request, (err: unknown, result: unknown) => {
+      logAttachmentSubmitDiagnostics(client, request);
       debug('Submit_Supplier_Invoice request sent', {
         requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
       });
