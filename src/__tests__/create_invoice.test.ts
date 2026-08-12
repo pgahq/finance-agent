@@ -305,7 +305,9 @@ describe('create_invoice', () => {
       'create_invoice',
       'success',
       expect.any(Number),
-      expect.objectContaining({ fileName: 'good.pdf' })
+      expect.objectContaining({
+        attachment: expect.objectContaining({ fileName: 'good.pdf' })
+      })
     );
   });
 
