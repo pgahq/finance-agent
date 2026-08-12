@@ -25,6 +25,43 @@ interface TriggerCreateInvoiceRequest {
   fileContent?: string;
 }
 
+const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS = 4;
+
+async function downloadInvoiceAttachments(attachments: IntercomAttachment[]): Promise<Buffer[]> {
+  const buffers = new Array<Buffer>(attachments.length);
+  let nextIndex = 0;
+  let totalBytes = 0;
+  let stopped = false;
+
+  const worker = async () => {
+    while (!stopped) {
+      const index = nextIndex++;
+      if (index >= attachments.length) return;
+
+      try {
+        const buffer = await downloadAttachment(attachments[index].url);
+        totalBytes += buffer.length;
+        if (totalBytes > MAX_ATTACHMENT_BYTES) {
+          stopped = true;
+          throw new IntercomAttachmentTooLargeError(totalBytes, true);
+        }
+        buffers[index] = buffer;
+      } catch (error) {
+        stopped = true;
+        throw error;
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_CONCURRENT_ATTACHMENT_DOWNLOADS, attachments.length) },
+      worker
+    )
+  );
+  return buffers;
+}
+
 function formatError(error: unknown): string {
   if (error instanceof Error) {
     return error.stack ?? error.message;
@@ -143,13 +180,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   attachments = conversationData.attachments;
   try {
-    buffers = await Promise.all(
-      attachments.map((attachment) => downloadAttachment(attachment.url))
-    );
-    const totalBytes = buffers.reduce((total, buffer) => total + buffer.length, 0);
-    if (totalBytes > MAX_ATTACHMENT_BYTES) {
-      throw new IntercomAttachmentTooLargeError(totalBytes, true);
-    }
+    buffers = await downloadInvoiceAttachments(attachments);
   } catch (error) {
     if (error instanceof IntercomAttachmentTooLargeError) {
       debug('Intercom attachment too large', {

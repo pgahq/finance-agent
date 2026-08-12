@@ -83,7 +83,8 @@ envelope `Header` element.
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
 - Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
 - Only `application/pdf` attachments are accepted; missing PDF → 400
-- Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
+- Max individual and combined download size is 20MB; downloads use at most four
+  concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
 - Each Workday invoice receives its corresponding PDF as `Attachment_Data`

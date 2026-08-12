@@ -276,6 +276,30 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('limits concurrent attachment downloads', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      attachments: Array.from({ length: 6 }, (_, index) => ({
+        name: `invoice-${index}.pdf`,
+        url: `https://downloads.intercomcdn.com/invoice-${index}.pdf`,
+        contentType: 'application/pdf',
+        emailContext: invoiceEmailContext,
+      })),
+    });
+    let activeDownloads = 0;
+    let maxActiveDownloads = 0;
+    mockDownloadAttachment.mockImplementation(async () => {
+      activeDownloads += 1;
+      maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      activeDownloads -= 1;
+      return Buffer.from('pdf');
+    });
+
+    await handler(buildEvent());
+
+    expect(maxActiveDownloads).toBe(4);
+  });
+
   it('returns 502 when Intercom Conversations API fails', async () => {
     mockFetchConversationInvoiceData.mockRejectedValue(
       new IntercomUpstreamError('Intercom Conversations API returned 503', 503),
