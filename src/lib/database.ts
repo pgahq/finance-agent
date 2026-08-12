@@ -180,7 +180,12 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
 
-      await migrateDocumentsTypeCheck((sql, params) => pool!.query(sql, params));
+      const migrationClient = await pool.connect();
+      try {
+        await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
+      } finally {
+        migrationClient.release();
+      }
     } catch (error) {
       debug('Error initializing database schema:', error);
       try {

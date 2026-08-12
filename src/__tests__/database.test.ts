@@ -25,10 +25,13 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockQuery = jest.fn();
 const mockEnd = jest.fn();
 const mockOn = jest.fn();
+const mockRelease = jest.fn();
+const mockConnect = jest.fn();
 const mockPool = {
   query: mockQuery,
   end: mockEnd,
   on: mockOn,
+  connect: mockConnect,
 };
 
 jest.mock('pg', () => ({
@@ -40,6 +43,7 @@ describe('Database Library', () => {
     jest.clearAllMocks();
     mockEnd.mockResolvedValue(undefined);
     mockQuery.mockResolvedValue({ rows: [] });
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         username: 'testuser',
@@ -152,6 +156,8 @@ describe('Database Library', () => {
 
       expect(connection).toBeDefined();
       expect(connection.query).toBeDefined();
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
     });
 
     it('resets the pool when schema initialization fails', async () => {
