@@ -336,11 +336,7 @@ interface buildSubmitInvoiceDataOptions {
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   currencyWID?: string;
-  attachment?: { fileName: string; contentType: string; base64Content: string };
 }
-
-// TEMPORARY: set true to restore inline Attachment_Data / File_Content on Submit_Supplier_Invoice.
-export const INCLUDE_ATTACHMENT_DATA_IN_SUBMIT = false;
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
 const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
@@ -579,7 +575,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -716,23 +712,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    // TEMPORARY: omit Attachment_Data while diagnosing Workday attach auth faults.
-    // Flip INCLUDE_ATTACHMENT_DATA_IN_SUBMIT back to true to restore inline file upload.
-    ...(attachment && INCLUDE_ATTACHMENT_DATA_IN_SUBMIT ? {
-      Attachment_Data: [{
-        $attributes: { Content_Type: attachment.contentType, Filename: attachment.fileName },
-        File_Content: attachment.base64Content
-      }]
-    } : (() => {
-      if (attachment) {
-        debug('TEMPORARY: omitting Attachment_Data from Submit_Supplier_Invoice payload', {
-          fileName: attachment.fileName,
-          contentType: attachment.contentType,
-          base64Length: attachment.base64Content.length
-        });
-      }
-      return {};
-    })()),
+    // Attachments are added after create via Put_Procurement_Document_Attachment, not inline
+    // Attachment_Data on Submit_Supplier_Invoice (inline File_Content hits ISU auth faults).
 
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 
@@ -771,9 +752,33 @@ interface SubmitSupplierInvoiceRequest {
   };
 }
 
+interface BusinessDocumentReference {
+  ID: Array<{ $attributes: { type: string }; $value: string }>;
+}
+
+interface PutProcurementDocumentAttachmentRequest {
+  Put_Procurement_Document_Attachment_Request: {
+    Document_Reference: BusinessDocumentReference;
+    Document_Attachment_Data: {
+      $attributes: { Content_Type: string; Filename: string };
+      File_Content: string;
+    };
+  };
+}
+
+interface InvoiceFileAttachment {
+  fileName: string;
+  contentType: string;
+  base64Content: string;
+}
+
 interface ResourceManagementClient {
   Submit_Supplier_Invoice: (
     request: SubmitSupplierInvoiceRequest,
+    callback: (err: unknown, result: unknown) => void
+  ) => void;
+  Put_Procurement_Document_Attachment: (
+    request: PutProcurementDocumentAttachmentRequest,
     callback: (err: unknown, result: unknown) => void
   ) => void;
   lastRequest?: string;
@@ -908,6 +913,92 @@ async function submitSupplierInvoiceSoap(
         return reject(err);
       }
       debug('Workday SOAP update response received');
+      resolve(result);
+    });
+  });
+}
+
+/** Prefer the Submit_Supplier_Invoice response reference as Document_Reference for Put_Procurement_Document_Attachment. */
+export function extractBusinessDocumentReferenceFromSubmitResult(
+  submitResult: unknown
+): BusinessDocumentReference | undefined {
+  const result = submitResult as {
+    Supplier_Invoice_Reference?: BusinessDocumentReference;
+    Submit_Supplier_Invoice_Response?: {
+      Supplier_Invoice_Reference?: BusinessDocumentReference;
+    };
+  };
+
+  const ref =
+    result?.Supplier_Invoice_Reference
+    ?? result?.Submit_Supplier_Invoice_Response?.Supplier_Invoice_Reference;
+
+  if (ref?.ID) {
+    const ids = Array.isArray(ref.ID) ? ref.ID : [ref.ID];
+    if (ids.length > 0) {
+      return { ID: ids };
+    }
+  }
+
+  const wid = extractIdsByType(submitResult, 'WID')[0];
+  if (!wid) return undefined;
+
+  return {
+    ID: [{ $attributes: { type: 'WID' }, $value: wid }]
+  };
+}
+
+function createPutProcurementDocumentAttachmentRequest(
+  documentReference: BusinessDocumentReference,
+  attachment: InvoiceFileAttachment
+): PutProcurementDocumentAttachmentRequest {
+  return {
+    Put_Procurement_Document_Attachment_Request: {
+      Document_Reference: documentReference,
+      Document_Attachment_Data: {
+        $attributes: {
+          Content_Type: attachment.contentType,
+          Filename: attachment.fileName
+        },
+        File_Content: attachment.base64Content
+      }
+    }
+  };
+}
+
+async function putProcurementDocumentAttachmentSoap(
+  client: ResourceManagementClient,
+  request: PutProcurementDocumentAttachmentRequest
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    debug('Putting procurement document attachment via SOAP', {
+      documentReference: request.Put_Procurement_Document_Attachment_Request.Document_Reference,
+      fileName: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.$attributes.Filename,
+      contentType: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.$attributes.Content_Type,
+      base64Length: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.File_Content.length
+    });
+
+    client.Put_Procurement_Document_Attachment(request, (err: unknown, result: unknown) => {
+      debug(
+        'Put_Procurement_Document_Attachment outbound HTTP headers:',
+        redactOutboundHttpHeaders(client.lastRequestHeaders)
+      );
+      const soapHeaderXml = extractSoapEnvelopeHeaderXml(client.lastRequest);
+      debug(
+        'Put_Procurement_Document_Attachment SOAP envelope Header:',
+        soapHeaderXml ?? '<none>'
+      );
+      debug('Put_Procurement_Document_Attachment XML:', client.lastRequest);
+      debug('Put_Procurement_Document_Attachment request sent', {
+        requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
+      });
+
+      if (err) {
+        debug('Error from Workday SOAP (Put_Procurement_Document_Attachment)', summarizeSoapError(err));
+        return reject(err);
+      }
+
+      debug('Put_Procurement_Document_Attachment response received', result);
       resolve(result);
     });
   });
@@ -1408,10 +1499,11 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
   paymentTermsId?: string;
-  attachment: { fileName: string; contentType: string; base64Content: string };
+  attachment: InvoiceFileAttachment;
 }
 
-// Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
+// Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request),
+// then attaches the PDF via Put_Procurement_Document_Attachment using the submit response reference.
 export async function submitNewSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   {
@@ -1430,7 +1522,13 @@ export async function submitNewSupplierInvoice(
     paymentTermsId,
     attachment
   }: SubmitNewSupplierInvoiceParams
-): Promise<{ success: boolean; message?: string; invoiceWID?: string; appliedFallbacks: AppliedFallback[] }> {
+): Promise<{
+  success: boolean;
+  message?: string;
+  invoiceWID?: string;
+  appliedFallbacks: AppliedFallback[];
+  attachmentAttachedViaPut: boolean;
+}> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
   debug(`Company WID: ${companyWID}`);
@@ -1463,7 +1561,6 @@ export async function submitNewSupplierInvoice(
       extractedTaxAmount,
       finalLines,
       paymentTermsWID: paymentTermsId,
-      attachment
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',
@@ -1472,13 +1569,32 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks });
+  const documentReference = extractBusinessDocumentReferenceFromSubmitResult(result);
+  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks, documentReference });
+
+  if (!documentReference) {
+    throw new Error(
+      `Supplier invoice created${invoiceWID ? ` (${invoiceWID})` : ''}, but Submit_Supplier_Invoice returned no document reference for Put_Procurement_Document_Attachment`
+    );
+  }
+
+  try {
+    await putProcurementDocumentAttachmentSoap(
+      client as ResourceManagementClient,
+      createPutProcurementDocumentAttachmentRequest(documentReference, attachment)
+    );
+  } catch (error) {
+    const sanitized = sanitizeSoapError(error);
+    sanitized.message = `Invoice ${invoiceWID ?? '(unknown WID)'} created, but Put_Procurement_Document_Attachment failed: ${sanitized.message}`;
+    throw sanitized;
+  }
 
   return {
     success: true,
-    message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
+    message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'} and attached ${attachment.fileName}`,
     invoiceWID,
     appliedFallbacks,
+    attachmentAttachedViaPut: true,
   };
 }
 

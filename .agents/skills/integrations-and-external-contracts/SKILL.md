@@ -81,7 +81,8 @@ containing only the original name/message.
 - Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Each Workday invoice receives its corresponding PDF as `Attachment_Data`
-- If Workday accepts the same invoice without `File_Content` but returns an
-  authentication fault when it is present, inspect attachment-specific security.
-  `Put_Procurement_Document_Attachment` is the supported two-step alternative.
+- Create-invoice Workday flow is two-step:
+  1. `Submit_Supplier_Invoice` **without** inline `Attachment_Data` / `File_Content`
+  2. `Put_Procurement_Document_Attachment` using the submit response `Supplier_Invoice_Reference` as `Document_Reference`
+- Do not restore inline `Attachment_Data` on create unless Makse confirms the ISU has Put rights for that path; inline attach has produced misleading `Authentication_Fault` responses for this ISU
+- Slack `create_invoice` success notes whether the Put attachment step ran

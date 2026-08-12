@@ -19,7 +19,7 @@ import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback } from './lib/workday.js';
-import { getPurchaseOrder, INCLUDE_ATTACHMENT_DATA_IN_SUBMIT, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
+import { getPurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 // Default_OCR_Company is a Workday Company_Reference_ID for a placeholder company used
@@ -184,14 +184,15 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     });
 
     const processingTime = Date.now() - startTime;
-    const attachmentNote = INCLUDE_ATTACHMENT_DATA_IN_SUBMIT
-      ? 'Attachment *included* in Workday payload'
-      : 'Attachment *omitted* from Workday payload (temporary)';
+    const attachmentNote = createOutcome.attachmentAttachedViaPut
+      ? 'Attachment added via *Put_Procurement_Document_Attachment* (not inline on Submit)'
+      : 'Attachment *not* added to Workday';
 
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
       fileName,
-      attachmentIncludedInWorkdayPayload: INCLUDE_ATTACHMENT_DATA_IN_SUBMIT,
+      attachmentAttachedViaPut: createOutcome.attachmentAttachedViaPut,
+      attachmentIncludedInSubmit: false,
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
@@ -215,9 +216,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
-    const attachmentNote = INCLUDE_ATTACHMENT_DATA_IN_SUBMIT
-      ? 'Attachment *included* in Workday payload'
-      : 'Attachment *omitted* from Workday payload (temporary)';
     await notifyResult(
       'create_invoice',
       'error',
@@ -225,11 +223,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       {
         s3Key,
         fileName,
-        attachmentIncludedInWorkdayPayload: INCLUDE_ATTACHMENT_DATA_IN_SUBMIT,
+        attachmentIncludedInSubmit: false,
       },
       error,
       undefined,
-      attachmentNote
+      'Attachment uses *Put_Procurement_Document_Attachment* after Submit (not inline)'
     );
     throw error;
   }

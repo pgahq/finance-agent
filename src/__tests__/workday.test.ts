@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import {
   annotateSupplierInvoice,
   executeWorkdayQuery,
+  extractBusinessDocumentReferenceFromSubmitResult,
   extractSoapEnvelopeHeaderXml,
   getAllPaymentTerms,
   getSupplierInvoiceWithAttachments,
@@ -86,6 +87,28 @@ describe('Workday utilities', () => {
       const xml = '<soap:Envelope><soap:Header><wd:X>1</wd:X></soap:Header><soap:Body/></soap:Envelope>';
       expect(extractSoapEnvelopeHeaderXml(xml)).toBe('<soap:Header><wd:X>1</wd:X></soap:Header>');
       expect(extractSoapEnvelopeHeaderXml('<soap:Envelope><soap:Body/></soap:Envelope>')).toBeUndefined();
+    });
+
+    it('extracts Document_Reference from Submit_Supplier_Invoice results', () => {
+      expect(extractBusinessDocumentReferenceFromSubmitResult({
+        Supplier_Invoice_Reference: {
+          ID: [{ $attributes: { type: 'WID' }, $value: 'invoice-wid' }]
+        }
+      })).toEqual({
+        ID: [{ $attributes: { type: 'WID' }, $value: 'invoice-wid' }]
+      });
+
+      expect(extractBusinessDocumentReferenceFromSubmitResult({
+        Submit_Supplier_Invoice_Response: {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-1' }]
+          }
+        }
+      })).toEqual({
+        ID: [{ $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-1' }]
+      });
+
+      expect(extractBusinessDocumentReferenceFromSubmitResult({})).toBeUndefined();
     });
   });
 
@@ -2205,6 +2228,13 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Submit_Supplier_Invoice: jest.fn(),
+        Put_Procurement_Document_Attachment: jest.fn(((_request: any, callback: any) => {
+          callback(null, {
+            Document_Reference: {
+              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+            }
+          });
+        })),
         lastRequestHeaders: undefined,
         lastRequest: undefined
       };
@@ -2234,6 +2264,7 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
+      expect(result.attachmentAttachedViaPut).toBe(true);
       const { soap } = require('strong-soap');
       expect(soap.BearerSecurity).toHaveBeenCalledWith('mock-access-token');
       expect(mockClient.setEndpoint).toHaveBeenCalledWith(
@@ -2248,13 +2279,13 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should log redacted outbound HTTP and SOAP headers when Attachment_Data is present, and keep full XML', async () => {
-      // TEMPORARY: Attachment_Data is currently omitted from submit payloads.
-      // Re-enable this assertion path when INCLUDE_ATTACHMENT_DATA_IN_SUBMIT is restored.
+    it('should omit Attachment_Data on Submit and attach via Put_Procurement_Document_Attachment', async () => {
       const mockClient = mockSoapClient();
-      let capturedRequest: any;
+      let capturedSubmitRequest: any;
+      let capturedPutRequest: any;
+
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequest = request;
+        capturedSubmitRequest = request;
         mockClient.lastRequestHeaders = {
           'Content-Type': 'text/xml; charset=utf-8',
           SOAPAction: '"Submit_Supplier_Invoice"',
@@ -2262,39 +2293,71 @@ describe('Workday utilities', () => {
         };
         mockClient.lastRequest = '<soap:Envelope><soap:Body/></soap:Envelope>';
         callback(null, {
-          Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] }
+          Supplier_Invoice_Reference: {
+            ID: [
+              { $attributes: { type: 'WID' }, $value: 'new-invoice-wid' },
+              { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-100' }
+            ]
+          }
         });
       });
 
-      await submitNewSupplierInvoiceForTest();
+      mockClient.Put_Procurement_Document_Attachment.mockImplementation((request: any, callback: any) => {
+        capturedPutRequest = request;
+        mockClient.lastRequestHeaders = {
+          'Content-Type': 'text/xml; charset=utf-8',
+          SOAPAction: '"Put_Procurement_Document_Attachment"',
+          Authorization: 'Bearer mock-access-token-secret'
+        };
+        mockClient.lastRequest = '<soap:Envelope><soap:Header><wd:Workday_Common_Header/></soap:Header><soap:Body/></soap:Envelope>';
+        callback(null, {
+          Document_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+          }
+        });
+      });
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
+      const result = await submitNewSupplierInvoiceForTest();
+
+      expect(result.attachmentAttachedViaPut).toBe(true);
+      expect(capturedSubmitRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
+      expect(capturedPutRequest).toEqual({
+        Put_Procurement_Document_Attachment_Request: {
+          Document_Reference: {
+            ID: [
+              { $attributes: { type: 'WID' }, $value: 'new-invoice-wid' },
+              { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-100' }
+            ]
+          },
+          Document_Attachment_Data: {
+            $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
+            File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
+          }
+        }
+      });
       expect(debug).toHaveBeenCalledWith(
-        'TEMPORARY: omitting Attachment_Data from Submit_Supplier_Invoice payload',
-        expect.objectContaining({
-          fileName: 'invoice.pdf',
-          contentType: 'application/pdf'
-        })
-      );
-      expect(debug).not.toHaveBeenCalledWith(
-        'Submit_Supplier_Invoice outbound HTTP headers (attachment present):',
-        expect.anything()
+        'Put_Procurement_Document_Attachment outbound HTTP headers:',
+        expect.objectContaining({ Authorization: 'Bearer <redacted>' })
       );
     });
 
-    it('should embed the attachment as Attachment_Data on the request', async () => {
+    it('should surface Put_Procurement_Document_Attachment failures after a successful create', async () => {
       const mockClient = mockSoapClient();
-
-      let capturedRequest: any;
-      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequest = request;
-        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] }
+        });
+      });
+      mockClient.Put_Procurement_Document_Attachment.mockImplementation((_request: any, callback: any) => {
+        const err: any = new Error('invalid username or password');
+        err.name = 'Authentication_Fault';
+        callback(err);
       });
 
-      await submitNewSupplierInvoiceForTest();
-
-      // TEMPORARY: Attachment_Data omitted while diagnosing Workday attach auth faults.
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
+      await expect(submitNewSupplierInvoiceForTest()).rejects.toMatchObject({
+        name: 'Authentication_Fault',
+        message: expect.stringContaining('Invoice new-invoice-wid created, but Put_Procurement_Document_Attachment failed')
+      });
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {
