@@ -31,7 +31,6 @@ const mockPool = {
   on: mockOn,
 };
 
-// Mock pg — return a shared pool so module-level pool + test mocks stay aligned
 jest.mock('pg', () => ({
   Pool: jest.fn().mockImplementation(() => mockPool)
 }));

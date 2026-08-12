@@ -187,7 +187,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
-      fileName,
       attachment: {
         fileName,
         contentType,

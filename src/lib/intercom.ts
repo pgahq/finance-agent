@@ -107,10 +107,6 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
     }));
 }
 
-function selectAttachments(attachments: IntercomAttachment[]): IntercomAttachment[] {
-  return attachments.filter((attachment) => attachment.contentType === 'application/pdf');
-}
-
 export function sanitizeFileName(fileName: string): string {
   const base = fileName
     .replace(/\\/g, '/')
@@ -196,7 +192,9 @@ export async function fetchConversationInvoiceData(
 
   const conversation = await response.json() as IntercomConversationResponse;
   const attachments = collectAttachments(conversation);
-  const invoiceAttachments = selectAttachments(attachments);
+  const invoiceAttachments = attachments.filter(
+    (attachment) => attachment.contentType === 'application/pdf'
+  );
   if (invoiceAttachments.length === 0) {
     throw new IntercomNoAttachmentError(conversationId);
   }
