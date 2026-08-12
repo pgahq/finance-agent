@@ -81,7 +81,8 @@ containing only the original name/message.
 - Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Each Workday invoice receives its corresponding PDF as `Attachment_Data`
-- If Workday accepts the same invoice without `File_Content` but returns an
-  authentication fault when it is present, inspect attachment-specific security.
-  `Put_Procurement_Document_Attachment` is the supported two-step alternative.
+- Workday attachment flow is two-step: create without inline `Attachment_Data`,
+  then call `Put_Procurement_Document_Attachment` with the returned invoice reference
+- The current ISU can create invoices but receives an authentication fault when
+  uploading file content through either attachment path; attachment-specific
+  Workday security must be granted

@@ -25,7 +25,12 @@ jest.mock('../lib/workday.js', () => ({
   }),
   getPurchaseOrder: jest.fn(),
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
-  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] })
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({
+    success: true,
+    invoiceWID: 'new-invoice-wid',
+    appliedFallbacks: [],
+    attachmentAttachedViaPut: true
+  })
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -180,7 +185,10 @@ describe('create_invoice', () => {
       'create_invoice',
       'success',
       expect.any(Number),
-      expect.objectContaining({ invoiceWID: 'new-invoice-wid' })
+      expect.objectContaining({
+        invoiceWID: 'new-invoice-wid',
+        attachmentAttachedViaPut: true
+      })
     );
   });
 
