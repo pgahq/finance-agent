@@ -177,6 +177,30 @@ describe('intercom', () => {
         statusCode: 503,
       });
     });
+
+    it('rejects malformed successful responses as upstream errors', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({ source: { attachments: {} } }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123'))
+        .rejects.toBeInstanceOf(IntercomUpstreamError);
+    });
+
+    it('maps response JSON failures to upstream errors', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => {
+          throw new SyntaxError('invalid JSON');
+        },
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123'))
+        .rejects.toBeInstanceOf(IntercomUpstreamError);
+    });
   });
 
   describe('downloadAttachment', () => {
@@ -218,6 +242,19 @@ describe('intercom', () => {
         ok: false,
         status: 403,
         headers: { get: () => null },
+      }) as unknown as typeof fetch;
+
+      await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))
+        .rejects.toBeInstanceOf(IntercomUpstreamError);
+    });
+
+    it('maps attachment body read failures to upstream errors', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => null },
+        arrayBuffer: async () => {
+          throw new Error('stream failed');
+        },
       }) as unknown as typeof fetch;
 
       await expect(downloadAttachment('https://downloads.intercomcdn.com/invoice.pdf'))

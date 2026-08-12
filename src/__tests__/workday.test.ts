@@ -1,3 +1,4 @@
+import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
@@ -2157,7 +2158,9 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
+        Submit_Supplier_Invoice: jest.fn(),
+        lastRequest: undefined as string | undefined,
+        lastRequestHeaders: undefined as Record<string, unknown> | undefined,
       };
 
       const { soap } = require('strong-soap');
@@ -2200,6 +2203,12 @@ describe('Workday utilities', () => {
       let capturedRequest: any;
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
         capturedRequest = request;
+        mockClient.lastRequestHeaders = {
+          'Content-Type': 'text/xml; charset=utf-8',
+          Authorization: 'Bearer secret-access-token',
+        };
+        mockClient.lastRequest =
+          '<soap:Envelope><soap:Header><wd:Workday_Common_Header/></soap:Header><soap:Body><wd:File_Content>base64-secret</wd:File_Content></soap:Body></soap:Envelope>';
         callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
       });
 
@@ -2209,6 +2218,19 @@ describe('Workday utilities', () => {
         $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
         File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
       }]);
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice outbound HTTP headers (attachment present)',
+        {
+          'Content-Type': 'text/xml; charset=utf-8',
+          Authorization: 'Bearer <redacted>',
+        }
+      );
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice SOAP envelope Header (attachment present)',
+        '<soap:Header><wd:Workday_Common_Header/></soap:Header>'
+      );
+      expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('secret-access-token');
+      expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {

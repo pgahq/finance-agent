@@ -165,14 +165,37 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 400 when conversationId is missing', async () => {
+  it('returns 400 when neither supported request contract is provided', async () => {
     const response = await handler(buildEvent({ body: JSON.stringify({}) }));
 
     expect(response).toEqual({
       statusCode: 400,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'error', message: 'conversationId is required' }),
+      body: JSON.stringify({
+        status: 'error',
+        message: 'conversationId or fileName, contentType, and fileContent are required'
+      }),
     });
+  });
+
+  it('accepts the legacy direct-upload request', async () => {
+    const response = await handler(buildEvent({
+      body: JSON.stringify({
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        fileContent: Buffer.from('legacy-pdf').toString('base64'),
+      }),
+    }));
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockFetchConversationInvoiceData).not.toHaveBeenCalled();
+    expect(mockPutBinaryToS3).toHaveBeenCalledWith(
+      { bucketName: 'test-bucket' },
+      'new-invoices/fixed-request-id/1-invoice.pdf',
+      Buffer.from('legacy-pdf'),
+      'application/pdf',
+      expect.not.objectContaining({ 'intercom-conversation-id': expect.anything() }),
+    );
   });
 
   it('decodes a base64-encoded JSON body from API Gateway', async () => {
@@ -247,7 +270,7 @@ describe('trigger_create_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        message: 'Attachment exceeds maximum allowed size',
+        message: 'Combined attachment size exceeds maximum allowed size',
         conversationId: '1234567890',
       }),
     });
@@ -326,29 +349,35 @@ describe('trigger_create_invoice handler', () => {
       }),
     );
 
-    expect(InvokeCommand).toHaveBeenCalledWith({
+    expect(InvokeCommand).toHaveBeenNthCalledWith(1, {
       FunctionName: 'finance-agent-CreateInvoiceProcessor',
       InvocationType: 'Event',
       Payload: JSON.stringify({
-        data: [
-          {
-            s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
-            fileName: 'invoice.pdf',
-            contentType: 'application/pdf',
-            emailContext: invoiceEmailContext,
-          },
-          {
-            s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
-            fileName: 'support.pdf',
-            contentType: 'application/pdf',
-            emailContext: supportEmailContext,
-          },
-        ],
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: invoiceEmailContext,
+        }],
         page: 1,
         totalPages: 1,
       }),
     });
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(InvokeCommand).toHaveBeenNthCalledWith(2, {
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
+          fileName: 'support.pdf',
+          contentType: 'application/pdf',
+          emailContext: supportEmailContext,
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
 });

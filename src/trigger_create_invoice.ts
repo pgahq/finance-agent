@@ -13,11 +13,16 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
+  sanitizeFileName,
+  type IntercomAttachment,
 } from './lib/intercom.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
+  fileName?: string;
+  contentType?: string;
+  fileContent?: string;
 }
 
 function formatError(error: unknown): string {
@@ -75,12 +80,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const conversationId = typeof requestBody.conversationId === 'string'
     ? requestBody.conversationId.trim()
     : '';
-  if (!conversationId) {
-    debug('Missing conversationId in create invoice trigger request');
-    return jsonResponse(400, { status: 'error', message: 'conversationId is required' });
+  const legacyFileName = typeof requestBody.fileName === 'string' ? requestBody.fileName : '';
+  const legacyContentType = typeof requestBody.contentType === 'string' ? requestBody.contentType : '';
+  const legacyFileContent = typeof requestBody.fileContent === 'string' ? requestBody.fileContent : '';
+  const hasLegacyUpload = Boolean(legacyFileName && legacyContentType && legacyFileContent);
+  if (!conversationId && !hasLegacyUpload) {
+    return jsonResponse(400, {
+      status: 'error',
+      message: 'conversationId or fileName, contentType, and fileContent are required'
+    });
   }
 
-  let intercomConfig;
+  let attachments: IntercomAttachment[];
+  let buffers: Buffer[];
+  if (conversationId) {
+    let intercomConfig;
   try {
     intercomConfig = getIntercomConfig(process.env);
   } catch (error) {
@@ -127,15 +141,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
-  const { attachments } = conversationData;
-  let buffers: Buffer[];
+  attachments = conversationData.attachments;
   try {
     buffers = await Promise.all(
       attachments.map((attachment) => downloadAttachment(attachment.url))
     );
     const totalBytes = buffers.reduce((total, buffer) => total + buffer.length, 0);
     if (totalBytes > MAX_ATTACHMENT_BYTES) {
-      throw new IntercomAttachmentTooLargeError(totalBytes);
+      throw new IntercomAttachmentTooLargeError(totalBytes, true);
     }
   } catch (error) {
     if (error instanceof IntercomAttachmentTooLargeError) {
@@ -145,7 +158,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
       return jsonResponse(400, {
         status: 'error',
-        message: 'Attachment exceeds maximum allowed size',
+        message: error.combined
+          ? 'Combined attachment size exceeds maximum allowed size'
+          : 'Attachment exceeds maximum allowed size',
         conversationId,
       });
     }
@@ -167,6 +182,22 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
+  } else {
+    const buffer = Buffer.from(legacyFileContent, 'base64');
+    if (buffer.length > MAX_ATTACHMENT_BYTES) {
+      return jsonResponse(400, {
+        status: 'error',
+        message: 'Attachment exceeds maximum allowed size'
+      });
+    }
+    attachments = [{
+      name: sanitizeFileName(legacyFileName),
+      url: '',
+      contentType: legacyContentType,
+      emailContext: {},
+    }];
+    buffers = [buffer];
+  }
 
   try {
     const s3Config = getS3Config(process.env);
@@ -177,7 +208,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       await putBinaryToS3(s3Config, s3Key, buffer, attachment.contentType, {
         'original-filename': attachment.name,
         'upload-timestamp': new Date().toISOString(),
-        'intercom-conversation-id': conversationId,
+        ...(conversationId && { 'intercom-conversation-id': conversationId }),
       });
       return {
         s3Key,
@@ -196,21 +227,23 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
 
-    await lambda.send(new InvokeCommand({
-      FunctionName: processorFunctionName,
-      InvocationType: 'Event',
-      Payload: JSON.stringify({
-        data: uploadedAttachments,
-        page: 1,
-        totalPages: 1,
-      }),
-    }));
+    await Promise.all(uploadedAttachments.map((attachment) =>
+      lambda.send(new InvokeCommand({
+        FunctionName: processorFunctionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({
+          data: [attachment],
+          page: 1,
+          totalPages: 1,
+        }),
+      }))
+    ));
 
     return jsonResponse(202, {
       status: 'accepted',
       message: 'Invoice creation triggered',
       requestId,
-      conversationId,
+      ...(conversationId && { conversationId }),
     });
   } catch (error) {
     debug('Error triggering invoice creation', { error: formatError(error), conversationId });

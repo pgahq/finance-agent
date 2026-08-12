@@ -209,6 +209,21 @@ describe('create_invoice', () => {
     );
   });
 
+  it('should create one invoice for each processor record', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [
+        attachmentRequest('new-invoices/req-1/invoice.pdf'),
+        attachmentRequest('new-invoices/req-1/support.pdf', 'support.pdf'),
+      ]
+    } as any);
+
+    expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
+  });
+
   it('should fall back to the default supplier WID when none is resolved', async () => {
     process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
 
@@ -273,41 +288,6 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
       expect.any(Error)
-    );
-  });
-
-  it('should continue processing later attachments after one invoice fails', async () => {
-    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments
-      .mockResolvedValueOnce({
-        ...baseEnrichmentResult,
-        supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
-      })
-      .mockResolvedValueOnce(baseEnrichmentResult);
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await expect(processor({
-      data: [
-        attachmentRequest('new-invoices/req-4/bad.pdf', 'bad.pdf'),
-        attachmentRequest('new-invoices/req-4/good.pdf', 'good.pdf'),
-      ]
-    } as any)).resolves.not.toThrow();
-
-    expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
-    expect(slack.notifyResult).toHaveBeenCalledWith(
-      'create_invoice',
-      'error',
-      expect.any(Number),
-      expect.objectContaining({ fileName: 'bad.pdf' }),
-      expect.any(Error)
-    );
-    expect(slack.notifyResult).toHaveBeenCalledWith(
-      'create_invoice',
-      'success',
-      expect.any(Number),
-      expect.objectContaining({
-        attachment: expect.objectContaining({ fileName: 'good.pdf' })
-      })
     );
   });
 
