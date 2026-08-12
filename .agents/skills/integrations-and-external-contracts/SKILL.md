@@ -23,8 +23,8 @@ Request body:
 { "conversationId": "1234567890" }
 ```
 
-The legacy `{ "fileName", "contentType", "fileContent" }` direct-upload body
-remains supported.
+This is a new Intercom-only contract. Direct-upload bodies
+(`fileName` / `contentType` / `fileContent`) are not accepted.
 
 Flow:
 
@@ -37,8 +37,8 @@ Flow:
 
 | HTTP | Meaning |
 | --- | --- |
-| 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, and `conversationId` for Intercom requests |
-| 400 | Missing request fields, invalid JSON, no PDF, or attachment too large |
+| 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, and `conversationId` |
+| 400 | Missing `conversationId`, invalid JSON, no PDF, or attachment too large |
 | 401 | Bad/missing finance-agent bearer token |
 | 404 | Intercom conversation not found |
 | 502 | Intercom API or CDN download failed |

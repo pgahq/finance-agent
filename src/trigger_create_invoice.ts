@@ -13,16 +13,12 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
-  sanitizeFileName,
   type IntercomAttachment,
 } from './lib/intercom.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
-  fileName?: string;
-  contentType?: string;
-  fileContent?: string;
 }
 
 const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS = 4;
@@ -117,21 +113,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const conversationId = typeof requestBody.conversationId === 'string'
     ? requestBody.conversationId.trim()
     : '';
-  const legacyFileName = typeof requestBody.fileName === 'string' ? requestBody.fileName : '';
-  const legacyContentType = typeof requestBody.contentType === 'string' ? requestBody.contentType : '';
-  const legacyFileContent = typeof requestBody.fileContent === 'string' ? requestBody.fileContent : '';
-  const hasLegacyUpload = Boolean(legacyFileName && legacyContentType && legacyFileContent);
-  if (!conversationId && !hasLegacyUpload) {
+  if (!conversationId) {
     return jsonResponse(400, {
       status: 'error',
-      message: 'conversationId or fileName, contentType, and fileContent are required'
+      message: 'conversationId is required'
     });
   }
 
-  let attachments: IntercomAttachment[];
-  let buffers: Buffer[];
-  if (conversationId) {
-    let intercomConfig;
+  let intercomConfig;
   try {
     intercomConfig = getIntercomConfig(process.env);
   } catch (error) {
@@ -178,7 +167,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
-  attachments = conversationData.attachments;
+  const attachments = conversationData.attachments;
+  let buffers: Buffer[];
   try {
     buffers = await downloadInvoiceAttachments(attachments);
   } catch (error) {
@@ -213,22 +203,6 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
-  } else {
-    const buffer = Buffer.from(legacyFileContent, 'base64');
-    if (buffer.length > MAX_ATTACHMENT_BYTES) {
-      return jsonResponse(400, {
-        status: 'error',
-        message: 'Attachment exceeds maximum allowed size'
-      });
-    }
-    attachments = [{
-      name: sanitizeFileName(legacyFileName),
-      url: '',
-      contentType: legacyContentType,
-      emailContext: {},
-    }];
-    buffers = [buffer];
-  }
 
   try {
     const s3Config = getS3Config(process.env);
@@ -239,7 +213,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       await putBinaryToS3(s3Config, s3Key, buffer, attachment.contentType, {
         'original-filename': attachment.name,
         'upload-timestamp': new Date().toISOString(),
-        ...(conversationId && { 'intercom-conversation-id': conversationId }),
+        'intercom-conversation-id': conversationId,
       });
       return {
         s3Key,
@@ -274,7 +248,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       status: 'accepted',
       message: 'Invoice creation triggered',
       requestId,
-      ...(conversationId && { conversationId }),
+      conversationId,
     });
   } catch (error) {
     debug('Error triggering invoice creation', { error: formatError(error), conversationId });

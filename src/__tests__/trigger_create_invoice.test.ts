@@ -165,7 +165,7 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 400 when neither supported request contract is provided', async () => {
+  it('returns 400 when conversationId is missing', async () => {
     const response = await handler(buildEvent({ body: JSON.stringify({}) }));
 
     expect(response).toEqual({
@@ -173,29 +173,31 @@ describe('trigger_create_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        message: 'conversationId or fileName, contentType, and fileContent are required'
+        message: 'conversationId is required'
       }),
     });
+    expect(mockFetchConversationInvoiceData).not.toHaveBeenCalled();
   });
 
-  it('accepts the legacy direct-upload request', async () => {
+  it('returns 400 when the body is a direct-upload payload without conversationId', async () => {
     const response = await handler(buildEvent({
       body: JSON.stringify({
         fileName: 'invoice.pdf',
         contentType: 'application/pdf',
-        fileContent: Buffer.from('legacy-pdf').toString('base64'),
+        fileContent: Buffer.from('direct-upload').toString('base64'),
       }),
     }));
 
-    expect(response).toMatchObject({ statusCode: 202 });
+    expect(response).toEqual({
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'error',
+        message: 'conversationId is required'
+      }),
+    });
     expect(mockFetchConversationInvoiceData).not.toHaveBeenCalled();
-    expect(mockPutBinaryToS3).toHaveBeenCalledWith(
-      { bucketName: 'test-bucket' },
-      'new-invoices/fixed-request-id/1-invoice.pdf',
-      Buffer.from('legacy-pdf'),
-      'application/pdf',
-      expect.not.objectContaining({ 'intercom-conversation-id': expect.anything() }),
-    );
+    expect(mockPutBinaryToS3).not.toHaveBeenCalled();
   });
 
   it('decodes a base64-encoded JSON body from API Gateway', async () => {
