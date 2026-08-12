@@ -86,13 +86,13 @@ describe('Database Library', () => {
 
   describe('migrateDocumentsTypeCheck', () => {
     it('recreates the type check with only known document types', async () => {
-      const query = jest.fn()
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] });
+      const query = jest.fn(async () => ({ rows: [] }));
 
       await migrateDocumentsTypeCheck(query);
 
+      expect(query).toHaveBeenCalledWith('BEGIN');
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('pg_advisory_xact_lock'));
+      expect(query).toHaveBeenCalledWith('COMMIT');
       const addSql = query.mock.calls
         .map(([sql]) => sql as string)
         .find((sql) => sql.includes('ADD CONSTRAINT'));
@@ -102,10 +102,11 @@ describe('Database Library', () => {
     });
 
     it('includes unexpected existing types so ADD CONSTRAINT does not fail', async () => {
-      const query = jest.fn()
-        .mockResolvedValueOnce({ rows: [{ type: 'shipping_address' }, { type: 'address' }] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] });
+      const query = jest.fn(async (sql: string) => ({
+        rows: sql.includes('SELECT DISTINCT')
+          ? [{ type: 'shipping_address' }, { type: 'address' }]
+          : []
+      }));
 
       await migrateDocumentsTypeCheck(query);
 
@@ -115,6 +116,16 @@ describe('Database Library', () => {
       expect(addSql).toContain("'shipping_address'");
       expect(addSql).toContain("'address'");
       expect(addSql).toContain("'supplier'");
+    });
+
+    it('rolls back when the constraint cannot be recreated', async () => {
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('ADD CONSTRAINT')) throw new Error('migration failed');
+        return { rows: [] };
+      });
+
+      await expect(migrateDocumentsTypeCheck(query)).rejects.toThrow('migration failed');
+      expect(query).toHaveBeenCalledWith('ROLLBACK');
     });
   });
 

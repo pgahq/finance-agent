@@ -32,7 +32,8 @@ intentional shutdown paths.
 `DOCUMENT_TYPES` in `src/lib/database.ts` is the source of truth. The migration
 includes existing unknown values in the CHECK constraint so orphan rows do not
 block Lambda startup. Schema-init failures clear the pool so retries rerun the
-migration.
+migration. A transaction-scoped advisory lock serializes the constraint DDL
+across concurrent Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
 
