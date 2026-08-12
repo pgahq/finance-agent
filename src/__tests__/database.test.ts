@@ -86,7 +86,9 @@ describe('Database Library', () => {
 
   describe('migrateDocumentsTypeCheck', () => {
     it('recreates the type check with only known document types', async () => {
-      const query = jest.fn(async () => ({ rows: [] }));
+      const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({
+        rows: [] as Array<{ type?: string }>
+      }));
 
       await migrateDocumentsTypeCheck(query);
 
