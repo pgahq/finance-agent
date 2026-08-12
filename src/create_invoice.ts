@@ -36,8 +36,20 @@ export interface CreateInvoiceRequest {
 
 // Processor function - invoked by trigger_create_invoice
 export const processor = withProcessorHandler(async (context, requests) => {
+  const failures: unknown[] = [];
   for (const request of requests) {
-    await processNewInvoice(context, request as CreateInvoiceRequest);
+    try {
+      await processNewInvoice(context, request as CreateInvoiceRequest);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+
+  if (failures.length === requests.length && failures.length > 0) {
+    throw failures[0];
+  }
+  if (failures.length > 0) {
+    debug(`Created ${requests.length - failures.length} of ${requests.length} invoices`);
   }
 });
 

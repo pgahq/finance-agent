@@ -276,6 +276,39 @@ describe('create_invoice', () => {
     );
   });
 
+  it('should continue processing later attachments after one invoice fails', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments
+      .mockResolvedValueOnce({
+        ...baseEnrichmentResult,
+        supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
+      })
+      .mockResolvedValueOnce(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await expect(processor({
+      data: [
+        attachmentRequest('new-invoices/req-4/bad.pdf', 'bad.pdf'),
+        attachmentRequest('new-invoices/req-4/good.pdf', 'good.pdf'),
+      ]
+    } as any)).resolves.not.toThrow();
+
+    expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ fileName: 'bad.pdf' }),
+      expect.any(Error)
+    );
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({ fileName: 'good.pdf' })
+    );
+  });
+
   it('should not submit when invoice modification is disabled', async () => {
     process.env.INVOICE_MOD_ENABLED = 'false';
 
