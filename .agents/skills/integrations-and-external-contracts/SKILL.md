@@ -84,5 +84,6 @@ containing only the original name/message.
 - Create-invoice Workday flow is two-step:
   1. `Submit_Supplier_Invoice` **without** inline `Attachment_Data` / `File_Content`
   2. `Put_Procurement_Document_Attachment` using the submit response `Supplier_Invoice_Reference` as `Document_Reference`
-- Do not restore inline `Attachment_Data` on create unless Makse confirms the ISU has Put rights for that path; inline attach has produced misleading `Authentication_Fault` responses for this ISU
+- Confirmed for `ISU_PGAgent_SUPPLIERS` (OAuth API Client): create without file content succeeds; **both** inline `Attachment_Data` on Submit **and** `Put_Procurement_Document_Attachment` fail with Workday `Authentication_Fault` / "invalid username or password". That fault is misleading — the same bearer token creates the invoice. Treat it as missing attachment/binary Put rights on the ISU (or domain security for business-document attachments), not bad OAuth credentials. Human Dev Portal success does not prove the ISU has those rights.
+- There is no other Resource Management supplier-invoice file-upload operation in the local WSDL beyond those two paths
 - Slack `create_invoice` success notes whether the Put attachment step ran
