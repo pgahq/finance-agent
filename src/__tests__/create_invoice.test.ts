@@ -246,13 +246,8 @@ describe('create_invoice', () => {
       'create_invoice',
       'error',
       expect.any(Number),
-      expect.objectContaining({
-        s3Key: 'new-invoices/req-4/invoice.pdf',
-        attachmentIncludedInSubmit: false,
-      }),
-      expect.any(Error),
-      undefined,
-      'Attachment uses *Put_Procurement_Document_Attachment* after Submit (not inline)'
+      expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
+      expect.any(Error)
     );
   });
 

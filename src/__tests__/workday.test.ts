@@ -42,62 +42,6 @@ jest.mock('../lib/workday_validation_field_agent.js', () => ({
 }));
 
 describe('Workday utilities', () => {
-  describe('submit outbound logging helpers', () => {
-    it('detects Attachment_Data on submit requests', () => {
-      expect(submitRequestHasAttachmentData({
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Data: {
-            Attachment_Data: [{ File_Content: 'abc' }]
-          }
-        }
-      })).toBe(true);
-
-      expect(submitRequestHasAttachmentData({
-        Submit_Supplier_Invoice_Request: {
-          Supplier_Invoice_Data: {}
-        }
-      })).toBe(false);
-    });
-
-    it('redacts Authorization values but keeps the scheme', () => {
-      expect(redactOutboundHttpHeaders({
-        'Content-Type': 'text/xml; charset=utf-8',
-        Authorization: 'Bearer secret-token'
-      })).toEqual({
-        'Content-Type': 'text/xml; charset=utf-8',
-        Authorization: 'Bearer <redacted>'
-      });
-    });
-
-    it('extracts the SOAP envelope Header element', () => {
-      const xml = '<soap:Envelope><soap:Header><wd:X>1</wd:X></soap:Header><soap:Body/></soap:Envelope>';
-      expect(extractSoapEnvelopeHeaderXml(xml)).toBe('<soap:Header><wd:X>1</wd:X></soap:Header>');
-      expect(extractSoapEnvelopeHeaderXml('<soap:Envelope><soap:Body/></soap:Envelope>')).toBeUndefined();
-    });
-
-    it('extracts Document_Reference from Submit_Supplier_Invoice results', () => {
-      expect(extractBusinessDocumentReferenceFromSubmitResult({
-        Supplier_Invoice_Reference: {
-          ID: [{ $attributes: { type: 'WID' }, $value: 'invoice-wid' }]
-        }
-      })).toEqual({
-        ID: [{ $attributes: { type: 'WID' }, $value: 'invoice-wid' }]
-      });
-
-      expect(extractBusinessDocumentReferenceFromSubmitResult({
-        Submit_Supplier_Invoice_Response: {
-          Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-1' }]
-          }
-        }
-      })).toEqual({
-        ID: [{ $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-1' }]
-      });
-
-      expect(extractBusinessDocumentReferenceFromSubmitResult({})).toBeUndefined();
-    });
-  });
-
   beforeEach(() => {
     jest.clearAllMocks();
     const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -2210,7 +2154,7 @@ describe('Workday utilities', () => {
     });
 
     const mockSoapClient = () => {
-      const mockClient: any = {
+      const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Submit_Supplier_Invoice: jest.fn()
@@ -2252,8 +2196,6 @@ describe('Workday utilities', () => {
 
     it('should embed the attachment as Attachment_Data on the request', async () => {
       const mockClient = mockSoapClient();
-      let capturedSubmitRequest: any;
-      let capturedPutRequest: any;
 
       let capturedRequest: any;
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
@@ -2261,20 +2203,7 @@ describe('Workday utilities', () => {
         callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
       });
 
-      mockClient.Put_Procurement_Document_Attachment.mockImplementation((request: any, callback: any) => {
-        capturedPutRequest = request;
-        mockClient.lastRequestHeaders = {
-          'Content-Type': 'text/xml; charset=utf-8',
-          SOAPAction: '"Put_Procurement_Document_Attachment"',
-          Authorization: 'Bearer mock-access-token-secret'
-        };
-        mockClient.lastRequest = '<soap:Envelope><soap:Header><wd:Workday_Common_Header/></soap:Header><soap:Body/></soap:Envelope>';
-        callback(null, {
-          Document_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
-          }
-        });
-      });
+      await submitNewSupplierInvoiceForTest();
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([{
         $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },

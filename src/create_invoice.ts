@@ -184,9 +184,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     });
 
     const processingTime = Date.now() - startTime;
-    const attachmentNote = createOutcome.attachmentAttachedViaPut
-      ? 'Attachment added via *Put_Procurement_Document_Attachment* (not inline on Submit)'
-      : 'Attachment *not* added to Workday';
 
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
@@ -210,7 +207,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       },
       lineCount: finalLines.length,
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
-    }, undefined, undefined, attachmentNote);
+    });
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
@@ -218,14 +215,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       processingTime,
-      {
-        s3Key,
-        fileName,
-        attachmentIncludedInSubmit: false,
-      },
-      error,
-      undefined,
-      'Attachment uses *Put_Procurement_Document_Attachment* after Submit (not inline)'
+      { s3Key, fileName },
+      error
     );
     throw error;
   }

@@ -86,8 +86,7 @@ export async function notifyResult(
   processingTime?: number,
   details?: any,
   error?: any,
-  context?: string,
-  note?: string
+  context?: string
 ): Promise<void> {
   const statusEmoji = status === 'success' ? '✅' : '🚨';
   const statusText = status === 'success' ? 'successfully' : 'with error';
@@ -111,16 +110,6 @@ export async function notifyResult(
       }
     }
   ];
-
-  if (note) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: note
-      }
-    });
-  }
 
   if (details || error) {
     let detailsData;
