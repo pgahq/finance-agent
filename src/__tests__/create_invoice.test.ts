@@ -180,7 +180,15 @@ describe('create_invoice', () => {
       'create_invoice',
       'success',
       expect.any(Number),
-      expect.objectContaining({ invoiceWID: 'new-invoice-wid' })
+      expect.objectContaining({
+        invoiceWID: 'new-invoice-wid',
+        attachment: {
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          sizeBytes: Buffer.byteLength('fake-pdf-content'),
+          includedInline: true,
+        }
+      })
     );
   });
 
