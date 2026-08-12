@@ -213,7 +213,7 @@ Status: Active`);
         metadata: { supplierId: 'supp-1' },
         similarity: 0.85
       });
-      expect(mockDb.close).toHaveBeenCalled();
+      expect(mockDb.close).not.toHaveBeenCalled();
     });
 
     it('should use default parameters', async () => {
@@ -340,10 +340,10 @@ Status: Active`);
         query: 'test query'
       })).rejects.toThrow('Search failed');
 
-      expect(mockDb.close).toHaveBeenCalled();
+      expect(mockDb.close).not.toHaveBeenCalled();
     });
 
-    it('should close database connection on success', async () => {
+    it('should keep the shared database pool open after success', async () => {
       const mockSearchResults = [
         {
           workday_id: 'supplier-1',
@@ -368,7 +368,7 @@ Status: Active`);
         query: 'test query'
       });
 
-      expect(mockDb.close).toHaveBeenCalled();
+      expect(mockDb.close).not.toHaveBeenCalled();
     });
   });
 

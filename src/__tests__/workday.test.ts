@@ -1,3 +1,4 @@
+import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
@@ -2157,7 +2158,9 @@ describe('Workday utilities', () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
+        Submit_Supplier_Invoice: jest.fn(),
+        lastRequest: undefined as string | undefined,
+        lastRequestHeaders: undefined as Record<string, unknown> | undefined,
       };
 
       const { soap } = require('strong-soap');
@@ -2200,6 +2203,12 @@ describe('Workday utilities', () => {
       let capturedRequest: any;
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
         capturedRequest = request;
+        mockClient.lastRequestHeaders = {
+          'Content-Type': 'text/xml; charset=utf-8',
+          Authorization: 'Bearer secret-access-token',
+        };
+        mockClient.lastRequest =
+          '<soap:Envelope><soap:Header><wd:Workday_Common_Header/></soap:Header><soap:Body><wd:File_Content>base64-secret</wd:File_Content></soap:Body></soap:Envelope>';
         callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
       });
 
@@ -2209,6 +2218,19 @@ describe('Workday utilities', () => {
         $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
         File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
       }]);
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice outbound HTTP headers (attachment present)',
+        {
+          'Content-Type': 'text/xml; charset=utf-8',
+          Authorization: 'Bearer <redacted>',
+        }
+      );
+      expect(debug).toHaveBeenCalledWith(
+        'Submit_Supplier_Invoice SOAP envelope Header (attachment present)',
+        '<soap:Header><wd:Workday_Common_Header/></soap:Header>'
+      );
+      expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('secret-access-token');
+      expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {
@@ -2227,7 +2249,7 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should omit Currency_Reference when currencyWID is not provided', async () => {
+    it('should default Currency_Reference to USD when currencyWID is not provided', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -2238,7 +2260,9 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest();
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toBeUndefined();
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Currency_Reference).toEqual({
+        ID: [{ $attributes: { type: 'Currency_ID' }, $value: 'USD' }]
+      });
     });
 
     it('should build Company_Reference with a non-WID reference type (e.g. Company_Reference_ID for Default_OCR_Company)', async () => {
@@ -2277,14 +2301,26 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should propagate SOAP errors', async () => {
+    it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
-
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(new Error('Create failed'), null);
+      const soapError = Object.assign(new Error('Create failed'), {
+        response: {
+          statusCode: 500,
+          request: {
+            headers: { Authorization: 'Bearer secret-access-token' }
+          }
+        },
+        body: '<secret-response-body/>'
       });
 
-      await expect(submitNewSupplierInvoiceForTest()).rejects.toThrow('Create failed');
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(soapError, null);
+      });
+
+      const rejected = submitNewSupplierInvoiceForTest();
+      await expect(rejected).rejects.toThrow('Create failed');
+      await expect(rejected).rejects.not.toHaveProperty('response');
+      await expect(rejected).rejects.not.toHaveProperty('body');
     });
   });
 

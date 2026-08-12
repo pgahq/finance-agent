@@ -1,5 +1,7 @@
-import { 
-  getDatabaseConfig, 
+import {
+  DOCUMENT_TYPES,
+  closeDatabasePool,
+  getDatabaseConfig,
   getDatabaseConnection,
   insertDocument,
   updateDocument,
@@ -7,7 +9,8 @@ import {
   searchDocuments,
   bulkInsertDocuments,
   bulkUpdateDocuments,
-  bulkDeleteDocuments
+  bulkDeleteDocuments,
+  migrateDocumentsTypeCheck,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -19,33 +22,35 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
   GetSecretValueCommand: jest.fn()
 }));
 
-// Mock pg
+const mockQuery = jest.fn();
+const mockEnd = jest.fn();
+const mockOn = jest.fn();
+const mockRelease = jest.fn();
+const mockConnect = jest.fn();
+const mockPool = {
+  query: mockQuery,
+  end: mockEnd,
+  on: mockOn,
+  connect: mockConnect,
+};
+
 jest.mock('pg', () => ({
-  Pool: jest.fn().mockImplementation(() => ({
-    query: jest.fn(),
-    end: jest.fn(),
-    on: jest.fn()
-  }))
+  Pool: jest.fn().mockImplementation(() => mockPool)
 }));
 
 describe('Database Library', () => {
-  let mockPool: any;
-  let mockQuery: jest.MockedFunction<any>;
-
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
-    
-    const pgModule = require('pg');
-    mockPool = new pgModule.Pool();
-    mockQuery = mockPool.query;
-    
-    // Mock successful secrets retrieval
+    mockEnd.mockResolvedValue(undefined);
+    mockQuery.mockResolvedValue({ rows: [] });
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         username: 'testuser',
         password: 'testpass'
       })
     });
+    await closeDatabasePool();
   });
 
   describe('getDatabaseConfig', () => {
@@ -83,6 +88,53 @@ describe('Database Library', () => {
     });
   });
 
+  describe('migrateDocumentsTypeCheck', () => {
+    it('recreates the type check with only known document types', async () => {
+      const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({
+        rows: [] as Array<{ type?: string }>
+      }));
+
+      await migrateDocumentsTypeCheck(query);
+
+      expect(query).toHaveBeenCalledWith('BEGIN');
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('pg_advisory_xact_lock'));
+      expect(query).toHaveBeenCalledWith('COMMIT');
+      const addSql = query.mock.calls
+        .map(([sql]) => sql as string)
+        .find((sql) => sql.includes('ADD CONSTRAINT'));
+      for (const type of DOCUMENT_TYPES) {
+        expect(addSql).toContain(`'${type}'`);
+      }
+    });
+
+    it('includes unexpected existing types so ADD CONSTRAINT does not fail', async () => {
+      const query = jest.fn(async (sql: string) => ({
+        rows: sql.includes('SELECT DISTINCT')
+          ? [{ type: 'shipping_address' }, { type: 'address' }]
+          : []
+      }));
+
+      await migrateDocumentsTypeCheck(query);
+
+      const addSql = query.mock.calls
+        .map(([sql]) => sql as string)
+        .find((sql) => sql.includes('ADD CONSTRAINT'));
+      expect(addSql).toContain("'shipping_address'");
+      expect(addSql).toContain("'address'");
+      expect(addSql).toContain("'supplier'");
+    });
+
+    it('rolls back when the constraint cannot be recreated', async () => {
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('ADD CONSTRAINT')) throw new Error('migration failed');
+        return { rows: [] };
+      });
+
+      await expect(migrateDocumentsTypeCheck(query)).rejects.toThrow('migration failed');
+      expect(query).toHaveBeenCalledWith('ROLLBACK');
+    });
+  });
+
   describe('getDatabaseConnection', () => {
     it('should create database connection successfully', async () => {
       const env = {
@@ -91,9 +143,7 @@ describe('Database Library', () => {
         DATABASE_NAME: 'test_db'
       };
 
-      const mockSecretsClient = require('@aws-sdk/client-secrets-manager').SecretsManagerClient;
-      const mockSend = mockSecretsClient().send;
-      mockSend.mockResolvedValue({
+      mockSecretsSend.mockResolvedValue({
         SecretString: JSON.stringify({
           username: 'testuser',
           password: 'testpass'
@@ -106,6 +156,32 @@ describe('Database Library', () => {
 
       expect(connection).toBeDefined();
       expect(connection.query).toBeDefined();
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
+    });
+
+    it('resets the pool when schema initialization fails', async () => {
+      const env = {
+        DATABASE_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',
+        DATABASE_CLUSTER_ENDPOINT: 'test-cluster.cluster-xyz.us-east-1.rds.amazonaws.com',
+        DATABASE_NAME: 'test_db'
+      };
+
+      mockSecretsSend.mockResolvedValue({ SecretString: 'plain-password' });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockRejectedValueOnce(new Error('check constraint "documents_type_check" of relation "documents" is violated by some row'));
+
+      await expect(getDatabaseConnection(env)).rejects.toThrow('documents_type_check');
+      expect(mockEnd).toHaveBeenCalled();
+
+      mockQuery.mockResolvedValue({ rows: [] });
+      const connection = await getDatabaseConnection(env);
+      expect(connection).toBeDefined();
     });
   });
 

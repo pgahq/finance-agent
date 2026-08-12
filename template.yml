@@ -667,7 +667,7 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
       Handler: dist/create_invoice.processor
-      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
       VpcConfig:
@@ -677,7 +677,7 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Trigger Create Invoice - HTTP API endpoint accepting a file blob for a not-yet-existing invoice
+  # Trigger Create Invoice - HTTP API endpoint that creates a new invoice from an Intercom conversation.
   TriggerCreateInvoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -685,10 +685,12 @@ Resources:
       Handler: dist/trigger_create_invoice.handler
       Role: !GetAtt FinanceAgentLambdaRole.Arn
       Timeout: 30
-      MemorySize: 512
+      MemorySize: 1024
       Environment:
         Variables:
           ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+          INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
+          INTERCOM_API_BASE_URL: https://api.intercom.io
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -707,5 +709,5 @@ Outputs:
     Description: POST endpoint to trigger invoice enrichment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/enrich-invoice"
   CreateInvoiceApiUrl:
-    Description: POST endpoint to create a new invoice from an uploaded attachment
+    Description: POST endpoint to create a new invoice from an Intercom conversation attachment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice"

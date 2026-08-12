@@ -132,54 +132,47 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     // Create embedding for the query
     const queryEmbedding = await createEmbedding(query);
 
-    // Get database connection
     const db = await getDatabaseConnection(process.env);
 
-    try {
-      // Use hybrid search that combines semantic similarity with exact text matching
-      const results = await searchDocuments(
-        db,
-        queryEmbedding,
-        query,
-        documentType || 'supplier', // Default to supplier if no type specified
-        limit
-      );
+    // Use hybrid search that combines semantic similarity with exact text matching
+    const results = await searchDocuments(
+      db,
+      queryEmbedding,
+      query,
+      documentType || 'supplier', // Default to supplier if no type specified
+      limit
+    );
 
-      // Filter by similarity threshold and transform results
-      const ragResults: RAGResult[] = results
-        .filter(row => parseFloat(row.similarity) >= similarityThreshold)
-        .map(row => ({
-          workday_id: row.workday_id,
-          type: row.type,
-          content: row.content,
-          metadata: row.metadata,
-          similarity: parseFloat(row.similarity)
-        }));
+    // Filter by similarity threshold and transform results
+    const ragResults: RAGResult[] = results
+      .filter(row => parseFloat(row.similarity) >= similarityThreshold)
+      .map(row => ({
+        workday_id: row.workday_id,
+        type: row.type,
+        content: row.content,
+        metadata: row.metadata,
+        similarity: parseFloat(row.similarity)
+      }));
 
-      // Consolidated RAG results log
-      if (ragResults.length > 0) {
-        debug(`RAG Query: "${query}"`);
-        debug(`Query executed successfully, returned ${results.length} rows`);
-        debug(`Top similarity scores: ${ragResults.map(r => r.similarity.toFixed(3)).join(', ')}`);
+    // Consolidated RAG results log
+    if (ragResults.length > 0) {
+      debug(`RAG Query: "${query}"`);
+      debug(`Query executed successfully, returned ${results.length} rows`);
+      debug(`Top similarity scores: ${ragResults.map(r => r.similarity.toFixed(3)).join(', ')}`);
 
-        // Show excerpt of first few results
-        const excerpt = ragResults.slice(0, 3).map(r => ({
-          workday_id: r.workday_id,
-          type: r.type,
-          similarity: r.similarity.toFixed(3),
-          contentPreview: r.content.substring(0, 100) + '...'
-        }));
-        debug(`First few results:`, excerpt);
-      } else {
-        debug(`RAG Query: "${query}" - No documents found above similarity threshold`);
-      }
-
-      return ragResults;
-
-    } finally {
-      await db.close();
+      // Show excerpt of first few results
+      const excerpt = ragResults.slice(0, 3).map(r => ({
+        workday_id: r.workday_id,
+        type: r.type,
+        similarity: r.similarity.toFixed(3),
+        contentPreview: r.content.substring(0, 100) + '...'
+      }));
+      debug(`First few results:`, excerpt);
+    } else {
+      debug(`RAG Query: "${query}" - No documents found above similarity threshold`);
     }
 
+    return ragResults;
   } catch (error) {
     debug(`Error in RAG document query: ${error}`);
     throw error;

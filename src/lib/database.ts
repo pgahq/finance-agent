@@ -11,7 +11,19 @@ export interface DatabaseConfig {
   password: string;
 }
 
-export type DocumentType = 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category';
+export const DOCUMENT_TYPES = [
+  'supplier',
+  'invoice',
+  'company',
+  'cost_center',
+  'payment_terms',
+  'event',
+  'lob',
+  'fund',
+  'spend_category',
+] as const;
+
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 // Document interface
 export interface Document {
@@ -30,12 +42,20 @@ export interface DatabaseConnection {
   close: () => Promise<void>;
 }
 
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function documentsTypeCheckSql(types: readonly string[]): string {
+  return `CHECK (type IN (${types.map(sqlStringLiteral).join(', ')}))`;
+}
+
 // Database schema creation
 export const CREATE_DOCUMENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workday_id VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category')),
+    type VARCHAR(20) NOT NULL ${documentsTypeCheckSql(DOCUMENT_TYPES)},
     content TEXT NOT NULL,
     metadata JSONB,
     embedding VECTOR(1536),
@@ -51,11 +71,38 @@ export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
 ];
 
-// Migrations to run on every cold start (idempotent)
-export const MIGRATIONS = [
-  `ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`,
-  `ALTER TABLE documents ADD CONSTRAINT documents_type_check CHECK (type IN ('supplier', 'invoice', 'company', 'cost_center', 'payment_terms', 'event', 'lob', 'fund', 'spend_category'))`,
-];
+export async function migrateDocumentsTypeCheck(
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
+): Promise<void> {
+  await query('BEGIN');
+  try {
+    await query(`SELECT pg_advisory_xact_lock(hashtext('finance-agent:documents_type_check'))`);
+    const extrasResult = await query(
+      `SELECT DISTINCT type FROM documents WHERE type <> ALL($1::text[])`,
+      [[...DOCUMENT_TYPES]]
+    );
+    const extras = extrasResult.rows
+      .map((row) => row.type)
+      .filter((type): type is string => typeof type === 'string' && type.length > 0);
+
+    if (extras.length > 0) {
+      debug(
+        'documents.type values outside DocumentType allowlist (included in CHECK to avoid startup failure):',
+        extras
+      );
+    }
+
+    const checkTypes = [...new Set<string>([...DOCUMENT_TYPES, ...extras])];
+    await query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`);
+    await query(
+      `ALTER TABLE documents ADD CONSTRAINT documents_type_check ${documentsTypeCheckSql(checkTypes)}`
+    );
+    await query('COMMIT');
+  } catch (error) {
+    await query('ROLLBACK');
+    throw error;
+  }
+}
 
 // Enable pgvector extension
 export const ENABLE_PGVECTOR = `CREATE EXTENSION IF NOT EXISTS vector;`;
@@ -133,13 +180,20 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
 
-      // Run migrations
-      for (const migrationSql of MIGRATIONS) {
-        await pool.query(migrationSql);
+      const migrationClient = await pool.connect();
+      try {
+        await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
+      } finally {
+        migrationClient.release();
       }
-
     } catch (error) {
       debug('Error initializing database schema:', error);
+      try {
+        await pool.end();
+      } catch (closeError) {
+        debug('Error closing pool after schema init failure:', closeError);
+      }
+      pool = null;
       throw error;
     }
 
@@ -163,13 +217,16 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       }
     },
     close: async () => {
-      if (pool) {
-        debug('Closing database connection pool');
-        await pool.end();
-        pool = null;
-      }
+      await closeDatabasePool();
     }
   };
+}
+
+export async function closeDatabasePool(): Promise<void> {
+  if (!pool) return;
+  debug('Closing database connection pool');
+  await pool.end();
+  pool = null;
 }
 
 // Document CRUD operations
