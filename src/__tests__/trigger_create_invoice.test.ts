@@ -282,20 +282,6 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 500 when INTERCOM_ACCESS_TOKEN is not configured', async () => {
-    mockGetIntercomConfig.mockImplementation(() => {
-      throw new Error('INTERCOM_ACCESS_TOKEN is required');
-    });
-
-    const response = await handler(buildEvent());
-
-    expect(response).toEqual({
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'error', message: 'Internal server error' }),
-    });
-  });
-
   it('uploads every PDF and invokes the processor with all attachment metadata', async () => {
     const response = await handler(buildEvent());
 

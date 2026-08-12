@@ -132,7 +132,6 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     // Create embedding for the query
     const queryEmbedding = await createEmbedding(query);
 
-    // The pool is shared by concurrent RAG tools.
     const db = await getDatabaseConnection(process.env);
 
     // Use hybrid search that combines semantic similarity with exact text matching

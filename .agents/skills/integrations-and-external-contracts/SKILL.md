@@ -86,6 +86,3 @@ envelope `Header` element.
 - Each Workday invoice receives its corresponding PDF as `Attachment_Data`
 - Success Slack details include filename, content type, byte size, and
   `includedInline`; never include base64 content
-- If Workday accepts the same invoice without `File_Content` but returns an
-  authentication fault when it is present, inspect attachment-specific security.
-  `Put_Procurement_Document_Attachment` is the supported two-step alternative.
