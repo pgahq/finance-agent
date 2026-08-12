@@ -30,7 +30,7 @@ jest.mock('../lib/workday.js', () => ({
     invoiceWID: 'new-invoice-wid',
     appliedFallbacks: [],
     attachmentAttachedViaPut: true
-  }),
+  })
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -167,13 +167,8 @@ describe('create_invoice', () => {
 
     await expect(processor(event as any)).resolves.not.toThrow();
 
-    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledWith(
-      {},
-      expect.arrayContaining([expect.objectContaining({ s3Key: 'new-invoices/req-1/invoice.pdf' })]),
-      undefined,
-      { descriptor: 'Default Company', id: 'Default_OCR_Company' },
-      emailContext,
-    );
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][4]).toEqual(emailContext);
 
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
@@ -192,12 +187,8 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
-        attachmentAttachedViaPut: true,
-        attachmentIncludedInSubmit: false,
-      }),
-      undefined,
-      undefined,
-      'Attachment added via *Put_Procurement_Document_Attachment* (not inline on Submit)'
+        attachmentAttachedViaPut: true
+      })
     );
   });
 

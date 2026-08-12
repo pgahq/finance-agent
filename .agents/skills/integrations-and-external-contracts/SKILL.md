@@ -81,9 +81,8 @@ containing only the original name/message.
 - Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Create-invoice Workday flow is two-step:
-  1. `Submit_Supplier_Invoice` **without** inline `Attachment_Data` / `File_Content`
-  2. `Put_Procurement_Document_Attachment` using the submit response `Supplier_Invoice_Reference` as `Document_Reference`
-- Confirmed for `ISU_PGAgent_SUPPLIERS` (OAuth API Client): create without file content succeeds; **both** inline `Attachment_Data` on Submit **and** `Put_Procurement_Document_Attachment` fail with Workday `Authentication_Fault` / "invalid username or password". That fault is misleading — the same bearer token creates the invoice. Treat it as missing attachment/binary Put rights on the ISU (or domain security for business-document attachments), not bad OAuth credentials. Human Dev Portal success does not prove the ISU has those rights.
-- There is no other Resource Management supplier-invoice file-upload operation in the local WSDL beyond those two paths
-- Slack `create_invoice` success notes whether the Put attachment step ran
+- Workday attachment flow is two-step: create without inline `Attachment_Data`,
+  then call `Put_Procurement_Document_Attachment` with the returned invoice reference
+- The current ISU can create invoices but receives an authentication fault when
+  uploading file content through either attachment path; attachment-specific
+  Workday security must be granted

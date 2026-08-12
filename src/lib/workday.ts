@@ -712,9 +712,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    // Attachments are added after create via Put_Procurement_Document_Attachment, not inline
-    // Attachment_Data on Submit_Supplier_Invoice (inline File_Content hits ISU auth faults).
-
     ...(invoiceLines?.length && { Invoice_Line_Replacement_Data: invoiceLines }),
 
     ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
@@ -756,6 +753,12 @@ interface BusinessDocumentReference {
   ID: Array<{ $attributes: { type: string }; $value: string }>;
 }
 
+interface InvoiceFileAttachment {
+  fileName: string;
+  contentType: string;
+  base64Content: string;
+}
+
 interface PutProcurementDocumentAttachmentRequest {
   Put_Procurement_Document_Attachment_Request: {
     Document_Reference: BusinessDocumentReference;
@@ -764,12 +767,6 @@ interface PutProcurementDocumentAttachmentRequest {
       File_Content: string;
     };
   };
-}
-
-interface InvoiceFileAttachment {
-  fileName: string;
-  contentType: string;
-  base64Content: string;
 }
 
 interface ResourceManagementClient {
@@ -918,34 +915,22 @@ async function submitSupplierInvoiceSoap(
   });
 }
 
-/** Prefer the Submit_Supplier_Invoice response reference as Document_Reference for Put_Procurement_Document_Attachment. */
-export function extractBusinessDocumentReferenceFromSubmitResult(
-  submitResult: unknown
-): BusinessDocumentReference | undefined {
+function extractBusinessDocumentReference(submitResult: unknown): BusinessDocumentReference | undefined {
   const result = submitResult as {
     Supplier_Invoice_Reference?: BusinessDocumentReference;
     Submit_Supplier_Invoice_Response?: {
       Supplier_Invoice_Reference?: BusinessDocumentReference;
     };
   };
-
-  const ref =
-    result?.Supplier_Invoice_Reference
-    ?? result?.Submit_Supplier_Invoice_Response?.Supplier_Invoice_Reference;
-
-  if (ref?.ID) {
-    const ids = Array.isArray(ref.ID) ? ref.ID : [ref.ID];
-    if (ids.length > 0) {
-      return { ID: ids };
-    }
-  }
+  const reference =
+    result.Supplier_Invoice_Reference
+    ?? result.Submit_Supplier_Invoice_Response?.Supplier_Invoice_Reference;
+  if (reference?.ID?.length) return reference;
 
   const wid = extractIdsByType(submitResult, 'WID')[0];
-  if (!wid) return undefined;
-
-  return {
-    ID: [{ $attributes: { type: 'WID' }, $value: wid }]
-  };
+  return wid
+    ? { ID: [{ $attributes: { type: 'WID' }, $value: wid }] }
+    : undefined;
 }
 
 function createPutProcurementDocumentAttachmentRequest(
@@ -971,34 +956,14 @@ async function putProcurementDocumentAttachmentSoap(
   request: PutProcurementDocumentAttachmentRequest
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    debug('Putting procurement document attachment via SOAP', {
-      documentReference: request.Put_Procurement_Document_Attachment_Request.Document_Reference,
-      fileName: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.$attributes.Filename,
-      contentType: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.$attributes.Content_Type,
-      base64Length: request.Put_Procurement_Document_Attachment_Request.Document_Attachment_Data.File_Content.length
-    });
-
     client.Put_Procurement_Document_Attachment(request, (err: unknown, result: unknown) => {
-      debug(
-        'Put_Procurement_Document_Attachment outbound HTTP headers:',
-        redactOutboundHttpHeaders(client.lastRequestHeaders)
-      );
-      const soapHeaderXml = extractSoapEnvelopeHeaderXml(client.lastRequest);
-      debug(
-        'Put_Procurement_Document_Attachment SOAP envelope Header:',
-        soapHeaderXml ?? '<none>'
-      );
-      debug('Put_Procurement_Document_Attachment XML:', client.lastRequest);
       debug('Put_Procurement_Document_Attachment request sent', {
         requestBytes: Buffer.byteLength(client.lastRequest ?? '', 'utf8')
       });
-
       if (err) {
         debug('Error from Workday SOAP (Put_Procurement_Document_Attachment)', summarizeSoapError(err));
         return reject(err);
       }
-
-      debug('Put_Procurement_Document_Attachment response received', result);
       resolve(result);
     });
   });
@@ -1502,8 +1467,6 @@ export interface SubmitNewSupplierInvoiceParams {
   attachment: InvoiceFileAttachment;
 }
 
-// Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request),
-// then attaches the PDF via Put_Procurement_Document_Attachment using the submit response reference.
 export async function submitNewSupplierInvoice(
   context: { workdayConfig: WorkdayConfig },
   {
@@ -1560,7 +1523,7 @@ export async function submitNewSupplierInvoice(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
-      paymentTermsWID: paymentTermsId,
+      paymentTermsWID: paymentTermsId
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',
@@ -1569,13 +1532,9 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  const documentReference = extractBusinessDocumentReferenceFromSubmitResult(result);
-  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks, documentReference });
-
+  const documentReference = extractBusinessDocumentReference(result);
   if (!documentReference) {
-    throw new Error(
-      `Supplier invoice created${invoiceWID ? ` (${invoiceWID})` : ''}, but Submit_Supplier_Invoice returned no document reference for Put_Procurement_Document_Attachment`
-    );
+    throw new Error(`Supplier invoice ${invoiceWID ?? '(unknown WID)'} was created without a document reference`);
   }
 
   try {
@@ -1585,7 +1544,7 @@ export async function submitNewSupplierInvoice(
     );
   } catch (error) {
     const sanitized = sanitizeSoapError(error);
-    sanitized.message = `Invoice ${invoiceWID ?? '(unknown WID)'} created, but Put_Procurement_Document_Attachment failed: ${sanitized.message}`;
+    sanitized.message = `Invoice ${invoiceWID ?? '(unknown WID)'} created, but attachment failed: ${sanitized.message}`;
     throw sanitized;
   }
 

@@ -192,7 +192,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       invoiceWID: createOutcome.invoiceWID,
       fileName,
       attachmentAttachedViaPut: createOutcome.attachmentAttachedViaPut,
-      attachmentIncludedInSubmit: false,
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,

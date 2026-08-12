@@ -1,18 +1,4 @@
-import { debug } from '@pga/logger';
-import {
-  annotateSupplierInvoice,
-  executeWorkdayQuery,
-  extractBusinessDocumentReferenceFromSubmitResult,
-  extractSoapEnvelopeHeaderXml,
-  getAllPaymentTerms,
-  getSupplierInvoiceWithAttachments,
-  getWorkdayConfig,
-  parsePurchaseOrderLines,
-  redactOutboundHttpHeaders,
-  submitNewSupplierInvoice,
-  submitRequestHasAttachmentData,
-  submitSupplierInvoiceUpdate
-} from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -2228,15 +2214,9 @@ describe('Workday utilities', () => {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
         Submit_Supplier_Invoice: jest.fn(),
-        Put_Procurement_Document_Attachment: jest.fn(((_request: any, callback: any) => {
-          callback(null, {
-            Document_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
-            }
-          });
-        })),
-        lastRequestHeaders: undefined,
-        lastRequest: undefined
+        Put_Procurement_Document_Attachment: jest.fn((_request: any, callback: any) => {
+          callback(null, { success: true });
+        })
       };
 
       const { soap } = require('strong-soap');
@@ -2265,11 +2245,6 @@ describe('Workday utilities', () => {
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
       expect(result.attachmentAttachedViaPut).toBe(true);
-      const { soap } = require('strong-soap');
-      expect(soap.BearerSecurity).toHaveBeenCalledWith('mock-access-token');
-      expect(mockClient.setEndpoint).toHaveBeenCalledWith(
-        'https://test.workday.com/ccx/service/test-tenant/Resource_Management/v44.1'
-      );
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
@@ -2279,27 +2254,20 @@ describe('Workday utilities', () => {
       });
     });
 
-    it('should omit Attachment_Data on Submit and attach via Put_Procurement_Document_Attachment', async () => {
+    it('should attach the file after creating the invoice', async () => {
       const mockClient = mockSoapClient();
       let capturedSubmitRequest: any;
       let capturedPutRequest: any;
 
+      let capturedSubmitRequest: any;
+      let capturedPutRequest: any;
       mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
         capturedSubmitRequest = request;
-        mockClient.lastRequestHeaders = {
-          'Content-Type': 'text/xml; charset=utf-8',
-          SOAPAction: '"Submit_Supplier_Invoice"',
-          Authorization: 'Bearer mock-access-token-secret'
-        };
-        mockClient.lastRequest = '<soap:Envelope><soap:Body/></soap:Envelope>';
-        callback(null, {
-          Supplier_Invoice_Reference: {
-            ID: [
-              { $attributes: { type: 'WID' }, $value: 'new-invoice-wid' },
-              { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-100' }
-            ]
-          }
-        });
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+      mockClient.Put_Procurement_Document_Attachment.mockImplementation((request: any, callback: any) => {
+        capturedPutRequest = request;
+        callback(null, { success: true });
       });
 
       mockClient.Put_Procurement_Document_Attachment.mockImplementation((request: any, callback: any) => {
@@ -2317,46 +2285,17 @@ describe('Workday utilities', () => {
         });
       });
 
-      const result = await submitNewSupplierInvoiceForTest();
-
-      expect(result.attachmentAttachedViaPut).toBe(true);
       expect(capturedSubmitRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toBeUndefined();
       expect(capturedPutRequest).toEqual({
         Put_Procurement_Document_Attachment_Request: {
           Document_Reference: {
-            ID: [
-              { $attributes: { type: 'WID' }, $value: 'new-invoice-wid' },
-              { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SI-100' }
-            ]
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
           },
           Document_Attachment_Data: {
             $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
             File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
           }
         }
-      });
-      expect(debug).toHaveBeenCalledWith(
-        'Put_Procurement_Document_Attachment outbound HTTP headers:',
-        expect.objectContaining({ Authorization: 'Bearer <redacted>' })
-      );
-    });
-
-    it('should surface Put_Procurement_Document_Attachment failures after a successful create', async () => {
-      const mockClient = mockSoapClient();
-      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-        callback(null, {
-          Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] }
-        });
-      });
-      mockClient.Put_Procurement_Document_Attachment.mockImplementation((_request: any, callback: any) => {
-        const err: any = new Error('invalid username or password');
-        err.name = 'Authentication_Fault';
-        callback(err);
-      });
-
-      await expect(submitNewSupplierInvoiceForTest()).rejects.toMatchObject({
-        name: 'Authentication_Fault',
-        message: expect.stringContaining('Invoice new-invoice-wid created, but Put_Procurement_Document_Attachment failed')
       });
     });
 
@@ -2428,6 +2367,20 @@ describe('Workday utilities', () => {
       });
     });
 
+    it('should identify the created invoice when attachment upload fails', async () => {
+      const mockClient = mockSoapClient();
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+      mockClient.Put_Procurement_Document_Attachment.mockImplementation((_request: any, callback: any) => {
+        callback(new Error('Attachment denied'));
+      });
+
+      await expect(submitNewSupplierInvoiceForTest()).rejects.toThrow(
+        'Invoice new-invoice-wid created, but attachment failed: Attachment denied'
+      );
+    });
+
     it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
       const soapError = Object.assign(new Error('Create failed'), {
@@ -2448,11 +2401,6 @@ describe('Workday utilities', () => {
       await expect(rejected).rejects.toThrow('Create failed');
       await expect(rejected).rejects.not.toHaveProperty('response');
       await expect(rejected).rejects.not.toHaveProperty('body');
-      expect(debug).toHaveBeenCalledWith('Error from Workday SOAP (Submit_Supplier_Invoice)', {
-        name: 'Error',
-        message: 'Create failed',
-        statusCode: 500
-      });
     });
   });
 

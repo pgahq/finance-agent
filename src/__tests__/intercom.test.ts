@@ -8,8 +8,6 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
-  selectAttachments,
-  type IntercomAttachment,
 } from '../lib/intercom.js';
 
 const originalFetch = global.fetch;
@@ -38,26 +36,6 @@ describe('intercom', () => {
         accessToken: 'token',
         apiBaseUrl: 'https://api.intercom.io',
       });
-    });
-  });
-
-  describe('selectAttachments', () => {
-    it('returns every PDF attachment', () => {
-      const attachments: IntercomAttachment[] = [
-        { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
-        { name: 'invoice.pdf', url: 'https://downloads.intercomcdn.com/a.pdf', contentType: 'application/pdf' },
-        { name: 'other.pdf', url: 'https://downloads.intercomcdn.com/b.pdf', contentType: 'application/pdf' },
-      ];
-
-      expect(selectAttachments(attachments)).toEqual([attachments[1], attachments[2]]);
-    });
-
-    it('returns undefined when no PDF exists', () => {
-      const attachments: IntercomAttachment[] = [
-        { name: 'photo.png', url: 'https://downloads.intercomcdn.com/a.png', contentType: 'image/png' },
-      ];
-
-      expect(selectAttachments(attachments)).toEqual([]);
     });
   });
 
