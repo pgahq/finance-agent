@@ -1,9 +1,11 @@
 import { debug } from '@pga/logger';
+import { z } from 'zod';
 import type { InvoiceData } from './types.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.intercom.io';
 const INTERCOM_VERSION = '2.14';
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // Intercom inbound email total limit is 20MB
+type EmailContext = NonNullable<InvoiceData['emailContext']>;
 
 export interface IntercomConfig {
   accessToken: string;
@@ -14,11 +16,11 @@ export interface IntercomAttachment {
   name: string;
   url: string;
   contentType: string;
+  emailContext: EmailContext;
 }
 
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
-  emailContext: NonNullable<InvoiceData['emailContext']>;
 }
 
 export class IntercomNotFoundError extends Error {
@@ -37,11 +39,13 @@ export class IntercomNoAttachmentError extends Error {
 
 export class IntercomAttachmentTooLargeError extends Error {
   readonly sizeBytes: number;
+  readonly combined: boolean;
 
-  constructor(sizeBytes: number) {
+  constructor(sizeBytes: number, combined = false) {
     super(`Attachment exceeds maximum size of ${MAX_ATTACHMENT_BYTES} bytes (got ${sizeBytes})`);
     this.name = 'IntercomAttachmentTooLargeError';
     this.sizeBytes = sizeBytes;
+    this.combined = combined;
   }
 }
 
@@ -61,24 +65,30 @@ interface IntercomPartAttachment {
   content_type?: string;
 }
 
-interface IntercomConversationPart {
-  attachments?: IntercomPartAttachment[];
-}
-
-interface IntercomConversationResponse {
-  id?: string;
-  source?: {
-    subject?: string | null;
-    body?: string | null;
-    author?: {
-      email?: string | null;
-    };
-    attachments?: IntercomPartAttachment[];
-  };
-  conversation_parts?: {
-    conversation_parts?: IntercomConversationPart[];
-  };
-}
+const intercomAttachmentSchema = z.object({
+  name: z.string().optional(),
+  url: z.string().optional(),
+  content_type: z.string().optional(),
+});
+const intercomAuthorSchema = z.object({ email: z.string().nullable().optional() });
+const intercomConversationPartSchema = z.object({
+  body: z.string().nullable().optional(),
+  author: intercomAuthorSchema.optional(),
+  attachments: z.array(intercomAttachmentSchema).optional(),
+});
+const intercomConversationSchema = z.object({
+  id: z.string().optional(),
+  source: z.object({
+    subject: z.string().nullable().optional(),
+    body: z.string().nullable().optional(),
+    author: intercomAuthorSchema.optional(),
+    attachments: z.array(intercomAttachmentSchema).optional(),
+  }).optional(),
+  conversation_parts: z.object({
+    conversation_parts: z.array(intercomConversationPartSchema).optional(),
+  }).optional(),
+});
+type IntercomConversationResponse = z.infer<typeof intercomConversationSchema>;
 
 export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
   const accessToken = env.INTERCOM_ACCESS_TOKEN;
@@ -91,20 +101,33 @@ export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
 }
 
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
-  const raw: IntercomPartAttachment[] = [
-    ...(conversation.source?.attachments ?? []),
-    ...(conversation.conversation_parts?.conversation_parts ?? []).flatMap(
-      (part) => part.attachments ?? [],
-    ),
-  ];
-
-  return raw
+  const sourceContext = {
+    emailFrom: conversation.source?.author?.email || undefined,
+    subject: conversation.source?.subject || undefined,
+    plainTextBody: conversation.source?.body || undefined,
+  };
+  const mapAttachments = (
+    attachments: IntercomPartAttachment[],
+    emailContext: EmailContext
+  ): IntercomAttachment[] => attachments
     .filter((attachment): attachment is IntercomPartAttachment & { url: string } => Boolean(attachment.url))
     .map((attachment) => ({
       name: attachment.name || 'attachment',
       url: attachment.url,
       contentType: attachment.content_type || 'application/octet-stream',
+      emailContext,
     }));
+
+  return [
+    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext),
+    ...(conversation.conversation_parts?.conversation_parts ?? []).flatMap((part) =>
+      mapAttachments(part.attachments ?? [], {
+        emailFrom: part.author?.email || sourceContext.emailFrom,
+        subject: sourceContext.subject,
+        plainTextBody: part.body || sourceContext.plainTextBody,
+      })
+    ),
+  ];
 }
 
 export function sanitizeFileName(fileName: string): string {
@@ -118,16 +141,6 @@ export function sanitizeFileName(fileName: string): string {
 
   const withoutTraversal = base.replace(/^\.+/, '') || 'attachment.pdf';
   return withoutTraversal.slice(0, 200);
-}
-
-export function buildEmailContext(
-  conversation: IntercomConversationResponse,
-): NonNullable<InvoiceData['emailContext']> {
-  return {
-    emailFrom: conversation.source?.author?.email || undefined,
-    subject: conversation.source?.subject || undefined,
-    plainTextBody: conversation.source?.body || undefined,
-  };
 }
 
 const INTERCOM_CDN_HOST_PATTERN = /^(?:[a-z0-9-]+\.)*intercomcdn\.com$/i;
@@ -190,7 +203,17 @@ export async function fetchConversationInvoiceData(
     );
   }
 
-  const conversation = await response.json() as IntercomConversationResponse;
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new IntercomUpstreamError('Intercom Conversations API returned invalid JSON');
+  }
+  const parsed = intercomConversationSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new IntercomUpstreamError('Intercom Conversations API returned an unexpected response');
+  }
+  const conversation = parsed.data;
   const attachments = collectAttachments(conversation);
   const invoiceAttachments = attachments.filter(
     (attachment) => attachment.contentType === 'application/pdf'
@@ -208,7 +231,6 @@ export async function fetchConversationInvoiceData(
       ...attachment,
       name: sanitizeFileName(attachment.name),
     })),
-    emailContext: buildEmailContext(conversation),
   };
 }
 
@@ -240,7 +262,12 @@ export async function downloadAttachment(url: string): Promise<Buffer> {
     }
   }
 
-  const bytes = await response.arrayBuffer();
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await response.arrayBuffer();
+  } catch {
+    throw new IntercomUpstreamError('Failed to read Intercom attachment response');
+  }
   if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
     throw new IntercomAttachmentTooLargeError(bytes.byteLength);
   }

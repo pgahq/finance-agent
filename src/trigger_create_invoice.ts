@@ -13,11 +13,49 @@ import {
   IntercomNotFoundError,
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
+  type IntercomAttachment,
 } from './lib/intercom.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
+}
+
+const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS = 4;
+
+async function downloadInvoiceAttachments(attachments: IntercomAttachment[]): Promise<Buffer[]> {
+  const buffers = new Array<Buffer>(attachments.length);
+  let nextIndex = 0;
+  let totalBytes = 0;
+  let stopped = false;
+
+  const worker = async () => {
+    while (!stopped) {
+      const index = nextIndex++;
+      if (index >= attachments.length) return;
+
+      try {
+        const buffer = await downloadAttachment(attachments[index].url);
+        totalBytes += buffer.length;
+        if (totalBytes > MAX_ATTACHMENT_BYTES) {
+          stopped = true;
+          throw new IntercomAttachmentTooLargeError(totalBytes, true);
+        }
+        buffers[index] = buffer;
+      } catch (error) {
+        stopped = true;
+        throw error;
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_CONCURRENT_ATTACHMENT_DOWNLOADS, attachments.length) },
+      worker
+    )
+  );
+  return buffers;
 }
 
 function formatError(error: unknown): string {
@@ -76,8 +114,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     ? requestBody.conversationId.trim()
     : '';
   if (!conversationId) {
-    debug('Missing conversationId in create invoice trigger request');
-    return jsonResponse(400, { status: 'error', message: 'conversationId is required' });
+    return jsonResponse(400, {
+      status: 'error',
+      message: 'conversationId is required'
+    });
   }
 
   let intercomConfig;
@@ -127,16 +167,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
-  const { attachments, emailContext } = conversationData;
+  const attachments = conversationData.attachments;
   let buffers: Buffer[];
   try {
-    buffers = await Promise.all(
-      attachments.map((attachment) => downloadAttachment(attachment.url))
-    );
-    const totalBytes = buffers.reduce((total, buffer) => total + buffer.length, 0);
-    if (totalBytes > MAX_ATTACHMENT_BYTES) {
-      throw new IntercomAttachmentTooLargeError(totalBytes);
-    }
+    buffers = await downloadInvoiceAttachments(attachments);
   } catch (error) {
     if (error instanceof IntercomAttachmentTooLargeError) {
       debug('Intercom attachment too large', {
@@ -145,7 +179,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
       return jsonResponse(400, {
         status: 'error',
-        message: 'Attachment exceeds maximum allowed size',
+        message: error.combined
+          ? 'Combined attachment size exceeds maximum allowed size'
+          : 'Attachment exceeds maximum allowed size',
         conversationId,
       });
     }
@@ -183,6 +219,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         s3Key,
         fileName: attachment.name,
         contentType: attachment.contentType,
+        emailContext: attachment.emailContext,
       };
     }));
 
@@ -200,7 +237,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         FunctionName: processorFunctionName,
         InvocationType: 'Event',
         Payload: JSON.stringify({
-          data: [{ ...attachment, emailContext }],
+          data: [attachment],
           page: 1,
           totalPages: 1,
         }),

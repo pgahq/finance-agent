@@ -23,18 +23,21 @@ Request body:
 { "conversationId": "1234567890" }
 ```
 
+This is a new Intercom-only contract. Direct-upload bodies
+(`fileName` / `contentType` / `fileContent`) are not accepted.
+
 Flow:
 
 1. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
 2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` once per attachment, each carrying `emailContext`
+5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
 | HTTP | Meaning |
 | --- | --- |
-| 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, `conversationId` |
+| 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, and `conversationId` |
 | 400 | Missing `conversationId`, invalid JSON, no PDF, or attachment too large |
 | 401 | Bad/missing finance-agent bearer token |
 | 404 | Intercom conversation not found |
@@ -80,7 +83,8 @@ envelope `Header` element.
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
 - Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
 - Only `application/pdf` attachments are accepted; missing PDF → 400
-- Max individual and combined download size is 20MB; trigger Lambda timeout is 30s (HTTP API integration ceiling) with 1024 MB memory
+- Max individual and combined download size is 20MB; downloads use at most four
+  concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
 - Each Workday invoice receives its corresponding PDF as `Attachment_Data`

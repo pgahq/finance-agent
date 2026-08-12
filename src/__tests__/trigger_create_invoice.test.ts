@@ -90,24 +90,31 @@ function buildEvent(overrides: Partial<APIGatewayProxyEventV2> = {}): APIGateway
   };
 }
 
+const invoiceEmailContext = {
+  emailFrom: 'ap@vendor.com',
+  subject: 'Please process',
+  plainTextBody: 'Invoice attached',
+};
+const supportEmailContext = {
+  emailFrom: 'approver@pgahq.com',
+  subject: 'Please process',
+  plainTextBody: 'Use cost center 72200',
+};
 const conversationInvoiceData = {
   attachments: [
     {
       name: 'invoice.pdf',
       url: 'https://downloads.intercomcdn.com/invoice.pdf',
       contentType: 'application/pdf',
+      emailContext: invoiceEmailContext,
     },
     {
       name: 'support.pdf',
       url: 'https://downloads.intercomcdn.com/support.pdf',
       contentType: 'application/pdf',
+      emailContext: supportEmailContext,
     },
   ],
-  emailContext: {
-    emailFrom: 'ap@vendor.com',
-    subject: 'Please process',
-    plainTextBody: 'Invoice attached',
-  },
 };
 
 describe('trigger_create_invoice handler', () => {
@@ -164,8 +171,33 @@ describe('trigger_create_invoice handler', () => {
     expect(response).toEqual({
       statusCode: 400,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'error', message: 'conversationId is required' }),
+      body: JSON.stringify({
+        status: 'error',
+        message: 'conversationId is required'
+      }),
     });
+    expect(mockFetchConversationInvoiceData).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when the body is a direct-upload payload without conversationId', async () => {
+    const response = await handler(buildEvent({
+      body: JSON.stringify({
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        fileContent: Buffer.from('direct-upload').toString('base64'),
+      }),
+    }));
+
+    expect(response).toEqual({
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'error',
+        message: 'conversationId is required'
+      }),
+    });
+    expect(mockFetchConversationInvoiceData).not.toHaveBeenCalled();
+    expect(mockPutBinaryToS3).not.toHaveBeenCalled();
   });
 
   it('decodes a base64-encoded JSON body from API Gateway', async () => {
@@ -240,10 +272,34 @@ describe('trigger_create_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        message: 'Attachment exceeds maximum allowed size',
+        message: 'Combined attachment size exceeds maximum allowed size',
         conversationId: '1234567890',
       }),
     });
+  });
+
+  it('limits concurrent attachment downloads', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      attachments: Array.from({ length: 6 }, (_, index) => ({
+        name: `invoice-${index}.pdf`,
+        url: `https://downloads.intercomcdn.com/invoice-${index}.pdf`,
+        contentType: 'application/pdf',
+        emailContext: invoiceEmailContext,
+      })),
+    });
+    let activeDownloads = 0;
+    let maxActiveDownloads = 0;
+    mockDownloadAttachment.mockImplementation(async () => {
+      activeDownloads += 1;
+      maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      activeDownloads -= 1;
+      return Buffer.from('pdf');
+    });
+
+    await handler(buildEvent());
+
+    expect(maxActiveDownloads).toBe(4);
   });
 
   it('returns 502 when Intercom Conversations API fails', async () => {
@@ -327,7 +383,7 @@ describe('trigger_create_invoice handler', () => {
           s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
           fileName: 'invoice.pdf',
           contentType: 'application/pdf',
-          emailContext: conversationInvoiceData.emailContext,
+          emailContext: invoiceEmailContext,
         }],
         page: 1,
         totalPages: 1,
@@ -341,7 +397,7 @@ describe('trigger_create_invoice handler', () => {
           s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
           fileName: 'support.pdf',
           contentType: 'application/pdf',
-          emailContext: conversationInvoiceData.emailContext,
+          emailContext: supportEmailContext,
         }],
         page: 1,
         totalPages: 1,

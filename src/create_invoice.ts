@@ -134,8 +134,21 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       costCenterId: process.env.FALLBACK_COST_CENTER_ID,
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
     };
+    const emailWorktags = result.emailWorktags ? {
+      costCenterId: result.emailWorktags.costCenter?.code ?? null,
+      eventWid: result.emailWorktags.event?.workdayId ?? null,
+      lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
+      fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
+      spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
+    } : undefined;
 
-    const merged = await buildFinalInvoiceLines(candidateLines, poLines, undefined, fallbackIds);
+    const merged = await buildFinalInvoiceLines(
+      candidateLines,
+      poLines,
+      emailContext?.plainTextBody,
+      fallbackIds,
+      emailWorktags
+    );
     let finalLines = merged.lines;
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
@@ -151,8 +164,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           hasDiscount: null,
         }],
         undefined,
-        undefined,
-        fallbackIds
+        emailContext?.plainTextBody,
+        fallbackIds,
+        emailWorktags
       );
       finalLines = synthetic.lines;
     }

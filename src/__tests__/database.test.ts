@@ -25,10 +25,13 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockQuery = jest.fn();
 const mockEnd = jest.fn();
 const mockOn = jest.fn();
+const mockRelease = jest.fn();
+const mockConnect = jest.fn();
 const mockPool = {
   query: mockQuery,
   end: mockEnd,
   on: mockOn,
+  connect: mockConnect,
 };
 
 jest.mock('pg', () => ({
@@ -40,6 +43,7 @@ describe('Database Library', () => {
     jest.clearAllMocks();
     mockEnd.mockResolvedValue(undefined);
     mockQuery.mockResolvedValue({ rows: [] });
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         username: 'testuser',
@@ -86,13 +90,15 @@ describe('Database Library', () => {
 
   describe('migrateDocumentsTypeCheck', () => {
     it('recreates the type check with only known document types', async () => {
-      const query = jest.fn()
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] });
+      const query = jest.fn(async (_sql: string, _params?: unknown[]) => ({
+        rows: [] as Array<{ type?: string }>
+      }));
 
       await migrateDocumentsTypeCheck(query);
 
+      expect(query).toHaveBeenCalledWith('BEGIN');
+      expect(query).toHaveBeenCalledWith(expect.stringContaining('pg_advisory_xact_lock'));
+      expect(query).toHaveBeenCalledWith('COMMIT');
       const addSql = query.mock.calls
         .map(([sql]) => sql as string)
         .find((sql) => sql.includes('ADD CONSTRAINT'));
@@ -102,10 +108,11 @@ describe('Database Library', () => {
     });
 
     it('includes unexpected existing types so ADD CONSTRAINT does not fail', async () => {
-      const query = jest.fn()
-        .mockResolvedValueOnce({ rows: [{ type: 'shipping_address' }, { type: 'address' }] })
-        .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [] });
+      const query = jest.fn(async (sql: string) => ({
+        rows: sql.includes('SELECT DISTINCT')
+          ? [{ type: 'shipping_address' }, { type: 'address' }]
+          : []
+      }));
 
       await migrateDocumentsTypeCheck(query);
 
@@ -115,6 +122,16 @@ describe('Database Library', () => {
       expect(addSql).toContain("'shipping_address'");
       expect(addSql).toContain("'address'");
       expect(addSql).toContain("'supplier'");
+    });
+
+    it('rolls back when the constraint cannot be recreated', async () => {
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('ADD CONSTRAINT')) throw new Error('migration failed');
+        return { rows: [] };
+      });
+
+      await expect(migrateDocumentsTypeCheck(query)).rejects.toThrow('migration failed');
+      expect(query).toHaveBeenCalledWith('ROLLBACK');
     });
   });
 
@@ -139,6 +156,8 @@ describe('Database Library', () => {
 
       expect(connection).toBeDefined();
       expect(connection.query).toBeDefined();
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockRelease).toHaveBeenCalledTimes(1);
     });
 
     it('resets the pool when schema initialization fails', async () => {

@@ -74,26 +74,34 @@ export const CREATE_INDEXES = [
 export async function migrateDocumentsTypeCheck(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
 ): Promise<void> {
-  const extrasResult = await query(
-    `SELECT DISTINCT type FROM documents WHERE type <> ALL($1::text[])`,
-    [[...DOCUMENT_TYPES]]
-  );
-  const extras = extrasResult.rows
-    .map((row) => row.type)
-    .filter((type): type is string => typeof type === 'string' && type.length > 0);
-
-  if (extras.length > 0) {
-    debug(
-      'documents.type values outside DocumentType allowlist (included in CHECK to avoid startup failure):',
-      extras
+  await query('BEGIN');
+  try {
+    await query(`SELECT pg_advisory_xact_lock(hashtext('finance-agent:documents_type_check'))`);
+    const extrasResult = await query(
+      `SELECT DISTINCT type FROM documents WHERE type <> ALL($1::text[])`,
+      [[...DOCUMENT_TYPES]]
     );
-  }
+    const extras = extrasResult.rows
+      .map((row) => row.type)
+      .filter((type): type is string => typeof type === 'string' && type.length > 0);
 
-  const checkTypes = [...new Set<string>([...DOCUMENT_TYPES, ...extras])];
-  await query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`);
-  await query(
-    `ALTER TABLE documents ADD CONSTRAINT documents_type_check ${documentsTypeCheckSql(checkTypes)}`
-  );
+    if (extras.length > 0) {
+      debug(
+        'documents.type values outside DocumentType allowlist (included in CHECK to avoid startup failure):',
+        extras
+      );
+    }
+
+    const checkTypes = [...new Set<string>([...DOCUMENT_TYPES, ...extras])];
+    await query(`ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_type_check`);
+    await query(
+      `ALTER TABLE documents ADD CONSTRAINT documents_type_check ${documentsTypeCheckSql(checkTypes)}`
+    );
+    await query('COMMIT');
+  } catch (error) {
+    await query('ROLLBACK');
+    throw error;
+  }
 }
 
 // Enable pgvector extension
@@ -172,7 +180,12 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
 
-      await migrateDocumentsTypeCheck((sql, params) => pool!.query(sql, params));
+      const migrationClient = await pool.connect();
+      try {
+        await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
+      } finally {
+        migrationClient.release();
+      }
     } catch (error) {
       debug('Error initializing database schema:', error);
       try {
