@@ -59,9 +59,9 @@ references:
           name: Publish Gmail Workspace add-on
           command: |
             set -euo pipefail
-            KEY="${GCP_SERVICE_ACCOUNT_KEY:-${GCLOUD_SERVICE_KEY:-}}"
+            KEY="${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}"
             if [ -z "${KEY}" ]; then
-              echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
+              echo "Skipping Gmail add-on gcloud deploy; add FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
               exit 0
             fi
             GMAIL_ADDON_URL="$(aws cloudformation describe-stacks \

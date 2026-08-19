@@ -189,9 +189,7 @@ service account that can manage Workspace add-on deployments.
 
    | Name | Value |
    | --- | --- |
-   | `GCP_SERVICE_ACCOUNT_KEY` | The JSON key (raw JSON starting with `{`, or base64 of that JSON). The same key can be reused in other projects' contexts. |
-
-   `GCLOUD_SERVICE_KEY` is accepted as an alias.
+   | `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` | JSON key for `workspace-add-ons-ci@finance-agent-506013.iam.gserviceaccount.com` (raw JSON starting with `{`, or base64 of that JSON) |
 
    GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
    `GMAIL_ADDON_OAUTH_CLIENT_ID` is set per job in `.circleci/config.yml` from
@@ -202,7 +200,7 @@ service account that can manage Workspace add-on deployments.
    | `deploy-to-dev` | `finance-agent-gmail-sandbox@finance-agent-506013.iam.gserviceaccount.com` | `11281551445800182416` |
    | `deploy-to-prod` | `finance-agent-gmail@finance-agent-506013.iam.gserviceaccount.com` | `108741410526312943726` |
 
-Until `GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
+Until `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
 still finishes the AWS stack.
 
 Individual testers still install once:
