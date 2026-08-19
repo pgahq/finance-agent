@@ -49,5 +49,6 @@ export const processor = withProcessorHandler(async (context, costCenters, _even
     }),
     notifyLabel: 'cache_cost_centers',
     itemLabel: 'cost centers',
+    pruneAbsent: true,
   });
 });

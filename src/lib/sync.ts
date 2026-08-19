@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { bulkInsertDocuments, bulkUpdateDocuments, getDocumentsByType } from './database.js';
+import { bulkDeleteDocuments, bulkInsertDocuments, bulkUpdateDocuments, getDocumentsByType } from './database.js';
 import type { DatabaseConnection, DocumentType } from './database.js';
 import { createEmbedding } from './rag.js';
 import { notifyResult } from './slack.js';
@@ -17,6 +17,12 @@ export interface SyncDataSourceOptions<T> {
   createMetadata: (item: T) => Record<string, any>;
   /** When provided, existing items are checked for updates. Omit for insert-only sources. */
   isUpdated?: (existingMetadata: any, item: T) => boolean;
+  /**
+   * Delete existing documents of this type whose workdayId is not in `items`.
+   * Only safe when `items` is a complete current snapshot. Skipped when `items` is empty.
+   * Do not enable for windowed sources such as events.
+   */
+  pruneAbsent?: boolean;
   /** e.g. 'cache_suppliers' */
   notifyLabel: string;
   /** e.g. 'suppliers' — used in debug messages and Slack summary */
@@ -59,6 +65,7 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
     createContent,
     createMetadata,
     isUpdated,
+    pruneAbsent,
     notifyLabel,
     itemLabel,
   } = options;
@@ -84,7 +91,11 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       }
     }
 
-    debug(`Sync analysis: ${newIds.length} new, ${updatedIds.length} updated, ${unchangedIds.length} unchanged`);
+    const staleIds = pruneAbsent && items.size > 0
+      ? existingDocs.map(doc => doc.workday_id).filter(workdayId => !items.has(workdayId))
+      : [];
+
+    debug(`Sync analysis: ${newIds.length} new, ${updatedIds.length} updated, ${unchangedIds.length} unchanged, ${staleIds.length} absent`);
 
     let successCount = 0;
     let errorCount = 0;
@@ -121,6 +132,12 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       }
     }
 
+    if (staleIds.length > 0) {
+      debug(`Pruning ${staleIds.length} ${itemLabel} absent from the current snapshot`);
+      const deletedCount = await bulkDeleteDocuments(dbConnection, staleIds, type);
+      successCount += deletedCount;
+    }
+
     const processingTime = Date.now() - startTime;
     debug(`Bulk sync complete: ${successCount} operations successful, ${errorCount} errors`);
     debug(`Skipped ${unchangedIds.length} unchanged ${itemLabel}`);
@@ -135,6 +152,7 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
           new: newIds.length,
           updated: updatedIds.length,
           unchanged: unchangedIds.length,
+          ...(pruneAbsent ? { deleted: staleIds.length } : {}),
           errors: errorCount,
           processingTime,
         }

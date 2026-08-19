@@ -3,8 +3,9 @@ name: data-and-state-changes
 description: >-
   Cold-start Postgres schema init and documents RAG table migrations for
   finance-agent. Use when changing DocumentType, documents CHECK constraints,
-  getDatabaseConnection schema setup, pgvector indexes, or debugging
-  documents_type_check / schema init Lambda failures.
+  getDatabaseConnection schema setup, pgvector indexes, debugging
+  documents_type_check / schema init Lambda failures, or cache prune behavior
+  in syncDataSource.
 ---
 
 # Data and state changes
@@ -36,6 +37,14 @@ migration. A transaction-scoped advisory lock serializes the constraint DDL
 across concurrent Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
+
+## Cache prune
+
+`syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing
+rows of that type whose `workday_id` is missing from the incoming snapshot. Only
+enable it for queries that return the complete current set (cost centers). Do
+not enable it for windowed sources such as events. An empty snapshot does not
+prune.
 
 ## When adding a new document type
 
