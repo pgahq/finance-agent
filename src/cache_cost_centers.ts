@@ -51,6 +51,7 @@ export const processor = withProcessorHandler(async (context, costCenters, event
     itemLabel: 'cost centers',
     pruneAbsent: true,
     sourceTotal: event?.sourceTotal,
+    sourceFetchedCount: costCenters.length,
     pruneDryRun: process.env.COST_CENTER_PRUNE_DRY_RUN === 'true',
   });
-});
+}, { requireCompleteTotal: true });

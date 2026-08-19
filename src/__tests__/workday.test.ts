@@ -203,8 +203,32 @@ describe('Workday utilities', () => {
           })
         });
 
-      await expect(executeWorkdayQuery(mockConfig, mockQuery))
+      await expect(executeWorkdayQuery(mockConfig, mockQuery, { requireCompleteTotal: true }))
         .rejects.toThrow('Workday query incomplete: expected 3 rows, got 2');
+    });
+
+    it('does not throw on a total mismatch unless requireCompleteTotal is set', async () => {
+      const mockQuery = 'SELECT invoiceNumber FROM supplierInvoices LIMIT 5';
+      const mockTokenResponse = { access_token: 'mock-access-token' };
+      const mockQueryResponse = {
+        total: 12,
+        data: [
+          { invoiceNumber: 'INV-001' },
+          { invoiceNumber: 'INV-002' }
+        ]
+      };
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockTokenResponse)
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockQueryResponse)
+        });
+
+      await expect(executeWorkdayQuery(mockConfig, mockQuery)).resolves.toEqual(mockQueryResponse);
     });
 
     it('should handle empty query response', async () => {

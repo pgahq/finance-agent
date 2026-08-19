@@ -42,11 +42,13 @@ Do not delete production orphan rows from app code without an explicit ops decis
 
 `syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing
 rows of that type whose `workday_id` is missing from the incoming snapshot, and
-only when `sourceTotal` equals `items.size` (Workday `total` matches fetched
-rows). Empty snapshots, missing totals, and incomplete pulls skip prune and
-report `pruneSkipped` in Slack. Set `pruneDryRun: true` (cost centers:
-`COST_CENTER_PRUNE_DRY_RUN=true`) to log `absent` / `absentIds` without deleting.
-Do not enable prune for windowed sources such as events.
+only when `sourceTotal` equals `sourceFetchedCount` (Workday `total` matches the
+raw fetched array, not Map size after duplicate IDs). Empty snapshots, missing
+totals, and incomplete pulls skip prune and report `pruneSkipped` in Slack. Set
+`pruneDryRun: true` (cost centers: `COST_CENTER_PRUNE_DRY_RUN=true`) to log
+`absent` / `absentIds` without deleting. Cost-center cache passes
+`requireCompleteTotal: true` into `executeWorkdayQuery`; other WQL callers do
+not. Do not enable prune for windowed sources such as events.
 
 ## When adding a new document type
 

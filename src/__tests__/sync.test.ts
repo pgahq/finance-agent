@@ -96,6 +96,7 @@ describe('syncDataSource', () => {
     await syncDataSource(baseOptions({
       pruneAbsent: true,
       sourceTotal: 1,
+      sourceFetchedCount: 1,
     }));
 
     expect(bulkDeleteDocuments).toHaveBeenCalledWith(
@@ -166,6 +167,7 @@ describe('syncDataSource', () => {
     await syncDataSource(baseOptions({
       pruneAbsent: true,
       sourceTotal: 99,
+      sourceFetchedCount: 1,
     }));
 
     expect(bulkDeleteDocuments).not.toHaveBeenCalled();
@@ -184,6 +186,52 @@ describe('syncDataSource', () => {
     );
   });
 
+  it('does not prune when sourceFetchedCount is missing', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({
+      pruneAbsent: true,
+      sourceTotal: 1,
+    }));
+
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+    expect(notifyResult).toHaveBeenCalledWith(
+      'cache_cost_centers',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        syncStats: expect.objectContaining({
+          deleted: 0,
+          pruneSkipped: 'missing fetched count'
+        })
+      }),
+      undefined,
+      '1 cost centers'
+    );
+  });
+
+  it('still prunes when duplicate workday IDs shrink the item Map', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+    bulkDeleteDocuments.mockResolvedValue(1);
+
+    await syncDataSource(baseOptions({
+      pruneAbsent: true,
+      sourceTotal: 2,
+      sourceFetchedCount: 2,
+    }));
+
+    expect(bulkDeleteDocuments).toHaveBeenCalledWith(
+      dbConnection,
+      ['cc-inactive'],
+      'cost_center'
+    );
+  });
+
   it('logs absent IDs without deleting during a dry run', async () => {
     getDocumentsByType.mockResolvedValue([
       { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
@@ -193,6 +241,7 @@ describe('syncDataSource', () => {
     await syncDataSource(baseOptions({
       pruneAbsent: true,
       sourceTotal: 1,
+      sourceFetchedCount: 1,
       pruneDryRun: true,
     }));
 
