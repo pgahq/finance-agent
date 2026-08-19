@@ -415,6 +415,7 @@ interface buildSubmitInvoiceDataOptions {
   applySpendCategoryFallback?: boolean;
   omitEventWorktag?: boolean;
   omitLobWorktag?: boolean;
+  applyLobFallback?: boolean;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -496,7 +497,7 @@ function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions)
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
-  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag } = options;
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -522,6 +523,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (applySpendCategoryFallback && process.env.FALLBACK_SPEND_CATEGORY_ID) {
     fallbacks.push({ field: 'worktag:spendCategory', label: 'fallback spend category' });
+  }
+
+  if (applyLobFallback && process.env.FALLBACK_LOB_ID) {
+    fallbacks.push({ field: 'worktag:lob', label: 'fallback line of business' });
   }
 
   if (omitEventWorktag) {
@@ -651,6 +656,13 @@ function getFallbackRetryBuildOptions(
     };
   }
 
+  if (field === 'worktag:lob' && !options.omitLobWorktag && !options.applyLobFallback && process.env.FALLBACK_LOB_ID && !options.finalLines?.some(l => l.lineOfBusinessId)) {
+    return {
+      buildOptions: { ...options, applyLobFallback: true },
+      fallbackLabel: 'fallback line of business',
+    };
+  }
+
   if (field === 'worktag:lob' && !options.omitLobWorktag && options.finalLines?.some(l => l.lineOfBusinessId)) {
     return {
       buildOptions: { ...options, omitLobWorktag: true },
@@ -662,7 +674,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, currencyWID, attachment } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -675,6 +687,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
+  const fallbackLobId = process.env.FALLBACK_LOB_ID;
 
   const resolvedSupplierWID = supplierWID ?? defaultSupplierWID;
   const supplierRef = resolvedSupplierWID
@@ -724,7 +737,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+        ...(!omitLobWorktag && (applyLobFallback ? fallbackLobId : line.lineOfBusinessId) ? [createReference('Organization_Reference_ID', (applyLobFallback ? fallbackLobId : line.lineOfBusinessId)!)] : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ]);
       const isDiscountOverride = line.hasDiscount === true;

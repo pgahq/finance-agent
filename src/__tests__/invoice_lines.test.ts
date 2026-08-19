@@ -56,6 +56,12 @@ describe('extractLineOfBusinessId', () => {
     ])).toBe('LOB-Technology_Services');
   });
 
+  it('returns Default_Line_Of_Business', () => {
+    expect(extractLineOfBusinessId([
+      makeWorktag('Organization_Reference_ID', 'Default_Line_Of_Business'),
+    ])).toBe('Default_Line_Of_Business');
+  });
+
   it('returns null when no LOB worktag is present', () => {
     expect(extractLineOfBusinessId([
       makeWorktag('Cost_Center_Reference_ID', 'CC-Building Services-PBG'),
@@ -292,5 +298,82 @@ describe('buildFinalInvoiceLines', () => {
 
     expect(lookup).toHaveBeenCalledWith(['CC-Building Services-PBG']);
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+    expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
+  });
+
+  it('uses Default_Line_Of_Business when no PO, email, or related LOB is available', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: 'CC-Building Services-PBG',
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map());
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      { lineOfBusinessId: 'Default_Line_Of_Business' },
+      undefined,
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('Default_Line_Of_Business');
+    expect(result.appliedFallbacks.lineOfBusiness).toBe(true);
+  });
+
+  it('does not apply the LOB fallback when a related default was filled', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: 'CC-Building Services-PBG',
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Building Services-PBG', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: ['LOB-Facilities'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      { lineOfBusinessId: 'Default_Line_Of_Business' },
+      undefined,
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+    expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
   });
 });

@@ -134,6 +134,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       fundId: process.env.FALLBACK_FUND_ID,
       costCenterId: process.env.FALLBACK_COST_CENTER_ID,
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+      lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
     const emailWorktags = result.emailWorktags ? {
       costCenterId: result.emailWorktags.costCenter?.code ?? null,

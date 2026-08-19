@@ -30,6 +30,10 @@ Parameters:
   DefaultOcrSpendCategoryId:
     Type: String
     Description: Workday Spend_Category_ID to apply as fallback for OCR lines missing a spend category
+  FallbackLineOfBusinessId:
+    Type: String
+    Description: Workday Organization_Reference_ID to apply when a line has no Line of Business
+    Default: Default_Line_Of_Business
 
 Globals:
   Function:
@@ -52,6 +56,7 @@ Globals:
         FALLBACK_COST_CENTER_ID: !Ref FallbackCostCenterId
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
+        FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         S3_BUCKET_NAME: !Ref FinanceAgentBucket

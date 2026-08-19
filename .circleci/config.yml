@@ -53,6 +53,7 @@ references:
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
+            FallbackLineOfBusinessId=$FALLBACK_LOB_ID
 
 jobs:
   build:
@@ -111,6 +112,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      FALLBACK_LOB_ID: Default_Line_Of_Business
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -123,6 +125,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      FALLBACK_LOB_ID: Default_Line_Of_Business
 
 workflows:
   version: 2

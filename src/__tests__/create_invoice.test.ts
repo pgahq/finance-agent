@@ -109,7 +109,7 @@ const baseEnrichmentResult = {
 
 const defaultFinalLines = {
   lines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }],
-  appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+  appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
 };
 
 // Resets the module registry and re-requires create_invoice.js and its mocked dependencies,
@@ -252,10 +252,10 @@ describe('create_invoice', () => {
       extractedInvoiceLines: null
     });
     invoiceLines.buildFinalInvoiceLines
-      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false } })
+      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false } })
       .mockResolvedValueOnce({
         lines: [{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }],
-        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
       });
 
     const event = {
