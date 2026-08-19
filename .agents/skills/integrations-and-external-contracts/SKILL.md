@@ -182,9 +182,8 @@ service account that can manage Workspace add-on deployments.
    - Create a CI service account (for example `workspace-add-ons-ci`)
    - Grant it `roles/gsuiteaddons.developer`
    - Create a JSON key
-2. Create CircleCI contexts **finance-agent-development** and
-   **finance-agent-production** (replacing `chatbot-development` /
-   `chatbot-production`). Copy the existing AWS deploy variables into them.
+2. Reuse the existing CircleCI contexts **chatbot-development** and
+   **chatbot-production** (AWS deploy variables already live there).
    The only extra context secret is:
 
    | Name | Value |
