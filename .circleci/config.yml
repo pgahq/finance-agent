@@ -75,6 +75,7 @@ references:
             export PATH="$HOME/google-cloud-sdk/bin:$PATH"
             bash scripts/deploy-gmail-addon.sh
 
+jobs:
   build:
     working_directory: ~/app
     docker:
