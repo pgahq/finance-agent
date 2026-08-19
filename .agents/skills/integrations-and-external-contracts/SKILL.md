@@ -194,13 +194,13 @@ service account that can manage Workspace add-on deployments.
    `GCLOUD_SERVICE_KEY` is accepted as an alias.
 
    GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
-   Set `GMAIL_ADDON_OAUTH_CLIENT_ID` in `.circleci/config.yml` on both deploy
-   jobs (same client; it is not a secret):
+   `GMAIL_ADDON_OAUTH_CLIENT_ID` is set per job in `.circleci/config.yml` from
+   the Gmail service-account OAuth 2 client ids (not a CircleCI secret):
 
-   ```bash
-   gcloud workspace-add-ons get-authorization --project=finance-agent-506013 \
-     --format='value(oauthClientId)'
-   ```
+   | Job | Service account | OAuth 2 client id |
+   | --- | --- | --- |
+   | `deploy-to-dev` | `finance-agent-gmail-sandbox@finance-agent-506013.iam.gserviceaccount.com` | `11281551445800182416` |
+   | `deploy-to-prod` | `finance-agent-gmail@finance-agent-506013.iam.gserviceaccount.com` | `108741410526312943726` |
 
 Until `GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
 still finishes the AWS stack.

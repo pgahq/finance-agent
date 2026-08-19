@@ -133,8 +133,7 @@ references:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: sandbox
-      # gcloud workspace-add-ons get-authorization --project=finance-agent-506013 --format='value(oauthClientId)'
-      GMAIL_ADDON_OAUTH_CLIENT_ID: ""
+      GMAIL_ADDON_OAUTH_CLIENT_ID: "11281551445800182416"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -148,8 +147,7 @@ references:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: production
-      # gcloud workspace-add-ons get-authorization --project=finance-agent-506013 --format='value(oauthClientId)'
-      GMAIL_ADDON_OAUTH_CLIENT_ID: ""
+      GMAIL_ADDON_OAUTH_CLIENT_ID: "108741410526312943726"
 
 workflows:
   version: 2
