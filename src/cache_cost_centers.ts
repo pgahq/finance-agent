@@ -9,6 +9,7 @@ const QUERY = `
     name,
     code
   FROM costCenters
+  WHERE inactive != true
 `;
 
 export const handler = withQueryHandler(QUERY)({
