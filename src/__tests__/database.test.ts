@@ -11,6 +11,7 @@ import {
   bulkUpdateDocuments,
   bulkDeleteDocuments,
   migrateDocumentsTypeCheck,
+  getCostCenterRelatedLobsByCodes,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -411,6 +412,45 @@ describe('Database Library', () => {
         [['doc-1', 'doc-2'], 'supplier']
       );
       expect(result).toBe(0); // bulkDeleteDocuments returns row count
+    });
+  });
+
+  describe('getCostCenterRelatedLobsByCodes', () => {
+    it('indexes related LOB metadata by cost center code and workday id', async () => {
+      const relatedLob = {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: ['LOB-Facilities'],
+      };
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Building Services-PBG', relatedLob } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(
+        mockConnection,
+        ['CC-Building Services-PBG', 'CC-Building Services-PBG']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [['CC-Building Services-PBG']]
+      );
+      expect(result.get('CC-Building Services-PBG')).toEqual(relatedLob);
+      expect(result.get('cc-wid-1')).toEqual(relatedLob);
+    });
+
+    it('returns an empty map when no ids are provided', async () => {
+      const mockConnection = {
+        query: jest.fn(),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(mockConnection, []);
+      expect(result.size).toBe(0);
+      expect(mockConnection.query).not.toHaveBeenCalled();
     });
   });
 });

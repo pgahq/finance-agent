@@ -4,6 +4,11 @@ import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValid
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { parseExtractedAmount } from './invoice_lines.js';
+import {
+  parseRelatedWorktagsResponse,
+  relatedWorktagsTotalPages,
+  type RelatedLob,
+} from './related_worktags.js';
 
 import type {
   DownloadedAttachment,
@@ -263,6 +268,87 @@ export async function getCustomValidationRules(
   const rules = response?.Response_Data?.[0]?.Custom_Validation_Rule ?? [];
   debug(`Fetched ${rules.length} total validation rules, parsing Supplier Invoice rules`);
   return parseValidationRules(rules);
+}
+
+const RELATED_WORKTAGS_PAGE_SIZE = 999;
+const RELATED_WORKTAGS_BATCH_SIZE = 100;
+
+interface RelatedWorktagsSoapClient {
+  Get_Related_Worktags_for_Worktags(
+    request: {
+      Get_Related_Worktags_for_Worktags_Request: {
+        Request_References: {
+          Related_Worktag_Reference: Array<{ ID: Array<{ $attributes: { type: string }; $value: string }> }>;
+        };
+        Response_Filter: { Page: number; Count: number };
+      };
+    },
+    callback: (err: unknown, result: unknown) => void
+  ): void;
+}
+
+function asRelatedWorktagsClient(client: unknown): RelatedWorktagsSoapClient {
+  if (
+    typeof client !== 'object'
+    || client == null
+    || typeof (client as { Get_Related_Worktags_for_Worktags?: unknown }).Get_Related_Worktags_for_Worktags !== 'function'
+  ) {
+    throw new Error('Financial Management SOAP client is missing Get_Related_Worktags_for_Worktags');
+  }
+  return client as RelatedWorktagsSoapClient;
+}
+
+function fetchRelatedWorktagsPage(
+  client: RelatedWorktagsSoapClient,
+  costCenterWorkdayIds: string[],
+  page: number
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    client.Get_Related_Worktags_for_Worktags({
+      Get_Related_Worktags_for_Worktags_Request: {
+        Request_References: {
+          Related_Worktag_Reference: costCenterWorkdayIds.map(workdayId => ({
+            ID: [{ $attributes: { type: 'WID' }, $value: workdayId }]
+          }))
+        },
+        Response_Filter: { Page: page, Count: RELATED_WORKTAGS_PAGE_SIZE }
+      }
+    }, (err: unknown, result: unknown) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
+}
+
+export async function getRelatedWorktagsForCostCenters(
+  context: { workdayConfig: WorkdayConfig },
+  costCenterWorkdayIds: string[]
+): Promise<Map<string, RelatedLob>> {
+  const relatedByKey = new Map<string, RelatedLob>();
+  const workdayIds = [...new Set(costCenterWorkdayIds.filter(Boolean))];
+  if (workdayIds.length === 0) return relatedByKey;
+
+  const soapClient: unknown = await buildFinancialManagementClient(context);
+  const client = asRelatedWorktagsClient(soapClient);
+
+  for (let i = 0; i < workdayIds.length; i += RELATED_WORKTAGS_BATCH_SIZE) {
+    const batch = workdayIds.slice(i, i + RELATED_WORKTAGS_BATCH_SIZE);
+    let page = 1;
+    let totalPages = 1;
+
+    do {
+      const response = await fetchRelatedWorktagsPage(client, batch, page);
+      const parsed = parseRelatedWorktagsResponse(response);
+      for (const [key, related] of parsed) {
+        relatedByKey.set(key, related);
+      }
+      totalPages = relatedWorktagsTotalPages(response);
+      page += 1;
+    } while (page <= totalPages);
+  }
+
+  debug(`Fetched related worktags for ${relatedByKey.size} cost center key(s)`);
+  return relatedByKey;
 }
 
 const getResourceManagementEndpoint = (config: WorkdayConfig): string =>

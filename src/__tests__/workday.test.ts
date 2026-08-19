@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -1883,7 +1883,7 @@ describe('Workday utilities', () => {
 
         await submitSupplierInvoiceUpdateForTest({
           finalLines: [
-            { lineOrder: 1, description: 'Consulting Services', quantity: 5, unitCost: 200, extendedAmount: 1000, fundId: 'FUND-001', costCenterId: 'CC-001', spendCategoryId: 'SC-001' }
+            { lineOrder: 1, description: 'Consulting Services', quantity: 5, unitCost: 200, extendedAmount: 1000, fundId: 'FUND-001', costCenterId: 'CC-001', spendCategoryId: 'SC-001', lineOfBusinessId: 'LOB-Facilities' }
           ]
         });
 
@@ -1897,7 +1897,8 @@ describe('Workday utilities', () => {
           Extended_Amount: 1000,
           Worktags_Reference: [
             { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-001' }] },
-            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-001' }] }
+            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-001' }] },
+            { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Facilities' }] }
           ],
           Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-001' }] }
         });
@@ -2891,6 +2892,89 @@ describe('Workday utilities', () => {
       const result = await getAllPaymentTerms(mockContext);
 
       expect(result).toEqual([{ paymentTermsId: 'NET_30', name: 'Net 30' }]);
+    });
+  });
+
+  describe('getRelatedWorktagsForCostCenters', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    beforeEach(() => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('returns related LOB worktags keyed by cost center WID', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Related_Worktags_for_Worktags: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1 },
+          Response_Data: {
+            Related_Worktags: {
+              Related_Worktag_Reference: {
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'cc-wid-1' },
+                  { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }
+                ]
+              },
+              Related_Worktags_Data: {
+                Related_Worktags_by_Type_Data: {
+                  Required_On_Transaction: true,
+                  Default_Worktag_Data: {
+                    Default_Worktag_Reference: {
+                      ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Facilities' }]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        });
+      });
+
+      const result = await getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1']);
+
+      expect(mockClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+            Request_References: {
+              Related_Worktag_Reference: [
+                { ID: [{ $attributes: { type: 'WID' }, $value: 'cc-wid-1' }] }
+              ]
+            }
+          })
+        }),
+        expect.any(Function)
+      );
+      expect(result.get('cc-wid-1')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: [],
+      });
+      expect(result.get('CC-Building Services-PBG')).toEqual(result.get('cc-wid-1'));
+    });
+
+    it('returns an empty map when no cost center ids are provided', async () => {
+      const result = await getRelatedWorktagsForCostCenters(mockContext, []);
+      expect(result.size).toBe(0);
     });
   });
 

@@ -14,6 +14,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
 import { applyProcessorLabelOutcome, getGmailConfig } from './lib/gmail.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
@@ -146,12 +147,15 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
+    const relatedLobLookup = (costCenterIds: string[]) =>
+      getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
     const merged = await buildFinalInvoiceLines(
       candidateLines,
       poLines,
       emailContext?.plainTextBody,
       fallbackIds,
-      emailWorktags
+      emailWorktags,
+      relatedLobLookup
     );
     let finalLines = merged.lines;
 
@@ -170,7 +174,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         undefined,
         emailContext?.plainTextBody,
         fallbackIds,
-        emailWorktags
+        emailWorktags,
+        relatedLobLookup
       );
       finalLines = synthetic.lines;
     }

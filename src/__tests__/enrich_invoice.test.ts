@@ -47,7 +47,8 @@ jest.mock('../lib/database.js', () => ({
     query: jest.fn().mockResolvedValue([]),
     close: jest.fn().mockResolvedValue({})
   }),
-  searchSimilarDocuments: jest.fn().mockResolvedValue([])
+  searchSimilarDocuments: jest.fn().mockResolvedValue([]),
+  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/rag.js', () => ({

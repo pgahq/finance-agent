@@ -2,6 +2,11 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
+import {
+  extractLineOfBusinessId,
+  resolveRelatedLobId,
+  type RelatedLob,
+} from './related_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -35,6 +40,8 @@ export interface LineFallbacks {
   spendCategory: boolean;
 }
 
+export type RelatedLobLookup = (costCenterIds: string[]) => Promise<Map<string, RelatedLob>>;
+
 export function parseExtractedAmount(raw: string): number | undefined {
   const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
   return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
@@ -55,6 +62,37 @@ function extractSpendCategoryId(spendCategoryReference: any): string | null {
   const ids = ([] as any[]).concat(spendCategoryReference.ID ?? []);
   const match = ids.find((id: any) => id.$attributes?.type === 'Spend_Category_ID');
   return match?.$value ?? null;
+}
+
+interface ParsedPoLineWorktags {
+  purchaseOrderLineId: string | null;
+  lineOfBusinessId: string | null;
+  costCenterId: string | null;
+  fundId: string | null;
+  spendCategoryId: string | null;
+  worktagsReference: any[];
+  lineOrder: number;
+  description: string | null;
+  memo: string | null;
+  shipToAddressId: string | null;
+}
+
+function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
+  return (poLines ?? []).map(line => {
+    const worktags = ([] as any[]).concat(line.worktagsReference ?? []);
+    return {
+      lineOrder: line.lineOrder,
+      purchaseOrderLineId: line.purchaseOrderLineId ?? null,
+      description: line.description ?? null,
+      memo: line.memo ?? null,
+      costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
+      fundId: extractWorktagId(worktags, 'Fund_ID'),
+      spendCategoryId: extractSpendCategoryId(line.spendCategoryReference),
+      lineOfBusinessId: extractLineOfBusinessId(worktags),
+      worktagsReference: worktags,
+      shipToAddressId: line.shipToAddressId ?? null,
+    };
+  });
 }
 
 function applyFallbacks(
@@ -136,6 +174,47 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+export function overlayPoLineOfBusiness(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  if (poLines.length === 0) return lines;
+
+  const byPurchaseOrderLineId = new Map(
+    poLines
+      .filter(line => line.purchaseOrderLineId && line.lineOfBusinessId)
+      .map(line => [line.purchaseOrderLineId as string, line.lineOfBusinessId as string])
+  );
+  const uniquePoLobs = [...new Set(poLines.map(line => line.lineOfBusinessId).filter((id): id is string => !!id))];
+
+  return lines.map(line => {
+    if (line.lineOfBusinessId) return line;
+    if (line.purchaseOrderLineId && byPurchaseOrderLineId.has(line.purchaseOrderLineId)) {
+      return { ...line, lineOfBusinessId: byPurchaseOrderLineId.get(line.purchaseOrderLineId) };
+    }
+    if (uniquePoLobs.length === 1) {
+      return { ...line, lineOfBusinessId: uniquePoLobs[0] };
+    }
+    return line;
+  });
+}
+
+export function applyRelatedLobWorktags(
+  lines: FinalInvoiceLine[],
+  relatedByCostCenterId: Map<string, RelatedLob>,
+  fallbackCostCenterId?: string | null
+): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (line.lineOfBusinessId) return line;
+    const resolved = resolveRelatedLobId(
+      relatedByCostCenterId.get(line.costCenterId ?? ''),
+      line.costCenterId,
+      fallbackCostCenterId
+    );
+    return resolved ? { ...line, lineOfBusinessId: resolved } : line;
+  });
+}
+
 export interface EmailWorktags {
   costCenterId?: string | null;
   eventWid?: string | null;
@@ -149,24 +228,24 @@ export async function buildFinalInvoiceLines(
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
   fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string },
-  emailWorktags?: EmailWorktags
+  emailWorktags?: EmailWorktags,
+  relatedLobLookup?: RelatedLobLookup
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
+  const parsedPoLines = parsePoLineWorktags(poLines);
   const mergeInput = {
     extractedInvoiceLines: extractedLines,
-    purchaseOrderLines: poLines?.map(l => {
-      const worktags = ([] as any[]).concat(l.worktagsReference ?? []);
-      return {
-        lineOrder: l.lineOrder,
-        purchaseOrderLineId: l.purchaseOrderLineId ?? null,
-        description: l.description ?? null,
-        memo: l.memo ?? null,
-        costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
-        fundId: extractWorktagId(worktags, 'Fund_ID'),
-        spendCategoryId: extractSpendCategoryId(l.spendCategoryReference),
-        worktagsReference: worktags,
-        shipToAddressId: l.shipToAddressId ?? null,
-      };
-    }),
+    purchaseOrderLines: parsedPoLines.map(line => ({
+      lineOrder: line.lineOrder,
+      purchaseOrderLineId: line.purchaseOrderLineId,
+      description: line.description,
+      memo: line.memo,
+      costCenterId: line.costCenterId,
+      fundId: line.fundId,
+      spendCategoryId: line.spendCategoryId,
+      lineOfBusinessId: line.lineOfBusinessId,
+      worktagsReference: line.worktagsReference,
+      shipToAddressId: line.shipToAddressId,
+    })),
     emailBody: emailBody ?? null,
   };
 
@@ -181,15 +260,52 @@ export async function buildFinalInvoiceLines(
   } catch (error) {
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return { lines: applyEmailWorktags(fallback.lines, emailWorktags), appliedFallbacks: fallback.appliedFallbacks };
+    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
   }
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return { lines: applyEmailWorktags(fallback.lines, emailWorktags), appliedFallbacks: fallback.appliedFallbacks };
+    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  return { lines: applyEmailWorktags(lines, emailWorktags), appliedFallbacks };
+  return finalizeInvoiceLines(lines, appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
+}
+
+async function finalizeInvoiceLines(
+  lines: FinalInvoiceLine[],
+  appliedFallbacks: LineFallbacks,
+  parsedPoLines: ParsedPoLineWorktags[],
+  emailWorktags: EmailWorktags | undefined,
+  relatedLobLookup: RelatedLobLookup | undefined
+): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
+  const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
+  const withEmail = applyEmailWorktags(withPoLob, emailWorktags);
+  const withRelated = await fillRelatedLobs(withEmail, relatedLobLookup);
+  return { lines: withRelated, appliedFallbacks };
+}
+
+async function fillRelatedLobs(
+  lines: FinalInvoiceLine[],
+  relatedLobLookup?: RelatedLobLookup
+): Promise<FinalInvoiceLine[]> {
+  if (!relatedLobLookup) return lines;
+
+  const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
+  const costCenterIds = [...new Set(
+    lines
+      .filter(line => !line.lineOfBusinessId && line.costCenterId && line.costCenterId !== fallbackCostCenterId)
+      .map(line => line.costCenterId)
+      .filter((id): id is string => !!id)
+  )];
+  if (costCenterIds.length === 0) return lines;
+
+  try {
+    const relatedByCostCenterId = await relatedLobLookup(costCenterIds);
+    return applyRelatedLobWorktags(lines, relatedByCostCenterId, fallbackCostCenterId);
+  } catch (error) {
+    debug('Failed to look up related Line of Business worktags for cost centers:', error);
+    return lines;
+  }
 }
