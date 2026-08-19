@@ -218,6 +218,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     await verifyGmailAddonOidc(authorizationHeader(event), clientId);
   } catch (error) {
     if (error instanceof GmailAddonUnauthorizedError) {
+      debug('Unauthorized Gmail add-on OIDC token', {
+        hasAuthorizationHeader: Boolean(authorizationHeader(event)),
+        hasClientId: Boolean(clientId),
+      });
       return jsonResponse(401, { status: 'error', message: 'Unauthorized' });
     }
     debug('Unexpected Gmail add-on auth error', { error: formatError(error) });

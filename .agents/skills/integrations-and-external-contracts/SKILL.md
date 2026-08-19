@@ -134,7 +134,7 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
 | `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Gmail trigger, add-on, and `CreateInvoiceProcessor` (JSON `client_email` + `private_key`). Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
 | `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
-| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CircleCI job env in `.circleci/config.yml` (CFT `GmailAddonOauthClientId`) | Add-on OIDC audience |
+| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Add-on OIDC audience for system and user ID tokens |
 
 The Gmail service account needs **Google Admin domain-wide delegation** with
 scope `https://www.googleapis.com/auth/gmail.modify`. Do not log the service
@@ -195,13 +195,14 @@ service account that can manage Workspace add-on deployments.
    | `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` | JSON key for `workspace-add-ons-ci@finance-agent-506013.iam.gserviceaccount.com` (raw JSON starting with `{`, or base64 of that JSON) |
 
    GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
-   `GMAIL_ADDON_OAUTH_CLIENT_ID` is set per job in `.circleci/config.yml` from
-   the Gmail service-account OAuth 2 client ids (not a CircleCI secret):
+   Before CloudFormation deploy, CI runs `gcloud workspace-add-ons get-authorization`
+   and passes `oauthClientId` as `GmailAddonOauthClientId`. That is the HTTP add-on
+   OAuth client (`….apps.googleusercontent.com`), not a Gmail domain-wide-delegation
+   service-account client id. Sandbox and prod stacks share this client because they
+   share the GCP project.
 
-   | Job | Service account | OAuth 2 client id |
-   | --- | --- | --- |
-   | `deploy-to-dev` | `finance-agent-gmail-sandbox@finance-agent-506013.iam.gserviceaccount.com` | `11281551445800182416` |
-   | `deploy-to-prod` | `finance-agent-gmail@finance-agent-506013.iam.gserviceaccount.com` | `108741410526312943726` |
+   The OAuth consent screen in `finance-agent-506013` must be configured (Internal)
+   or `get-authorization` returns an empty client id and add-on calls return 401.
 
 Until `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
 still finishes the AWS stack.
