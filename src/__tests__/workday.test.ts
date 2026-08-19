@@ -2045,6 +2045,30 @@ describe('Workday utilities', () => {
         ]);
       });
 
+      it('should append Default_Line_Of_Business when a line has a cost center but no LOB', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+          }]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
+        ]);
+      });
+
       it('should replace cost center with fallback on worktag validation fault retry', async () => {
         const mockClient = {
           setSecurity: jest.fn(),
@@ -2102,7 +2126,7 @@ describe('Workday utilities', () => {
         ]);
       });
 
-      it('should apply fallback Line of Business on a missing-LOB validation retry', async () => {
+      it('should apply fallback Line of Business when a cost center requires LOB', async () => {
         const mockClient = {
           setSecurity: jest.fn(),
           setEndpoint: jest.fn(),
@@ -2117,14 +2141,19 @@ describe('Workday utilities', () => {
           callback(null, mockBaseGetResponse);
         });
 
+        const lineHasFallbackLob = (request: any) => {
+          const worktags = request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? [];
+          return JSON.stringify(worktags).includes('Default_Line_Of_Business');
+        };
+
         const capturedRequests: any[] = [];
         mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
           capturedRequests.push(request);
-          if (capturedRequests.length === 1) {
+          if (!lineHasFallbackLob(request)) {
             callback({
               Validation_Fault: {
                 Validation_Error: {
-                  Message: 'These worktag types must also have a value: Line of Business.',
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business',
                   Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
                   Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
                 }
@@ -2136,26 +2165,20 @@ describe('Workday utilities', () => {
         });
 
         process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'fallback-cc-id';
         const result = await submitSupplierInvoiceUpdateForTest({
           finalLines: [
-            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Building Services-PBG' }
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
           ]
         });
         delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
 
         expect(result.success).toBe(true);
-        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-
-        const firstLine = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-        expect(firstLine.Worktags_Reference).toEqual([
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
           { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
-          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] }
-        ]);
-
-        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-        expect(retryLine.Worktags_Reference).toEqual([
-          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
-          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
           { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
         ]);
       });

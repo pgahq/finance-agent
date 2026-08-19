@@ -70,4 +70,4 @@ not. Do not enable prune for windowed sources such as events.
 }
 ```
 
-Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the default (or the single allowed id) after PO and email worktags. If that is still empty, `FALLBACK_LOB_ID` (`Default_Line_Of_Business`) is applied.
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the default (or the single allowed id) after PO and email worktags. If that is still empty, `FALLBACK_LOB_ID` (`Default_Line_Of_Business`) is applied on the line and again on SOAP submit. Related-worktag faults that say a cost center requires Line of Business apply that fallback directly — they are not treated as cost-center value errors.
