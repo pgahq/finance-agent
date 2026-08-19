@@ -134,7 +134,8 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
 | `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Gmail trigger, add-on, and `CreateInvoiceProcessor` (JSON `client_email` + `private_key`). Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
 | `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
-| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Add-on OIDC audience for system and user ID tokens |
+| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Audience for the **user** ID token (`authorizationEventObject.userIdToken`) |
+| `GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL` | Same `get-authorization` `serviceAccountEmail` (CFT `GmailAddonServiceAccountEmail`) | Expected `email` on the **system** ID token in `Authorization` |
 
 The Gmail service account needs **Google Admin domain-wide delegation** with
 scope `https://www.googleapis.com/auth/gmail.modify`. Do not log the service
@@ -196,9 +197,12 @@ service account that can manage Workspace add-on deployments.
 
    GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
    Before CloudFormation deploy, CI runs `gcloud workspace-add-ons get-authorization`
-   and passes `oauthClientId` as `GmailAddonOauthClientId`. That is the HTTP add-on
-   OAuth client (`….apps.googleusercontent.com`), not a Gmail domain-wide-delegation
-   service-account client id. Sandbox and prod stacks share this client because they
+   and passes `oauthClientId` as `GmailAddonOauthClientId` and `serviceAccountEmail`
+   as `GmailAddonServiceAccountEmail`. `oauthClientId` (`….apps.googleusercontent.com`)
+   is the audience for the user ID token only. The system token in `Authorization`
+   uses the add-on HTTPS URL as `aud` (same URL as `GmailAddonApiUrl` /
+   `GMAIL_ADDON_URL`) and must have `email` equal to `serviceAccountEmail`. These are not Gmail domain-wide-delegation service-account
+   client ids. Sandbox and prod stacks share this GCP authorization because they
    share the GCP project.
 
    The OAuth consent screen in `finance-agent-506013` must be configured (Internal)

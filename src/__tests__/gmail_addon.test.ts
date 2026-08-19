@@ -13,6 +13,7 @@ jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
   default: jest.fn().mockResolvedValue({
     GMAIL_ADDON_OAUTH_CLIENT_ID: 'oauth-client-id',
+    GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL: 'addon@gserviceaccount.com',
     GMAIL_SERVICE_ACCOUNT_SECRET_ARN: 'finance-agent/gmail-service-account',
     ADDON_ENVIRONMENT: 'sandbox',
   }),
