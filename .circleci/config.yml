@@ -154,14 +154,14 @@ workflows:
     jobs:
       - build
       - deploy-to-dev:
-          context: chatbot-development
+          context: finance-agent-development
           requires:
             - build
           filters:
             branches:
               only: development
       - deploy-to-prod:
-          context: chatbot-production
+          context: finance-agent-production
           requires:
             - build
           filters:

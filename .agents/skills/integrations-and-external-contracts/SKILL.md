@@ -176,18 +176,21 @@ This is separate from the Gmail domain-wide-delegation key in AWS Secrets
 Manager (`finance-agent/gmail-service-account`). CI needs a **second** GCP
 service account that can manage Workspace add-on deployments.
 
-1. In the GCP project that owns the HTTP add-on (same project for both gcloud
-   names is fine):
+1. In the GCP project that owns the HTTP add-on (one project can publish
+   add-ons for any number of apps):
    - Enable [Google Workspace Add-ons API](https://console.cloud.google.com/apis/library/gsuiteaddons.googleapis.com) (`gsuiteaddons.googleapis.com`)
-   - Create a CI service account (for example `finance-agent-gmail-addon-ci`)
+   - Create a CI service account (for example `workspace-add-ons-ci`)
    - Grant it `roles/gsuiteaddons.developer`
    - Create a JSON key
-2. In CircleCI contexts **chatbot-development** and **chatbot-production**, add:
+2. Create CircleCI contexts **finance-agent-development** and
+   **finance-agent-production** (replacing `chatbot-development` /
+   `chatbot-production`). Copy the existing AWS deploy variables into them,
+   then add:
 
    | Name | Value |
    | --- | --- |
    | `GCP_PROJECT_ID` | That GCP project id |
-   | `GCP_SERVICE_ACCOUNT_KEY` | The JSON key (raw JSON starting with `{`, or base64 of that JSON) |
+   | `GCP_SERVICE_ACCOUNT_KEY` | The JSON key (raw JSON starting with `{`, or base64 of that JSON). The same key can be reused in other projects' contexts. |
    | `GMAIL_ADDON_OAUTH_CLIENT_ID` | Add-on OAuth client id (CFT `GmailAddonOauthClientId`; Lambda OIDC audience) |
 
    `GCLOUD_SERVICE_KEY` / `GOOGLE_PROJECT_ID` are accepted as aliases.
