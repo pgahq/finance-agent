@@ -784,5 +784,5 @@ Outputs:
     Description: POST endpoint to create a new invoice from a Gmail message (bearer token)
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice/gmail"
   GmailAddonApiUrl:
-    Description: Gmail Workspace Add-on HTTP endpoint. Paste into gmail-addon/deployment.*.json runFunction and onTriggerFunction, then gcloud workspace-add-ons deployments create|replace.
+    Description: Gmail Workspace Add-on HTTP endpoint used by CI when publishing the unpublished Workspace add-on
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/gmail-addon"

@@ -147,23 +147,24 @@ two stacks:
 - `main` → `deploy-to-prod` (Workday prod, `AddonEnvironment=production`)
 
 After deploy, CircleCI reads `GmailAddonApiUrl` and publishes the matching
-gcloud Workspace add-on deployment. Do not commit filled-in execute-api URLs.
+gcloud Workspace add-on deployment. Deployment JSON is generated in CI from
+`ADDON_ENVIRONMENT` and the stack URL; do not commit `deployment.*.json`.
 
 ## Gmail add-on via gcloud (two deployments)
 
 AWS/Workday targeting is CFT. The extra split is **two unpublished Workspace
-add-on deployments** that point at the two HttpApi URLs.
+add-on deployments** that point at the two HttpApi URLs. CI builds the spec
+with `scripts/build-gmail-addon-deployment.js` (display name + endpoint URL)
+and create/replace with `scripts/deploy-gmail-addon.sh`.
 
-| gcloud name | File | CircleCI job | `GmailAddonApiUrl` from |
+| `ADDON_ENVIRONMENT` | gcloud name | Gmail add-on title | CircleCI job |
 | --- | --- | --- | --- |
-| `finance-agent-gmail-sandbox` | `gmail-addon/deployment.sandbox.json` | `deploy-to-dev` | development stack |
-| `finance-agent-gmail` | `gmail-addon/deployment.production.json` | `deploy-to-prod` | prod stack |
+| `sandbox` | `finance-agent-gmail-sandbox` | Workday supplier invoice (sandbox) | `deploy-to-dev` |
+| `production` | `finance-agent-gmail` | Workday supplier invoice | `deploy-to-prod` |
 
-CI fills `runFunction` and `onTriggerFunction` from the stack output, then
-`gcloud workspace-add-ons deployments create` or `replace`. It does **not**
-run `install` (that is per Google user). Placeholders in git are expected.
+CI does **not** run `install` (that is per Google user).
 
-Add-on OAuth scopes in those files: `gmail.addons.execute`,
+Add-on OAuth scopes: `gmail.addons.execute`,
 `gmail.addons.current.message.readonly`, `userinfo.email`. Message fetch and
 label writes use the Gmail DWD service account, not the add-on user OAuth token.
 

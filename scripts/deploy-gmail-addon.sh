@@ -6,8 +6,7 @@ set -euo pipefail
 
 KEY="${GCP_SERVICE_ACCOUNT_KEY:-${GCLOUD_SERVICE_KEY:-}}"
 PROJECT="${GCP_PROJECT_ID:-${GOOGLE_PROJECT_ID:-}}"
-NAME="${GMAIL_ADDON_DEPLOYMENT_NAME:-}"
-FILE="${GMAIL_ADDON_DEPLOYMENT_FILE:-}"
+ENVIRONMENT="${ADDON_ENVIRONMENT:-}"
 URL="${GMAIL_ADDON_URL:-}"
 
 if [[ -z "${KEY}" && -z "${PROJECT}" ]]; then
@@ -15,22 +14,22 @@ if [[ -z "${KEY}" && -z "${PROJECT}" ]]; then
   exit 0
 fi
 
-if [[ -z "${KEY}" || -z "${PROJECT}" || -z "${NAME}" || -z "${FILE}" || -z "${URL}" ]]; then
-  echo "Gmail add-on gcloud deploy needs GCP_SERVICE_ACCOUNT_KEY, GCP_PROJECT_ID, GMAIL_ADDON_DEPLOYMENT_NAME, GMAIL_ADDON_DEPLOYMENT_FILE, and GMAIL_ADDON_URL." >&2
+if [[ -z "${KEY}" || -z "${PROJECT}" || -z "${ENVIRONMENT}" || -z "${URL}" ]]; then
+  echo "Gmail add-on gcloud deploy needs GCP_SERVICE_ACCOUNT_KEY, GCP_PROJECT_ID, ADDON_ENVIRONMENT, and GMAIL_ADDON_URL." >&2
   exit 1
 fi
 
-if [[ ! -f "${FILE}" ]]; then
-  echo "Gmail add-on deployment file not found: ${FILE}" >&2
-  exit 1
-fi
-
-echo "Updating ${FILE} to ${URL}"
-node scripts/set-gmail-addon-url.js "${FILE}" "${URL}"
-
+NAME="$(node scripts/build-gmail-addon-deployment.js --environment "${ENVIRONMENT}" --print-id)"
+FILE="$(mktemp)"
 key_file="$(mktemp)"
-cleanup() { rm -f "${key_file}"; }
+cleanup() { rm -f "${FILE}" "${key_file}"; }
 trap cleanup EXIT
+
+echo "Building Workspace add-on deployment ${NAME} for ${ENVIRONMENT} at ${URL}"
+node scripts/build-gmail-addon-deployment.js \
+  --environment "${ENVIRONMENT}" \
+  --url "${URL}" \
+  --out "${FILE}"
 
 case "${KEY}" in
   \{*) printf '%s' "${KEY}" > "${key_file}" ;;
