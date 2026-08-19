@@ -17,7 +17,7 @@ export const handler = withQueryHandler(QUERY)({
   pageSize: null
 });
 
-export const processor = withProcessorHandler(async (context, costCenters, _event) => {
+export const processor = withProcessorHandler(async (context, costCenters, event) => {
   if (!costCenters || costCenters.length === 0) {
     debug('No cost center data received - skipping sync');
     return;
@@ -50,5 +50,7 @@ export const processor = withProcessorHandler(async (context, costCenters, _even
     notifyLabel: 'cache_cost_centers',
     itemLabel: 'cost centers',
     pruneAbsent: true,
+    sourceTotal: event?.sourceTotal,
+    pruneDryRun: process.env.COST_CENTER_PRUNE_DRY_RUN === 'true',
   });
 });

@@ -41,10 +41,12 @@ Do not delete production orphan rows from app code without an explicit ops decis
 ## Cache prune
 
 `syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing
-rows of that type whose `workday_id` is missing from the incoming snapshot. Only
-enable it for queries that return the complete current set (cost centers). Do
-not enable it for windowed sources such as events. An empty snapshot does not
-prune.
+rows of that type whose `workday_id` is missing from the incoming snapshot, and
+only when `sourceTotal` equals `items.size` (Workday `total` matches fetched
+rows). Empty snapshots, missing totals, and incomplete pulls skip prune and
+report `pruneSkipped` in Slack. Set `pruneDryRun: true` (cost centers:
+`COST_CENTER_PRUNE_DRY_RUN=true`) to log `absent` / `absentIds` without deleting.
+Do not enable prune for windowed sources such as events.
 
 ## When adding a new document type
 

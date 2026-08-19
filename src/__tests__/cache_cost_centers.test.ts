@@ -65,7 +65,8 @@ describe('cache_cost_centers', () => {
     await expect(processor({
       data: [
         { workdayID: 'cc-active', name: 'Active', code: '100' }
-      ]
+      ],
+      sourceTotal: 1
     })).resolves.not.toThrow();
 
     const { bulkDeleteDocuments, bulkInsertDocuments } = require('../lib/database.js');
@@ -82,6 +83,17 @@ describe('cache_cost_centers', () => {
 
   it('does not prune when no cost center data is received', async () => {
     await expect(processor({ data: [] })).resolves.not.toThrow();
+
+    const { bulkDeleteDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when Workday total is missing from the event', async () => {
+    await expect(processor({
+      data: [
+        { workdayID: 'cc-active', name: 'Active', code: '100' }
+      ]
+    })).resolves.not.toThrow();
 
     const { bulkDeleteDocuments } = require('../lib/database.js');
     expect(bulkDeleteDocuments).not.toHaveBeenCalled();

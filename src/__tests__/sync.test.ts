@@ -91,7 +91,12 @@ describe('syncDataSource', () => {
       { workday_id: 'cc-gone', metadata: {}, created_at: new Date() }
     ]);
 
-    await syncDataSource(baseOptions({ pruneAbsent: true }));
+    bulkDeleteDocuments.mockResolvedValue(2);
+
+    await syncDataSource(baseOptions({
+      pruneAbsent: true,
+      sourceTotal: 1,
+    }));
 
     expect(bulkDeleteDocuments).toHaveBeenCalledWith(
       dbConnection,
@@ -107,7 +112,8 @@ describe('syncDataSource', () => {
           new: 0,
           updated: 0,
           unchanged: 1,
-          deleted: 2
+          deleted: 2,
+          absent: 2,
         })
       }),
       undefined,
@@ -127,5 +133,84 @@ describe('syncDataSource', () => {
     }));
 
     expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when sourceTotal is missing', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({ pruneAbsent: true }));
+
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+    expect(notifyResult).toHaveBeenCalledWith(
+      'cache_cost_centers',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        syncStats: expect.objectContaining({
+          deleted: 0,
+          pruneSkipped: 'missing source total'
+        })
+      }),
+      undefined,
+      '1 cost centers'
+    );
+  });
+
+  it('does not prune when fetched count does not match sourceTotal', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({
+      pruneAbsent: true,
+      sourceTotal: 99,
+    }));
+
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+    expect(notifyResult).toHaveBeenCalledWith(
+      'cache_cost_centers',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        syncStats: expect.objectContaining({
+          deleted: 0,
+          pruneSkipped: 'incomplete snapshot: fetched 1 of 99'
+        })
+      }),
+      undefined,
+      '1 cost centers'
+    );
+  });
+
+  it('logs absent IDs without deleting during a dry run', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({
+      pruneAbsent: true,
+      sourceTotal: 1,
+      pruneDryRun: true,
+    }));
+
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+    expect(notifyResult).toHaveBeenCalledWith(
+      'cache_cost_centers',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        syncStats: expect.objectContaining({
+          deleted: 0,
+          absent: 1,
+          absentIds: ['cc-inactive'],
+          dryRun: true
+        })
+      }),
+      undefined,
+      '1 cost centers'
+    );
   });
 });
