@@ -36,6 +36,28 @@ references:
             --s3-prefix $CIRCLE_PROJECT_REPONAME
             --output-template-file packaged.yml
       - run:
+          name: Install Google Cloud SDK
+          command: |
+            set -euo pipefail
+            if [ -z "${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+              echo "Skipping gcloud install; Gmail add-on publish will be skipped."
+              exit 0
+            fi
+            curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz" -o /tmp/google-cloud-sdk.tar.gz
+            tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
+            echo 'export PATH="$HOME/google-cloud-sdk/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Resolve Gmail add-on OAuth client ID
+          command: |
+            set -euo pipefail
+            if [ -z "${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+              echo "Skipping OAuth client lookup."
+              exit 0
+            fi
+            CLIENT_ID="$(bash scripts/deploy-gmail-addon.sh print-oauth-client-id)"
+            echo "export GMAIL_ADDON_OAUTH_CLIENT_ID='${CLIENT_ID}'" >> "$BASH_ENV"
+            echo "Using Workspace add-on OAuth client ${CLIENT_ID}"
+      - run:
           name: Deploy CloudFormation template to AWS
           command: >
             aws cloudformation deploy
@@ -70,9 +92,6 @@ references:
               --query "Stacks[0].Outputs[?OutputKey=='GmailAddonApiUrl'].OutputValue" \
               --output text)"
             export GMAIL_ADDON_URL
-            curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz" -o /tmp/google-cloud-sdk.tar.gz
-            tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
-            export PATH="$HOME/google-cloud-sdk/bin:$PATH"
             bash scripts/deploy-gmail-addon.sh
 
 jobs:
@@ -134,7 +153,6 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: sandbox
-      GMAIL_ADDON_OAUTH_CLIENT_ID: "11281551445800182416"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -148,7 +166,6 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: production
-      GMAIL_ADDON_OAUTH_CLIENT_ID: "108741410526312943726"
 
 workflows:
   version: 2

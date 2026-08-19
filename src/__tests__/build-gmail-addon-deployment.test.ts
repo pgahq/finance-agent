@@ -44,3 +44,17 @@ describe('build-gmail-addon-deployment', () => {
       .toThrow(/https URL/);
   });
 });
+
+describe('deploy-gmail-addon.sh', () => {
+  const deployScript = path.join(process.cwd(), 'scripts/deploy-gmail-addon.sh');
+
+  it('requires a GCP key to print the add-on OAuth client id', () => {
+    const env = { ...process.env };
+    delete env.FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY;
+    expect(() => execFileSync('bash', [deployScript, 'print-oauth-client-id'], {
+      encoding: 'utf8',
+      env,
+    })).toThrow(/FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY is required/);
+  });
+});
+
