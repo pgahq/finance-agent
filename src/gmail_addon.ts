@@ -214,13 +214,20 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   process.env = await loadEnv();
 
   const clientId = process.env.GMAIL_ADDON_OAUTH_CLIENT_ID ?? '';
+  const serviceAccountEmail = process.env.GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL ?? '';
+  const addonUrl = addonUrlFromEvent(event);
   try {
-    await verifyGmailAddonOidc(authorizationHeader(event), clientId);
+    await verifyGmailAddonOidc(authorizationHeader(event), {
+      endpointUrl: addonUrl,
+      serviceAccountEmail,
+    });
   } catch (error) {
     if (error instanceof GmailAddonUnauthorizedError) {
       debug('Unauthorized Gmail add-on OIDC token', {
         hasAuthorizationHeader: Boolean(authorizationHeader(event)),
         hasClientId: Boolean(clientId),
+        hasServiceAccountEmail: Boolean(serviceAccountEmail),
+        hasEndpointUrl: Boolean(addonUrl),
       });
       return jsonResponse(401, { status: 'error', message: 'Unauthorized' });
     }
@@ -229,7 +236,6 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   const environment = getAddonEnvironment(process.env);
-  const addonUrl = addonUrlFromEvent(event);
   const copy = supplierInvoiceAddonCopy(environment);
 
   let parsedBody: z.infer<typeof addonEventSchema>;

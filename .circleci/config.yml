@@ -47,16 +47,20 @@ references:
             tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
             echo 'export PATH="$HOME/google-cloud-sdk/bin:$PATH"' >> "$BASH_ENV"
       - run:
-          name: Resolve Gmail add-on OAuth client ID
+          name: Resolve Gmail add-on authorization
           command: |
             set -euo pipefail
             if [ -z "${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
               echo "Skipping OAuth client lookup."
               exit 0
             fi
-            CLIENT_ID="$(bash scripts/deploy-gmail-addon.sh print-oauth-client-id)"
+            AUTH_JSON="$(bash scripts/deploy-gmail-addon.sh print-authorization)"
+            CLIENT_ID="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.oauthClientId||"")' "${AUTH_JSON}")"
+            SA_EMAIL="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.serviceAccountEmail||"")' "${AUTH_JSON}")"
             echo "export GMAIL_ADDON_OAUTH_CLIENT_ID='${CLIENT_ID}'" >> "$BASH_ENV"
+            echo "export GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL='${SA_EMAIL}'" >> "$BASH_ENV"
             echo "Using Workspace add-on OAuth client ${CLIENT_ID}"
+            echo "Using Workspace add-on service account ${SA_EMAIL}"
       - run:
           name: Deploy CloudFormation template to AWS
           command: >
@@ -77,6 +81,7 @@ references:
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             AddonEnvironment=$ADDON_ENVIRONMENT
             GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
+            GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
       - run:
           name: Publish Gmail Workspace add-on
           command: |

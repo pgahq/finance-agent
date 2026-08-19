@@ -40,7 +40,11 @@ Parameters:
   GmailAddonOauthClientId:
     Type: String
     Default: ""
-    Description: OAuth client ID used to verify Gmail add-on system and user ID tokens
+    Description: Workspace add-on OAuth client ID used to verify user ID tokens
+  GmailAddonServiceAccountEmail:
+    Type: String
+    Default: ""
+    Description: Workspace add-on system service account email used to verify the Authorization header ID token
 
 Globals:
   Function:
@@ -760,6 +764,8 @@ Resources:
         Variables:
           GMAIL_SERVICE_ACCOUNT_SECRET_ARN: finance-agent/gmail-service-account
           GMAIL_ADDON_OAUTH_CLIENT_ID: !Ref GmailAddonOauthClientId
+          GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL: !Ref GmailAddonServiceAccountEmail
+          GMAIL_ADDON_URL: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/gmail-addon"
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup

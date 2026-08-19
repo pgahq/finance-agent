@@ -41,21 +41,29 @@ activate_gcloud() {
     *) printf '%s' "${KEY}" | base64 -d > "${key_file}" ;;
   esac
 
-  gcloud auth activate-service-account --key-file="${key_file}" --quiet
-  gcloud config set project "${PROJECT}" --quiet
+  gcloud auth activate-service-account --key-file="${key_file}" --quiet >&2
+  gcloud config set project "${PROJECT}" --quiet >&2
+}
+
+print_authorization() {
+  activate_gcloud
+  local json client_id service_account_email
+  json="$(gcloud workspace-add-ons get-authorization \
+    --project="${PROJECT}" \
+    --format='json(oauthClientId,serviceAccountEmail)')"
+  client_id="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.oauthClientId||"")' "${json}")"
+  service_account_email="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.serviceAccountEmail||"")' "${json}")"
+  if [[ -z "${client_id}" || -z "${service_account_email}" ]]; then
+    echo "gcloud workspace-add-ons get-authorization did not return oauthClientId and serviceAccountEmail. Configure the OAuth consent screen in ${PROJECT}." >&2
+    exit 1
+  fi
+  printf '%s\n' "${json}"
 }
 
 print_oauth_client_id() {
-  activate_gcloud
-  local client_id
-  client_id="$(gcloud workspace-add-ons get-authorization \
-    --project="${PROJECT}" \
-    --format='value(oauthClientId)')"
-  if [[ -z "${client_id}" ]]; then
-    echo "gcloud workspace-add-ons get-authorization returned an empty oauthClientId. Configure the OAuth consent screen in ${PROJECT}." >&2
-    exit 1
-  fi
-  printf '%s\n' "${client_id}"
+  local json
+  json="$(print_authorization)"
+  node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.oauthClientId+"\n")' "${json}"
 }
 
 publish_deployment() {
@@ -98,6 +106,9 @@ publish_deployment() {
 }
 
 case "${ACTION}" in
+  print-authorization)
+    print_authorization
+    ;;
   print-oauth-client-id)
     print_oauth_client_id
     ;;
@@ -105,7 +116,7 @@ case "${ACTION}" in
     publish_deployment
     ;;
   *)
-    echo "Usage: $0 [publish|print-oauth-client-id]" >&2
+    echo "Usage: $0 [publish|print-authorization|print-oauth-client-id]" >&2
     exit 1
     ;;
 esac

@@ -10,20 +10,31 @@ export class GmailAddonUnauthorizedError extends Error {
 
 export async function verifyGmailAddonOidc(
   authorizationHeader: string | undefined,
-  clientId: string,
+  options: {
+    endpointUrl: string;
+    serviceAccountEmail: string;
+  },
 ): Promise<void> {
   const token = extractBearerToken(authorizationHeader);
-  if (!token || !clientId) {
+  const endpointUrl = options.endpointUrl.trim();
+  const serviceAccountEmail = options.serviceAccountEmail.trim();
+  if (!token || !endpointUrl || !serviceAccountEmail) {
     throw new GmailAddonUnauthorizedError();
   }
 
-  const client = new OAuth2Client(clientId);
+  const client = new OAuth2Client();
   try {
-    await client.verifyIdToken({
+    const ticket = await client.verifyIdToken({
       idToken: token,
-      audience: clientId,
+      audience: endpointUrl,
     });
-  } catch {
+    const payload = ticket.getPayload();
+    const email = payload?.email?.trim();
+    if (!payload?.email_verified || email !== serviceAccountEmail) {
+      throw new GmailAddonUnauthorizedError();
+    }
+  } catch (error) {
+    if (error instanceof GmailAddonUnauthorizedError) throw error;
     throw new GmailAddonUnauthorizedError();
   }
 }
