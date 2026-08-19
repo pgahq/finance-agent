@@ -196,8 +196,10 @@ service account that can manage Workspace add-on deployments.
    and passes `oauthClientId` as `GmailAddonOauthClientId` and `serviceAccountEmail`
    as `GmailAddonServiceAccountEmail`. `oauthClientId` (`….apps.googleusercontent.com`)
    is the audience for the user ID token only. The system token in `Authorization`
-   uses the add-on HTTPS URL as `aud` (same URL as `GmailAddonApiUrl` /
-   `GMAIL_ADDON_URL`) and must have `email` equal to `serviceAccountEmail`. These are not Gmail domain-wide-delegation service-account
+   uses the add-on HTTPS URL as `aud` (the request URL, same as `GmailAddonApiUrl`)
+   and must have `email` equal to `serviceAccountEmail`. Do not put `GmailAddonApiUrl`
+   on the Lambda as an env var that `!Ref`s `ServerlessHttpApi`; that creates a
+   CloudFormation cycle with the HttpApi event. These are not Gmail domain-wide-delegation service-account
    client ids. Sandbox and prod stacks share this GCP authorization because they
    share the GCP project.
 
