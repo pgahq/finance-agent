@@ -1,0 +1,27 @@
+{
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://www.googleapis.com/auth/userinfo.email"
+  ],
+  "addOns": {
+    "common": {
+      "name": "Workday supplier invoice (sandbox)",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/2x/googleg_48dp.png",
+      "layoutProperties": {
+        "primaryColor": "#00205C"
+      },
+      "homepageTrigger": {
+        "runFunction": "https://REPLACE_WITH_GmailAddonApiUrl_FROM_DEVELOPMENT_STACK"
+      }
+    },
+    "gmail": {
+      "contextualTriggers": [
+        {
+          "unconditional": {},
+          "onTriggerFunction": "https://REPLACE_WITH_GmailAddonApiUrl_FROM_DEVELOPMENT_STACK"
+        }
+      ]
+    }
+  }
+}
