@@ -38,7 +38,15 @@ export interface LineFallbacks {
   fund: boolean;
   costCenter: boolean;
   spendCategory: boolean;
+  lineOfBusiness: boolean;
 }
+
+export type InvoiceLineFallbackIds = {
+  fundId?: string;
+  costCenterId?: string;
+  spendCategoryId?: string;
+  lineOfBusinessId?: string;
+};
 
 export type RelatedLobLookup = (costCenterIds: string[]) => Promise<Map<string, RelatedLob>>;
 
@@ -97,7 +105,7 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
 
 function applyFallbacks(
   mergedLines: MergeInvoiceLinesResult['lines'],
-  fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string }
+  fallbackIds: InvoiceLineFallbackIds
 ): { lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks } {
   let fundApplied = false;
   let costCenterApplied = false;
@@ -131,12 +139,12 @@ function applyFallbacks(
     };
   });
 
-  return { lines, appliedFallbacks: { fund: fundApplied, costCenter: costCenterApplied, spendCategory: spendCategoryApplied } };
+  return { lines, appliedFallbacks: { fund: fundApplied, costCenter: costCenterApplied, spendCategory: spendCategoryApplied, lineOfBusiness: false } };
 }
 
 function buildFallbackLines(
   extractedLines: ExtractedInvoiceLine[],
-  fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string }
+  fallbackIds: InvoiceLineFallbackIds
 ): { lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks } {
   const lines: FinalInvoiceLine[] = extractedLines.map((line, idx) => ({
     lineOrder: idx + 1,
@@ -158,6 +166,7 @@ function buildFallbackLines(
       fund: !!fallbackIds.fundId,
       costCenter: !!fallbackIds.costCenterId,
       spendCategory: !!fallbackIds.spendCategoryId,
+      lineOfBusiness: false,
     },
   };
 }
@@ -223,11 +232,25 @@ export interface EmailWorktags {
   spendCategoryReferenceId?: string | null;
 }
 
+export function applyFallbackLineOfBusiness(
+  lines: FinalInvoiceLine[],
+  fallbackLineOfBusinessId?: string | null
+): { lines: FinalInvoiceLine[]; applied: boolean } {
+  if (!fallbackLineOfBusinessId) return { lines, applied: false };
+  let applied = false;
+  const next = lines.map(line => {
+    if (line.lineOfBusinessId) return line;
+    applied = true;
+    return { ...line, lineOfBusinessId: fallbackLineOfBusinessId };
+  });
+  return { lines: next, applied };
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
-  fallbackIds: { fundId?: string; costCenterId?: string; spendCategoryId?: string },
+  fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
@@ -260,17 +283,17 @@ export async function buildFinalInvoiceLines(
   } catch (error) {
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
+    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
+    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  return finalizeInvoiceLines(lines, appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup);
+  return finalizeInvoiceLines(lines, appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
 }
 
 async function finalizeInvoiceLines(
@@ -278,12 +301,20 @@ async function finalizeInvoiceLines(
   appliedFallbacks: LineFallbacks,
   parsedPoLines: ParsedPoLineWorktags[],
   emailWorktags: EmailWorktags | undefined,
-  relatedLobLookup: RelatedLobLookup | undefined
+  relatedLobLookup: RelatedLobLookup | undefined,
+  fallbackIds: InvoiceLineFallbackIds
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoLob, emailWorktags);
   const withRelated = await fillRelatedLobs(withEmail, relatedLobLookup);
-  return { lines: withRelated, appliedFallbacks };
+  const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
+  return {
+    lines: fallbackLob.lines,
+    appliedFallbacks: {
+      ...appliedFallbacks,
+      lineOfBusiness: appliedFallbacks.lineOfBusiness || fallbackLob.applied,
+    },
+  };
 }
 
 async function fillRelatedLobs(

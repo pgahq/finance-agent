@@ -79,6 +79,7 @@ references:
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
+            FallbackLineOfBusinessId=$FALLBACK_LOB_ID
             AddonEnvironment=$ADDON_ENVIRONMENT
             GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
             GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
@@ -157,6 +158,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      FALLBACK_LOB_ID: Default_Line_Of_Business
       ADDON_ENVIRONMENT: sandbox
 
   deploy-to-prod:
@@ -170,6 +172,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      FALLBACK_LOB_ID: Default_Line_Of_Business
       ADDON_ENVIRONMENT: production
 
 workflows:

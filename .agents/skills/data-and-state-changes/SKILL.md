@@ -70,4 +70,4 @@ not. Do not enable prune for windowed sources such as events.
 }
 ```
 
-Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the default (or the single allowed id) after PO and email worktags.
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the default (or the single allowed id) after PO and email worktags. If that is still empty, `FALLBACK_LOB_ID` (`Default_Line_Of_Business`) is applied.

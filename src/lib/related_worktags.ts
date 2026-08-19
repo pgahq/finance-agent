@@ -20,8 +20,10 @@ export function asArray<T>(value: T | T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
+export const DEFAULT_LINE_OF_BUSINESS_ID = 'Default_Line_Of_Business';
+
 export function isLineOfBusinessReferenceId(value: unknown): value is string {
-  return typeof value === 'string' && /^LOB-/i.test(value);
+  return typeof value === 'string' && (/^LOB-/i.test(value) || value === DEFAULT_LINE_OF_BUSINESS_ID);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
