@@ -20,12 +20,15 @@ export interface SyncDataSourceOptions<T> {
   isUpdated?: (existingMetadata: any, item: T) => boolean;
   /**
    * Delete existing documents of this type whose workdayId is not in `items`.
-   * Requires `sourceTotal` to equal `items.size` (complete Workday snapshot).
+   * Requires `sourceTotal` to equal `sourceFetchedCount` (Workday `total` matches
+   * the raw fetched array length, not Map size after duplicate IDs are dropped).
    * Skipped when `items` is empty. Do not enable for windowed sources such as events.
    */
   pruneAbsent?: boolean;
-  /** Workday-reported row count for the snapshot in `items`. Required to prune. */
+  /** Workday-reported row count for the query that produced the snapshot. Required to prune. */
   sourceTotal?: number;
+  /** Length of the raw fetched array before Map dedupe. Required to prune. */
+  sourceFetchedCount?: number;
   /** Log absent IDs and Slack stats without deleting. */
   pruneDryRun?: boolean;
   /** e.g. 'cache_suppliers' */
@@ -38,14 +41,18 @@ function pruneSkipReason(options: {
   pruneAbsent?: boolean;
   itemsSize: number;
   sourceTotal?: number;
+  sourceFetchedCount?: number;
 }): string | undefined {
   if (!options.pruneAbsent) return undefined;
   if (options.itemsSize === 0) return 'empty snapshot';
   if (typeof options.sourceTotal !== 'number' || !Number.isFinite(options.sourceTotal)) {
     return 'missing source total';
   }
-  if (options.itemsSize !== options.sourceTotal) {
-    return `incomplete snapshot: fetched ${options.itemsSize} of ${options.sourceTotal}`;
+  if (typeof options.sourceFetchedCount !== 'number' || !Number.isFinite(options.sourceFetchedCount)) {
+    return 'missing fetched count';
+  }
+  if (options.sourceFetchedCount !== options.sourceTotal) {
+    return `incomplete snapshot: fetched ${options.sourceFetchedCount} of ${options.sourceTotal}`;
   }
   return undefined;
 }
@@ -88,6 +95,7 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
     isUpdated,
     pruneAbsent,
     sourceTotal,
+    sourceFetchedCount,
     pruneDryRun,
     notifyLabel,
     itemLabel,
@@ -122,6 +130,7 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       pruneAbsent,
       itemsSize: items.size,
       sourceTotal,
+      sourceFetchedCount,
     });
 
     debug(`Sync analysis: ${newIds.length} new, ${updatedIds.length} updated, ${unchangedIds.length} unchanged, ${staleIds.length} absent`);

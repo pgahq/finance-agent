@@ -151,7 +151,8 @@ async function fetchRemainingPages(
 
 export async function executeWorkdayQuery(
   config: WorkdayConfig,
-  wqlQuery: string
+  wqlQuery: string,
+  options?: { requireCompleteTotal?: boolean }
 ): Promise<{ total?: number; data?: unknown[] }> {
   debug(`Executing WQL query on tenant: ${config.tenant}`);
   debug(`Query: ${wqlQuery}`);
@@ -171,7 +172,7 @@ export async function executeWorkdayQuery(
     data = [...initialData, ...additionalData];
   }
 
-  if (typeof reportedTotal === 'number' && data.length !== reportedTotal) {
+  if (options?.requireCompleteTotal && typeof reportedTotal === 'number' && data.length !== reportedTotal) {
     throw new Error(`Workday query incomplete: expected ${reportedTotal} rows, got ${data.length}`);
   }
 

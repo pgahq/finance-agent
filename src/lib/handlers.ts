@@ -31,9 +31,12 @@ async function setupContext(): Promise<ProcessingContext> {
 
 const executeQuery = async (
   context: ProcessingContext,
-  query: string
+  query: string,
+  options?: { requireCompleteTotal?: boolean }
 ): Promise<{ total?: number; data: unknown[] }> => {
-  const queryResponse = await executeWorkdayQuery(context.workdayConfig, query);
+  const queryResponse = options
+    ? await executeWorkdayQuery(context.workdayConfig, query, options)
+    : await executeWorkdayQuery(context.workdayConfig, query);
 
   if (!queryResponse?.data || !Array.isArray(queryResponse.data)) {
     throw new Error('Expected query response format: {total: number, data: array}');
@@ -122,7 +125,8 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
  * @returns A handler function that can process data
  */
 export const withProcessorHandler = <T = unknown>(
-  processAction: (context: ProcessingContext, data: T[], event?: any) => Promise<void>
+  processAction: (context: ProcessingContext, data: T[], event?: any) => Promise<void>,
+  options?: { requireCompleteTotal?: boolean }
 ) => async (event: any = {}) => {
   const context = await setupContext();
   
@@ -131,7 +135,7 @@ export const withProcessorHandler = <T = unknown>(
     debug(`Executing query directly: ${event.query}`);
     let data: unknown[];
     try {
-      const queryResponse = await executeQuery(context, event.query);
+      const queryResponse = await executeQuery(context, event.query, options);
       data = queryResponse.data;
       event.sourceTotal = queryResponse.total;
     } catch (error) {
