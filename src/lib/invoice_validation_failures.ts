@@ -258,6 +258,10 @@ export function isWorkdayValidationError(error: unknown): boolean {
     && (hasValidationFaultShape(error) || VALIDATION_ERROR_PATTERN.test(validationMessage));
 }
 
+export function isRequiredLineOfBusinessWorktagError(text: string | undefined): boolean {
+  return typeof text === 'string' && /must also have a value:\s*Line of Business/i.test(text);
+}
+
 export async function recordInvoiceValidationFailure(
   config: InvoiceValidationFailuresConfig | undefined,
   invoiceWorkdayID: string,

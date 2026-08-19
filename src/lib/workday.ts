@@ -1,10 +1,11 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, isRequiredLineOfBusinessWorktagError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { parseExtractedAmount } from './invoice_lines.js';
 import {
+  extractLineOfBusinessId,
   parseRelatedWorktagsResponse,
   relatedWorktagsTotalPages,
   type RelatedLob,
@@ -558,6 +559,14 @@ async function getValidationFallbackField(
 
   const validation = parseWorkdayValidationDetails(error) ?? { message: validationError };
 
+  if (
+    isRequiredLineOfBusinessWorktagError(`${validation.message ?? ''} ${validationError}`)
+    && retryableFallbackFields.includes('worktag:lob')
+  ) {
+    debug('Validation requires a Line of Business worktag; applying fallback LOB without classifier');
+    return 'worktag:lob';
+  }
+
   try {
     const decision = await classifyWorkdayValidationField({
       validation,
@@ -656,7 +665,8 @@ function getFallbackRetryBuildOptions(
     };
   }
 
-  if (field === 'worktag:lob' && !options.omitLobWorktag && !options.applyLobFallback && process.env.FALLBACK_LOB_ID && !options.finalLines?.some(l => l.lineOfBusinessId)) {
+  const someLineMissingLob = !options.finalLines?.length || options.finalLines.some(l => !l.lineOfBusinessId);
+  if (field === 'worktag:lob' && !options.omitLobWorktag && !options.applyLobFallback && process.env.FALLBACK_LOB_ID && someLineMissingLob) {
     return {
       buildOptions: { ...options, applyLobFallback: true },
       fallbackLabel: 'fallback line of business',
@@ -674,7 +684,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, currencyWID, attachment } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -711,25 +721,30 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ...(applyCostCenterFallback && fallbackCostCenterRef ? ['Cost_Center_Reference_ID'] : []),
     ]);
 
+    let result = worktags;
     if (replaceTypes.size > 0) {
       const remaining = worktags.filter((t: any) =>
         ([] as any[]).concat(t.ID ?? []).every((id: any) => !replaceTypes.has(id.$attributes?.type))
       );
-      return [
+      result = [
         ...remaining,
         ...(applyFundFallback && fallbackFundRef ? [fallbackFundRef] : []),
         ...(applyCostCenterFallback && fallbackCostCenterRef ? [fallbackCostCenterRef] : []),
       ];
+    } else if (defaultFallbackWorktags.length) {
+      const existingTypes = new Set(
+        worktags.flatMap((t: any) =>
+          ([] as any[]).concat(t.ID ?? []).map((id: any) => id.$attributes?.type)
+        ).filter(Boolean)
+      );
+      const additions = defaultFallbackWorktags.filter(t => !existingTypes.has(t.ID[0].$attributes?.type));
+      result = additions.length ? [...worktags, ...additions] : worktags;
     }
 
-    if (!defaultFallbackWorktags.length) return worktags;
-    const existingTypes = new Set(
-      worktags.flatMap((t: any) =>
-        ([] as any[]).concat(t.ID ?? []).map((id: any) => id.$attributes?.type)
-      ).filter(Boolean)
-    );
-    const additions = defaultFallbackWorktags.filter(t => !existingTypes.has(t.ID[0].$attributes?.type));
-    return additions.length ? [...worktags, ...additions] : worktags;
+    if (!omitLobWorktag && fallbackLobId && !extractLineOfBusinessId(result)) {
+      result = [...result, createReference('Organization_Reference_ID', fallbackLobId)];
+    }
+    return result;
   };
 
   const invoiceLines = finalLines?.length
@@ -737,7 +752,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(!omitLobWorktag && (applyLobFallback ? fallbackLobId : line.lineOfBusinessId) ? [createReference('Organization_Reference_ID', (applyLobFallback ? fallbackLobId : line.lineOfBusinessId)!)] : []),
+        ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ]);
       const isDiscountOverride = line.hasDiscount === true;

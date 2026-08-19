@@ -1,10 +1,18 @@
 import {
   getInvoiceValidationFailuresConfig,
+  isRequiredLineOfBusinessWorktagError,
   isWorkdayValidationError,
   summarizeValidationError,
 } from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
+  it('detects related-worktag faults that require Line of Business', () => {
+    expect(isRequiredLineOfBusinessWorktagError(
+      'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business'
+    )).toBe(true);
+    expect(isRequiredLineOfBusinessWorktagError('Spend Category is required')).toBe(false);
+  });
+
   it('returns the plain validation message from an Error', () => {
     const error = new Error('Validation_Fault: Spend Category is required');
 
