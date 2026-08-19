@@ -130,7 +130,7 @@ failure+failure → Failure; mixed → Partial.
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
 | `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Gmail trigger, add-on, and `CreateInvoiceProcessor` (JSON `client_email` + `private_key`). Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
 | `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
-| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CFT `GmailAddonOauthClientId` | Add-on OIDC audience |
+| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CircleCI job env in `.circleci/config.yml` (CFT `GmailAddonOauthClientId`) | Add-on OIDC audience |
 
 The Gmail service account needs **Google Admin domain-wide delegation** with
 scope `https://www.googleapis.com/auth/gmail.modify`. Do not log the service
@@ -176,41 +176,40 @@ This is separate from the Gmail domain-wide-delegation key in AWS Secrets
 Manager (`finance-agent/gmail-service-account`). CI needs a **second** GCP
 service account that can manage Workspace add-on deployments.
 
-1. In the GCP project that owns the HTTP add-on (one project can publish
-   add-ons for any number of apps):
+1. In GCP project `finance-agent-506013` (shared; can publish add-ons for any
+   number of apps):
    - Enable [Google Workspace Add-ons API](https://console.cloud.google.com/apis/library/gsuiteaddons.googleapis.com) (`gsuiteaddons.googleapis.com`)
    - Create a CI service account (for example `workspace-add-ons-ci`)
    - Grant it `roles/gsuiteaddons.developer`
    - Create a JSON key
 2. Create CircleCI contexts **finance-agent-development** and
    **finance-agent-production** (replacing `chatbot-development` /
-   `chatbot-production`). Copy the existing AWS deploy variables into them,
-   then add:
+   `chatbot-production`). Copy the existing AWS deploy variables into them.
+   The only extra context secret is:
 
    | Name | Value |
    | --- | --- |
-   | `GCP_PROJECT_ID` | That GCP project id |
    | `GCP_SERVICE_ACCOUNT_KEY` | The JSON key (raw JSON starting with `{`, or base64 of that JSON). The same key can be reused in other projects' contexts. |
-   | `GMAIL_ADDON_OAUTH_CLIENT_ID` | Add-on OAuth client id (CFT `GmailAddonOauthClientId`; Lambda OIDC audience) |
 
-   `GCLOUD_SERVICE_KEY` / `GOOGLE_PROJECT_ID` are accepted as aliases.
+   `GCLOUD_SERVICE_KEY` is accepted as an alias.
 
-   Read the client id with:
+   GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
+   Set `GMAIL_ADDON_OAUTH_CLIENT_ID` in `.circleci/config.yml` on both deploy
+   jobs (same client; it is not a secret):
 
    ```bash
-   gcloud workspace-add-ons get-authorization --project=YOUR_GCP_PROJECT \
+   gcloud workspace-add-ons get-authorization --project=finance-agent-506013 \
      --format='value(oauthClientId)'
    ```
 
-Until `GCP_SERVICE_ACCOUNT_KEY` and `GCP_PROJECT_ID` are both present, the
-deploy job skips gcloud and still finishes the AWS stack. If only one of them
-is set, the job fails.
+Until `GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
+still finishes the AWS stack.
 
 Individual testers still install once:
 
 ```bash
 gcloud workspace-add-ons deployments install finance-agent-gmail-sandbox \
-  --project=YOUR_GCP_PROJECT
+  --project=finance-agent-506013
 ```
 
 ## Workday SOAP authentication

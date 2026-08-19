@@ -54,15 +54,14 @@ references:
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             AddonEnvironment=$ADDON_ENVIRONMENT
-            GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID:-}"
+            GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
       - run:
           name: Publish Gmail Workspace add-on
           command: |
             set -euo pipefail
             KEY="${GCP_SERVICE_ACCOUNT_KEY:-${GCLOUD_SERVICE_KEY:-}}"
-            PROJECT="${GCP_PROJECT_ID:-${GOOGLE_PROJECT_ID:-}}"
-            if [ -z "${KEY}" ] && [ -z "${PROJECT}" ]; then
-              echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY and GCP_PROJECT_ID to this CircleCI context."
+            if [ -z "${KEY}" ]; then
+              echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
               exit 0
             fi
             GMAIL_ADDON_URL="$(aws cloudformation describe-stacks \
@@ -134,6 +133,8 @@ references:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: sandbox
+      # gcloud workspace-add-ons get-authorization --project=finance-agent-506013 --format='value(oauthClientId)'
+      GMAIL_ADDON_OAUTH_CLIENT_ID: ""
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -147,6 +148,8 @@ references:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: production
+      # gcloud workspace-add-ons get-authorization --project=finance-agent-506013 --format='value(oauthClientId)'
+      GMAIL_ADDON_OAUTH_CLIENT_ID: ""
 
 workflows:
   version: 2

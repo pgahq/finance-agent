@@ -5,17 +5,17 @@ set -euo pipefail
 # Does not run `gcloud workspace-add-ons deployments install` (that is per user).
 
 KEY="${GCP_SERVICE_ACCOUNT_KEY:-${GCLOUD_SERVICE_KEY:-}}"
-PROJECT="${GCP_PROJECT_ID:-${GOOGLE_PROJECT_ID:-}}"
+PROJECT="finance-agent-506013"
 ENVIRONMENT="${ADDON_ENVIRONMENT:-}"
 URL="${GMAIL_ADDON_URL:-}"
 
-if [[ -z "${KEY}" && -z "${PROJECT}" ]]; then
-  echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY and GCP_PROJECT_ID to this CircleCI context."
+if [[ -z "${KEY}" ]]; then
+  echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
   exit 0
 fi
 
-if [[ -z "${KEY}" || -z "${PROJECT}" || -z "${ENVIRONMENT}" || -z "${URL}" ]]; then
-  echo "Gmail add-on gcloud deploy needs GCP_SERVICE_ACCOUNT_KEY, GCP_PROJECT_ID, ADDON_ENVIRONMENT, and GMAIL_ADDON_URL." >&2
+if [[ -z "${ENVIRONMENT}" || -z "${URL}" ]]; then
+  echo "Gmail add-on gcloud deploy needs ADDON_ENVIRONMENT and GMAIL_ADDON_URL." >&2
   exit 1
 fi
 
