@@ -1,6 +1,7 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { debug } from '@pga/logger';
 import { Pool } from 'pg';
+import { parseRelatedLob, type RelatedLob } from './related_worktags.js';
 
 // Database configuration interface
 export interface DatabaseConfig {
@@ -307,6 +308,51 @@ export async function deleteAllDocumentsByType(
     return deletedCount;
   } catch (error) {
     debug(`Error deleting all documents of type ${type}:`, error);
+    throw error;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value == null) return {};
+  return value as Record<string, unknown>;
+}
+
+export async function getCostCenterRelatedLobsByCodes(
+  db: DatabaseConnection,
+  costCenterIds: string[]
+): Promise<Map<string, RelatedLob>> {
+  const byId = new Map<string, RelatedLob>();
+  const ids = [...new Set(costCenterIds.filter(Boolean))];
+  if (ids.length === 0) return byId;
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, metadata
+      FROM documents
+      WHERE type = 'cost_center'
+        AND (
+          metadata->>'code' = ANY($1::text[])
+          OR workday_id = ANY($1::text[])
+        )
+    `, [ids]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const metadata = asRecord(record.metadata);
+      const relatedLob = parseRelatedLob(metadata.relatedLob);
+      if (!relatedLob) continue;
+      if (typeof record.workday_id === 'string' && record.workday_id) {
+        byId.set(record.workday_id, relatedLob);
+      }
+      if (typeof metadata.code === 'string' && metadata.code) {
+        byId.set(metadata.code, relatedLob);
+      }
+    }
+
+    debug(`Found related LOB metadata for ${byId.size} cost center key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cost center related LOBs:', error);
     throw error;
   }
 }

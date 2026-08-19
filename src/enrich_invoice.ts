@@ -15,6 +15,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -229,7 +230,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           costCenterId: process.env.FALLBACK_COST_CENTER_ID,
           spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
         },
-        emailWorktags
+        emailWorktags,
+        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds)
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;

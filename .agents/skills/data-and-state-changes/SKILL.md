@@ -42,3 +42,19 @@ Do not delete production orphan rows from app code without an explicit ops decis
 1. Add it to `DOCUMENT_TYPES`
 2. Wire the cache/RAG path that writes that type
 3. Ensure the value fits `documents.type VARCHAR(20)`
+
+## Cost center related LOB metadata
+
+`cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is exact by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG.
+
+`relatedLob` shape:
+
+```ts
+{
+  requiredOnTransaction: boolean;
+  defaultReferenceId: string | null;
+  allowedReferenceIds: string[];
+}
+```
+
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the default (or the single allowed id) after PO and email worktags.
