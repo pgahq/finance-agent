@@ -147,6 +147,13 @@ describe('gmail_addon handler', () => {
     const parsed = parseCard(await handler(buildEvent({})));
     const card = parsed.body.action.navigations[0].pushCard;
     expect(parsed.statusCode).toBe(200);
+    expect(mockVerifyGmailAddonOidc).toHaveBeenCalledWith(
+      'Bearer system-id-token',
+      {
+        endpointUrl: 'https://example.execute-api.us-east-1.amazonaws.com/gmail-addon',
+        serviceAccountEmail: 'addon@gserviceaccount.com',
+      },
+    );
     expect(card?.header.title).toBe('Workday supplier invoice (sandbox)');
     expect(widgetText(card!)).toContain(
       'Open a supplier email with a PDF to create a Workday supplier invoice in the sandbox.',

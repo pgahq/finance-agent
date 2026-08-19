@@ -65,13 +65,14 @@ interface AddonRenderResponse {
 
 function addonUrlFromEvent(event: APIGatewayProxyEventV2): string {
   if (process.env.GMAIL_ADDON_URL) {
-    return process.env.GMAIL_ADDON_URL;
+    return process.env.GMAIL_ADDON_URL.replace(/\/+$/, '');
   }
   const domain = event.requestContext?.domainName;
   if (!domain) {
     return '';
   }
-  return `https://${domain}/gmail-addon`;
+  const path = (event.rawPath || '/gmail-addon').replace(/\/+$/, '') || '/gmail-addon';
+  return `https://${domain}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 function authorizationHeader(event: APIGatewayProxyEventV2): string | undefined {

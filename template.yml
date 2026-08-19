@@ -765,7 +765,6 @@ Resources:
           GMAIL_SERVICE_ACCOUNT_SECRET_ARN: finance-agent/gmail-service-account
           GMAIL_ADDON_OAUTH_CLIENT_ID: !Ref GmailAddonOauthClientId
           GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL: !Ref GmailAddonServiceAccountEmail
-          GMAIL_ADDON_URL: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/gmail-addon"
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
