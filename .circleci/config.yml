@@ -53,8 +53,28 @@ references:
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
+            AddonEnvironment=$ADDON_ENVIRONMENT
+            GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
+      - run:
+          name: Publish Gmail Workspace add-on
+          command: |
+            set -euo pipefail
+            KEY="${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}"
+            if [ -z "${KEY}" ]; then
+              echo "Skipping Gmail add-on gcloud deploy; add FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
+              exit 0
+            fi
+            GMAIL_ADDON_URL="$(aws cloudformation describe-stacks \
+              --stack-name "$CIRCLE_PROJECT_REPONAME" \
+              --region us-east-1 \
+              --query "Stacks[0].Outputs[?OutputKey=='GmailAddonApiUrl'].OutputValue" \
+              --output text)"
+            export GMAIL_ADDON_URL
+            curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz" -o /tmp/google-cloud-sdk.tar.gz
+            tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
+            export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+            bash scripts/deploy-gmail-addon.sh
 
-jobs:
   build:
     working_directory: ~/app
     docker:
@@ -99,6 +119,7 @@ jobs:
             - package-lock.json
             - template.yml
             - layers
+            - scripts
 
   deploy-to-dev:
     <<: *deploy_container_config
@@ -111,6 +132,8 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      ADDON_ENVIRONMENT: sandbox
+      GMAIL_ADDON_OAUTH_CLIENT_ID: "11281551445800182416"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -123,6 +146,8 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      ADDON_ENVIRONMENT: production
+      GMAIL_ADDON_OAUTH_CLIENT_ID: "108741410526312943726"
 
 workflows:
   version: 2

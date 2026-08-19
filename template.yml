@@ -30,6 +30,17 @@ Parameters:
   DefaultOcrSpendCategoryId:
     Type: String
     Description: Workday Spend_Category_ID to apply as fallback for OCR lines missing a spend category
+  AddonEnvironment:
+    Type: String
+    AllowedValues:
+      - sandbox
+      - production
+    Default: sandbox
+    Description: Gmail add-on copy and exclusive label prefix. sandbox on the development stack; production on main.
+  GmailAddonOauthClientId:
+    Type: String
+    Default: ""
+    Description: OAuth client ID used to verify Gmail add-on system and user ID tokens
 
 Globals:
   Function:
@@ -59,6 +70,7 @@ Globals:
         DATABASE_SECRET_ARN: !Ref DatabaseSecret
         DATABASE_CLUSTER_ENDPOINT: !GetAtt FinanceAgentDatabase.Endpoint.Address
         DATABASE_NAME: finance_agent
+        ADDON_ENVIRONMENT: !Ref AddonEnvironment
 
 Resources:
   FinanceAgentBucket:
@@ -185,6 +197,7 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Ref DatabaseSecret
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:finance-agent/gmail-service-account*
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -243,6 +256,7 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Ref DatabaseSecret
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:finance-agent/gmail-service-account*
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -670,6 +684,9 @@ Resources:
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
       Timeout: 300 # 5 minutes for single invoice
       MemorySize: 1024
+      Environment:
+        Variables:
+          GMAIL_SERVICE_ACCOUNT_SECRET_ARN: finance-agent/gmail-service-account
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -704,6 +721,58 @@ Resources:
             Path: /create-invoice
             Method: POST
 
+  # Trigger Create Invoice from Gmail - HTTP API for the add-on / automation callers
+  TriggerCreateInvoiceGmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-TriggerCreateInvoiceGmail"
+      Handler: dist/trigger_create_invoice_gmail.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 1024
+      Environment:
+        Variables:
+          ENRICH_INVOICE_API_TOKEN: ssm:/finance-agent/enrich-invoice-api-token
+          GMAIL_SERVICE_ACCOUNT_SECRET_ARN: finance-agent/gmail-service-account
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        CreateInvoiceGmailApi:
+          Type: HttpApi
+          Properties:
+            Path: /create-invoice/gmail
+            Method: POST
+
+  # Gmail Workspace Add-on HTTP endpoint (Google OIDC, not the finance-agent bearer token)
+  GmailAddonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-GmailAddon"
+      Handler: dist/gmail_addon.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 1024
+      Environment:
+        Variables:
+          GMAIL_SERVICE_ACCOUNT_SECRET_ARN: finance-agent/gmail-service-account
+          GMAIL_ADDON_OAUTH_CLIENT_ID: !Ref GmailAddonOauthClientId
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        GmailAddonApi:
+          Type: HttpApi
+          Properties:
+            Path: /gmail-addon
+            Method: POST
+
 Outputs:
   EnrichInvoiceApiUrl:
     Description: POST endpoint to trigger invoice enrichment
@@ -711,3 +780,9 @@ Outputs:
   CreateInvoiceApiUrl:
     Description: POST endpoint to create a new invoice from an Intercom conversation attachment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice"
+  CreateInvoiceGmailApiUrl:
+    Description: POST endpoint to create a new invoice from a Gmail message (bearer token)
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/create-invoice/gmail"
+  GmailAddonApiUrl:
+    Description: Gmail Workspace Add-on HTTP endpoint used by CI when publishing the unpublished Workspace add-on
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/gmail-addon"

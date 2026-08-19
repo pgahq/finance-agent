@@ -2,16 +2,20 @@
 name: integrations-and-external-contracts
 description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
-  create-invoice, enrich-invoice, Workday, SSM secrets). Use when changing
-  POST /create-invoice or /enrich-invoice, Intercom Data Connectors, bearer
-  auth tokens, or attachment upload contracts.
+  create-invoice, Gmail create-invoice, Gmail Workspace add-on, enrich-invoice,
+  Workday, SSM and Secrets Manager). Use when changing POST /create-invoice,
+  POST /create-invoice/gmail, POST /gmail-addon, Intercom Data Connectors,
+  Gmail labels, bearer auth tokens, or attachment upload contracts.
 ---
 
 # Integrations and external contracts
 
 ## HTTP triggers
 
-Both routes share bearer auth against SSM `/finance-agent/enrich-invoice-api-token` (`ENRICH_INVOICE_API_TOKEN`). Callers send `Authorization: Bearer <token>`.
+Intercom, Gmail, and enrich-invoice HTTP triggers share bearer auth against SSM
+`/finance-agent/enrich-invoice-api-token` (`ENRICH_INVOICE_API_TOKEN`). Callers
+send `Authorization: Bearer <token>`. The Gmail Workspace add-on endpoint does
+**not** use that token; it verifies Google OIDC instead.
 
 ### `POST /create-invoice`
 
@@ -23,7 +27,7 @@ Request body:
 { "conversationId": "1234567890" }
 ```
 
-This is a new Intercom-only contract. Direct-upload bodies
+This is an Intercom-only contract. Do not add Gmail fields. Direct-upload bodies
 (`fileName` / `contentType` / `fileContent`) are not accepted.
 
 Flow:
@@ -46,6 +50,77 @@ Flow:
 
 Error bodies include `status: error` and `message` so Fin can map response fields.
 
+### `POST /create-invoice/gmail`
+
+Gmail entry point. Does not share a request body with Intercom.
+
+Request body:
+
+```json
+{ "gmailMessageId": "msg-f:123", "userEmail": "ap@pgahq.com", "force": false }
+```
+
+`force` is optional. Without it, any exclusive supplier-invoice label on the
+message returns **409**. With `force: true`, the add-on re-runs and resets the
+label to Processing (this can create another Workday supplier invoice).
+
+Flow:
+
+1. Domain-wide delegation JWT as `userEmail` (`gmail.modify`) using the service account in Secrets Manager `finance-agent/gmail-service-account`
+2. Read exclusive labels; 409 unless `force`
+3. Fetch the message, collect every `application/pdf` (same 20MB / four-download cap as Intercom)
+4. Set the exclusive **Processing** label
+5. Upload S3 `new-invoices/{requestId}/...` and Event-invoke `CreateInvoiceProcessor` once per PDF with `gmailMessageId` and `userEmail` in the payload
+6. Processor success/failure updates Success, Failure, or Partial (see labels below)
+
+| HTTP | Meaning |
+| --- | --- |
+| 202 | Accepted — `status: accepted`, `requestId`, `gmailMessageId`, `attachmentCount` |
+| 400 | Missing ids, invalid JSON, no PDF, or attachment too large |
+| 401 | Bad/missing finance-agent bearer token |
+| 404 | Gmail message not found |
+| 409 | Already labeled and `force` was not true |
+| 502 | Gmail API failed |
+| 500 | Missing service account, S3/invoke failure, unexpected error |
+
+### `POST /gmail-addon`
+
+HTTP alternate runtime for the unpublished Gmail Workspace add-on. Google sends
+the add-on event JSON. Auth is the `Authorization: Bearer` **system ID token**
+(`GMAIL_ADDON_OAUTH_CLIENT_ID`). The user's email comes from
+`authorizationEventObject.userIdToken`.
+
+The add-on calls `runCreateInvoiceFromGmail` in-process (same 30s Lambda budget
+as the Gmail trigger). Google shows the native spinner while that request runs.
+`CreateInvoiceProcessor` stays async (up to 5 minutes); Slack still notifies.
+There is no job poller.
+
+| Card | Controls |
+| --- | --- |
+| Homepage (no message open) | Copy only — open a supplier email with a PDF |
+| Unlabeled message | **Create supplier invoice** (`force: false`) |
+| Labeled message | Create is hidden; **Create supplier invoice again** opens a confirm card (`force: true`) |
+
+Sandbox vs production **copy and Gmail labels** come from stack parameter
+`AddonEnvironment` (`ADDON_ENVIRONMENT`). Workday sandbox vs prod is the
+existing CFT/CircleCI split, not this parameter.
+
+## Gmail labels
+
+Exclusive nested labels, visible in the Gmail UI. The received email body is
+not edited.
+
+| Environment | Labels |
+| --- | --- |
+| production (`AddonEnvironment=production`) | `Supplier invoice/Processing`, `Success`, `Failure`, `Partial` |
+| sandbox (`AddonEnvironment=sandbox`) | `Supplier invoice (sandbox)/Processing`, `Success`, `Failure`, `Partial` |
+
+Both add-ons can be installed on the same mailbox; the distinct prefixes keep
+sandbox and prod status from colliding.
+
+Processor mapping for multiple PDFs on one message: success+success → Success;
+failure+failure → Failure; mixed → Partial.
+
 ### `POST /enrich-invoice`
 
 On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplierInvoiceId": "<WID or invoice number>" }`. Looks up email context from Workday OCR inbound email data, not Intercom.
@@ -54,11 +129,89 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 
 | Name | Source | Used by |
 | --- | --- | --- |
-| `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Both HTTP triggers (inbound auth) |
+| `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Intercom and Gmail HTTP triggers (inbound auth). Not the add-on. |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
+| `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Gmail trigger, add-on, and `CreateInvoiceProcessor` (JSON `client_email` + `private_key`). Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
+| `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
+| `GMAIL_ADDON_OAUTH_CLIENT_ID` | CircleCI job env in `.circleci/config.yml` (CFT `GmailAddonOauthClientId`) | Add-on OIDC audience |
+
+The Gmail service account needs **Google Admin domain-wide delegation** with
+scope `https://www.googleapis.com/auth/gmail.modify`. Do not log the service
+account JSON or private key.
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
+
+## AWS sandbox vs prod (already CFT)
+
+Do not add a second AWS environment model for Gmail. CircleCI already deploys
+two stacks:
+
+- `development` → `deploy-to-dev` (Workday impl sandbox, `AddonEnvironment=sandbox`)
+- `main` → `deploy-to-prod` (Workday prod, `AddonEnvironment=production`)
+
+After deploy, CircleCI reads `GmailAddonApiUrl` and publishes the matching
+gcloud Workspace add-on deployment. Deployment JSON is generated in CI from
+`ADDON_ENVIRONMENT` and the stack URL; do not commit `deployment.*.json`.
+
+## Gmail add-on via gcloud (two deployments)
+
+AWS/Workday targeting is CFT. The extra split is **two unpublished Workspace
+add-on deployments** that point at the two HttpApi URLs. CI builds the spec
+with `scripts/build-gmail-addon-deployment.js` (display name + endpoint URL)
+and create/replace with `scripts/deploy-gmail-addon.sh`.
+
+| `ADDON_ENVIRONMENT` | gcloud name | Gmail add-on title | CircleCI job |
+| --- | --- | --- | --- |
+| `sandbox` | `finance-agent-gmail-sandbox` | Workday supplier invoice (sandbox) | `deploy-to-dev` |
+| `production` | `finance-agent-gmail` | Workday supplier invoice | `deploy-to-prod` |
+
+CI does **not** run `install` (that is per Google user).
+
+Add-on OAuth scopes: `gmail.addons.execute`,
+`gmail.addons.current.message.readonly`, `userinfo.email`. Message fetch and
+label writes use the Gmail DWD service account, not the add-on user OAuth token.
+
+A private Marketplace listing is optional later. Do not org-install.
+
+### What to add so gcloud works from CI
+
+This is separate from the Gmail domain-wide-delegation key in AWS Secrets
+Manager (`finance-agent/gmail-service-account`). CI needs a **second** GCP
+service account that can manage Workspace add-on deployments.
+
+1. In GCP project `finance-agent-506013` (shared; can publish add-ons for any
+   number of apps):
+   - Enable [Google Workspace Add-ons API](https://console.cloud.google.com/apis/library/gsuiteaddons.googleapis.com) (`gsuiteaddons.googleapis.com`)
+   - Create a CI service account (for example `workspace-add-ons-ci`)
+   - Grant it `roles/gsuiteaddons.developer`
+   - Create a JSON key
+2. Reuse the existing CircleCI contexts **chatbot-development** and
+   **chatbot-production** (AWS deploy variables already live there).
+   The only extra context secret is:
+
+   | Name | Value |
+   | --- | --- |
+   | `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` | JSON key for `workspace-add-ons-ci@finance-agent-506013.iam.gserviceaccount.com` (raw JSON starting with `{`, or base64 of that JSON) |
+
+   GCP project id is `finance-agent-506013` in `scripts/deploy-gmail-addon.sh`.
+   `GMAIL_ADDON_OAUTH_CLIENT_ID` is set per job in `.circleci/config.yml` from
+   the Gmail service-account OAuth 2 client ids (not a CircleCI secret):
+
+   | Job | Service account | OAuth 2 client id |
+   | --- | --- | --- |
+   | `deploy-to-dev` | `finance-agent-gmail-sandbox@finance-agent-506013.iam.gserviceaccount.com` | `11281551445800182416` |
+   | `deploy-to-prod` | `finance-agent-gmail@finance-agent-506013.iam.gserviceaccount.com` | `108741410526312943726` |
+
+Until `FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY` is present, the deploy job skips gcloud and
+still finishes the AWS stack.
+
+Individual testers still install once:
+
+```bash
+gcloud workspace-add-ons deployments install finance-agent-gmail-sandbox \
+  --project=finance-agent-506013
+```
 
 ## Workday SOAP authentication
 
@@ -80,8 +233,9 @@ envelope `Header` element.
 
 ## Attachment bytes
 
-- Intercom CDN → binary `Buffer` → `putBinaryToS3`
-- Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
+- Intercom CDN or Gmail attachment API → binary `Buffer` → `putBinaryToS3`
+- Intercom download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
+- Gmail API host allowlist is `gmail.googleapis.com` / `www.gmail.googleapis.com`; `fetch` also uses `redirect: 'error'`
 - Only `application/pdf` attachments are accepted; missing PDF → 400
 - Max individual and combined download size is 20MB; downloads use at most four
   concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
