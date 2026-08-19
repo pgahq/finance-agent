@@ -54,8 +54,28 @@ references:
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             AddonEnvironment=$ADDON_ENVIRONMENT
+            GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID:-}"
+      - run:
+          name: Publish Gmail Workspace add-on
+          command: |
+            set -euo pipefail
+            KEY="${GCP_SERVICE_ACCOUNT_KEY:-${GCLOUD_SERVICE_KEY:-}}"
+            PROJECT="${GCP_PROJECT_ID:-${GOOGLE_PROJECT_ID:-}}"
+            if [ -z "${KEY}" ] && [ -z "${PROJECT}" ]; then
+              echo "Skipping Gmail add-on gcloud deploy; add GCP_SERVICE_ACCOUNT_KEY and GCP_PROJECT_ID to this CircleCI context."
+              exit 0
+            fi
+            GMAIL_ADDON_URL="$(aws cloudformation describe-stacks \
+              --stack-name "$CIRCLE_PROJECT_REPONAME" \
+              --region us-east-1 \
+              --query "Stacks[0].Outputs[?OutputKey=='GmailAddonApiUrl'].OutputValue" \
+              --output text)"
+            export GMAIL_ADDON_URL
+            curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz" -o /tmp/google-cloud-sdk.tar.gz
+            tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
+            export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+            bash scripts/deploy-gmail-addon.sh
 
-jobs:
   build:
     working_directory: ~/app
     docker:
@@ -100,6 +120,8 @@ jobs:
             - package-lock.json
             - template.yml
             - layers
+            - gmail-addon
+            - scripts
 
   deploy-to-dev:
     <<: *deploy_container_config
@@ -113,6 +135,8 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: sandbox
+      GMAIL_ADDON_DEPLOYMENT_NAME: finance-agent-gmail-sandbox
+      GMAIL_ADDON_DEPLOYMENT_FILE: gmail-addon/deployment.sandbox.json
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -126,6 +150,8 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       ADDON_ENVIRONMENT: production
+      GMAIL_ADDON_DEPLOYMENT_NAME: finance-agent-gmail
+      GMAIL_ADDON_DEPLOYMENT_FILE: gmail-addon/deployment.production.json
 
 workflows:
   version: 2

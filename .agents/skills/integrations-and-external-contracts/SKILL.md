@@ -146,48 +146,68 @@ two stacks:
 - `development` → `deploy-to-dev` (Workday impl sandbox, `AddonEnvironment=sandbox`)
 - `main` → `deploy-to-prod` (Workday prod, `AddonEnvironment=production`)
 
-After deploy, copy `GmailAddonApiUrl` from that stack's CloudFormation outputs
-into the matching gcloud deployment file.
+After deploy, CircleCI reads `GmailAddonApiUrl` and publishes the matching
+gcloud Workspace add-on deployment. Do not commit filled-in execute-api URLs.
 
 ## Gmail add-on via gcloud (two deployments)
 
 AWS/Workday targeting is CFT. The extra split is **two unpublished Workspace
 add-on deployments** that point at the two HttpApi URLs.
 
-| gcloud name | File | `GmailAddonApiUrl` from |
-| --- | --- | --- |
-| `finance-agent-gmail-sandbox` | `gmail-addon/deployment.sandbox.json` | development stack |
-| `finance-agent-gmail` | `gmail-addon/deployment.production.json` | prod stack |
+| gcloud name | File | CircleCI job | `GmailAddonApiUrl` from |
+| --- | --- | --- | --- |
+| `finance-agent-gmail-sandbox` | `gmail-addon/deployment.sandbox.json` | `deploy-to-dev` | development stack |
+| `finance-agent-gmail` | `gmail-addon/deployment.production.json` | `deploy-to-prod` | prod stack |
 
-Replace the `REPLACE_WITH_GmailAddonApiUrl_FROM_*` placeholders with the full
-output URL (it already includes `/gmail-addon`) in both `runFunction` and
-`onTriggerFunction`. Optionally replace `logoUrl` with a hosted PGA logo.
+CI fills `runFunction` and `onTriggerFunction` from the stack output, then
+`gcloud workspace-add-ons deployments create` or `replace`. It does **not**
+run `install` (that is per Google user). Placeholders in git are expected.
 
-Create or update (project id is the Workspace add-on GCP project):
+Add-on OAuth scopes in those files: `gmail.addons.execute`,
+`gmail.addons.current.message.readonly`, `userinfo.email`. Message fetch and
+label writes use the Gmail DWD service account, not the add-on user OAuth token.
 
-```bash
-gcloud workspace-add-ons deployments create finance-agent-gmail-sandbox \
-  --deployment-file=gmail-addon/deployment.sandbox.json \
-  --project=YOUR_GCP_PROJECT
+A private Marketplace listing is optional later. Do not org-install.
 
-gcloud workspace-add-ons deployments replace finance-agent-gmail-sandbox \
-  --deployment-file=gmail-addon/deployment.sandbox.json \
-  --project=YOUR_GCP_PROJECT
-```
+### What to add so gcloud works from CI
 
-Same commands with `finance-agent-gmail` and `gmail-addon/deployment.production.json`
-for prod. Install is **individual**, not org-wide Admin force-install:
+This is separate from the Gmail domain-wide-delegation key in AWS Secrets
+Manager (`finance-agent/gmail-service-account`). CI needs a **second** GCP
+service account that can manage Workspace add-on deployments.
+
+1. In the GCP project that owns the HTTP add-on (same project for both gcloud
+   names is fine):
+   - Enable [Google Workspace Add-ons API](https://console.cloud.google.com/apis/library/gsuiteaddons.googleapis.com) (`gsuiteaddons.googleapis.com`)
+   - Create a CI service account (for example `finance-agent-gmail-addon-ci`)
+   - Grant it `roles/gsuiteaddons.developer`
+   - Create a JSON key
+2. In CircleCI contexts **chatbot-development** and **chatbot-production**, add:
+
+   | Name | Value |
+   | --- | --- |
+   | `GCP_PROJECT_ID` | That GCP project id |
+   | `GCP_SERVICE_ACCOUNT_KEY` | The JSON key (raw JSON starting with `{`, or base64 of that JSON) |
+   | `GMAIL_ADDON_OAUTH_CLIENT_ID` | Add-on OAuth client id (CFT `GmailAddonOauthClientId`; Lambda OIDC audience) |
+
+   `GCLOUD_SERVICE_KEY` / `GOOGLE_PROJECT_ID` are accepted as aliases.
+
+   Read the client id with:
+
+   ```bash
+   gcloud workspace-add-ons get-authorization --project=YOUR_GCP_PROJECT \
+     --format='value(oauthClientId)'
+   ```
+
+Until `GCP_SERVICE_ACCOUNT_KEY` and `GCP_PROJECT_ID` are both present, the
+deploy job skips gcloud and still finishes the AWS stack. If only one of them
+is set, the job fails.
+
+Individual testers still install once:
 
 ```bash
 gcloud workspace-add-ons deployments install finance-agent-gmail-sandbox \
   --project=YOUR_GCP_PROJECT
 ```
-
-Add-on OAuth scopes in those files: `gmail.addons.execute`,
-`gmail.addons.current.message.readonly`, `userinfo.email`. Message fetch and
-label writes use the service account, not the add-on user OAuth token.
-
-A private Marketplace listing is optional later. Do not org-install.
 
 ## Workday SOAP authentication
 
