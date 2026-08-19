@@ -183,6 +183,30 @@ describe('Workday utilities', () => {
       expect(result).toEqual(mockQueryResponse);
     });
 
+    it('should throw when Workday total does not match fetched rows', async () => {
+      const mockQuery = 'SELECT id, name FROM costCenters';
+      const mockTokenResponse = { access_token: 'mock-access-token' };
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockTokenResponse)
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            total: 3,
+            data: [
+              { id: '1', name: 'Cost Center A' },
+              { id: '2', name: 'Cost Center B' }
+            ]
+          })
+        });
+
+      await expect(executeWorkdayQuery(mockConfig, mockQuery))
+        .rejects.toThrow('Workday query incomplete: expected 3 rows, got 2');
+    });
+
     it('should handle empty query response', async () => {
       const mockQuery = 'SELECT id FROM emptyTable';
       const mockTokenResponse = { access_token: 'mock-access-token' };

@@ -202,15 +202,25 @@ describe('handlers', () => {
 
   describe('withProcessorHandler', () => {
     it('should execute query when event contains query', async () => {
+      const { executeWorkdayQuery } = require('../lib/workday.js');
+      executeWorkdayQuery.mockResolvedValue({
+        total: 2,
+        data: [
+          { id: '1', name: 'Item 1' },
+          { id: '2', name: 'Item 2' }
+        ]
+      });
+
       const mockProcessAction = jest.fn().mockResolvedValue(undefined);
       const processor = withProcessorHandler(mockProcessAction);
 
-      const event = {
+      const event: { query: string; sourceTotal?: number } = {
         query: 'SELECT * FROM test'
       };
 
       await processor(event);
 
+      expect(event.sourceTotal).toBe(2);
       expect(mockProcessAction).toHaveBeenCalledWith(
         expect.objectContaining({
           workdayConfig: expect.any(Object),

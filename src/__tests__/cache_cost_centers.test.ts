@@ -1,5 +1,5 @@
 import { processor } from '../cache_cost_centers.js';
-import { bulkInsertDocuments } from '../lib/database.js';
+import { bulkDeleteDocuments, bulkInsertDocuments, getDocumentsByType } from '../lib/database.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 import { getRelatedWorktagsForCostCenters } from '../lib/workday.js';
 
@@ -31,7 +31,7 @@ jest.mock('../lib/database.js', () => ({
   getDocumentsByType: jest.fn().mockResolvedValue([]),
   bulkInsertDocuments: jest.fn().mockResolvedValue({}),
   bulkUpdateDocuments: jest.fn().mockResolvedValue({}),
-  bulkDeleteDocuments: jest.fn().mockResolvedValue(0)
+  bulkDeleteDocuments: jest.fn().mockResolvedValue(1)
 }));
 
 jest.mock('../lib/workday.js', () => ({
@@ -62,9 +62,13 @@ describe('cache_cost_centers', () => {
     typeof getRelatedWorktagsForCostCenters
   >;
   const mockBulkInsertDocuments = bulkInsertDocuments as jest.MockedFunction<typeof bulkInsertDocuments>;
+  const mockBulkDeleteDocuments = bulkDeleteDocuments as jest.MockedFunction<typeof bulkDeleteDocuments>;
+  const mockGetDocumentsByType = getDocumentsByType as jest.MockedFunction<typeof getDocumentsByType>;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map());
+    mockGetDocumentsByType.mockResolvedValue([]);
   });
 
   it('stores related LOB metadata on cost center documents', async () => {
@@ -112,5 +116,50 @@ describe('cache_cost_centers', () => {
 
     const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
     expect(inserted[0]?.metadata).toMatchObject({ relatedLob: EMPTY_RELATED_LOB });
+  });
+
+  it('prunes cached cost centers that are not in the active Workday snapshot', async () => {
+    mockGetDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await expect(processor({
+      data: [
+        { workdayID: 'cc-active', name: 'Active', code: '100' }
+      ],
+      sourceTotal: 1
+    })).resolves.not.toThrow();
+
+    expect(mockBulkDeleteDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      ['cc-inactive'],
+      'cost_center'
+    );
+    expect(mockBulkInsertDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when no cost center data is received', async () => {
+    await expect(processor({ data: [] })).resolves.not.toThrow();
+
+    expect(mockBulkDeleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when Workday total is missing from the event', async () => {
+    mockGetDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ]);
+
+    await expect(processor({
+      data: [
+        { workdayID: 'cc-active', name: 'Active', code: '100' }
+      ]
+    })).resolves.not.toThrow();
+
+    expect(mockBulkDeleteDocuments).not.toHaveBeenCalled();
   });
 });

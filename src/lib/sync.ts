@@ -1,10 +1,11 @@
 import { debug } from '@pga/logger';
-import { bulkInsertDocuments, bulkUpdateDocuments, getDocumentsByType } from './database.js';
+import { bulkDeleteDocuments, bulkInsertDocuments, bulkUpdateDocuments, getDocumentsByType } from './database.js';
 import type { DatabaseConnection, DocumentType } from './database.js';
 import { createEmbedding } from './rag.js';
 import { notifyResult } from './slack.js';
 
 const BATCH_SIZE = 50;
+const ABSENT_ID_SAMPLE_LIMIT = 50;
 
 export interface SyncDataSourceOptions<T> {
   dbConnection: DatabaseConnection;
@@ -17,10 +18,36 @@ export interface SyncDataSourceOptions<T> {
   createMetadata: (item: T) => Record<string, any>;
   /** When provided, existing items are checked for updates. Omit for insert-only sources. */
   isUpdated?: (existingMetadata: any, item: T) => boolean;
+  /**
+   * Delete existing documents of this type whose workdayId is not in `items`.
+   * Requires `sourceTotal` to equal `items.size` (complete Workday snapshot).
+   * Skipped when `items` is empty. Do not enable for windowed sources such as events.
+   */
+  pruneAbsent?: boolean;
+  /** Workday-reported row count for the snapshot in `items`. Required to prune. */
+  sourceTotal?: number;
+  /** Log absent IDs and Slack stats without deleting. */
+  pruneDryRun?: boolean;
   /** e.g. 'cache_suppliers' */
   notifyLabel: string;
   /** e.g. 'suppliers' — used in debug messages and Slack summary */
   itemLabel: string;
+}
+
+function pruneSkipReason(options: {
+  pruneAbsent?: boolean;
+  itemsSize: number;
+  sourceTotal?: number;
+}): string | undefined {
+  if (!options.pruneAbsent) return undefined;
+  if (options.itemsSize === 0) return 'empty snapshot';
+  if (typeof options.sourceTotal !== 'number' || !Number.isFinite(options.sourceTotal)) {
+    return 'missing source total';
+  }
+  if (options.itemsSize !== options.sourceTotal) {
+    return `incomplete snapshot: fetched ${options.itemsSize} of ${options.sourceTotal}`;
+  }
+  return undefined;
 }
 
 async function processBatch<T>(
@@ -59,6 +86,9 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
     createContent,
     createMetadata,
     isUpdated,
+    pruneAbsent,
+    sourceTotal,
+    pruneDryRun,
     notifyLabel,
     itemLabel,
   } = options;
@@ -84,7 +114,17 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       }
     }
 
-    debug(`Sync analysis: ${newIds.length} new, ${updatedIds.length} updated, ${unchangedIds.length} unchanged`);
+    const staleIds = pruneAbsent && items.size > 0
+      ? existingDocs.map(doc => doc.workday_id).filter(workdayId => !items.has(workdayId))
+      : [];
+    const absentSample = staleIds.slice(0, ABSENT_ID_SAMPLE_LIMIT);
+    const pruneSkipped = pruneSkipReason({
+      pruneAbsent,
+      itemsSize: items.size,
+      sourceTotal,
+    });
+
+    debug(`Sync analysis: ${newIds.length} new, ${updatedIds.length} updated, ${unchangedIds.length} unchanged, ${staleIds.length} absent`);
 
     let successCount = 0;
     let errorCount = 0;
@@ -121,6 +161,22 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       }
     }
 
+    let deletedCount = 0;
+    if (staleIds.length > 0) {
+      debug(
+        `${pruneSkipped ? 'Would prune' : pruneDryRun ? 'Dry-run prune' : 'Pruning'} ${staleIds.length} ${itemLabel} absent from the current snapshot`,
+        absentSample
+      );
+      if (pruneSkipped) {
+        debug(`Skipping prune: ${pruneSkipped}`);
+      } else if (pruneDryRun) {
+        debug(`Dry-run prune: ${staleIds.length} ${itemLabel} not deleted`);
+      } else {
+        deletedCount = await bulkDeleteDocuments(dbConnection, staleIds, type);
+        successCount += deletedCount;
+      }
+    }
+
     const processingTime = Date.now() - startTime;
     debug(`Bulk sync complete: ${successCount} operations successful, ${errorCount} errors`);
     debug(`Skipped ${unchangedIds.length} unchanged ${itemLabel}`);
@@ -135,6 +191,13 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
           new: newIds.length,
           updated: updatedIds.length,
           unchanged: unchangedIds.length,
+          ...(pruneAbsent ? {
+            deleted: deletedCount,
+            absent: staleIds.length,
+            ...(absentSample.length > 0 ? { absentIds: absentSample } : {}),
+            ...(pruneSkipped ? { pruneSkipped } : {}),
+            ...(pruneDryRun && !pruneSkipped ? { dryRun: true } : {}),
+          } : {}),
           errors: errorCount,
           processingTime,
         }

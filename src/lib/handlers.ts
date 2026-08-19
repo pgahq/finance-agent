@@ -29,14 +29,17 @@ async function setupContext(): Promise<ProcessingContext> {
   };
 }
 
-const executeQuery = async (context: ProcessingContext, query: string) => {
+const executeQuery = async (
+  context: ProcessingContext,
+  query: string
+): Promise<{ total?: number; data: unknown[] }> => {
   const queryResponse = await executeWorkdayQuery(context.workdayConfig, query);
-  
+
   if (!queryResponse?.data || !Array.isArray(queryResponse.data)) {
     throw new Error('Expected query response format: {total: number, data: array}');
   }
-  
-  return queryResponse.data;
+
+  return queryResponse as { total?: number; data: unknown[] };
 };
 
 /**
@@ -82,7 +85,7 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
         debug(`Executing query and paginating with pageSize: ${config.pageSize}`);
         let allData;
         try {
-          allData = await executeQuery(context, resolvedQuery);
+          allData = (await executeQuery(context, resolvedQuery)).data;
         } catch (error) {
           const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
           await notifyResult(lambdaName, 'error', undefined, undefined, error);
@@ -128,7 +131,9 @@ export const withProcessorHandler = <T = unknown>(
     debug(`Executing query directly: ${event.query}`);
     let data: unknown[];
     try {
-      data = await executeQuery(context, event.query);
+      const queryResponse = await executeQuery(context, event.query);
+      data = queryResponse.data;
+      event.sourceTotal = queryResponse.total;
     } catch (error) {
       const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
       await notifyResult(lambdaName, 'error', undefined, undefined, error);
