@@ -15,6 +15,7 @@ import {
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
 import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
+import { applyProcessorLabelOutcome, getGmailConfig } from './lib/gmail.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
@@ -32,6 +33,9 @@ export interface CreateInvoiceRequest {
   fileName: string;
   contentType: string;
   emailContext?: InvoiceData['emailContext'];
+  gmailMessageId?: string;
+  userEmail?: string;
+  gmailAccessToken?: string;
 }
 
 // Processor function - invoked by trigger_create_invoice
@@ -54,6 +58,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       { s3Key, fileName },
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
+    await updateGmailProcessorLabel(request, 'failure');
     return;
   }
 
@@ -198,6 +203,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     });
 
     const processingTime = Date.now() - startTime;
+    await updateGmailProcessorLabel(request, 'success');
 
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
@@ -237,6 +243,29 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       { s3Key, fileName },
       error
     );
+    await updateGmailProcessorLabel(request, 'failure');
     throw error;
+  }
+}
+
+async function updateGmailProcessorLabel(
+  request: CreateInvoiceRequest,
+  outcome: 'success' | 'failure',
+): Promise<void> {
+  const gmailMessageId = request.gmailMessageId?.trim();
+  const userEmail = request.userEmail?.trim();
+  if (!gmailMessageId || !userEmail) {
+    return;
+  }
+
+  try {
+    const gmailConfig = await getGmailConfig(process.env, userEmail, request.gmailAccessToken);
+    await applyProcessorLabelOutcome(gmailConfig, gmailMessageId, outcome);
+  } catch (error) {
+    debug('Failed to update Gmail supplier invoice label', {
+      gmailMessageId,
+      outcome,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

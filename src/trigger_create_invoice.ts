@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
+import { ingestCreateInvoiceAttachments } from './lib/create_invoice_ingest.js';
+import { formatError, jsonResponse, readRequestBody } from './lib/http_api.js';
 import {
   downloadAttachment,
   fetchConversationInvoiceData,
@@ -15,13 +15,11 @@ import {
   MAX_ATTACHMENT_BYTES,
   type IntercomAttachment,
 } from './lib/intercom.js';
-import { getS3Config, putBinaryToS3 } from './lib/s3.js';
+import { MAX_CONCURRENT_ATTACHMENT_DOWNLOADS } from './lib/create_invoice_ingest.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
 }
-
-const MAX_CONCURRENT_ATTACHMENT_DOWNLOADS = 4;
 
 async function downloadInvoiceAttachments(attachments: IntercomAttachment[]): Promise<Buffer[]> {
   const buffers = new Array<Buffer>(attachments.length);
@@ -56,31 +54,6 @@ async function downloadInvoiceAttachments(attachments: IntercomAttachment[]): Pr
     )
   );
   return buffers;
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  return String(error);
-}
-
-function jsonResponse(statusCode: number, body: Record<string, string>): APIGatewayProxyResultV2 {
-  return {
-    statusCode,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  };
-}
-
-function readRequestBody(event: APIGatewayProxyEventV2): string {
-  if (!event.body) {
-    return '';
-  }
-  if (event.isBase64Encoded) {
-    return Buffer.from(event.body, 'base64').toString('utf8');
-  }
-  return event.body;
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
@@ -205,49 +178,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   try {
-    const s3Config = getS3Config(process.env);
-    const requestId = randomUUID();
-    const uploadedAttachments = await Promise.all(attachments.map(async (attachment, index) => {
-      const s3Key = `new-invoices/${requestId}/${index + 1}-${attachment.name}`;
-      const buffer = buffers[index];
-      await putBinaryToS3(s3Config, s3Key, buffer, attachment.contentType, {
-        'original-filename': attachment.name,
-        'upload-timestamp': new Date().toISOString(),
-        'intercom-conversation-id': conversationId,
-      });
-      return {
-        s3Key,
-        fileName: attachment.name,
+    const ingested = await ingestCreateInvoiceAttachments(
+      process.env,
+      attachments.map((attachment, index) => ({
+        name: attachment.name,
         contentType: attachment.contentType,
+        buffer: buffers[index],
         emailContext: attachment.emailContext,
-      };
-    }));
-
-    debug('Uploaded new invoice attachments to S3', {
-      attachmentCount: uploadedAttachments.length,
-      totalBytes: buffers.reduce((total, buffer) => total + buffer.length, 0),
-      conversationId,
-    });
-
-    const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
-    const lambda = new LambdaClient({ region: process.env.AWS_REGION });
-
-    await Promise.all(uploadedAttachments.map((attachment) =>
-      lambda.send(new InvokeCommand({
-        FunctionName: processorFunctionName,
-        InvocationType: 'Event',
-        Payload: JSON.stringify({
-          data: [attachment],
-          page: 1,
-          totalPages: 1,
-        }),
-      }))
-    ));
+      })),
+      { 'intercom-conversation-id': conversationId },
+    );
 
     return jsonResponse(202, {
       status: 'accepted',
       message: 'Invoice creation triggered',
-      requestId,
+      requestId: ingested.requestId,
       conversationId,
     });
   } catch (error) {

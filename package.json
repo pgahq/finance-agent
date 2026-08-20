@@ -46,6 +46,7 @@
     "@pga/lambda-env": "^0.0.11",
     "@pga/logger": "^0.1.10",
     "ai": "^6.0.168",
+    "google-auth-library": "^11.0.2",
     "pg": "^8.16.3",
     "strong-soap": "^5.0.5",
     "zod": "^4.1.12"

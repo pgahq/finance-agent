@@ -36,6 +36,32 @@ references:
             --s3-prefix $CIRCLE_PROJECT_REPONAME
             --output-template-file packaged.yml
       - run:
+          name: Install Google Cloud SDK
+          command: |
+            set -euo pipefail
+            if [ -z "${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+              echo "Skipping gcloud install; Gmail add-on publish will be skipped."
+              exit 0
+            fi
+            curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/google-cloud-sdk.tar.gz" -o /tmp/google-cloud-sdk.tar.gz
+            tar -C "$HOME" -xzf /tmp/google-cloud-sdk.tar.gz
+            echo 'export PATH="$HOME/google-cloud-sdk/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Resolve Gmail add-on authorization
+          command: |
+            set -euo pipefail
+            if [ -z "${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+              echo "Skipping OAuth client lookup."
+              exit 0
+            fi
+            AUTH_JSON="$(bash scripts/deploy-gmail-addon.sh print-authorization)"
+            CLIENT_ID="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.oauthClientId||"")' "${AUTH_JSON}")"
+            SA_EMAIL="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.serviceAccountEmail||"")' "${AUTH_JSON}")"
+            echo "export GMAIL_ADDON_OAUTH_CLIENT_ID='${CLIENT_ID}'" >> "$BASH_ENV"
+            echo "export GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL='${SA_EMAIL}'" >> "$BASH_ENV"
+            echo "Using Workspace add-on OAuth client ${CLIENT_ID}"
+            echo "Using Workspace add-on service account ${SA_EMAIL}"
+      - run:
           name: Deploy CloudFormation template to AWS
           command: >
             aws cloudformation deploy
@@ -53,6 +79,25 @@ references:
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
+            AddonEnvironment=$ADDON_ENVIRONMENT
+            GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
+            GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
+      - run:
+          name: Publish Gmail Workspace add-on
+          command: |
+            set -euo pipefail
+            KEY="${FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY:-}"
+            if [ -z "${KEY}" ]; then
+              echo "Skipping Gmail add-on gcloud deploy; add FINANCE_AGENT_GCP_SERVICE_ACCOUNT_KEY to this CircleCI context."
+              exit 0
+            fi
+            GMAIL_ADDON_URL="$(aws cloudformation describe-stacks \
+              --stack-name "$CIRCLE_PROJECT_REPONAME" \
+              --region us-east-1 \
+              --query "Stacks[0].Outputs[?OutputKey=='GmailAddonApiUrl'].OutputValue" \
+              --output text)"
+            export GMAIL_ADDON_URL
+            bash scripts/deploy-gmail-addon.sh
 
 jobs:
   build:
@@ -99,6 +144,7 @@ jobs:
             - package-lock.json
             - template.yml
             - layers
+            - scripts
 
   deploy-to-dev:
     <<: *deploy_container_config
@@ -111,6 +157,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      ADDON_ENVIRONMENT: sandbox
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -123,6 +170,7 @@ jobs:
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
+      ADDON_ENVIRONMENT: production
 
 workflows:
   version: 2
