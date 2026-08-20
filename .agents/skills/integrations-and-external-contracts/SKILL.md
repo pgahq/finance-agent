@@ -74,9 +74,9 @@ domain-wide-delegation JWT from Secrets Manager
 Flow:
 
 1. Obtain a Gmail access token: prefer `gmailAccessToken`; otherwise JWT as `userEmail` (`gmail.modify`)
-2. Read exclusive labels; 409 unless `force`
+2. Read exclusive labels; 409 unless `force`. If labels.list is forbidden, continue as unlabeled
 3. Fetch the message, collect every `application/pdf` (same 20MB / four-download cap as Intercom)
-4. Set the exclusive **Processing** label
+4. Best-effort exclusive **Processing** label (do not block processor invoke if `gmail.modify` / labels APIs fail)
 5. Upload S3 `new-invoices/{requestId}/...` and Event-invoke `CreateInvoiceProcessor` once per PDF with `gmailMessageId`, `userEmail`, and `gmailAccessToken` (when present) in the **payload only** — never S3 object metadata
 6. Processor success/failure updates Success, Failure, or Partial using the same token (see labels below)
 

@@ -315,6 +315,7 @@ async function fetchGmailMessage(
     throw new GmailNotFoundError(gmailMessageId);
   }
   if (!response.ok) {
+    debug('Gmail messages API error', { gmailMessageId, format, statusCode: response.status });
     throw new GmailUpstreamError(`Gmail messages API returned ${response.status}`, response.status);
   }
 
@@ -445,8 +446,10 @@ export async function downloadGmailAttachments(
 }
 
 async function listGmailLabels(config: GmailConfig): Promise<Map<string, string>> {
+  debug('Listing Gmail labels');
   const response = await gmailRequest(config, '/gmail/v1/users/me/labels');
   if (!response.ok) {
+    debug('Gmail labels API error', { statusCode: response.status });
     throw new GmailUpstreamError(`Gmail labels API returned ${response.status}`, response.status);
   }
   let payload: unknown;
@@ -514,7 +517,16 @@ export async function getSupplierInvoiceLabelState(
   gmailMessageId: string,
 ): Promise<SupplierInvoiceLabelState | null> {
   const message = await fetchGmailMessage(config, gmailMessageId, 'metadata');
-  const labels = await listGmailLabels(config);
+  let labels: Map<string, string>;
+  try {
+    labels = await listGmailLabels(config);
+  } catch (error) {
+    if (error instanceof GmailUpstreamError && error.statusCode === 403) {
+      debug('Gmail labels list is forbidden; treating message as unlabeled', { gmailMessageId });
+      return null;
+    }
+    throw error;
+  }
   const nameById = new Map([...labels.entries()].map(([name, id]) => [id, name]));
   return labelStateFromIds(config.environment, message.labelIds ?? [], nameById);
 }

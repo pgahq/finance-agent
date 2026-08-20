@@ -241,6 +241,25 @@ describe('gmail_addon handler', () => {
     });
   });
 
+  it('creates when Google sends action parameters as arrays', async () => {
+    mockRunCreateInvoiceFromGmail.mockResolvedValue({
+      statusCode: 202,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'accepted' }),
+    });
+    await handler(buildEvent({
+      authorizationEventObject: addonAuth,
+      commonEventObject: { parameters: { addonAction: ['create'] } },
+      gmail: { messageId: 'msg-1' },
+    }));
+    expect(mockRunCreateInvoiceFromGmail).toHaveBeenCalledWith({
+      gmailMessageId: 'msg-1',
+      userEmail: 'ap@pgahq.com',
+      force: false,
+      gmailAccessToken: 'ya29.user',
+    });
+  });
+
   it('asks the user to reinstall when the add-on event has no user OAuth token', async () => {
     const parsed = parseCard(await handler(buildEvent({
       authorizationEventObject: { userIdToken: 'user-id-token' },

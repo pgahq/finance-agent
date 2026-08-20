@@ -62,19 +62,15 @@ export async function runCreateInvoiceFromGmail(
       });
     }
     if (error instanceof GmailUpstreamError) {
-      debug('Gmail upstream error reading labels', {
+      debug('Gmail upstream error reading labels; continuing without exclusive-label check', {
         gmailMessageId,
         error: formatError(error),
         statusCode: error.statusCode,
       });
-      return jsonResponse(502, {
-        status: 'error',
-        message: 'Failed to fetch message from Gmail',
-        gmailMessageId,
-      });
+    } else {
+      debug('Unexpected error reading Gmail labels', { gmailMessageId, error: formatError(error) });
+      return jsonResponse(500, { status: 'error', message: 'Internal server error' });
     }
-    debug('Unexpected error reading Gmail labels', { gmailMessageId, error: formatError(error) });
-    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
   let messageData;
@@ -143,11 +139,10 @@ export async function runCreateInvoiceFromGmail(
   try {
     await setSupplierInvoiceLabel(gmailConfig, gmailMessageId, 'processing');
   } catch (error) {
-    debug('Failed to set Gmail processing label', {
+    debug('Failed to set Gmail processing label; continuing to processor invoke', {
       gmailMessageId,
       error: formatError(error),
     });
-    return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
   try {
