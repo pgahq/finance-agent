@@ -116,10 +116,21 @@ describe('gmail', () => {
   });
 
   describe('getGmailConfig', () => {
-    it('requires the Secrets Manager id and user email', async () => {
+    it('requires the Secrets Manager id and user email when no user access token is provided', async () => {
       await expect(getGmailConfig({}, 'ap@pgahq.com')).rejects.toThrow('GMAIL_SERVICE_ACCOUNT_SECRET_ARN is required');
       await expect(getGmailConfig({ GMAIL_SERVICE_ACCOUNT_SECRET_ARN: 'finance-agent/gmail-service-account' }, ''))
         .rejects.toThrow('userEmail is required');
+    });
+
+    it('uses the add-on user OAuth token and skips the service account JWT', async () => {
+      await expect(getGmailConfig({}, 'ap@pgahq.com', 'ya29.user')).resolves.toEqual({
+        accessToken: 'ya29.user',
+        userEmail: 'ap@pgahq.com',
+        environment: 'sandbox',
+        apiBaseUrl: 'https://gmail.googleapis.com',
+      });
+      expect(mockSendSecret).not.toHaveBeenCalled();
+      expect(mockGetAccessToken).not.toHaveBeenCalled();
     });
 
     it('loads the service account JSON and impersonates the user', async () => {

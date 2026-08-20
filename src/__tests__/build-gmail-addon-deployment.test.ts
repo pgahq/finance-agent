@@ -22,6 +22,7 @@ describe('build-gmail-addon-deployment', () => {
     run(['--environment', 'sandbox', '--url', exampleUrl, '--out', file]);
 
     const deployment = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      oauthScopes: string[];
       addOns: {
         common: { name: string; homepageTrigger: { runFunction: string } };
         gmail: { contextualTriggers: Array<{ onTriggerFunction: string }> };
@@ -30,6 +31,12 @@ describe('build-gmail-addon-deployment', () => {
     expect(deployment.addOns.common.name).toBe('Workday supplier invoice (sandbox)');
     expect(deployment.addOns.common.homepageTrigger.runFunction).toBe(exampleUrl);
     expect(deployment.addOns.gmail.contextualTriggers[0].onTriggerFunction).toBe(exampleUrl);
+    expect(deployment.oauthScopes).toEqual(expect.arrayContaining([
+      'https://www.googleapis.com/auth/gmail.addons.execute',
+      'https://www.googleapis.com/auth/gmail.addons.current.message.readonly',
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/userinfo.email',
+    ]));
   });
 
   it('builds production JSON with the production display name', () => {

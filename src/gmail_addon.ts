@@ -17,6 +17,7 @@ import { runCreateInvoiceFromGmail } from './trigger_create_invoice_gmail.js';
 const addonEventSchema = z.object({
   authorizationEventObject: z.object({
     userIdToken: z.string().optional(),
+    userOAuthToken: z.string().optional(),
   }).optional(),
   commonEventObject: z.object({
     parameters: z.record(z.string(), z.unknown()).optional(),
@@ -269,13 +270,27 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
+  const gmailAccessToken = parsedBody.authorizationEventObject?.userOAuthToken?.trim() ?? '';
+  if (!gmailAccessToken) {
+    debug('Gmail add-on event is missing userOAuthToken');
+    return addonJsonResponse(renderCard(
+      statusCard(environment, addonUrl, null, copy.gmailAccessDenied),
+      { update: Boolean(addonAction) },
+    ));
+  }
+
   if (addonAction === 'confirm') {
     return addonJsonResponse(renderCard(confirmationCard(environment, addonUrl), { update: true }));
   }
 
   if (addonAction === 'create' || addonAction === 'createAgain') {
     const force = addonAction === 'createAgain';
-    const result = await runCreateInvoiceFromGmail({ gmailMessageId, userEmail, force });
+    const result = await runCreateInvoiceFromGmail({
+      gmailMessageId,
+      userEmail,
+      force,
+      gmailAccessToken,
+    });
     const statusCode = triggerStatusCode(result);
     if (statusCode === 202) {
       return addonJsonResponse(renderCard(
@@ -285,7 +300,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     let labelState: SupplierInvoiceLabelState | null = null;
     try {
-      const gmailConfig = await getGmailConfig(process.env, userEmail);
+      const gmailConfig = await getGmailConfig(process.env, userEmail, gmailAccessToken);
       labelState = await getSupplierInvoiceLabelState(gmailConfig, gmailMessageId);
     } catch (error) {
       debug('Failed to read Gmail labels after trigger', {
@@ -301,7 +316,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   let labelState: SupplierInvoiceLabelState | null = null;
   try {
-    const gmailConfig = await getGmailConfig(process.env, userEmail);
+    const gmailConfig = await getGmailConfig(process.env, userEmail, gmailAccessToken);
     labelState = await getSupplierInvoiceLabelState(gmailConfig, gmailMessageId);
   } catch (error) {
     debug('Failed to read Gmail labels for add-on card', {

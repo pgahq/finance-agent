@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/gmail.addons.execute',
   'https://www.googleapis.com/auth/gmail.addons.current.message.readonly',
+  'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/userinfo.email',
 ];
 const LOGO_URL = 'https://www.gstatic.com/images/branding/product/2x/googleg_48dp.png';

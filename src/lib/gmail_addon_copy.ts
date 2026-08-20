@@ -11,6 +11,7 @@ export interface SupplierInvoiceAddonCopy {
   cancelButton: string;
   openAMessage: string;
   startedToast: string;
+  gmailAccessDenied: string;
   status: Record<SupplierInvoiceLabelState | 'idle', string>;
 }
 
@@ -27,6 +28,7 @@ export function supplierInvoiceAddonCopy(environment: AddonEnvironment): Supplie
       cancelButton: 'Cancel',
       openAMessage: 'Open a supplier email with a PDF to create a Workday supplier invoice in the sandbox.',
       startedToast: 'Supplier invoice creation started (sandbox).',
+      gmailAccessDenied: 'Unable to access this Gmail message. Reinstall the add-on and grant permission to modify messages.',
       status: {
         idle: 'No supplier invoice has been submitted from this message.',
         processing: 'Supplier invoice processing in the Workday sandbox.',
@@ -47,6 +49,7 @@ export function supplierInvoiceAddonCopy(environment: AddonEnvironment): Supplie
     cancelButton: 'Cancel',
     openAMessage: 'Open a supplier email with a PDF to create a Workday supplier invoice.',
     startedToast: 'Supplier invoice creation started.',
+    gmailAccessDenied: 'Unable to access this Gmail message. Reinstall the add-on and grant permission to modify messages.',
     status: {
       idle: 'No supplier invoice has been submitted from this message.',
       processing: 'Supplier invoice processing.',
