@@ -285,5 +285,17 @@ describe('gmail', () => {
 
       await expect(getSupplierInvoiceLabelState(gmailConfig, 'msg-1')).resolves.toBeNull();
     });
+
+    it('returns null when listing labels is forbidden after the message fetch', async () => {
+      global.fetch = jest.fn((url: string | URL) => {
+        const href = String(url);
+        if (href.includes('/messages/msg-1')) {
+          return Promise.resolve(jsonResponse(200, { id: 'msg-1', labelIds: ['INBOX'] }));
+        }
+        return Promise.resolve(jsonResponse(403, { error: { message: 'insufficient permissions' } }));
+      }) as unknown as typeof fetch;
+
+      await expect(getSupplierInvoiceLabelState(gmailConfig, 'msg-1')).resolves.toBeNull();
+    });
   });
 });

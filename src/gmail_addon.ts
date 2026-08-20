@@ -25,6 +25,7 @@ const addonEventSchema = z.object({
   gmail: z.object({
     messageId: z.string().optional(),
   }).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
 });
 
 type AddonAction = 'create' | 'confirm' | 'createAgain' | 'cancel';
@@ -95,6 +96,28 @@ function parseAddonAction(value: string | undefined): AddonAction | undefined {
   return undefined;
 }
 
+function parameterString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  if (Array.isArray(value) && typeof value[0] === 'string' && value[0].trim()) {
+    return value[0].trim();
+  }
+  return undefined;
+}
+
+function addonActionFromEvent(parsed: z.infer<typeof addonEventSchema>): AddonAction | undefined {
+  const raw = parsed.commonEventObject?.parameters?.addonAction ?? parsed.parameters?.addonAction;
+  return parseAddonAction(parameterString(raw));
+}
+
+function gmailMessageIdFromEvent(parsed: z.infer<typeof addonEventSchema>): string {
+  return parsed.gmail?.messageId?.trim()
+    || parameterString(parsed.commonEventObject?.parameters?.gmailMessageId)
+    || parameterString(parsed.parameters?.gmailMessageId)
+    || '';
+}
+
 function triggerStatusCode(result: APIGatewayProxyResultV2): number {
   if (typeof result === 'object' && result && 'statusCode' in result && typeof result.statusCode === 'number') {
     return result.statusCode;
@@ -127,15 +150,19 @@ function actionButton(
   addonUrl: string,
   text: string,
   action: AddonAction,
-  spinner = false,
+  options: { spinner?: boolean; gmailMessageId?: string } = {},
 ): AddonButton {
+  const parameters: ActionParameter[] = [{ key: 'addonAction', value: action }];
+  if (options.gmailMessageId) {
+    parameters.push({ key: 'gmailMessageId', value: options.gmailMessageId });
+  }
   return {
     text,
     onClick: {
       action: {
         function: addonUrl,
-        parameters: [{ key: 'addonAction', value: action }],
-        ...(spinner ? { loadIndicator: 'SPINNER' as const } : {}),
+        parameters,
+        ...(options.spinner ? { loadIndicator: 'SPINNER' as const } : {}),
       },
     },
   };
@@ -151,7 +178,11 @@ function homepageCard(environment: AddonEnvironment): AddonCard {
   };
 }
 
-function confirmationCard(environment: AddonEnvironment, addonUrl: string): AddonCard {
+function confirmationCard(
+  environment: AddonEnvironment,
+  addonUrl: string,
+  gmailMessageId: string,
+): AddonCard {
   const copy = supplierInvoiceAddonCopy(environment);
   return {
     header: cardHeader(copy),
@@ -162,8 +193,11 @@ function confirmationCard(environment: AddonEnvironment, addonUrl: string): Addo
         {
           buttonList: {
             buttons: [
-              actionButton(addonUrl, copy.confirmButton, 'createAgain', true),
-              actionButton(addonUrl, copy.cancelButton, 'cancel'),
+              actionButton(addonUrl, copy.confirmButton, 'createAgain', {
+                spinner: true,
+                gmailMessageId,
+              }),
+              actionButton(addonUrl, copy.cancelButton, 'cancel', { gmailMessageId }),
             ],
           },
         },
@@ -177,6 +211,7 @@ function statusCard(
   addonUrl: string,
   labelState: SupplierInvoiceLabelState | null,
   extraText?: string,
+  gmailMessageId?: string,
 ): AddonCard {
   const copy = supplierInvoiceAddonCopy(environment);
   const widgets: AddonWidget[] = [
@@ -187,8 +222,8 @@ function statusCard(
   }
   if (addonUrl) {
     const buttons: AddonButton[] = labelState
-      ? [actionButton(addonUrl, copy.createAgainButton, 'confirm')]
-      : [actionButton(addonUrl, copy.createButton, 'create', true)];
+      ? [actionButton(addonUrl, copy.createAgainButton, 'confirm', { gmailMessageId })]
+      : [actionButton(addonUrl, copy.createButton, 'create', { spinner: true, gmailMessageId })];
     widgets.push({ buttonList: { buttons } });
   }
   return {
@@ -249,10 +284,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return addonJsonResponse(renderCard(homepageCard(environment), { update: false }));
   }
 
-  const rawAction = parsedBody.commonEventObject?.parameters?.addonAction;
-  const addonAction = parseAddonAction(typeof rawAction === 'string' ? rawAction : undefined);
-  const gmailMessageId = parsedBody.gmail?.messageId?.trim() ?? '';
+  const addonAction = addonActionFromEvent(parsedBody);
+  const gmailMessageId = gmailMessageIdFromEvent(parsedBody);
   if (!gmailMessageId) {
+    debug('Gmail add-on request has no message id', { addonAction: addonAction ?? 'open' });
     return addonJsonResponse(renderCard(homepageCard(environment), { update: Boolean(addonAction) }));
   }
 
@@ -271,16 +306,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   const gmailAccessToken = parsedBody.authorizationEventObject?.userOAuthToken?.trim() ?? '';
+  debug('Gmail add-on request', {
+    addonAction: addonAction ?? 'open',
+    hasMessageId: true,
+    hasUserOAuthToken: Boolean(gmailAccessToken),
+  });
   if (!gmailAccessToken) {
     debug('Gmail add-on event is missing userOAuthToken');
     return addonJsonResponse(renderCard(
-      statusCard(environment, addonUrl, null, copy.gmailAccessDenied),
+      statusCard(environment, addonUrl, null, copy.gmailAccessDenied, gmailMessageId),
       { update: Boolean(addonAction) },
     ));
   }
 
   if (addonAction === 'confirm') {
-    return addonJsonResponse(renderCard(confirmationCard(environment, addonUrl), { update: true }));
+    return addonJsonResponse(renderCard(confirmationCard(environment, addonUrl, gmailMessageId), { update: true }));
   }
 
   if (addonAction === 'create' || addonAction === 'createAgain') {
@@ -292,9 +332,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       gmailAccessToken,
     });
     const statusCode = triggerStatusCode(result);
+    debug('Gmail add-on create result', { gmailMessageId, statusCode, force });
     if (statusCode === 202) {
       return addonJsonResponse(renderCard(
-        statusCard(environment, addonUrl, 'processing'),
+        statusCard(environment, addonUrl, 'processing', undefined, gmailMessageId),
         { update: true, notification: copy.startedToast },
       ));
     }
@@ -309,7 +350,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
     }
     return addonJsonResponse(renderCard(
-      statusCard(environment, addonUrl, labelState, triggerMessage(result)),
+      statusCard(environment, addonUrl, labelState, triggerMessage(result), gmailMessageId),
       { update: true },
     ));
   }
@@ -324,13 +365,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       error: formatError(error),
     });
     return addonJsonResponse(renderCard(
-      statusCard(environment, addonUrl, null, 'Unable to read this message in Gmail.'),
+      statusCard(environment, addonUrl, null, 'Unable to read this message in Gmail.', gmailMessageId),
       { update: false },
     ));
   }
 
   return addonJsonResponse(renderCard(
-    statusCard(environment, addonUrl, labelState),
+    statusCard(environment, addonUrl, labelState, undefined, gmailMessageId),
     { update: addonAction === 'cancel' },
   ));
 }

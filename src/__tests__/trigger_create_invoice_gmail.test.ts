@@ -322,4 +322,19 @@ describe('trigger_create_invoice_gmail handler', () => {
     expect(mockSetSupplierInvoiceLabel).toHaveBeenNthCalledWith(1, expect.anything(), 'msg-1', 'processing');
     expect(mockSetSupplierInvoiceLabel).toHaveBeenNthCalledWith(2, expect.anything(), 'msg-1', 'failure');
   });
+
+  it('still invokes the processor when exclusive labels cannot be read', async () => {
+    mockGetSupplierInvoiceLabelState.mockRejectedValue(new GmailUpstreamError('Gmail labels API returned 403', 403));
+    const response = await handler(buildEvent());
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockFetchGmailMessageInvoiceData).toHaveBeenCalled();
+    expect(InvokeCommand).toHaveBeenCalled();
+  });
+
+  it('still invokes the processor when the processing label cannot be set', async () => {
+    mockSetSupplierInvoiceLabel.mockRejectedValueOnce(new GmailUpstreamError('Gmail modify returned 403', 403));
+    const response = await handler(buildEvent());
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(InvokeCommand).toHaveBeenCalled();
+  });
 });
