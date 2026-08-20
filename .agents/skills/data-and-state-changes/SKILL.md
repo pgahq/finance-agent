@@ -3,8 +3,9 @@ name: data-and-state-changes
 description: >-
   Cold-start Postgres schema init and documents RAG table migrations for
   finance-agent. Use when changing DocumentType, documents CHECK constraints,
-  getDatabaseConnection schema setup, pgvector indexes, or debugging
-  documents_type_check / schema init Lambda failures.
+  getDatabaseConnection schema setup, pgvector indexes, debugging
+  documents_type_check / schema init Lambda failures, or cache prune behavior
+  in syncDataSource.
 ---
 
 # Data and state changes
@@ -36,6 +37,18 @@ migration. A transaction-scoped advisory lock serializes the constraint DDL
 across concurrent Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
+
+## Cache prune
+
+`syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing
+rows of that type whose `workday_id` is missing from the incoming snapshot, and
+only when `sourceTotal` equals `sourceFetchedCount` (Workday `total` matches the
+raw fetched array, not Map size after duplicate IDs). Empty snapshots, missing
+totals, and incomplete pulls skip prune and report `pruneSkipped` in Slack. Set
+`pruneDryRun: true` (cost centers: `COST_CENTER_PRUNE_DRY_RUN=true`) to log
+`absent` / `absentIds` without deleting. Cost-center cache passes
+`requireCompleteTotal: true` into `executeWorkdayQuery`; other WQL callers do
+not. Do not enable prune for windowed sources such as events.
 
 ## When adding a new document type
 

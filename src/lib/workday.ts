@@ -146,7 +146,8 @@ async function fetchRemainingPages(
 
 export async function executeWorkdayQuery(
   config: WorkdayConfig,
-  wqlQuery: string
+  wqlQuery: string,
+  options?: { requireCompleteTotal?: boolean }
 ): Promise<{ total?: number; data?: unknown[] }> {
   debug(`Executing WQL query on tenant: ${config.tenant}`);
   debug(`Query: ${wqlQuery}`);
@@ -155,27 +156,30 @@ export async function executeWorkdayQuery(
 
   // Start with max limit to get as much as possible in one request
   const initialResult = await fetchWorkdayPage(config, accessToken, wqlQuery, 10000, 0);
-  const totalCount = initialResult.total || 0;
+  const reportedTotal = initialResult.total;
   const initialData = initialResult.data || [];
 
-  debug(`Total records available: ${totalCount}, got ${initialData.length} in initial request`);
+  debug(`Total records available: ${reportedTotal ?? 'unknown'}, got ${initialData.length} in initial request`);
 
-  // If we got all records in the initial request, return it
-  if (totalCount <= 10000) {
+  let data = initialData;
+  if (typeof reportedTotal === 'number' && reportedTotal > 10000) {
+    const additionalData = await fetchRemainingPages(config, accessToken, wqlQuery, reportedTotal, initialData);
+    data = [...initialData, ...additionalData];
+  }
+
+  if (options?.requireCompleteTotal && typeof reportedTotal === 'number' && data.length !== reportedTotal) {
+    throw new Error(`Workday query incomplete: expected ${reportedTotal} rows, got ${data.length}`);
+  }
+
+  debug(`Successfully fetched ${data.length} records total`);
+
+  if (typeof reportedTotal !== 'number' || reportedTotal <= 10000) {
     return initialResult;
   }
 
-  // Fetch remaining pages in parallel
-  const additionalData = await fetchRemainingPages(config, accessToken, wqlQuery, totalCount, initialData);
-
-  // Combine all data
-  const allData = [...initialData, ...additionalData];
-
-  debug(`Successfully fetched ${allData.length} records total`);
-
   return {
-    total: totalCount,
-    data: allData
+    total: reportedTotal,
+    data
   };
 }
 
