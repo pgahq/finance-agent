@@ -57,21 +57,28 @@ Gmail entry point. Does not share a request body with Intercom.
 Request body:
 
 ```json
-{ "gmailMessageId": "msg-f:123", "userEmail": "ap@pgahq.com", "force": false }
+{ "gmailMessageId": "msg-f:123", "userEmail": "ap@pgahq.com", "force": false, "gmailAccessToken": "ya29..." }
 ```
 
 `force` is optional. Without it, any exclusive supplier-invoice label on the
 message returns **409**. With `force: true`, the add-on re-runs and resets the
 label to Processing (this can create another Workday supplier invoice).
 
+`gmailAccessToken` is optional on this HTTP route. The Gmail Workspace add-on
+always sends the Google `authorizationEventObject.userOAuthToken` value here.
+When it is present, Gmail API calls use that bearer token and skip the service
+account JWT. When it is omitted, the Gmail HTTP route still mints a
+domain-wide-delegation JWT from Secrets Manager
+`finance-agent/gmail-service-account`. Do not log `gmailAccessToken`.
+
 Flow:
 
-1. Domain-wide delegation JWT as `userEmail` (`gmail.modify`) using the service account in Secrets Manager `finance-agent/gmail-service-account`
+1. Obtain a Gmail access token: prefer `gmailAccessToken`; otherwise JWT as `userEmail` (`gmail.modify`)
 2. Read exclusive labels; 409 unless `force`
 3. Fetch the message, collect every `application/pdf` (same 20MB / four-download cap as Intercom)
 4. Set the exclusive **Processing** label
-5. Upload S3 `new-invoices/{requestId}/...` and Event-invoke `CreateInvoiceProcessor` once per PDF with `gmailMessageId` and `userEmail` in the payload
-6. Processor success/failure updates Success, Failure, or Partial (see labels below)
+5. Upload S3 `new-invoices/{requestId}/...` and Event-invoke `CreateInvoiceProcessor` once per PDF with `gmailMessageId`, `userEmail`, and `gmailAccessToken` (when present) in the **payload only** — never S3 object metadata
+6. Processor success/failure updates Success, Failure, or Partial using the same token (see labels below)
 
 | HTTP | Meaning |
 | --- | --- |
@@ -81,14 +88,18 @@ Flow:
 | 404 | Gmail message not found |
 | 409 | Already labeled and `force` was not true |
 | 502 | Gmail API failed |
-| 500 | Missing service account, S3/invoke failure, unexpected error |
+| 500 | Missing Gmail auth, S3/invoke failure, unexpected error |
 
 ### `POST /gmail-addon`
 
 HTTP alternate runtime for the unpublished Gmail Workspace add-on. Google sends
 the add-on event JSON. Auth is the `Authorization: Bearer` **system ID token**
 (`GMAIL_ADDON_OAUTH_CLIENT_ID`). The user's email comes from
-`authorizationEventObject.userIdToken`.
+`authorizationEventObject.userIdToken`. Gmail API calls (read message, PDFs,
+labels) use `authorizationEventObject.userOAuthToken` as a bearer access token.
+That token is passed into `runCreateInvoiceFromGmail` and the processor payload
+so Success/Failure/Partial labels still apply after Workday. Do not log it or
+write it to S3 metadata.
 
 The add-on calls `runCreateInvoiceFromGmail` in-process (same 30s Lambda budget
 as the Gmail trigger). Google shows the native spinner while that request runs.
@@ -128,14 +139,16 @@ failure+failure → Failure; mixed → Partial.
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Intercom and Gmail HTTP triggers (inbound auth). Not the add-on. |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
-| `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Gmail trigger, add-on, and `CreateInvoiceProcessor` (JSON `client_email` + `private_key`). Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
+| `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Fallback only for `POST /create-invoice/gmail` when no `gmailAccessToken` is provided (JSON `client_email` + `private_key`). The add-on path does not use this. Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
 | `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
 | `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Audience for the **user** ID token (`authorizationEventObject.userIdToken`) |
 | `GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL` | Same `get-authorization` `serviceAccountEmail` (CFT `GmailAddonServiceAccountEmail`) | Expected `email` on the **system** ID token in `Authorization` |
 
-The Gmail service account needs **Google Admin domain-wide delegation** with
-scope `https://www.googleapis.com/auth/gmail.modify`. Do not log the service
-account JSON or private key.
+The add-on Gmail path uses the signed-in user's OAuth access token
+(`userOAuthToken`) with scope `https://www.googleapis.com/auth/gmail.modify`.
+Domain-wide delegation on the Gmail service account is only needed for the
+HTTP Gmail trigger when the caller does not send `gmailAccessToken`. Do not log
+the user access token, the service account JSON, or the private key.
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
@@ -166,8 +179,11 @@ and create/replace with `scripts/deploy-gmail-addon.sh`.
 CI does **not** run `install` (that is per Google user).
 
 Add-on OAuth scopes: `gmail.addons.execute`,
-`gmail.addons.current.message.readonly`, `userinfo.email`. Message fetch and
-label writes use the Gmail DWD service account, not the add-on user OAuth token.
+`gmail.addons.current.message.readonly`, `gmail.modify`, `userinfo.email`.
+Message fetch, attachment download, and label writes use the add-on
+`userOAuthToken`, not a Gmail domain-wide-delegation service account.
+After CI publishes a deployment that adds `gmail.modify`, testers must
+reinstall or re-consent so Google issues a token with that scope.
 
 A private Marketplace listing is optional later. Do not org-install.
 

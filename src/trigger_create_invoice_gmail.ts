@@ -19,6 +19,7 @@ import { formatError, jsonResponse, readRequestBody } from './lib/http_api.js';
 interface TriggerCreateInvoiceGmailRequest {
   gmailMessageId?: string;
   userEmail?: string;
+  gmailAccessToken?: string;
   force?: boolean;
 }
 
@@ -26,18 +27,19 @@ export interface CreateInvoiceFromGmailInput {
   gmailMessageId: string;
   userEmail: string;
   force: boolean;
+  gmailAccessToken?: string;
 }
 
 export async function runCreateInvoiceFromGmail(
   input: CreateInvoiceFromGmailInput,
 ): Promise<APIGatewayProxyResultV2> {
-  const { gmailMessageId, userEmail, force } = input;
+  const { gmailMessageId, userEmail, force, gmailAccessToken } = input;
 
   let gmailConfig;
   try {
-    gmailConfig = await getGmailConfig(process.env, userEmail);
+    gmailConfig = await getGmailConfig(process.env, userEmail, gmailAccessToken);
   } catch (error) {
-    debug('Gmail service account is not configured', { error: formatError(error) });
+    debug('Gmail auth is not configured', { error: formatError(error) });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
@@ -159,6 +161,7 @@ export async function runCreateInvoiceFromGmail(
         processorFields: {
           gmailMessageId,
           userEmail,
+          ...(gmailAccessToken ? { gmailAccessToken } : {}),
         },
       })),
       {
@@ -224,6 +227,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const userEmail = typeof requestBody.userEmail === 'string'
     ? requestBody.userEmail.trim()
     : '';
+  const gmailAccessToken = typeof requestBody.gmailAccessToken === 'string'
+    ? requestBody.gmailAccessToken.trim()
+    : '';
   if (!gmailMessageId) {
     return jsonResponse(400, { status: 'error', message: 'gmailMessageId is required' });
   }
@@ -235,5 +241,6 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     gmailMessageId,
     userEmail,
     force: requestBody.force === true,
+    ...(gmailAccessToken ? { gmailAccessToken } : {}),
   });
 }

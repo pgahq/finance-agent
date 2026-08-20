@@ -383,7 +383,7 @@ describe('create_invoice', () => {
       }]
     } as any);
 
-    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com');
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', undefined);
     expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
       expect.anything(),
       'msg-1',
@@ -406,10 +406,33 @@ describe('create_invoice', () => {
       }]
     } as any)).rejects.toThrow('Invoice enrichment returned error status');
 
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', undefined);
     expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
       expect.anything(),
       'msg-1',
       'failure',
+    );
+  });
+
+  it('passes the add-on user OAuth token when updating Gmail labels', async () => {
+    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-11/invoice.pdf'),
+        gmailMessageId: 'msg-1',
+        userEmail: 'ap@pgahq.com',
+        gmailAccessToken: 'ya29.user',
+      }]
+    } as any);
+
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', 'ya29.user');
+    expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
+      expect.anything(),
+      'msg-1',
+      'success',
     );
   });
 

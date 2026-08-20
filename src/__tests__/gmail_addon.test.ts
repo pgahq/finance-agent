@@ -79,6 +79,11 @@ function buildEvent(body: Record<string, unknown> = {}, overrides: Partial<APIGa
   };
 }
 
+const addonAuth = {
+  userIdToken: 'user-id-token',
+  userOAuthToken: 'ya29.user',
+};
+
 function parseCard(response: unknown) {
   const result = response as { statusCode: number; body: string };
   return {
@@ -163,18 +168,19 @@ describe('gmail_addon handler', () => {
 
   it('shows Create supplier invoice when the message is unlabeled', async () => {
     const parsed = parseCard(await handler(buildEvent({
-      authorizationEventObject: { userIdToken: 'user-id-token' },
+      authorizationEventObject: addonAuth,
       gmail: { messageId: 'msg-1' },
     })));
     const card = parsed.body.action.navigations[0].pushCard;
     expect(buttonLabels(card!)).toEqual(['Create supplier invoice']);
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', 'ya29.user');
     expect(mockRunCreateInvoiceFromGmail).not.toHaveBeenCalled();
   });
 
   it('hides Create and shows Create again when the message is already labeled', async () => {
     mockGetSupplierInvoiceLabelState.mockResolvedValue('success');
     const parsed = parseCard(await handler(buildEvent({
-      authorizationEventObject: { userIdToken: 'user-id-token' },
+      authorizationEventObject: addonAuth,
       gmail: { messageId: 'msg-1' },
     })));
     const card = parsed.body.action.navigations[0].pushCard;
@@ -184,7 +190,7 @@ describe('gmail_addon handler', () => {
 
   it('pushes a confirmation card before force-creating again', async () => {
     const parsed = parseCard(await handler(buildEvent({
-      authorizationEventObject: { userIdToken: 'user-id-token' },
+      authorizationEventObject: addonAuth,
       commonEventObject: { parameters: { addonAction: 'confirm' } },
       gmail: { messageId: 'msg-1' },
     })));
@@ -201,7 +207,7 @@ describe('gmail_addon handler', () => {
       body: JSON.stringify({ status: 'accepted', message: 'Supplier invoice creation triggered' }),
     });
     const parsed = parseCard(await handler(buildEvent({
-      authorizationEventObject: { userIdToken: 'user-id-token' },
+      authorizationEventObject: addonAuth,
       commonEventObject: { parameters: { addonAction: 'create' } },
       gmail: { messageId: 'msg-1' },
     })));
@@ -209,6 +215,7 @@ describe('gmail_addon handler', () => {
       gmailMessageId: 'msg-1',
       userEmail: 'ap@pgahq.com',
       force: false,
+      gmailAccessToken: 'ya29.user',
     });
     const card = parsed.body.action.navigations[0].updateCard;
     expect(parsed.body.action.notification?.text).toBe('Supplier invoice creation started (sandbox).');
@@ -222,7 +229,7 @@ describe('gmail_addon handler', () => {
       body: JSON.stringify({ status: 'accepted' }),
     });
     await handler(buildEvent({
-      authorizationEventObject: { userIdToken: 'user-id-token' },
+      authorizationEventObject: addonAuth,
       commonEventObject: { parameters: { addonAction: 'createAgain' } },
       gmail: { messageId: 'msg-1' },
     }));
@@ -230,6 +237,20 @@ describe('gmail_addon handler', () => {
       gmailMessageId: 'msg-1',
       userEmail: 'ap@pgahq.com',
       force: true,
+      gmailAccessToken: 'ya29.user',
     });
+  });
+
+  it('asks the user to reinstall when the add-on event has no user OAuth token', async () => {
+    const parsed = parseCard(await handler(buildEvent({
+      authorizationEventObject: { userIdToken: 'user-id-token' },
+      gmail: { messageId: 'msg-1' },
+    })));
+    const card = parsed.body.action.navigations[0].pushCard;
+    expect(widgetText(card!)).toContain(
+      'Unable to access this Gmail message. Reinstall the add-on and grant permission to modify messages.',
+    );
+    expect(mockGetGmailConfig).not.toHaveBeenCalled();
+    expect(mockRunCreateInvoiceFromGmail).not.toHaveBeenCalled();
   });
 });

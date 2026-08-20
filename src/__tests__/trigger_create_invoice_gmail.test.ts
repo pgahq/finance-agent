@@ -248,6 +248,7 @@ describe('trigger_create_invoice_gmail handler', () => {
         'gmail-user-email': 'ap@pgahq.com',
       }),
     );
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', undefined);
     expect(InvokeCommand).toHaveBeenCalledWith({
       FunctionName: 'finance-agent-CreateInvoiceProcessor',
       InvocationType: 'Event',
@@ -259,6 +260,45 @@ describe('trigger_create_invoice_gmail handler', () => {
           emailContext,
           gmailMessageId: 'msg-1',
           userEmail: 'ap@pgahq.com',
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+  });
+
+  it('passes a user OAuth token to Gmail and the processor, not S3 metadata', async () => {
+    const response = await handler(buildEvent({
+      body: JSON.stringify({
+        gmailMessageId: 'msg-1',
+        userEmail: 'ap@pgahq.com',
+        gmailAccessToken: 'ya29.user',
+      }),
+    }));
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', 'ya29.user');
+    expect(mockPutBinaryToS3).toHaveBeenCalledWith(
+      { bucketName: 'test-bucket' },
+      'new-invoices/fixed-request-id/1-invoice.pdf',
+      Buffer.from('invoice-content'),
+      'application/pdf',
+      expect.not.objectContaining({
+        'gmail-access-token': expect.anything(),
+      }),
+    );
+    expect(JSON.stringify(mockPutBinaryToS3.mock.calls)).not.toContain('ya29.user');
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext,
+          gmailMessageId: 'msg-1',
+          userEmail: 'ap@pgahq.com',
+          gmailAccessToken: 'ya29.user',
         }],
         page: 1,
         totalPages: 1,

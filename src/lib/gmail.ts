@@ -217,13 +217,25 @@ export function assertAllowedGmailUrl(url: string): URL {
 export async function getGmailConfig(
   env: NodeJS.ProcessEnv,
   userEmail: string,
+  userAccessToken?: string,
 ): Promise<GmailConfig> {
+  if (!userEmail) {
+    throw new Error('userEmail is required');
+  }
+
+  const accessTokenFromUser = userAccessToken?.trim();
+  if (accessTokenFromUser) {
+    return {
+      accessToken: accessTokenFromUser,
+      userEmail,
+      environment: getAddonEnvironment(env),
+      apiBaseUrl: GMAIL_API_BASE_URL,
+    };
+  }
+
   const secretId = env.GMAIL_SERVICE_ACCOUNT_SECRET_ARN;
   if (!secretId) {
     throw new Error('GMAIL_SERVICE_ACCOUNT_SECRET_ARN is required');
-  }
-  if (!userEmail) {
-    throw new Error('userEmail is required');
   }
 
   const secretsClient = new SecretsManagerClient({});

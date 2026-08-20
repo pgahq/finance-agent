@@ -35,6 +35,7 @@ export interface CreateInvoiceRequest {
   emailContext?: InvoiceData['emailContext'];
   gmailMessageId?: string;
   userEmail?: string;
+  gmailAccessToken?: string;
 }
 
 // Processor function - invoked by trigger_create_invoice
@@ -258,7 +259,7 @@ async function updateGmailProcessorLabel(
   }
 
   try {
-    const gmailConfig = await getGmailConfig(process.env, userEmail);
+    const gmailConfig = await getGmailConfig(process.env, userEmail, request.gmailAccessToken);
     await applyProcessorLabelOutcome(gmailConfig, gmailMessageId, outcome);
   } catch (error) {
     debug('Failed to update Gmail supplier invoice label', {
