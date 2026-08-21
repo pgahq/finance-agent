@@ -183,6 +183,54 @@ describe('Workday utilities', () => {
       expect(result).toEqual(mockQueryResponse);
     });
 
+    it('should throw when Workday total does not match fetched rows', async () => {
+      const mockQuery = 'SELECT id, name FROM costCenters';
+      const mockTokenResponse = { access_token: 'mock-access-token' };
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockTokenResponse)
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            total: 3,
+            data: [
+              { id: '1', name: 'Cost Center A' },
+              { id: '2', name: 'Cost Center B' }
+            ]
+          })
+        });
+
+      await expect(executeWorkdayQuery(mockConfig, mockQuery, { requireCompleteTotal: true }))
+        .rejects.toThrow('Workday query incomplete: expected 3 rows, got 2');
+    });
+
+    it('does not throw on a total mismatch unless requireCompleteTotal is set', async () => {
+      const mockQuery = 'SELECT invoiceNumber FROM supplierInvoices LIMIT 5';
+      const mockTokenResponse = { access_token: 'mock-access-token' };
+      const mockQueryResponse = {
+        total: 12,
+        data: [
+          { invoiceNumber: 'INV-001' },
+          { invoiceNumber: 'INV-002' }
+        ]
+      };
+
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockTokenResponse)
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue(mockQueryResponse)
+        });
+
+      await expect(executeWorkdayQuery(mockConfig, mockQuery)).resolves.toEqual(mockQueryResponse);
+    });
+
     it('should handle empty query response', async () => {
       const mockQuery = 'SELECT id FROM emptyTable';
       const mockTokenResponse = { access_token: 'mock-access-token' };

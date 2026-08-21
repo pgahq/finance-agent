@@ -28,10 +28,13 @@ jest.mock('../lib/database.js', () => ({
     query: jest.fn().mockResolvedValue([]),
     close: jest.fn().mockResolvedValue({})
   }),
-  getDocumentsByType: jest.fn().mockResolvedValue([]),
+  getDocumentsByType: jest.fn().mockResolvedValue([
+    { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+    { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+  ]),
   bulkInsertDocuments: jest.fn().mockResolvedValue({}),
   bulkUpdateDocuments: jest.fn().mockResolvedValue({}),
-  bulkDeleteDocuments: jest.fn().mockResolvedValue(0)
+  bulkDeleteDocuments: jest.fn().mockResolvedValue(1)
 }));
 
 jest.mock('../lib/workday.js', () => ({
@@ -65,6 +68,7 @@ describe('cache_cost_centers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map());
   });
 
   it('stores related LOB metadata on cost center documents', async () => {
@@ -112,5 +116,43 @@ describe('cache_cost_centers', () => {
 
     const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
     expect(inserted[0]?.metadata).toMatchObject({ relatedLob: EMPTY_RELATED_LOB });
+  });
+
+  it('prunes cached cost centers that are not in the active Workday snapshot', async () => {
+    await expect(processor({
+      data: [
+        { workdayID: 'cc-active', name: 'Active', code: '100' }
+      ],
+      sourceTotal: 1
+    })).resolves.not.toThrow();
+
+    const { bulkDeleteDocuments, bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.any(Function),
+        close: expect.any(Function)
+      }),
+      ['cc-inactive'],
+      'cost_center'
+    );
+    expect(bulkInsertDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when no cost center data is received', async () => {
+    await expect(processor({ data: [] })).resolves.not.toThrow();
+
+    const { bulkDeleteDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it('does not prune when Workday total is missing from the event', async () => {
+    await expect(processor({
+      data: [
+        { workdayID: 'cc-active', name: 'Active', code: '100' }
+      ]
+    })).resolves.not.toThrow();
+
+    const { bulkDeleteDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
   });
 });
