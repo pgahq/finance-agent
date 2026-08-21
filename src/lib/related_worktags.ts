@@ -165,18 +165,31 @@ export function relatedWorktagsTotalPages(response: unknown): number {
   return Number.isFinite(totalPages) && totalPages > 0 ? totalPages : 1;
 }
 
+function isGlobalFallbackLobId(id: string): boolean {
+  return id === DEFAULT_LINE_OF_BUSINESS_ID || id === process.env.FALLBACK_LOB_ID;
+}
+
 export function resolveRelatedLobId(
   related: RelatedLob | null | undefined,
   costCenterId?: string | null,
-  fallbackCostCenterId?: string | null
+  fallbackCostCenterId?: string | null,
+  excludeIds?: Iterable<string>
 ): string | null {
   if (!costCenterId || (fallbackCostCenterId && costCenterId === fallbackCostCenterId)) {
     return null;
   }
   if (!related) return null;
-  if (related.defaultReferenceId) return related.defaultReferenceId;
-  if (related.allowedReferenceIds.length === 1) return related.allowedReferenceIds[0];
-  return null;
+
+  const excluded = new Set(excludeIds ?? []);
+  const candidates: string[] = [];
+  if (related.defaultReferenceId) candidates.push(related.defaultReferenceId);
+  for (const id of related.allowedReferenceIds) {
+    if (!candidates.includes(id)) candidates.push(id);
+  }
+
+  const usable = candidates.filter(id => id && !excluded.has(id));
+  const preferred = usable.filter(id => !isGlobalFallbackLobId(id));
+  return preferred[0] ?? usable[0] ?? null;
 }
 
 export function relatedLobEquals(a: RelatedLob | null | undefined, b: RelatedLob | null | undefined): boolean {

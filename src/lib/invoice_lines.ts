@@ -211,16 +211,20 @@ export function overlayPoLineOfBusiness(
 export function applyRelatedLobWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
-  fallbackCostCenterId?: string | null
+  fallbackCostCenterId?: string | null,
+  options?: { replaceIds?: Iterable<string> }
 ): FinalInvoiceLine[] {
+  const replaceIds = new Set(options?.replaceIds ?? []);
   return lines.map(line => {
-    if (line.lineOfBusinessId) return line;
+    const current = line.lineOfBusinessId;
+    if (current && !replaceIds.has(current)) return line;
     const resolved = resolveRelatedLobId(
       relatedByCostCenterId.get(line.costCenterId ?? ''),
       line.costCenterId,
-      fallbackCostCenterId
+      fallbackCostCenterId,
+      replaceIds
     );
-    return resolved ? { ...line, lineOfBusinessId: resolved } : line;
+    return resolved && resolved !== current ? { ...line, lineOfBusinessId: resolved } : line;
   });
 }
 
@@ -253,7 +257,7 @@ export async function buildFinalInvoiceLines(
   fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
+): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   const mergeInput = {
     extractedInvoiceLines: extractedLines,
@@ -303,10 +307,10 @@ async function finalizeInvoiceLines(
   emailWorktags: EmailWorktags | undefined,
   relatedLobLookup: RelatedLobLookup | undefined,
   fallbackIds: InvoiceLineFallbackIds
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks }> {
+): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoLob, emailWorktags);
-  const withRelated = await fillRelatedLobs(withEmail, relatedLobLookup);
+  const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
   const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
   return {
     lines: fallbackLob.lines,
@@ -314,29 +318,34 @@ async function finalizeInvoiceLines(
       ...appliedFallbacks,
       lineOfBusiness: appliedFallbacks.lineOfBusiness || fallbackLob.applied,
     },
+    relatedLobByCostCenter: relatedByCostCenterId,
   };
 }
 
 async function fillRelatedLobs(
   lines: FinalInvoiceLine[],
   relatedLobLookup?: RelatedLobLookup
-): Promise<FinalInvoiceLine[]> {
-  if (!relatedLobLookup) return lines;
+): Promise<{ lines: FinalInvoiceLine[]; relatedByCostCenterId: Map<string, RelatedLob> }> {
+  const empty = new Map<string, RelatedLob>();
+  if (!relatedLobLookup) return { lines, relatedByCostCenterId: empty };
 
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
   const costCenterIds = [...new Set(
     lines
-      .filter(line => !line.lineOfBusinessId && line.costCenterId && line.costCenterId !== fallbackCostCenterId)
+      .filter(line => line.costCenterId && line.costCenterId !== fallbackCostCenterId)
       .map(line => line.costCenterId)
       .filter((id): id is string => !!id)
   )];
-  if (costCenterIds.length === 0) return lines;
+  if (costCenterIds.length === 0) return { lines, relatedByCostCenterId: empty };
 
   try {
     const relatedByCostCenterId = await relatedLobLookup(costCenterIds);
-    return applyRelatedLobWorktags(lines, relatedByCostCenterId, fallbackCostCenterId);
+    return {
+      lines: applyRelatedLobWorktags(lines, relatedByCostCenterId, fallbackCostCenterId),
+      relatedByCostCenterId,
+    };
   } catch (error) {
     debug('Failed to look up related Line of Business worktags for cost centers:', error);
-    return lines;
+    return { lines, relatedByCostCenterId: empty };
   }
 }

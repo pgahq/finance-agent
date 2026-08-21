@@ -245,7 +245,7 @@ gcloud workspace-add-ons deployments install finance-agent-gmail-sandbox \
 - `buildResourceManagementClient` in `src/lib/workday.ts`
 - OAuth refresh-token grant, `strong-soap` `BearerSecurity`, and the Resource Management v44.1 endpoint
 
-Custom validation rules and cost-center related worktags use `buildFinancialManagementClient` (Financial Management v46.0) with the same OAuth secrets. `Get_Related_Worktags_for_Worktags` is how `cache_cost_centers` loads default/allowed Line of Business ids for each cost center.
+Custom validation rules and cost-center related worktags use `buildFinancialManagementClient` (Financial Management v46.0) with the same OAuth secrets. `Get_Related_Worktags_for_Worktags` is how `cache_cost_centers` loads default/allowed Line of Business ids for each cost center, and how supplier-invoice submit retries look up an allowed LOB when Workday rejects `Default_Line_Of_Business`.
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 

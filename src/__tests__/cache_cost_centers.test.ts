@@ -1,5 +1,5 @@
 import { processor } from '../cache_cost_centers.js';
-import { bulkDeleteDocuments, bulkInsertDocuments, getDocumentsByType } from '../lib/database.js';
+import { bulkInsertDocuments } from '../lib/database.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 import { getRelatedWorktagsForCostCenters } from '../lib/workday.js';
 
@@ -28,7 +28,10 @@ jest.mock('../lib/database.js', () => ({
     query: jest.fn().mockResolvedValue([]),
     close: jest.fn().mockResolvedValue({})
   }),
-  getDocumentsByType: jest.fn().mockResolvedValue([]),
+  getDocumentsByType: jest.fn().mockResolvedValue([
+    { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+    { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+  ]),
   bulkInsertDocuments: jest.fn().mockResolvedValue({}),
   bulkUpdateDocuments: jest.fn().mockResolvedValue({}),
   bulkDeleteDocuments: jest.fn().mockResolvedValue(1)
@@ -62,13 +65,10 @@ describe('cache_cost_centers', () => {
     typeof getRelatedWorktagsForCostCenters
   >;
   const mockBulkInsertDocuments = bulkInsertDocuments as jest.MockedFunction<typeof bulkInsertDocuments>;
-  const mockBulkDeleteDocuments = bulkDeleteDocuments as jest.MockedFunction<typeof bulkDeleteDocuments>;
-  const mockGetDocumentsByType = getDocumentsByType as jest.MockedFunction<typeof getDocumentsByType>;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map());
-    mockGetDocumentsByType.mockResolvedValue([]);
   });
 
   it('stores related LOB metadata on cost center documents', async () => {
@@ -119,11 +119,6 @@ describe('cache_cost_centers', () => {
   });
 
   it('prunes cached cost centers that are not in the active Workday snapshot', async () => {
-    mockGetDocumentsByType.mockResolvedValue([
-      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
-      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
-    ]);
-
     await expect(processor({
       data: [
         { workdayID: 'cc-active', name: 'Active', code: '100' }
@@ -131,7 +126,8 @@ describe('cache_cost_centers', () => {
       sourceTotal: 1
     })).resolves.not.toThrow();
 
-    expect(mockBulkDeleteDocuments).toHaveBeenCalledWith(
+    const { bulkDeleteDocuments, bulkInsertDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
         query: expect.any(Function),
         close: expect.any(Function)
@@ -139,27 +135,24 @@ describe('cache_cost_centers', () => {
       ['cc-inactive'],
       'cost_center'
     );
-    expect(mockBulkInsertDocuments).not.toHaveBeenCalled();
+    expect(bulkInsertDocuments).not.toHaveBeenCalled();
   });
 
   it('does not prune when no cost center data is received', async () => {
     await expect(processor({ data: [] })).resolves.not.toThrow();
 
-    expect(mockBulkDeleteDocuments).not.toHaveBeenCalled();
+    const { bulkDeleteDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
   });
 
   it('does not prune when Workday total is missing from the event', async () => {
-    mockGetDocumentsByType.mockResolvedValue([
-      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
-      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
-    ]);
-
     await expect(processor({
       data: [
         { workdayID: 'cc-active', name: 'Active', code: '100' }
       ]
     })).resolves.not.toThrow();
 
-    expect(mockBulkDeleteDocuments).not.toHaveBeenCalled();
+    const { bulkDeleteDocuments } = require('../lib/database.js');
+    expect(bulkDeleteDocuments).not.toHaveBeenCalled();
   });
 });

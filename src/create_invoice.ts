@@ -159,6 +159,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailWorktags,
       relatedLobLookup
     );
+    let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
@@ -180,6 +181,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         relatedLobLookup
       );
       finalLines = synthetic.lines;
+      relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
     }
 
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
@@ -200,6 +202,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      relatedLobByCostCenter,
       paymentTermsId,
       attachment: {
         fileName,
