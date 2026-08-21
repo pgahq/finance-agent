@@ -4,6 +4,7 @@ import {
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isRequiredLineOfBusinessWorktagError,
+  isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
   summarizeValidationError,
 } from '../lib/invoice_validation_failures.js';
@@ -45,6 +46,16 @@ describe('invoice_validation_failures', () => {
     expect(isLineOfBusinessRelatedWorktagError(error)).toBe(true);
     expect(collectWorkdayValidationErrorText(error)).toContain('must also have a value: Line of Business');
     expect(collectWorkdayValidationErrorText(error)).toContain('not available for use with the company');
+  });
+
+  it('detects a Workday processing fault that is not authorized', () => {
+    expect(isWorkdayTaskNotAuthorizedError(
+      'Processing error occurred. The task submitted is not authorized.'
+    )).toBe(true);
+    expect(isWorkdayTaskNotAuthorizedError({
+      body: '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    })).toBe(true);
+    expect(isWorkdayTaskNotAuthorizedError('Spend Category is required')).toBe(false);
   });
 
   it('returns the plain validation message from an Error', () => {

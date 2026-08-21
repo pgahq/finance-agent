@@ -293,6 +293,10 @@ export function isLineOfBusinessRelatedWorktagError(text: unknown): boolean {
   return isRequiredLineOfBusinessWorktagError(text) || isDisallowedLineOfBusinessWorktagError(text);
 }
 
+export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
+  return /the task submitted is not authorized/i.test(asValidationText(error));
+}
+
 export async function recordInvoiceValidationFailure(
   config: InvoiceValidationFailuresConfig | undefined,
   invoiceWorkdayID: string,
