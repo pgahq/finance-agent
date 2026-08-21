@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -2069,7 +2070,7 @@ describe('Workday utilities', () => {
         ]);
       });
 
-      it('should replace cost center with fallback on worktag validation fault retry', async () => {
+      it('should replace cost center with fallback on a cost-center availability fault', async () => {
         const mockClient = {
           setSecurity: jest.fn(),
           setEndpoint: jest.fn(),
@@ -2091,7 +2092,7 @@ describe('Workday utilities', () => {
             callback({
               Validation_Fault: {
                 Validation_Error: {
-                  Message: 'When "Cost Center: CC-Technology Services" is entered then these worktag types must also have a value: Line of Business.',
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-Technology Services',
                   Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
                   Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
                 }
@@ -2303,6 +2304,128 @@ describe('Workday utilities', () => {
           { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
           { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
         ]);
+      });
+
+      it('should apply a related LOB instead of fallback cost center when Workday also says the cost center is unavailable', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Results: { Total_Pages: 1 },
+            Response_Data: {
+              Related_Worktags: {
+                Related_Worktag_Reference: {
+                  ID: [
+                    { $attributes: { type: 'WID' }, $value: 'cc-ent-tech-wid' },
+                    { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }
+                  ]
+                },
+                Related_Worktags_Data: {
+                  Related_Worktags_by_Type_Data: {
+                    Worktag_Type_Reference: {
+                      ID: [{ $attributes: { type: 'Worktag_Type_ID' }, $value: 'LINE_OF_BUSINESS' }]
+                    },
+                    Required_On_Transaction: true,
+                    Allowed_Worktag_Data: [
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] } }
+                    ]
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        const capturedRequests: any[] = [];
+        rmClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          const worktags = JSON.stringify(request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? []);
+          if (!worktags.includes('LOB-Enterprise')) {
+            callback({
+              faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+              detail: {
+                Validation_Fault: {
+                  Validation_Error: [
+                    {
+                      Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+                      Detail_Message: 'Parm Supplier_Invoice_Line_Replacement_Data (6$18900): n, Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                    },
+                    {
+                      Message: 'The Cost Center is/are not available for use with the company/s: CC-Enterprise Technology',
+                      Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                    }
+                  ]
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' },
+            { lineOrder: 9, description: 'Line 9', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', EMPTY_RELATED_LOB]
+          ]),
+          resolveCostCenterWorkdayIds: async () => new Map([
+            ['CC-Enterprise Technology', 'cc-ent-tech-wid']
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+          expect.objectContaining({
+            Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+              Request_References: {
+                Related_Worktag_Reference: expect.arrayContaining([
+                  { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+                  { ID: [{ $attributes: { type: 'WID' }, $value: 'cc-ent-tech-wid' }] }
+                ])
+              }
+            })
+          }),
+          expect.any(Function)
+        );
+
+        const retryLines = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(retryLines).toHaveLength(2);
+        for (const line of retryLines) {
+          expect(line.Worktags_Reference).toEqual([
+            { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+            { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+          ]);
+        }
+        expect(JSON.stringify(capturedRequests[1])).not.toContain('CC0000');
       });
 
     });

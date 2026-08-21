@@ -42,10 +42,12 @@ Map the failing Workday field to one of the configured retry fields only when th
 - invoiceDate: invoice date fields or date restrictions
 - paymentTerms: payment terms fields
 - worktag:fund: fund worktag errors — message or XPath references Fund or Fund_ID
-- worktag:costCenter: invalid or restricted cost center *values* — not related-worktag rules that name Cost Center only as the field that requires another type
+- worktag:costCenter: invalid or restricted cost center *values* (for example "The Cost Center is/are not available for use with the company") — not related-worktag rules that name Cost Center only as the field that requires another type
 - worktag:spendCategory: spend category errors — message or XPath references Spend Category or Spend_Category_Reference
 - worktag:event: event worktag errors — message or XPath references Event
 - worktag:lob: line of business worktag errors, including "when Cost Center is entered then these worktag types must also have a value: Line of Business" and "does not allow worktag values: Line of Business"
+
+When multiple Validation_Error entries exist, a required or disallowed Line of Business related-worktag rule is worktag:lob even if another message says the Cost Center is not available for the company. Do not classify that combination as worktag:costCenter.
 
 Only classify as a specific worktag type when the evidence clearly identifies that type.
 Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, when you cannot identify the specific worktag type, or when changing the field would require inventing new data.

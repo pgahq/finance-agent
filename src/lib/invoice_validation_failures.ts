@@ -92,20 +92,14 @@ function getFirstStringByKey(objectValue: Record<string, unknown>, keys: string[
   return undefined;
 }
 
-function extractWorkdayValidationErrorDetails(value: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
+function extractWorkdayValidationErrorDetailsList(value: unknown, results: Array<Omit<WorkdayValidationDetails, 'field'>> = []): Array<Omit<WorkdayValidationDetails, 'field'>> {
   if (Array.isArray(value)) {
-    for (const item of value) {
-      const candidate = extractWorkdayValidationErrorDetails(item);
-      if (candidate) {
-        return candidate;
-      }
-    }
-
-    return undefined;
+    for (const item of value) extractWorkdayValidationErrorDetailsList(item, results);
+    return results;
   }
 
   if (!value || typeof value !== 'object') {
-    return undefined;
+    return results;
   }
 
   const objectValue = value as Record<string, unknown>;
@@ -115,25 +109,48 @@ function extractWorkdayValidationErrorDetails(value: unknown): Omit<WorkdayValid
     xpath: getFirstStringByKey(objectValue, VALIDATION_XPATH_KEYS),
   };
 
-  if (details.message || details.detailMessage || details.xpath) {
-    return details;
+  const isValidationErrorNode = 'Validation_Error' in objectValue
+    || 'Message' in objectValue
+    || 'Validation_Message' in objectValue
+    || 'Detail_Message' in objectValue
+    || 'Xpath' in objectValue
+    || 'XPath' in objectValue;
+
+  if (isValidationErrorNode && (details.message || details.detailMessage || details.xpath)) {
+    results.push(details);
   }
 
   for (const key of VALIDATION_CONTAINER_KEYS) {
-    const candidate = extractWorkdayValidationErrorDetails(objectValue[key]);
-    if (candidate) {
-      return candidate;
+    if (key in objectValue) {
+      extractWorkdayValidationErrorDetailsList(objectValue[key], results);
     }
   }
 
-  return undefined;
+  return results;
+}
+
+function extractWorkdayValidationErrorDetails(value: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
+  return extractWorkdayValidationErrorDetailsList(value)[0];
 }
 
 export function parseWorkdayValidationDetails(error: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
   return extractWorkdayValidationErrorDetails(error);
 }
 
-function formatWorkdayValidationErrorDetails(details: WorkdayValidationDetails): string {
+export function collectWorkdayValidationErrorText(error: unknown): string {
+  const details = extractWorkdayValidationErrorDetailsList(error);
+  if (details.length > 0) {
+    return details.map(formatWorkdayValidationErrorDetails).join(' ');
+  }
+
+  if (error instanceof Error) {
+    return normalizeErrorText(error.message);
+  }
+
+  return extractErrorText(error);
+}
+
+function formatWorkdayValidationErrorDetails(details: Omit<WorkdayValidationDetails, 'field'> & { field?: string }): string {
   const parts: string[] = [];
 
   if (details.message) {
@@ -258,15 +275,21 @@ export function isWorkdayValidationError(error: unknown): boolean {
     && (hasValidationFaultShape(error) || VALIDATION_ERROR_PATTERN.test(validationMessage));
 }
 
-export function isRequiredLineOfBusinessWorktagError(text: string | undefined): boolean {
-  return typeof text === 'string' && /must also have a value:\s*Line of Business/i.test(text);
+function asValidationText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  return collectWorkdayValidationErrorText(value);
 }
 
-export function isDisallowedLineOfBusinessWorktagError(text: string | undefined): boolean {
-  return typeof text === 'string' && /does not allow worktag values:[\s\S]*Line of Business/i.test(text);
+export function isRequiredLineOfBusinessWorktagError(text: unknown): boolean {
+  return /must also have a value:\s*Line of Business/i.test(asValidationText(text));
 }
 
-export function isLineOfBusinessRelatedWorktagError(text: string | undefined): boolean {
+export function isDisallowedLineOfBusinessWorktagError(text: unknown): boolean {
+  return /does not allow worktag values:[\s\S]*Line of Business/i.test(asValidationText(text));
+}
+
+export function isLineOfBusinessRelatedWorktagError(text: unknown): boolean {
   return isRequiredLineOfBusinessWorktagError(text) || isDisallowedLineOfBusinessWorktagError(text);
 }
 

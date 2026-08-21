@@ -1,4 +1,5 @@
 import {
+  collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
@@ -19,6 +20,31 @@ describe('invoice_validation_failures', () => {
     expect(isLineOfBusinessRelatedWorktagError(
       'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
     )).toBe(true);
+  });
+
+  it('detects a required Line of Business rule in a multi-error SOAP fault', () => {
+    const error = {
+      faultstring: 'Validation error occurred.',
+      detail: {
+        Validation_Fault: {
+          Validation_Error: [
+            {
+              Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+            },
+            {
+              Message: 'The Cost Center is/are not available for use with the company/s: CC-Enterprise Technology',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+            }
+          ]
+        }
+      }
+    };
+
+    expect(isRequiredLineOfBusinessWorktagError(error)).toBe(true);
+    expect(isLineOfBusinessRelatedWorktagError(error)).toBe(true);
+    expect(collectWorkdayValidationErrorText(error)).toContain('must also have a value: Line of Business');
+    expect(collectWorkdayValidationErrorText(error)).toContain('not available for use with the company');
   });
 
   it('returns the plain validation message from an Error', () => {
