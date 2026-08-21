@@ -118,6 +118,28 @@ describe('cache_cost_centers', () => {
     expect(inserted[0]?.metadata).toMatchObject({ relatedLob: EMPTY_RELATED_LOB });
   });
 
+  it('notifies Slack when related worktags are not authorized', async () => {
+    mockGetRelatedWorktagsForCostCenters.mockRejectedValue(
+      new Error('Processing error occurred. The task submitted is not authorized.')
+    );
+
+    await expect(processor({
+      data: [{ workdayID: 'cc-wid-2', name: 'Other', code: 'CC-Other' }]
+    })).resolves.not.toThrow();
+
+    const { notifyResult } = require('../lib/slack.js');
+    expect(notifyResult).toHaveBeenCalledWith(
+      'cache_cost_centers',
+      'error',
+      undefined,
+      expect.objectContaining({
+        note: expect.stringContaining('Get_Related_Worktags_for_Worktags')
+      }),
+      expect.any(Error),
+      'related worktags unauthorized'
+    );
+  });
+
   it('prunes cached cost centers that are not in the active Workday snapshot', async () => {
     await expect(processor({
       data: [

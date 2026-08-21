@@ -341,27 +341,31 @@ export async function getRelatedWorktagsForCostCenters(
   const workdayIds = [...new Set(costCenterWorkdayIds.filter(Boolean))];
   if (workdayIds.length === 0) return relatedByKey;
 
-  const soapClient: unknown = await buildFinancialManagementClient(context);
-  const client = asRelatedWorktagsClient(soapClient);
+  try {
+    const soapClient: unknown = await buildFinancialManagementClient(context);
+    const client = asRelatedWorktagsClient(soapClient);
 
-  for (let i = 0; i < workdayIds.length; i += RELATED_WORKTAGS_BATCH_SIZE) {
-    const batch = workdayIds.slice(i, i + RELATED_WORKTAGS_BATCH_SIZE);
-    let page = 1;
-    let totalPages = 1;
+    for (let i = 0; i < workdayIds.length; i += RELATED_WORKTAGS_BATCH_SIZE) {
+      const batch = workdayIds.slice(i, i + RELATED_WORKTAGS_BATCH_SIZE);
+      let page = 1;
+      let totalPages = 1;
 
-    do {
-      const response = await fetchRelatedWorktagsPage(client, batch, page);
-      const parsed = parseRelatedWorktagsResponse(response);
-      for (const [key, related] of parsed) {
-        relatedByKey.set(key, related);
-      }
-      totalPages = relatedWorktagsTotalPages(response);
-      page += 1;
-    } while (page <= totalPages);
+      do {
+        const response = await fetchRelatedWorktagsPage(client, batch, page);
+        const parsed = parseRelatedWorktagsResponse(response);
+        for (const [key, related] of parsed) {
+          relatedByKey.set(key, related);
+        }
+        totalPages = relatedWorktagsTotalPages(response);
+        page += 1;
+      } while (page <= totalPages);
+    }
+
+    debug(`Fetched related worktags for ${relatedByKey.size} cost center key(s)`);
+    return relatedByKey;
+  } catch (error) {
+    throw sanitizeSoapError(error);
   }
-
-  debug(`Fetched related worktags for ${relatedByKey.size} cost center key(s)`);
-  return relatedByKey;
 }
 
 const getResourceManagementEndpoint = (config: WorkdayConfig): string =>
@@ -652,7 +656,10 @@ async function ensureRelatedLobByCostCenter(
     });
     return { ...options, relatedLobByCostCenter: merged };
   } catch (error) {
-    debug('Failed to fetch related Line of Business worktags during supplier invoice submit:', error);
+    debug(
+      'Failed to fetch related Line of Business worktags during supplier invoice submit',
+      summarizeSoapError(error)
+    );
     return { ...options, relatedLobByCostCenter: existing };
   }
 }
@@ -1079,6 +1086,41 @@ function serializeSubmitSupplierInvoiceRequest(request: SubmitSupplierInvoiceReq
   return JSON.stringify(request);
 }
 
+function soapFaultMessage(error: unknown): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (!error || typeof error !== 'object') {
+    return 'Workday SOAP error';
+  }
+
+  const soapError = error as {
+    message?: string;
+    faultstring?: string;
+    faultString?: string;
+    body?: unknown;
+  };
+  const fromFields = [soapError.message, soapError.faultstring, soapError.faultString]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  if (fromFields) {
+    return fromFields.trim();
+  }
+
+  if (typeof soapError.body === 'string') {
+    const faultstring = soapError.body.match(/<faultstring>([^<]*)<\/faultstring>/i)?.[1]?.trim();
+    if (faultstring) return faultstring;
+    const detailMessage = soapError.body.match(/<(?:\w+:)?Detail_Message>([^<]*)<\/(?:\w+:)?Detail_Message>/i)?.[1]?.trim();
+    if (detailMessage) return detailMessage;
+  }
+
+  return 'Workday SOAP error';
+}
+
 function summarizeSoapError(error: unknown): {
   name: string;
   message: string;
@@ -1086,13 +1128,12 @@ function summarizeSoapError(error: unknown): {
 } {
   const soapError = error as {
     name?: string;
-    message?: string;
     response?: { statusCode?: number };
   };
 
   return {
     name: soapError?.name ?? 'Error',
-    message: soapError?.message ?? String(error),
+    message: soapFaultMessage(error),
     statusCode: soapError?.response?.statusCode
   };
 }

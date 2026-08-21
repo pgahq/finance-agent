@@ -2428,6 +2428,63 @@ describe('Workday utilities', () => {
         expect(JSON.stringify(capturedRequests[1])).not.toContain('CC0000');
       });
 
+      it('should keep the original validation error when related worktags are not authorized', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback({ body: soapBody }, null);
+        });
+        rmClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback({
+            faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+            detail: {
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                }
+              }
+            }
+          }, null);
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        await expect(submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', EMPTY_RELATED_LOB]
+          ])
+        })).rejects.toMatchObject({
+          message: expect.stringContaining('must also have a value: Line of Business')
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalled();
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
     });
 
     it('should not include Purchase_Order_Reference when purchaseOrderNumber is not provided', async () => {
@@ -3385,6 +3442,28 @@ describe('Workday utilities', () => {
     it('returns an empty map when no cost center ids are provided', async () => {
       const result = await getRelatedWorktagsForCostCenters(mockContext, []);
       expect(result.size).toBe(0);
+    });
+
+    it('throws a sanitized error when related worktags are not authorized', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Related_Worktags_for_Worktags: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+      mockClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+        callback({ body: soapBody }, null);
+      });
+
+      await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.toMatchObject({
+        message: 'Processing error occurred. The task submitted is not authorized.'
+      });
+      await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.not.toHaveProperty('body');
     });
   });
 

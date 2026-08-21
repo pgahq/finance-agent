@@ -18,7 +18,7 @@ import {
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
-import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
+import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
@@ -27,27 +27,6 @@ import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInv
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
-const WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE = 'The task submitted is not authorized';
-
-function errorText(error: unknown): string {
-  if (typeof error === 'string') {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}\n${error.stack ?? ''}`;
-  }
-
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return '';
-  }
-}
-
-function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
-  return errorText(error).includes(WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE);
-}
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
