@@ -45,7 +45,7 @@ Map the failing Workday field to one of the configured retry fields only when th
 - worktag:costCenter: invalid or restricted cost center *values* — not related-worktag rules that name Cost Center only as the field that requires another type
 - worktag:spendCategory: spend category errors — message or XPath references Spend Category or Spend_Category_Reference
 - worktag:event: event worktag errors — message or XPath references Event
-- worktag:lob: line of business worktag errors, including "when Cost Center is entered then these worktag types must also have a value: Line of Business"
+- worktag:lob: line of business worktag errors, including "when Cost Center is entered then these worktag types must also have a value: Line of Business" and "does not allow worktag values: Line of Business"
 
 Only classify as a specific worktag type when the evidence clearly identifies that type.
 Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, when you cannot identify the specific worktag type, or when changing the field would require inventing new data.

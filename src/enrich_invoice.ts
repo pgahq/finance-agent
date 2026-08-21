@@ -17,6 +17,7 @@ import {
 } from './lib/invoice_enrichment.js';
 import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
+import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
@@ -219,6 +220,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     let finalLines: FinalInvoiceLine[] | undefined;
     let lineFallbacks: LineFallbacks | undefined;
+    let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
     if (candidateLines.length > 0) {
       debug(`Building final invoice lines from ${candidateLines.length} extracted line(s)`);
       const built = await buildFinalInvoiceLines(
@@ -236,6 +238,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
+      relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
 
@@ -262,6 +265,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         extractedTaxAmount,
         finalLines,
+        relatedLobByCostCenter,
         paymentTermsId
       });
       if (!updateOutcome.success) {

@@ -262,6 +262,14 @@ export function isRequiredLineOfBusinessWorktagError(text: string | undefined): 
   return typeof text === 'string' && /must also have a value:\s*Line of Business/i.test(text);
 }
 
+export function isDisallowedLineOfBusinessWorktagError(text: string | undefined): boolean {
+  return typeof text === 'string' && /does not allow worktag values:[\s\S]*Line of Business/i.test(text);
+}
+
+export function isLineOfBusinessRelatedWorktagError(text: string | undefined): boolean {
+  return isRequiredLineOfBusinessWorktagError(text) || isDisallowedLineOfBusinessWorktagError(text);
+}
+
 export async function recordInvoiceValidationFailure(
   config: InvoiceValidationFailuresConfig | undefined,
   invoiceWorkdayID: string,

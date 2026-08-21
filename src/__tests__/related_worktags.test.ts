@@ -113,12 +113,28 @@ describe('resolveRelatedLobId', () => {
     }, 'CC-001')).toBe('LOB-Only');
   });
 
-  it('returns null when multiple allowed values exist and there is no default', () => {
+  it('uses an allowed LOB when multiple values exist and there is no default', () => {
     expect(resolveRelatedLobId({
       requiredOnTransaction: true,
       defaultReferenceId: null,
       allowedReferenceIds: ['LOB-A', 'LOB-B'],
-    }, 'CC-001')).toBeNull();
+    }, 'CC-001')).toBe('LOB-A');
+  });
+
+  it('skips Default_Line_Of_Business when a real related LOB is allowed', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: 'Default_Line_Of_Business',
+      allowedReferenceIds: ['Default_Line_Of_Business', 'LOB-Enterprise'],
+    }, 'CC-001')).toBe('LOB-Enterprise');
+  });
+
+  it('skips excluded LOB ids', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-A',
+      allowedReferenceIds: ['LOB-A', 'LOB-B'],
+    }, 'CC-001', undefined, ['LOB-A'])).toBe('LOB-B');
   });
 
   it('returns null for the fallback cost center', () => {

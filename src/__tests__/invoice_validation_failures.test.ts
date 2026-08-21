@@ -1,5 +1,7 @@
 import {
   getInvoiceValidationFailuresConfig,
+  isDisallowedLineOfBusinessWorktagError,
+  isLineOfBusinessRelatedWorktagError,
   isRequiredLineOfBusinessWorktagError,
   isWorkdayValidationError,
   summarizeValidationError,
@@ -11,6 +13,12 @@ describe('invoice_validation_failures', () => {
       'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business'
     )).toBe(true);
     expect(isRequiredLineOfBusinessWorktagError('Spend Category is required')).toBe(false);
+    expect(isDisallowedLineOfBusinessWorktagError(
+      'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
+    )).toBe(true);
+    expect(isLineOfBusinessRelatedWorktagError(
+      'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
+    )).toBe(true);
   });
 
   it('returns the plain validation message from an Error', () => {

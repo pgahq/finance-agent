@@ -1,13 +1,15 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, isRequiredLineOfBusinessWorktagError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, isLineOfBusinessRelatedWorktagError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { parseExtractedAmount } from './invoice_lines.js';
+import { applyRelatedLobWorktags, parseExtractedAmount } from './invoice_lines.js';
 import {
+  DEFAULT_LINE_OF_BUSINESS_ID,
   extractLineOfBusinessId,
   parseRelatedWorktagsResponse,
   relatedWorktagsTotalPages,
+  resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
 
@@ -299,17 +301,22 @@ function asRelatedWorktagsClient(client: unknown): RelatedWorktagsSoapClient {
   return client as RelatedWorktagsSoapClient;
 }
 
+function relatedWorktagReferenceType(id: string): 'WID' | 'Cost_Center_Reference_ID' {
+  if (/^CC[-_]/.test(id) || /\s/.test(id)) return 'Cost_Center_Reference_ID';
+  return 'WID';
+}
+
 function fetchRelatedWorktagsPage(
   client: RelatedWorktagsSoapClient,
-  costCenterWorkdayIds: string[],
+  costCenterIds: string[],
   page: number
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     client.Get_Related_Worktags_for_Worktags({
       Get_Related_Worktags_for_Worktags_Request: {
         Request_References: {
-          Related_Worktag_Reference: costCenterWorkdayIds.map(workdayId => ({
-            ID: [{ $attributes: { type: 'WID' }, $value: workdayId }]
+          Related_Worktag_Reference: costCenterIds.map(id => ({
+            ID: [{ $attributes: { type: relatedWorktagReferenceType(id) }, $value: id }]
           }))
         },
         Response_Filter: { Page: page, Count: RELATED_WORKTAGS_PAGE_SIZE }
@@ -417,6 +424,8 @@ interface buildSubmitInvoiceDataOptions {
   omitEventWorktag?: boolean;
   omitLobWorktag?: boolean;
   applyLobFallback?: boolean;
+  applyRelatedLob?: boolean;
+  relatedLobByCostCenter?: Map<string, RelatedLob>;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -493,12 +502,22 @@ function createReference(type: string, value: string): { ID: Array<{ $attributes
   return { ID: [{ $attributes: { type }, $value: value }] };
 }
 
+function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
+  if (line?.costCenterId) return line.costCenterId;
+  for (const worktag of ([] as any[]).concat(line?.Worktags_Reference ?? [])) {
+    const ids = ([] as any[]).concat(worktag.ID ?? []);
+    const match = ids.find((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID' && id.$value);
+    if (match?.$value) return String(match.$value);
+  }
+  return null;
+}
+
 function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions): string | undefined {
   return process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? options.defaultSupplierWID;
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
-  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback } = options;
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -526,6 +545,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
     fallbacks.push({ field: 'worktag:spendCategory', label: 'fallback spend category' });
   }
 
+  if (applyRelatedLob) {
+    fallbacks.push({ field: 'worktag:lob', label: 'related line of business' });
+  }
+
   if (applyLobFallback && process.env.FALLBACK_LOB_ID) {
     fallbacks.push({ field: 'worktag:lob', label: 'fallback line of business' });
   }
@@ -539,6 +562,56 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
   }
 
   return fallbacks;
+}
+
+function fallbackLobExcludeIds(): string[] {
+  return [...new Set([DEFAULT_LINE_OF_BUSINESS_ID, process.env.FALLBACK_LOB_ID].filter((id): id is string => !!id))];
+}
+
+function costCenterIdsFromLines(lines: FinalInvoiceLine[] | undefined): string[] {
+  return [...new Set((lines ?? []).map(line => line.costCenterId).filter((id): id is string => !!id))];
+}
+
+function linesWithRelatedLob(options: buildSubmitInvoiceDataOptions): FinalInvoiceLine[] | undefined {
+  const lines = options.finalLines;
+  const related = options.relatedLobByCostCenter;
+  if (!lines?.length || !related?.size) return undefined;
+
+  const next = applyRelatedLobWorktags(
+    lines,
+    related,
+    process.env.FALLBACK_COST_CENTER_ID,
+    { replaceIds: fallbackLobExcludeIds() }
+  );
+  const changed = next.some((line, index) => line.lineOfBusinessId !== lines[index].lineOfBusinessId);
+  return changed ? next : undefined;
+}
+
+async function ensureRelatedLobByCostCenter(
+  workdayConfig: WorkdayConfig,
+  options: buildSubmitInvoiceDataOptions
+): Promise<buildSubmitInvoiceDataOptions> {
+  const existing = options.relatedLobByCostCenter ?? new Map<string, RelatedLob>();
+  const missing = costCenterIdsFromLines(options.finalLines).filter(id => !existing.has(id) && id !== process.env.FALLBACK_COST_CENTER_ID);
+  if (missing.length === 0) {
+    return existing === options.relatedLobByCostCenter ? options : { ...options, relatedLobByCostCenter: existing };
+  }
+
+  try {
+    const fetched = await getRelatedWorktagsForCostCenters({ workdayConfig }, missing);
+    const merged = new Map(existing);
+    for (const [key, related] of fetched) {
+      merged.set(key, related);
+    }
+    debug('Loaded related Line of Business worktags for supplier invoice submit', {
+      requested: missing,
+      resolved: [...merged.keys()],
+    });
+    return { ...options, relatedLobByCostCenter: merged };
+  } catch (error) {
+    debug('Failed to fetch related Line of Business worktags during supplier invoice submit:', error);
+    return { ...options, relatedLobByCostCenter: existing };
+  }
 }
 
 function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): FallbackField[] {
@@ -560,10 +633,10 @@ async function getValidationFallbackField(
   const validation = parseWorkdayValidationDetails(error) ?? { message: validationError };
 
   if (
-    isRequiredLineOfBusinessWorktagError(`${validation.message ?? ''} ${validationError}`)
+    isLineOfBusinessRelatedWorktagError(`${validation.message ?? ''} ${validationError}`)
     && retryableFallbackFields.includes('worktag:lob')
   ) {
-    debug('Validation requires a Line of Business worktag; applying fallback LOB without classifier');
+    debug('Validation is a Line of Business related-worktag restriction; retrying without classifier');
     return 'worktag:lob';
   }
 
@@ -666,6 +739,16 @@ function getFallbackRetryBuildOptions(
   }
 
   const someLineMissingLob = !options.finalLines?.length || options.finalLines.some(l => !l.lineOfBusinessId);
+  if (field === 'worktag:lob' && !options.omitLobWorktag && !options.applyRelatedLob) {
+    const relatedLines = linesWithRelatedLob(options);
+    if (relatedLines) {
+      return {
+        buildOptions: { ...options, finalLines: relatedLines, applyRelatedLob: true },
+        fallbackLabel: 'related line of business',
+      };
+    }
+  }
+
   if (field === 'worktag:lob' && !options.omitLobWorktag && !options.applyLobFallback && process.env.FALLBACK_LOB_ID && someLineMissingLob) {
     return {
       buildOptions: { ...options, applyLobFallback: true },
@@ -684,7 +767,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment, relatedLobByCostCenter } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -715,7 +798,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ? createReference('Payment_Terms_ID', paymentTermsWID)
     : currentInvoice.Payment_Terms_Reference;
 
-  const withFallbackWorktags = (worktags: any[]): any[] => {
+  const withFallbackWorktags = (worktags: any[], costCenterId?: string | null): any[] => {
     const replaceTypes = new Set([
       ...(applyFundFallback && fallbackFundRef ? ['Fund_ID'] : []),
       ...(applyCostCenterFallback && fallbackCostCenterRef ? ['Cost_Center_Reference_ID'] : []),
@@ -741,8 +824,17 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       result = additions.length ? [...worktags, ...additions] : worktags;
     }
 
-    if (!omitLobWorktag && fallbackLobId && !extractLineOfBusinessId(result)) {
-      result = [...result, createReference('Organization_Reference_ID', fallbackLobId)];
+    if (!omitLobWorktag && !extractLineOfBusinessId(result)) {
+      const relatedLobId = resolveRelatedLobId(
+        relatedLobByCostCenter?.get(costCenterId ?? ''),
+        costCenterId,
+        fallbackCostCenterId,
+        fallbackLobExcludeIds()
+      );
+      const lobId = relatedLobId ?? fallbackLobId;
+      if (lobId) {
+        result = [...result, createReference('Organization_Reference_ID', lobId)];
+      }
     }
     return result;
   };
@@ -754,7 +846,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
         ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
-      ]);
+      ], line.costCenterId);
       const isDiscountOverride = line.hasDiscount === true;
       return {
         Line_Order: line.lineOrder,
@@ -789,7 +881,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         );
         return {
           ...line,
-          Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
+          Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? []), extractLineCostCenterId(line)),
           ...(applySpendCategory && {
             Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId!),
           }),
@@ -882,6 +974,7 @@ interface ResourceManagementClient {
 
 interface SubmitSupplierInvoiceWithRepairOptions {
   client: ResourceManagementClient;
+  workdayConfig: WorkdayConfig;
   invoiceWorkdayID: string | undefined;
   currentInvoice: any;
   buildOptions: buildSubmitInvoiceDataOptions;
@@ -998,6 +1091,7 @@ async function submitSupplierInvoiceSoap(
 
 async function submitSupplierInvoiceWithRepair({
   client,
+  workdayConfig,
   invoiceWorkdayID,
   buildOptions,
   buildNotes,
@@ -1006,7 +1100,10 @@ async function submitSupplierInvoiceWithRepair({
   requestDebugLabel,
 }: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
-  let attemptBuildOptions = { ...buildOptions };
+  const relatedLines = linesWithRelatedLob(buildOptions);
+  let attemptBuildOptions = relatedLines
+    ? { ...buildOptions, finalLines: relatedLines }
+    : { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
   const validationTriggeredFields = new Set<FallbackField>();
 
@@ -1031,6 +1128,9 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const validationError = summarizeValidationError(error);
+      if (isLineOfBusinessRelatedWorktagError(validationError)) {
+        attemptBuildOptions = await ensureRelatedLobByCostCenter(workdayConfig, attemptBuildOptions);
+      }
       const retryableFallbackFields = getRetryableFallbackFields(attemptBuildOptions);
       const validationFallbackField = await getValidationFallbackField(error, validationError, retryableFallbackFields);
       failedRequestFingerprints.add(serializeSubmitSupplierInvoiceRequest(request));
@@ -1394,6 +1494,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
+  relatedLobByCostCenter?: Map<string, RelatedLob>;
   paymentTermsId?: string;
 }
 
@@ -1411,6 +1512,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    relatedLobByCostCenter,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
@@ -1445,6 +1547,7 @@ export async function submitSupplierInvoiceUpdate(
 
   const { finalBuildOptions } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
+    workdayConfig: context.workdayConfig,
     invoiceWorkdayID,
     currentInvoice,
     buildOptions: {
@@ -1459,6 +1562,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      relatedLobByCostCenter,
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true
     },
@@ -1490,6 +1594,7 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
+  relatedLobByCostCenter?: Map<string, RelatedLob>;
   paymentTermsId?: string;
   attachment: { fileName: string; contentType: string; base64Content: string };
 }
@@ -1510,6 +1615,7 @@ export async function submitNewSupplierInvoice(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    relatedLobByCostCenter,
     paymentTermsId,
     attachment
   }: SubmitNewSupplierInvoiceParams
@@ -1529,6 +1635,7 @@ export async function submitNewSupplierInvoice(
 
   const { result, finalBuildOptions } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
+    workdayConfig: context.workdayConfig,
     invoiceWorkdayID: undefined,
     currentInvoice: {},
     buildOptions: {
@@ -1545,6 +1652,7 @@ export async function submitNewSupplierInvoice(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      relatedLobByCostCenter,
       paymentTermsWID: paymentTermsId,
       attachment
     },
