@@ -14,7 +14,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
 import { applyProcessorLabelOutcome, getGmailConfig } from './lib/gmail.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
@@ -203,6 +203,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       extractedTaxAmount,
       finalLines,
       relatedLobByCostCenter,
+      resolveCostCenterWorkdayIds: (costCenterIds) =>
+        getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
       paymentTermsId,
       attachment: {
         fileName,

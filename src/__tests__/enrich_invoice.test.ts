@@ -48,7 +48,8 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
-  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map())
+  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -484,7 +485,10 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
-        poLines: undefined,
+        extractedTaxAmount: undefined,
+        finalLines: undefined,
+        relatedLobByCostCenter: undefined,
+        resolveCostCenterWorkdayIds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );
@@ -554,7 +558,10 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
-        poLines: undefined,
+        extractedTaxAmount: undefined,
+        finalLines: undefined,
+        relatedLobByCostCenter: undefined,
+        resolveCostCenterWorkdayIds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );

@@ -34,7 +34,8 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
-  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map())
+  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/s3.js', () => ({

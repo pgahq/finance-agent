@@ -12,6 +12,7 @@ import {
   bulkDeleteDocuments,
   migrateDocumentsTypeCheck,
   getCostCenterRelatedLobsByCodes,
+  getCostCenterWorkdayIdsByCodes,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -449,6 +450,40 @@ describe('Database Library', () => {
       };
 
       const result = await getCostCenterRelatedLobsByCodes(mockConnection, []);
+      expect(result.size).toBe(0);
+      expect(mockConnection.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getCostCenterWorkdayIdsByCodes', () => {
+    it('indexes cost center Workday ids by code and workday id', async () => {
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Enterprise Technology' } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterWorkdayIdsByCodes(
+        mockConnection,
+        ['CC-Enterprise Technology']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [['CC-Enterprise Technology']]
+      );
+      expect(result.get('CC-Enterprise Technology')).toBe('cc-wid-1');
+      expect(result.get('cc-wid-1')).toBe('cc-wid-1');
+    });
+
+    it('returns an empty map when no ids are provided', async () => {
+      const mockConnection = {
+        query: jest.fn(),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterWorkdayIdsByCodes(mockConnection, []);
       expect(result.size).toBe(0);
       expect(mockConnection.query).not.toHaveBeenCalled();
     });

@@ -357,6 +357,43 @@ export async function getCostCenterRelatedLobsByCodes(
   }
 }
 
+export async function getCostCenterWorkdayIdsByCodes(
+  db: DatabaseConnection,
+  costCenterIds: string[]
+): Promise<Map<string, string>> {
+  const byId = new Map<string, string>();
+  const ids = [...new Set(costCenterIds.filter(Boolean))];
+  if (ids.length === 0) return byId;
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, metadata
+      FROM documents
+      WHERE type = 'cost_center'
+        AND (
+          metadata->>'code' = ANY($1::text[])
+          OR workday_id = ANY($1::text[])
+        )
+    `, [ids]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const metadata = asRecord(record.metadata);
+      if (typeof record.workday_id !== 'string' || !record.workday_id) continue;
+      byId.set(record.workday_id, record.workday_id);
+      if (typeof metadata.code === 'string' && metadata.code) {
+        byId.set(metadata.code, record.workday_id);
+      }
+    }
+
+    debug(`Found Workday ids for ${byId.size} cost center key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cost center Workday ids:', error);
+    throw error;
+  }
+}
+
 export async function getDocumentsByType(
   db: DatabaseConnection,
   type: DocumentType

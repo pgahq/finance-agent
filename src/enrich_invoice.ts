@@ -15,7 +15,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -266,6 +266,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedTaxAmount,
         finalLines,
         relatedLobByCostCenter,
+        resolveCostCenterWorkdayIds: (costCenterIds) =>
+          getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
         paymentTermsId
       });
       if (!updateOutcome.success) {

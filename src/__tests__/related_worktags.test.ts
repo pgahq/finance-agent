@@ -86,6 +86,35 @@ describe('parseRelatedWorktagsResponse', () => {
 
     expect(parsed.get('cc-wid-3')).toEqual(EMPTY_RELATED_LOB);
   });
+
+  it('keeps Line of Business organization ids even when they do not use a LOB- prefix', () => {
+    const parsed = parseRelatedWorktagsResponse({
+      Response_Data: {
+        Related_Worktags: {
+          Related_Worktag_Reference: { ID: [id('Cost_Center_Reference_ID', 'CC-Enterprise Technology')] },
+          Related_Worktags_Data: {
+            Related_Worktags_by_Type_Data: {
+              Worktag_Type_Reference: {
+                ID: [id('Worktag_Type_ID', 'LINE_OF_BUSINESS')]
+              },
+              Required_On_Transaction: true,
+              Allowed_Worktag_Data: {
+                Allowed_Worktag_Reference: {
+                  ID: [id('Organization_Reference_ID', 'Enterprise_Technology')]
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    expect(parsed.get('CC-Enterprise Technology')).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Enterprise_Technology'],
+    });
+  });
 });
 
 describe('relatedWorktagsTotalPages', () => {

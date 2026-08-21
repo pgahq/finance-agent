@@ -70,4 +70,8 @@ not. Do not enable prune for windowed sources such as events.
 }
 ```
 
-Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the related default, or from an allowed LOB when there is no default. `Default_Line_Of_Business` is used only when related worktags do not yield a real LOB. SOAP submit prefers that related LOB over the global default. If Workday rejects the default (`does not allow worktag values: Line of Business`), retry loads related worktags for the line's cost center (cache, then live `Get_Related_Worktags_for_Worktags` by cost center code) and swaps to an allowed LOB. Required-LOB faults are also treated as `worktag:lob`, not cost-center value errors.
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. Invoice line build fills a missing `lineOfBusinessId` from the related default, or from an allowed LOB when there is no default. `Default_Line_Of_Business` is used only when related worktags do not yield a real LOB. SOAP submit prefers that related LOB over the global default.
+
+When Workday returns a related-worktag fault that requires Line of Business (`must also have a value: Line of Business`), retry as `worktag:lob` — even if another `Validation_Error` says the Cost Center is not available for the company. Do not send that combination to the validation-field classifier; it will pick `worktag:costCenter` and swap to the fallback cost center.
+
+Empty cached `relatedLob` is not a hit. Retry loads related worktags live by cost center code and Workday id (`getCostCenterWorkdayIdsByCodes`, then `Get_Related_Worktags_for_Worktags`) and applies an allowed LOB to every line missing one. If Workday rejects the default (`does not allow worktag values: Line of Business`), the same related-LOB swap runs.

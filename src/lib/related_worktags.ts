@@ -98,10 +98,34 @@ function isTruthy(value: unknown): boolean {
   return value === true || value === 'true' || value === '1' || value === 1;
 }
 
+export function relatedLobHasUsableValue(related: RelatedLob | null | undefined): boolean {
+  return Boolean(related?.defaultReferenceId || related?.allowedReferenceIds?.length);
+}
+
+function isLineOfBusinessWorktagType(typeData: Record<string, unknown>): boolean {
+  return collectIds(typeData.Worktag_Type_Reference).some(id =>
+    /line[_\s-]*of[_\s-]*business/i.test(id.value ?? '')
+  );
+}
+
+function organizationReferenceIdsFrom(node: unknown): string[] {
+  return [...new Set(
+    collectIds(node)
+      .filter((id): id is { type?: string; value: string } =>
+        LINE_OF_BUSINESS_ID_TYPES.has(id.type ?? '') && Boolean(id.value)
+      )
+      .map(id => id.value)
+  )];
+}
+
 function parseRelatedLobFromTypeData(typeData: unknown): RelatedLob | null {
   if (!isRecord(typeData)) return null;
-  const defaultIds = lineOfBusinessIdsFrom(typeData.Default_Worktag_Data);
-  const allowedIds = lineOfBusinessIdsFrom(typeData.Allowed_Worktag_Data);
+  const defaultIds = isLineOfBusinessWorktagType(typeData)
+    ? organizationReferenceIdsFrom(typeData.Default_Worktag_Data)
+    : lineOfBusinessIdsFrom(typeData.Default_Worktag_Data);
+  const allowedIds = isLineOfBusinessWorktagType(typeData)
+    ? organizationReferenceIdsFrom(typeData.Allowed_Worktag_Data)
+    : lineOfBusinessIdsFrom(typeData.Allowed_Worktag_Data);
   if (defaultIds.length === 0 && allowedIds.length === 0) return null;
 
   return {
