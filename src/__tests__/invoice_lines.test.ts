@@ -21,6 +21,15 @@ describe('isFreightOrHandlingLine', () => {
     'USPS Postage',
     'Overnight Shipping',
     'DHL Express Freight',
+    'Standard Shipping',
+    '2-Day Shipping',
+    'Freight In',
+    'Freight Out',
+    'FedEx Ground',
+    'UPS Ground',
+    'Priority Shipping',
+    'Next Day Shipping',
+    'Free Shipping',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
   });

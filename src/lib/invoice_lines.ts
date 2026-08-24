@@ -41,11 +41,18 @@ export function parseExtractedAmount(raw: string): number | undefined {
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'postage']);
+const FREIGHT_CARRIER_WORDS = new Set(['ups', 'fedex', 'usps', 'dhl']);
 const FREIGHT_ALLOWED_WORDS = new Set([
   ...FREIGHT_CORE_WORDS,
+  ...FREIGHT_CARRIER_WORDS,
   'charge', 'charges', 'fee', 'fees', 'cost', 'costs', 'and', 'inbound', 'outbound', 's', 'h',
-  'ground', 'overnight', 'express', 'ups', 'fedex', 'usps', 'dhl',
+  'ground', 'overnight', 'express',
+  'standard', 'priority', 'next', 'day', 'free', 'in', 'out',
 ]);
+
+function isAllowedFreightToken(token: string): boolean {
+  return FREIGHT_ALLOWED_WORDS.has(token) || /^\d+$/.test(token);
+}
 
 function normalizeLineDescription(description: string): string {
   return description
@@ -64,8 +71,8 @@ export function isFreightOrHandlingLine(description: string | null | undefined):
   if (!normalized) return false;
   if (normalized === 's and h') return true;
   const tokens = normalized.split(' ');
-  return tokens.some(token => FREIGHT_CORE_WORDS.has(token))
-    && tokens.every(token => FREIGHT_ALLOWED_WORDS.has(token));
+  const hasFreightAnchor = tokens.some(token => FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token));
+  return hasFreightAnchor && tokens.every(isAllowedFreightToken);
 }
 
 function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
