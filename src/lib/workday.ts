@@ -585,13 +585,15 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
   const providedFinalLines = finalLines !== undefined;
-  const splitFinalLines = providedFinalLines ? splitFreightLines(finalLines) : undefined;
+  // strong-soap can return a single line as an object, not an array.
+  const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
+  const splitFinalLines = providedFinalLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const merchandiseFinalLines = splitFinalLines?.merchandiseLines ?? [];
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
-  const ocrLines = currentInvoice.Invoice_Line_Replacement_Data;
-  const invoiceHadExistingLines = ([] as unknown[]).concat(ocrLines ?? []).length > 0;
-  const splitOcrLines = ocrLines?.length ? splitFreightLines(ocrLines) : undefined;
+  const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
+  const invoiceHadExistingLines = ocrLines.length > 0;
+  const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
 
   const freightAmount = extractedFreightAmount
