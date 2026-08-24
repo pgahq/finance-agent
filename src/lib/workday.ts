@@ -701,8 +701,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   // Create has no OCR lines, so an empty merchandise list omits Invoice_Line_Replacement_Data.
   // Update falls back to OCR merchandise (freight already stripped) so all-freight finalLines
   // do not wipe goods. strong-soap drops empty repeating elements, so [] is the same as omit;
-  // when OCR is also all freight, replace with a remainder Invoice line if control exceeds
-  // freight plus tax so the shipping row is actually cleared.
+  // when OCR is also all freight, always send a remainder Invoice line so the shipping row
+  // is actually replaced (amount may be 0 when control equals freight plus tax).
   let invoiceLines = providedFinalLines
     ? (mappedMerchandiseFinalLines.length > 0
         ? mappedMerchandiseFinalLines
@@ -710,24 +710,31 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     : mappedMerchandiseOcrLines;
 
   if (invoiceHadExistingLines && Array.isArray(invoiceLines) && invoiceLines.length === 0) {
-    const control = typeof controlAmountTotal === 'number'
-      ? controlAmountTotal
-      : (typeof controlAmountTotal === 'string' ? parseExtractedAmount(controlAmountTotal) : undefined);
-    const freight = typeof freightAmount === 'number' ? freightAmount : 0;
-    const tax = typeof taxAmount === 'number' ? taxAmount : 0;
+    const soapAmount = (value: unknown): number | undefined => {
+      if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
+      if (typeof value === 'string') return parseExtractedAmount(value);
+      return undefined;
+    };
+    const control = soapAmount(controlAmountTotal);
+    const freight = soapAmount(freightAmount) ?? 0;
+    const tax = soapAmount(taxAmount) ?? 0;
     if (control != null) {
-      const remainder = Math.round((control - freight - tax) * 100) / 100;
-      if (remainder > 0) {
-        const remainderWorktags = withFallbackWorktags([]);
-        invoiceLines = [{
-          Line_Order: 1,
-          Item_Description: 'Invoice',
-          Quantity: 1,
-          Unit_Cost: remainder,
-          Extended_Amount: remainder,
-          ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
-        }];
-      }
+      const remainder = Math.max(0, Math.round((control - freight - tax) * 100) / 100);
+      const remainderWorktags = withFallbackWorktags([]);
+      const fallbackSpendCategoryId = (filterInvoiceLines || applySpendCategoryFallback)
+        ? process.env.FALLBACK_SPEND_CATEGORY_ID
+        : undefined;
+      invoiceLines = [{
+        Line_Order: 1,
+        Item_Description: 'Invoice',
+        Quantity: 1,
+        Unit_Cost: remainder,
+        Extended_Amount: remainder,
+        ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
+        ...(fallbackSpendCategoryId && {
+          Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId),
+        }),
+      }];
     }
   }
 
