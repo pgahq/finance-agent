@@ -30,6 +30,14 @@ describe('isFreightOrHandlingLine', () => {
     'Priority Shipping',
     'Next Day Shipping',
     'Free Shipping',
+    'Air Freight',
+    'Ocean Freight',
+    'Freight Surcharge',
+    'FedEx Home Delivery',
+    'Parcel Shipping',
+    'Rush Shipping',
+    'Local Delivery',
+    'Deliveries',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
   });
@@ -38,6 +46,7 @@ describe('isFreightOrHandlingLine', () => {
     'Shipping Container',
     'Overnight shipping boxes',
     'Freightliner parts',
+    'Shipping Supplies',
     'Handling equipment',
     'Delivery truck rental',
     'Consulting Services',
@@ -94,6 +103,15 @@ describe('splitFreightLines', () => {
   it('recovers freight from unitCost times quantity when totalPrice is missing', () => {
     const split = splitFreightLines([
       { description: 'Freight', quantity: 2, unitCost: 15 },
+    ]);
+
+    expect(split.freightLines).toHaveLength(1);
+    expect(split.freightAmountFromLines).toBe(30);
+  });
+
+  it('recovers freight from SOAP Unit_Cost times Quantity when Extended_Amount is missing', () => {
+    const split = splitFreightLines([
+      { Item_Description: 'Freight', Quantity: '2', Unit_Cost: '15' },
     ]);
 
     expect(split.freightLines).toHaveLength(1);

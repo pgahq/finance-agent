@@ -40,7 +40,7 @@ export function parseExtractedAmount(raw: string): number | undefined {
   return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
 }
 
-const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'postage']);
+const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
 const FREIGHT_CARRIER_WORDS = new Set(['ups', 'fedex', 'usps', 'dhl']);
 const FREIGHT_ALLOWED_WORDS = new Set([
   ...FREIGHT_CORE_WORDS,
@@ -48,6 +48,7 @@ const FREIGHT_ALLOWED_WORDS = new Set([
   'charge', 'charges', 'fee', 'fees', 'cost', 'costs', 'and', 'inbound', 'outbound', 's', 'h',
   'ground', 'overnight', 'express',
   'standard', 'priority', 'next', 'day', 'free', 'in', 'out',
+  'air', 'ocean', 'parcel', 'home', 'local', 'rush', 'misc', 'surcharge',
 ]);
 
 function isAllowedFreightToken(token: string): boolean {
@@ -82,6 +83,7 @@ function lineDescription(line: { description?: string | null; Item_Description?:
 function lineAmount(line: {
   totalPrice?: string | null;
   unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
   extendedAmount?: number | null;
   Extended_Amount?: number | string | null;
   quantity?: number | null;
@@ -91,9 +93,10 @@ function lineAmount(line: {
   if (line.totalPrice) return parseExtractedAmount(line.totalPrice);
   if (typeof line.Extended_Amount === 'number') return line.Extended_Amount;
   if (typeof line.Extended_Amount === 'string') return parseExtractedAmount(line.Extended_Amount);
-  const unitCost = typeof line.unitCost === 'number'
-    ? line.unitCost
-    : (line.unitCost ? parseExtractedAmount(line.unitCost) : undefined);
+  const rawUnitCost = line.unitCost ?? line.Unit_Cost;
+  const unitCost = typeof rawUnitCost === 'number'
+    ? rawUnitCost
+    : (typeof rawUnitCost === 'string' ? parseExtractedAmount(rawUnitCost) : undefined);
   if (unitCost == null) return undefined;
   const rawQuantity = line.quantity ?? line.Quantity;
   const quantity = typeof rawQuantity === 'number'
@@ -108,6 +111,7 @@ export function splitFreightLines<T extends {
   Item_Description?: string | null;
   totalPrice?: string | null;
   unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
   extendedAmount?: number | null;
   Extended_Amount?: number | string | null;
   quantity?: number | null;
