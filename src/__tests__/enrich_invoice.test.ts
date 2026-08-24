@@ -48,6 +48,7 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
+  searchDocumentsByTypes: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map())
 }));

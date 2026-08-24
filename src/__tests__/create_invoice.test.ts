@@ -34,8 +34,13 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
+  searchDocumentsByTypes: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map())
+}));
+
+jest.mock('../lib/rag.js', () => ({
+  createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
 jest.mock('../lib/s3.js', () => ({

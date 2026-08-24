@@ -563,3 +563,41 @@ export async function searchDocuments(
     throw error;
   }
 }
+
+export async function searchDocumentsByTypes(
+  db: DatabaseConnection,
+  queryEmbedding: number[],
+  queryText: string,
+  documentTypes: readonly DocumentType[],
+  limit: number = 8
+): Promise<Array<ReferenceDocument & { similarity: number }>> {
+  if (documentTypes.length === 0) return [];
+
+  try {
+    const vectorString = `[${queryEmbedding.join(',')}]`;
+    const results = await db.query(`
+      SELECT
+        workday_id,
+        type,
+        content,
+        metadata,
+        CASE
+          WHEN LOWER(COALESCE(metadata->>'code', '')) = LOWER($3)
+            OR LOWER(COALESCE(metadata->>'referenceId', '')) = LOWER($3)
+            OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = LOWER($3)
+          THEN 1.0
+          ELSE 1 - (embedding <=> '${vectorString}'::vector)
+        END as similarity
+      FROM documents
+      WHERE type = ANY($1)
+      ORDER BY similarity DESC
+      LIMIT $2
+    `, [documentTypes, limit, queryText.trim()]) as Array<ReferenceDocument & { similarity: number }>;
+
+    debug(`Found ${results.length} ranked matches across ${documentTypes.length} types for "${queryText}"`);
+    return results;
+  } catch (error) {
+    debug(`Error searching documents across types for "${queryText}":`, error);
+    throw error;
+  }
+}

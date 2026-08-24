@@ -7,6 +7,7 @@ import {
   updateDocument,
   deleteDocument,
   searchDocuments,
+  searchDocumentsByTypes,
   findDocumentsByReferenceId,
   bulkInsertDocuments,
   bulkUpdateDocuments,
@@ -321,6 +322,39 @@ describe('Database Library', () => {
         'supplier',
         10
       )).rejects.toThrow('Search failed');
+    });
+  });
+
+  describe('searchDocumentsByTypes', () => {
+    it('ranks documents across types by metadata exactness then vector similarity', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      const mockResults = [
+        {
+          workday_id: 'company-wid-912',
+          type: 'company',
+          content: 'PGA Company',
+          metadata: { companyReferenceId: '912' },
+          similarity: 1
+        }
+      ];
+      mockQuery.mockResolvedValue(mockResults);
+
+      const result = await searchDocumentsByTypes(
+        mockConnection,
+        [0.1, 0.2, 0.3],
+        '912',
+        ['company', 'cost_center'],
+        8
+      );
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('type = ANY($1)'),
+        [['company', 'cost_center'], 8, '912']
+      );
+      expect(result).toEqual(mockResults);
     });
   });
 

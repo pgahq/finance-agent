@@ -21,11 +21,19 @@ jest.mock('@ai-sdk/openai', () => ({
 }));
 
 jest.mock('../lib/rag.js', () => ({
+  createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
   findSuppliersTool: {
     description: 'Mock tool',
     inputSchema: {},
     execute: jest.fn()
-  }
+  },
+  findCompaniesTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findCostCentersTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findPaymentTermsTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findEventsTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findLobsTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findFundsTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() },
+  findSpendCategoriesTool: { description: 'Mock tool', inputSchema: {}, execute: jest.fn() }
 }));
 
 describe('AI utilities', () => {

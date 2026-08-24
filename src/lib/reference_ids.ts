@@ -5,9 +5,11 @@ import {
   findDocumentsByReferenceId,
   findDocumentsByReferenceIds,
   getDatabaseConnection,
+  searchDocumentsByTypes,
   type DatabaseConnection,
   type DocumentType,
 } from './database.js';
+import { createEmbedding } from './rag.js';
 
 export const REFERENCE_CODE_DOCUMENT_TYPES = [
   'company',
@@ -22,7 +24,11 @@ export interface CachedReferenceMatch {
   workdayId: string;
   referenceId: string;
   name?: string;
+  confidence: number;
 }
+
+export const MIN_REFERENCE_MATCH_CONFIDENCE = 0.55;
+const MIN_TOP_MATCH_MARGIN = 0.05;
 
 export interface EmailCompanyMatch {
   workdayId?: string;
@@ -30,9 +36,14 @@ export interface EmailCompanyMatch {
   name?: string;
 }
 
+function isCalendarYearToken(code: string): boolean {
+  return /^(19|20)\d{2}$/.test(code);
+}
+
 export function extractReferenceCodeCandidates(text: string): string[] {
   const tokens = new Set<string>();
   for (const match of text.matchAll(/\b\d{3,8}\b/g)) {
+    if (isCalendarYearToken(match[0])) continue;
     tokens.add(match[0]);
   }
   for (const match of text.matchAll(/\b[A-Za-z]{1,8}[-_][A-Za-z0-9][A-Za-z0-9_-]{0,60}\b/g)) {
@@ -63,14 +74,69 @@ function matchReferenceId(metadata: Record<string, unknown> | undefined, queried
 
 export function mapDocumentToReferenceMatch(
   document: { workday_id: string; type: DocumentType; metadata?: Record<string, unknown> },
-  queriedCode: string
+  queriedCode: string,
+  confidence = 1
 ): CachedReferenceMatch {
   return {
     type: document.type,
     workdayId: document.workday_id,
     referenceId: matchReferenceId(document.metadata, queriedCode),
     name: matchName(document.metadata),
+    confidence,
   };
+}
+
+export function pickTopReferenceMatch(
+  matches: CachedReferenceMatch[]
+): CachedReferenceMatch | undefined {
+  const ranked = [...matches]
+    .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE)
+    .sort((left, right) => right.confidence - left.confidence);
+  const top = ranked[0];
+  if (!top) return undefined;
+
+  const rivalType = ranked.find((match) => match.type !== top.type);
+  if (rivalType && top.confidence < 1 && top.confidence - rivalType.confidence < MIN_TOP_MATCH_MARGIN) {
+    return undefined;
+  }
+  if (top.confidence === 1 && rivalType?.confidence === 1) return undefined;
+
+  const tiedSameType = ranked.filter((match) => {
+    if (match.type !== top.type) return false;
+    if (top.confidence === 1) return match.confidence === 1;
+    return top.confidence - match.confidence < MIN_TOP_MATCH_MARGIN;
+  });
+  if (new Set(tiedSameType.map((match) => match.workdayId)).size > 1) return undefined;
+
+  return top;
+}
+
+async function findSimilarReferenceMatches(
+  db: DatabaseConnection,
+  code: string
+): Promise<CachedReferenceMatch[]> {
+  try {
+    const embedding = await createEmbedding(code);
+    const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
+    return rows
+      .map((row) => mapDocumentToReferenceMatch(row, code, Number(row.similarity) || 0))
+      .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE);
+  } catch (error) {
+    debug(`Similarity lookup failed for reference code ${code}:`, error);
+    return [];
+  }
+}
+
+export async function resolveMatchesForCode(
+  db: DatabaseConnection,
+  code: string,
+  exactDocuments: Array<{ workday_id: string; type: DocumentType; metadata?: Record<string, unknown> }>
+): Promise<CachedReferenceMatch[]> {
+  if (exactDocuments.length > 0) {
+    return exactDocuments.map((document) => mapDocumentToReferenceMatch(document, code, 1));
+  }
+  if (isCalendarYearToken(code)) return [];
+  return findSimilarReferenceMatches(db, code);
 }
 
 export async function findCachedReferenceMatches(
@@ -78,7 +144,7 @@ export async function findCachedReferenceMatches(
   code: string
 ): Promise<CachedReferenceMatch[]> {
   const documents = await findDocumentsByReferenceId(db, code, REFERENCE_CODE_DOCUMENT_TYPES);
-  return documents.map((document) => mapDocumentToReferenceMatch(document, code));
+  return resolveMatchesForCode(db, code, documents);
 }
 
 export function formatReferenceDirectory(
@@ -90,14 +156,18 @@ export function formatReferenceDirectory(
     if (matches.length === 0) {
       return `- ${code}: no cached company, cost center, fund, LOB, or spend category`;
     }
-    const details = matches.map((match) => {
-      const label = match.name ? `${match.name} ` : '';
-      return `${match.type} ${label}(referenceId=${match.referenceId}, workdayId=${match.workdayId})`;
-    });
+    const top = pickTopReferenceMatch(matches);
+    const details = [...matches]
+      .sort((left, right) => right.confidence - left.confidence)
+      .map((match) => {
+        const label = match.name ? `${match.name} ` : '';
+        const topMark = top && match.workdayId === top.workdayId && match.type === top.type ? ', topMatch' : '';
+        return `${match.type} ${label}(referenceId=${match.referenceId}, workdayId=${match.workdayId}, confidence=${match.confidence.toFixed(2)}${topMark})`;
+      });
     return `- ${code}: ${details.join('; ')}`;
   });
 
-  return `\n\nCached reference ID matches for codes in this email:\n${lines.join('\n')}`;
+  return `\n\nCached reference ID matches for codes in this email (highest-confidence match is the object type):\n${lines.join('\n')}`;
 }
 
 export async function resolveReferenceCodesFromText(
@@ -108,10 +178,10 @@ export async function resolveReferenceCodesFromText(
   if (codes.length === 0) return [];
 
   const grouped = await findDocumentsByReferenceIds(db, codes, REFERENCE_CODE_DOCUMENT_TYPES);
-  return codes.map((code) => ({
+  return Promise.all(codes.map(async (code) => ({
     code,
-    matches: (grouped.get(code) ?? []).map((document) => mapDocumentToReferenceMatch(document, code)),
-  }));
+    matches: await resolveMatchesForCode(db, code, grouped.get(code) ?? []),
+  })));
 }
 
 function uniqueCompanies(matches: CachedReferenceMatch[]): EmailCompanyMatch[] {
@@ -128,6 +198,10 @@ function uniqueCompanies(matches: CachedReferenceMatch[]): EmailCompanyMatch[] {
   return [...byId.values()];
 }
 
+function isShortNumericReferenceId(value: string): boolean {
+  return /^\d{2,8}$/.test(value.trim());
+}
+
 export async function resolveCompanyFromEmail(options: {
   db: DatabaseConnection;
   emailBody?: string;
@@ -139,40 +213,79 @@ export async function resolveCompanyFromEmail(options: {
   } | null;
 }): Promise<EmailCompanyMatch | undefined> {
   const { emailCompany, emailBody } = options;
-  if (emailCompany?.workdayId) {
-    return {
-      workdayId: emailCompany.workdayId,
-      referenceId: emailCompany.referenceId || undefined,
-      name: emailCompany.name || undefined,
-    };
-  }
+  const rawWorkdayId = emailCompany?.workdayId?.trim() || undefined;
+  const claimedWid = rawWorkdayId && !isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined;
+  const claimedReferenceId = (
+    emailCompany?.referenceId?.trim()
+    || (rawWorkdayId && isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined)
+  ) || undefined;
 
   const codes = [
-    ...(emailCompany?.referenceId ? [emailCompany.referenceId] : []),
+    ...(claimedReferenceId ? [claimedReferenceId] : []),
     ...(emailCompany?.extracted ? extractReferenceCodeCandidates(emailCompany.extracted) : []),
     ...(emailBody ? extractReferenceCodeCandidates(emailBody) : []),
   ];
   const uniqueCodes = [...new Set(codes.map((code) => code.trim()).filter(Boolean))];
+
+  if (claimedWid && uniqueCodes.length === 0) {
+    return {
+      workdayId: claimedWid,
+      referenceId: claimedReferenceId,
+      name: emailCompany?.name || undefined,
+    };
+  }
   if (uniqueCodes.length === 0) return undefined;
 
   const grouped = await findDocumentsByReferenceIds(options.db, uniqueCodes, REFERENCE_CODE_DOCUMENT_TYPES);
-  const matchesFor = (code: string) =>
-    (grouped.get(code) ?? []).map((document) => mapDocumentToReferenceMatch(document, code));
+  const resolvedByCode = new Map<string, CachedReferenceMatch[]>();
+  await Promise.all(uniqueCodes.map(async (code) => {
+    resolvedByCode.set(code, await resolveMatchesForCode(options.db, code, grouped.get(code) ?? []));
+  }));
+  const matchesFor = (code: string) => resolvedByCode.get(code) ?? [];
+  const exactCompanies = uniqueCompanies(
+    uniqueCodes.flatMap((code) => matchesFor(code).filter((match) => match.confidence === 1))
+  );
+  const topCompanies = uniqueCompanies(
+    uniqueCodes
+      .map((code) => pickTopReferenceMatch(matchesFor(code)))
+      .filter((match): match is CachedReferenceMatch => match?.type === 'company')
+  );
 
-  if (emailCompany?.referenceId) {
-    const companies = uniqueCompanies(matchesFor(emailCompany.referenceId));
-    if (companies.length === 1) {
+  if (claimedWid) {
+    const matching = exactCompanies.find((company) => company.workdayId === claimedWid)
+      || topCompanies.find((company) => company.workdayId === claimedWid);
+    return {
+      workdayId: claimedWid,
+      referenceId: matching?.referenceId || claimedReferenceId,
+      name: emailCompany?.name || matching?.name,
+    };
+  }
+
+  if (claimedReferenceId) {
+    const referencedExact = uniqueCompanies(matchesFor(claimedReferenceId).filter((match) => match.confidence === 1));
+    if (referencedExact.length === 1) {
       return {
-        ...companies[0],
-        name: emailCompany.name || companies[0].name,
+        ...referencedExact[0],
+        name: emailCompany?.name || referencedExact[0].name,
+      };
+    }
+    const claimedTop = pickTopReferenceMatch(matchesFor(claimedReferenceId));
+    if (claimedTop?.type === 'company') {
+      return {
+        workdayId: claimedTop.workdayId,
+        referenceId: claimedTop.referenceId,
+        name: emailCompany?.name || claimedTop.name,
       };
     }
   }
 
-  const companies = uniqueCompanies(uniqueCodes.flatMap((code) => matchesFor(code)));
-  if (companies.length === 1) {
-    debug('Resolved a unique company from email reference codes', companies[0]);
-    return companies[0];
+  if (exactCompanies.length === 1) {
+    debug('Resolved a unique company from exact email reference codes', exactCompanies[0]);
+    return exactCompanies[0];
+  }
+  if (topCompanies.length === 1) {
+    debug('Resolved a unique company from the highest-confidence email code match', topCompanies[0]);
+    return topCompanies[0];
   }
   return undefined;
 }
@@ -182,7 +295,7 @@ export function selectCompanyForCreateInvoice(options: {
   recommendedCompanyWID?: string;
   defaultCompanyReferenceId: string;
 }): { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' } {
-  if (options.emailCompany?.workdayId) {
+  if (options.emailCompany?.workdayId && !isShortNumericReferenceId(options.emailCompany.workdayId)) {
     return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID' };
   }
   if (options.emailCompany?.referenceId) {
@@ -215,20 +328,23 @@ export const resolveReferenceCodeTool = tool({
   description: `Resolve a short Workday reference ID / code across cached object types.
 
   Use this when an email or invoice coding line contains a bare code such as "912", "72200", or "LOB-Golf".
-  It exact-matches cached Company_Reference_ID, Cost_Center_Reference_ID, Fund_ID, LOB reference IDs, and spend category reference IDs.
-  Do not assume a numeric code is a cost center — this lookup tells you which object type it is.
+  It first exact-matches cached Company_Reference_ID, Cost_Center_Reference_ID, Fund_ID, LOB reference IDs, and spend category reference IDs.
+  If there is no exact hit, it ranks similar cached objects by confidence and uses the highest-confidence match as the object type.
+  Do not assume a numeric code is a cost center — use topMatch.type.
 
   Examples: "912", "72200", "FD-001"`,
   inputSchema: z.object({
-    code: z.string().describe('The reference ID or code to look up exactly'),
+    code: z.string().describe('The reference ID or code to look up. Exact metadata matches win; otherwise the highest-confidence similar object is returned.'),
   }),
   execute: async ({ code }) => {
     const db = await getDatabaseConnection(process.env);
     const matches = await findCachedReferenceMatches(db, code);
-    debug(`Resolve Reference Code Tool: ${code} matched ${matches.length} object(s)`);
+    const topMatch = pickTopReferenceMatch(matches);
+    debug(`Resolve Reference Code Tool: ${code} matched ${matches.length} object(s); top=${topMatch?.type ?? 'none'}`);
     return {
       success: true,
       code,
+      topMatch: topMatch ?? null,
       matches,
     };
   },

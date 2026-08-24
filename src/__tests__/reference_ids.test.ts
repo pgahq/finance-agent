@@ -1,10 +1,12 @@
-import { findDocumentsByReferenceIds, type DatabaseConnection, type DocumentType } from '../lib/database.js';
+import { findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
+import { createEmbedding } from '../lib/rag.js';
 import {
   extractReferenceCodeCandidates,
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
   costCenterCodeExcludingCompany,
   formatReferenceDirectory,
+  pickTopReferenceMatch,
 } from '../lib/reference_ids.js';
 
 jest.mock('@pga/logger', () => ({
@@ -14,10 +16,17 @@ jest.mock('@pga/logger', () => ({
 jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceId: jest.fn(),
   findDocumentsByReferenceIds: jest.fn(),
+  searchDocumentsByTypes: jest.fn(),
   getDatabaseConnection: jest.fn(),
 }));
 
+jest.mock('../lib/rag.js', () => ({
+  createEmbedding: jest.fn(),
+}));
+
 const mockFindDocumentsByReferenceIds = findDocumentsByReferenceIds as jest.MockedFunction<typeof findDocumentsByReferenceIds>;
+const mockSearchDocumentsByTypes = searchDocumentsByTypes as jest.MockedFunction<typeof searchDocumentsByTypes>;
+const mockCreateEmbedding = createEmbedding as jest.MockedFunction<typeof createEmbedding>;
 
 function mockReferenceLookup(byCode: Record<string, CachedDoc[]>) {
   mockFindDocumentsByReferenceIds.mockImplementation((_db, codes) => {
@@ -78,6 +87,13 @@ describe('extractReferenceCodeCandidates', () => {
       expect.arrayContaining(['follow-up', 're-submit'])
     );
   });
+
+  it('ignores 4-digit calendar years so invoice dates do not trigger lookups', () => {
+    expect(extractReferenceCodeCandidates('Invoice dated 2024 for company 912')).toEqual(
+      expect.arrayContaining(['912'])
+    );
+    expect(extractReferenceCodeCandidates('Invoice dated 2024 for company 912')).not.toContain('2024');
+  });
 });
 
 describe('resolveCompanyFromEmail', () => {
@@ -85,6 +101,8 @@ describe('resolveCompanyFromEmail', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSearchDocumentsByTypes.mockResolvedValue([]);
+    mockCreateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
   });
 
   it('returns the unique company among mixed object types', async () => {
@@ -118,7 +136,26 @@ describe('resolveCompanyFromEmail', () => {
     })).resolves.toBeUndefined();
   });
 
-  it('returns an already-resolved workdayId without looking up', async () => {
+  it('returns an already-resolved workdayId without looking up when no codes are present', async () => {
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailCompany: {
+        extracted: null,
+        workdayId: 'email-company-wid',
+        referenceId: null,
+        name: 'PGA Company',
+      },
+    })).resolves.toEqual({
+      workdayId: 'email-company-wid',
+      referenceId: undefined,
+      name: 'PGA Company',
+    });
+    expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
+  });
+
+  it('fills companyReferenceId from cache when a WID is already present', async () => {
+    mockReferenceLookup({ '912': [companyDoc()] });
+
     await expect(resolveCompanyFromEmail({
       db,
       emailCompany: {
@@ -132,7 +169,7 @@ describe('resolveCompanyFromEmail', () => {
       referenceId: '912',
       name: 'PGA Company',
     });
-    expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
+    expect(mockFindDocumentsByReferenceIds).toHaveBeenCalled();
   });
 
   it('looks up a WID when only a company referenceId is present', async () => {
@@ -163,6 +200,61 @@ describe('resolveCompanyFromEmail', () => {
       referenceId: '912',
       name: 'PGA Company',
     });
+  });
+
+  it('uses the highest-confidence similar company when there is no exact metadata hit', async () => {
+    mockReferenceLookup({});
+    mockSearchDocumentsByTypes.mockResolvedValue([
+      {
+        workday_id: 'company-wid-912',
+        type: 'company',
+        content: 'PGA Company\nCompany Reference ID: 912',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+        similarity: 0.91,
+      },
+      {
+        workday_id: 'cc-wid-72200',
+        type: 'cost_center',
+        content: 'Technology',
+        metadata: { code: '72200', name: 'Technology' },
+        similarity: 0.41,
+      },
+    ]);
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Coding: 912 / 72200',
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+    });
+    expect(mockCreateEmbedding).toHaveBeenCalled();
+  });
+
+  it('does not treat a similar cost center as the company when it outranks company matches', async () => {
+    mockReferenceLookup({});
+    mockSearchDocumentsByTypes.mockResolvedValue([
+      {
+        workday_id: 'cc-wid-72200',
+        type: 'cost_center',
+        content: 'Technology 72200',
+        metadata: { code: '72200', name: 'Technology' },
+        similarity: 0.94,
+      },
+      {
+        workday_id: 'company-wid-912',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+        similarity: 0.4,
+      },
+    ]);
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Please code 72200',
+    })).resolves.toBeUndefined();
   });
 });
 
@@ -221,11 +313,50 @@ describe('formatReferenceDirectory', () => {
           workdayId: 'company-wid-912',
           referenceId: '912',
           name: 'PGA Company',
+          confidence: 1,
         }],
       },
     ]);
     expect(directory).toContain('912');
     expect(directory).toContain('company');
     expect(directory).toContain('company-wid-912');
+    expect(directory).toContain('confidence=1.00');
+    expect(directory).toContain('topMatch');
+  });
+});
+
+describe('pickTopReferenceMatch', () => {
+  it('returns the highest-confidence match when it clearly leads', () => {
+    expect(pickTopReferenceMatch([
+      { type: 'cost_center', workdayId: 'cc-1', referenceId: '72200', confidence: 0.4 },
+      { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 0.91 },
+    ])).toEqual(expect.objectContaining({ type: 'company', referenceId: '912' }));
+  });
+
+  it('returns undefined when two object types are nearly tied', () => {
+    expect(pickTopReferenceMatch([
+      { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 0.72 },
+      { type: 'cost_center', workdayId: 'cc-1', referenceId: '912', confidence: 0.7 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when two companies are tied at the top', () => {
+    expect(pickTopReferenceMatch([
+      { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 1 },
+      { type: 'company', workdayId: 'co-2', referenceId: '800', confidence: 1 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when the best score is below the confidence floor', () => {
+    expect(pickTopReferenceMatch([
+      { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 0.4 },
+    ])).toBeUndefined();
+  });
+
+  it('returns undefined when a company and a cost center are both exact matches', () => {
+    expect(pickTopReferenceMatch([
+      { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 1 },
+      { type: 'cost_center', workdayId: 'cc-1', referenceId: '912', confidence: 1 },
+    ])).toBeUndefined();
   });
 });

@@ -55,7 +55,9 @@ not. Do not enable prune for windowed sources such as events.
 
 `findDocumentsByReferenceId` exact-matches `metadata.code`, `metadata.referenceId`, and `metadata.companyReferenceId` across selected types. Company cache stores `companyReferenceId` from Workday `referenceID1` (Company_Reference_ID, e.g. `912`), falling back to `referenceID` when that value is not a WID. Do not use `companyID` or `company.id` — those are the 32-character Workday WID and match each other. Skip WID-shaped values and the company name. Embed the code in RAG content as `Company Reference ID`. Existing company rows need a recache before `912` lookup works.
 
-Do not dump all cached IDs into prompts. Extract candidate codes from the email, look up only those codes, and inject matches. A numeric code such as `912` may be a company, not a cost center — resolve across types before assigning.
+When a code has no exact metadata hit (or the token is not guaranteed exact), `searchDocumentsByTypes` ranks company, cost center, fund, LOB, and spend category by confidence. `pickTopReferenceMatch` treats the highest-confidence document as the object type; a unique company among those top matches can still select the company. Do not assign a type when two different types are nearly tied. Skip 4-digit calendar years (`19xx` / `20xx`) so invoice dates do not trigger embedding lookups.
+
+Do not dump all cached IDs into prompts. Extract candidate codes from the email, look up only those codes, and inject matches. A numeric code such as `912` may be a company, not a cost center — resolve across types before assigning. Use the highest-confidence match to decide the object.
 
 ## When adding a new document type
 

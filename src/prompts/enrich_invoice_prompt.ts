@@ -134,7 +134,7 @@ You have access to nine search tools:
 - **findLobs**: Search our lines of business database by name or reference to look up LOBs in Workday.
 - **findFunds**: Search our funds database by reference ID or name to look up funds in Workday.
 - **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
-- **resolveReferenceCode**: Exact-match a short code (e.g. "912", "72200") across cached companies, cost centers, funds, LOBs, and spend categories. Use this before assuming a bare number is a cost center.
+- **resolveReferenceCode**: Look up a short code (e.g. "912", "72200") across cached companies, cost centers, funds, LOBs, and spend categories. Exact metadata matches win; otherwise use \`topMatch\` — the highest-confidence object. Use this before assuming a bare number is a cost center.
 
 The invoice may include attachment files (PDFs, images, etc.) with presigned URLs that you can access to analyze the document content. These attachments often contain crucial information like supplier details, company logos, or additional context.
 
@@ -310,7 +310,7 @@ If email context is provided, scan the email body for any contextual mentions of
 
 **CRITICAL**: The "extracted" field is the only field that should contain text from the email. All other fields (codes, referenceIds, names used as IDs) MUST come from the find tool or resolveReferenceCode results. Never write an email string directly into an ID field. If lookup returns no results, set the ID field to null.
 
-0. **Bare codes**: If the email contains a short standalone code (digits like "912" or "72200", or a prefixed ID), call **resolveReferenceCode** with that code first. Use the returned object type to decide whether it is a company, cost center, fund, LOB, or spend category. Do not default numeric codes to cost center.
+0. **Bare codes**: If the email contains a short standalone code (digits like "912" or "72200", or a prefixed ID), call **resolveReferenceCode** with that code first. Use \`topMatch.type\` (highest-confidence object) to decide whether it is a company, cost center, fund, LOB, or spend category. Exact metadata hits are confidence 1.0; if there is no exact hit, trust the ranked similar match. Do not default numeric codes to cost center.
 
 1. **Cost Centers**: Look for any mention of a cost center, department, or team that might correspond to a Workday cost center — whether prefaced with "CC:", "cost center:", or referenced contextually (e.g., "charge this to Marketing", "72200"). If found:
    - Call **findCostCenters** with the cost center name or code to resolve it in Workday
