@@ -249,21 +249,22 @@ export async function resolveCompanyFromEmail(options: {
     || (rawWorkdayId && isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined)
   ) || undefined;
 
-  const codes = [
-    ...(claimedReferenceId ? [claimedReferenceId] : []),
+  const emailCodes = [
     ...(emailCompany?.extracted ? extractReferenceCodeCandidates(emailCompany.extracted) : []),
     ...(emailBody ? extractReferenceCodeCandidates(emailBody) : []),
   ];
-  const uniqueCodes = [...new Set(codes.map((code) => code.trim()).filter(Boolean))];
+  const uniqueCodes = [...new Set(emailCodes.map((code) => code.trim()).filter(Boolean))];
 
-  if (claimedWid && uniqueCodes.length === 0) {
-    return {
-      workdayId: claimedWid,
-      referenceId: claimedReferenceId,
-      name: emailCompany?.name || undefined,
-    };
+  if (uniqueCodes.length === 0) {
+    if (claimedWid) {
+      return {
+        workdayId: claimedWid,
+        referenceId: claimedReferenceId,
+        name: emailCompany?.name || undefined,
+      };
+    }
+    return undefined;
   }
-  if (uniqueCodes.length === 0) return undefined;
 
   const grouped = await findDocumentsByReferenceIds(options.db, uniqueCodes, REFERENCE_CODE_DOCUMENT_TYPES);
   const matchesFor = (code: string) =>
@@ -281,7 +282,9 @@ export async function resolveCompanyFromEmail(options: {
     }
   }
 
-  if (claimedReferenceId) {
+  const claimedCodeInEmail = claimedReferenceId
+    && uniqueCodes.some((code) => code.toLowerCase() === claimedReferenceId.toLowerCase());
+  if (claimedCodeInEmail && claimedReferenceId) {
     const referencedExact = uniqueCompanies(matchesFor(claimedReferenceId));
     if (referencedExact.length === 1) {
       return {
