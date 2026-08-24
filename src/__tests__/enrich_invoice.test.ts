@@ -636,5 +636,17 @@ describe('enrich_invoice', () => {
         companyWID: 'email-company-wid',
       })
     );
+
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    expect(notifyEnrichmentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        company: expect.objectContaining({
+          status: 'email_resolved',
+          appliedFromEmail: true,
+          appliedName: 'PGA Company',
+          appliedReferenceId: '912',
+        }),
+      })
+    );
   });
 });

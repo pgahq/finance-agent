@@ -29,6 +29,7 @@ export interface CachedReferenceMatch {
 
 export const MIN_REFERENCE_MATCH_CONFIDENCE = 0.55;
 const MIN_TOP_MATCH_MARGIN = 0.05;
+export const MAX_INEXACT_REFERENCE_LOOKUPS = 4;
 
 export interface EmailCompanyMatch {
   workdayId?: string;
@@ -40,11 +41,39 @@ function isCalendarYearToken(code: string): boolean {
   return /^(19|20)\d{2}$/.test(code);
 }
 
+function isCurrencyAmountFragment(text: string, index: number, token: string): boolean {
+  const before = index > 0 ? text[index - 1] : '';
+  const after = text[index + token.length] ?? '';
+  const beforePrev = index > 1 ? text[index - 2] : '';
+  const afterNext = text[index + token.length + 1] ?? '';
+  if (before === '$' || before === '€' || before === '£') return true;
+  if ((before === '.' || before === ',') && /\d/.test(beforePrev)) return true;
+  if ((after === '.' || after === ',') && /\d/.test(afterNext)) return true;
+  return false;
+}
+
+function isPostalCodeFragment(text: string, index: number, token: string): boolean {
+  if (token.length === 5 && /^-\d{4}\b/.test(text.slice(index + token.length))) return true;
+  if (token.length === 4 && index >= 6 && /^\d{5}-$/.test(text.slice(index - 6, index))) return true;
+  return false;
+}
+
+function isPhoneNumberFragment(text: string, index: number, token: string): boolean {
+  const windowStart = Math.max(0, index - 12);
+  const window = text.slice(windowStart, index + token.length + 12).replace(/[()]/g, '');
+  return /\d{3}[-.\s]\d{3}[-.\s]\d{4}/.test(window);
+}
+
 export function extractReferenceCodeCandidates(text: string): string[] {
   const tokens = new Set<string>();
   for (const match of text.matchAll(/\b\d{3,8}\b/g)) {
-    if (isCalendarYearToken(match[0])) continue;
-    tokens.add(match[0]);
+    const token = match[0];
+    const index = match.index ?? 0;
+    if (isCalendarYearToken(token)) continue;
+    if (isCurrencyAmountFragment(text, index, token)) continue;
+    if (isPostalCodeFragment(text, index, token)) continue;
+    if (isPhoneNumberFragment(text, index, token)) continue;
+    tokens.add(token);
   }
   for (const match of text.matchAll(/\b[A-Za-z]{1,8}[-_][A-Za-z0-9][A-Za-z0-9_-]{0,60}\b/g)) {
     if (/^[a-z]+[-_][a-z]+$/.test(match[0])) continue;
@@ -115,27 +144,23 @@ async function findSimilarReferenceMatches(
   db: DatabaseConnection,
   code: string
 ): Promise<CachedReferenceMatch[]> {
-  try {
-    const embedding = await createEmbedding(code);
-    const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
-    return rows
-      .map((row) => mapDocumentToReferenceMatch(row, code, Number(row.similarity) || 0))
-      .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE);
-  } catch (error) {
-    debug(`Similarity lookup failed for reference code ${code}:`, error);
-    return [];
-  }
+  const embedding = await createEmbedding(code);
+  const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
+  return rows
+    .map((row) => mapDocumentToReferenceMatch(row, code, Number(row.similarity) || 0))
+    .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE);
 }
 
 export async function resolveMatchesForCode(
   db: DatabaseConnection,
   code: string,
-  exactDocuments: Array<{ workday_id: string; type: DocumentType; metadata?: Record<string, unknown> }>
+  exactDocuments: Array<{ workday_id: string; type: DocumentType; metadata?: Record<string, unknown> }>,
+  options?: { allowInexact?: boolean }
 ): Promise<CachedReferenceMatch[]> {
   if (exactDocuments.length > 0) {
     return exactDocuments.map((document) => mapDocumentToReferenceMatch(document, code, 1));
   }
-  if (isCalendarYearToken(code)) return [];
+  if (options?.allowInexact === false || isCalendarYearToken(code)) return [];
   return findSimilarReferenceMatches(db, code);
 }
 
@@ -178,9 +203,13 @@ export async function resolveReferenceCodesFromText(
   if (codes.length === 0) return [];
 
   const grouped = await findDocumentsByReferenceIds(db, codes, REFERENCE_CODE_DOCUMENT_TYPES);
+  const unmatched = codes.filter((code) => (grouped.get(code) ?? []).length === 0);
+  const inexactCodes = new Set(unmatched.slice(0, MAX_INEXACT_REFERENCE_LOOKUPS));
   return Promise.all(codes.map(async (code) => ({
     code,
-    matches: await resolveMatchesForCode(db, code, grouped.get(code) ?? []),
+    matches: await resolveMatchesForCode(db, code, grouped.get(code) ?? [], {
+      allowInexact: inexactCodes.has(code),
+    }),
   })));
 }
 
@@ -237,23 +266,12 @@ export async function resolveCompanyFromEmail(options: {
   if (uniqueCodes.length === 0) return undefined;
 
   const grouped = await findDocumentsByReferenceIds(options.db, uniqueCodes, REFERENCE_CODE_DOCUMENT_TYPES);
-  const resolvedByCode = new Map<string, CachedReferenceMatch[]>();
-  await Promise.all(uniqueCodes.map(async (code) => {
-    resolvedByCode.set(code, await resolveMatchesForCode(options.db, code, grouped.get(code) ?? []));
-  }));
-  const matchesFor = (code: string) => resolvedByCode.get(code) ?? [];
-  const exactCompanies = uniqueCompanies(
-    uniqueCodes.flatMap((code) => matchesFor(code).filter((match) => match.confidence === 1))
-  );
-  const topCompanies = uniqueCompanies(
-    uniqueCodes
-      .map((code) => pickTopReferenceMatch(matchesFor(code)))
-      .filter((match): match is CachedReferenceMatch => match?.type === 'company')
-  );
+  const matchesFor = (code: string) =>
+    (grouped.get(code) ?? []).map((document) => mapDocumentToReferenceMatch(document, code, 1));
+  const exactCompanies = uniqueCompanies(uniqueCodes.flatMap((code) => matchesFor(code)));
 
   if (claimedWid) {
-    const matching = exactCompanies.find((company) => company.workdayId === claimedWid)
-      || topCompanies.find((company) => company.workdayId === claimedWid);
+    const matching = exactCompanies.find((company) => company.workdayId === claimedWid);
     return {
       workdayId: claimedWid,
       referenceId: matching?.referenceId || claimedReferenceId,
@@ -262,19 +280,11 @@ export async function resolveCompanyFromEmail(options: {
   }
 
   if (claimedReferenceId) {
-    const referencedExact = uniqueCompanies(matchesFor(claimedReferenceId).filter((match) => match.confidence === 1));
+    const referencedExact = uniqueCompanies(matchesFor(claimedReferenceId));
     if (referencedExact.length === 1) {
       return {
         ...referencedExact[0],
         name: emailCompany?.name || referencedExact[0].name,
-      };
-    }
-    const claimedTop = pickTopReferenceMatch(matchesFor(claimedReferenceId));
-    if (claimedTop?.type === 'company') {
-      return {
-        workdayId: claimedTop.workdayId,
-        referenceId: claimedTop.referenceId,
-        name: emailCompany?.name || claimedTop.name,
       };
     }
   }
@@ -282,10 +292,6 @@ export async function resolveCompanyFromEmail(options: {
   if (exactCompanies.length === 1) {
     debug('Resolved a unique company from exact email reference codes', exactCompanies[0]);
     return exactCompanies[0];
-  }
-  if (topCompanies.length === 1) {
-    debug('Resolved a unique company from the highest-confidence email code match', topCompanies[0]);
-    return topCompanies[0];
   }
   return undefined;
 }

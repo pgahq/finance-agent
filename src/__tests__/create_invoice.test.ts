@@ -421,7 +421,7 @@ describe('create_invoice', () => {
   });
 
   it('should prefer the email-coded company over a PDF companyVerification recommendation', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -444,6 +444,19 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('email-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          status: 'email_resolved',
+          appliedFromEmail: true,
+          appliedName: 'PGA Company',
+          appliedReferenceId: '912',
+        }),
+      })
+    );
   });
 
   it('should not apply a cost center code that is actually the email company reference ID', async () => {

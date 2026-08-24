@@ -227,7 +227,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         isDefault: !result.supplier.resolvedSupplier?.workdayId,
       },
-      company: result.companyVerification ? {
+      company: emailCompany ? {
+        status: 'email_resolved',
+        appliedFromEmail: true,
+        appliedName: emailCompany.name,
+        appliedReferenceId: emailCompany.referenceId,
+        recommendedName: result.companyVerification?.recommended?.companyName,
+      } : result.companyVerification ? {
         status: result.companyVerification.status,
         recommendedName: result.companyVerification.recommended?.companyName,
       } : undefined,

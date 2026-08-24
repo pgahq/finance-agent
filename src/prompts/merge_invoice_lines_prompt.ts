@@ -26,7 +26,7 @@ export const mergeInvoiceLinesPrompt = `You are an expert at mapping invoice lin
 You will receive a JSON object with the following fields:
 - **extractedInvoiceLines**: Line items extracted from the invoice document (description, quantity, unitCost as string, totalPrice as string)
 - **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId (extracted ID strings), and worktagsReference (the full array of raw Workday worktag reference objects for that line)
-- **emailBody** (optional): The plain-text email body that accompanied this invoice, which may contain cost center references
+- **emailBody** (optional): The plain-text email that accompanied this invoice. Do not copy codes from it into ID fields; email coding is resolved upstream.
 
 Your task is to produce final invoice lines by:
 

@@ -293,7 +293,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         existingName: existingSupplier?.descriptor,
         isDefault: fallbacks.defaultSupplier,
       },
-      company: result.companyVerification ? {
+      company: emailCompany ? {
+        status: 'email_resolved',
+        existingName: existingCompany?.descriptor,
+        recommendedName: result.companyVerification?.recommended?.companyName,
+        appliedFromEmail: true,
+        appliedName: emailCompany.name,
+        appliedReferenceId: emailCompany.referenceId,
+      } : result.companyVerification ? {
         status: result.companyVerification.status,
         existingName: existingCompany?.descriptor,
         recommendedName: result.companyVerification.recommended?.companyName,

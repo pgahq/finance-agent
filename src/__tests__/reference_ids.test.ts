@@ -1,12 +1,15 @@
-import { findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
+import { findDocumentsByReferenceId, findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
 import { createEmbedding } from '../lib/rag.js';
 import {
   extractReferenceCodeCandidates,
+  findCachedReferenceMatches,
   resolveCompanyFromEmail,
+  resolveReferenceCodesFromText,
   selectCompanyForCreateInvoice,
   costCenterCodeExcludingCompany,
   formatReferenceDirectory,
   pickTopReferenceMatch,
+  MAX_INEXACT_REFERENCE_LOOKUPS,
 } from '../lib/reference_ids.js';
 
 jest.mock('@pga/logger', () => ({
@@ -24,6 +27,7 @@ jest.mock('../lib/rag.js', () => ({
   createEmbedding: jest.fn(),
 }));
 
+const mockFindDocumentsByReferenceId = findDocumentsByReferenceId as jest.MockedFunction<typeof findDocumentsByReferenceId>;
 const mockFindDocumentsByReferenceIds = findDocumentsByReferenceIds as jest.MockedFunction<typeof findDocumentsByReferenceIds>;
 const mockSearchDocumentsByTypes = searchDocumentsByTypes as jest.MockedFunction<typeof searchDocumentsByTypes>;
 const mockCreateEmbedding = createEmbedding as jest.MockedFunction<typeof createEmbedding>;
@@ -93,6 +97,19 @@ describe('extractReferenceCodeCandidates', () => {
       expect.arrayContaining(['912'])
     );
     expect(extractReferenceCodeCandidates('Invoice dated 2024 for company 912')).not.toContain('2024');
+  });
+
+  it('ignores currency digit groups so invoice amounts are not treated as codes', () => {
+    expect(extractReferenceCodeCandidates('Amount due $1,912.00 please code 72200')).toEqual(['72200']);
+    expect(extractReferenceCodeCandidates('Total $800.00')).toEqual([]);
+    expect(extractReferenceCodeCandidates('Please code to 912, then 72200')).toEqual(
+      expect.arrayContaining(['912', '72200'])
+    );
+  });
+
+  it('ignores zip+4 and phone-number fragments', () => {
+    expect(extractReferenceCodeCandidates('Ship to 30328-1234 and code 912')).toEqual(['912']);
+    expect(extractReferenceCodeCandidates('Call 555-123-4567 then code 72200')).toEqual(['72200']);
   });
 });
 
@@ -202,7 +219,7 @@ describe('resolveCompanyFromEmail', () => {
     });
   });
 
-  it('uses the highest-confidence similar company when there is no exact metadata hit', async () => {
+  it('does not select a similar company when there is no exact metadata hit', async () => {
     mockReferenceLookup({});
     mockSearchDocumentsByTypes.mockResolvedValue([
       {
@@ -224,12 +241,8 @@ describe('resolveCompanyFromEmail', () => {
     await expect(resolveCompanyFromEmail({
       db,
       emailBody: 'Coding: 912 / 72200',
-    })).resolves.toEqual({
-      workdayId: 'company-wid-912',
-      referenceId: '912',
-      name: 'PGA Company',
-    });
-    expect(mockCreateEmbedding).toHaveBeenCalled();
+    })).resolves.toBeUndefined();
+    expect(mockCreateEmbedding).not.toHaveBeenCalled();
   });
 
   it('does not treat a similar cost center as the company when it outranks company matches', async () => {
@@ -358,5 +371,52 @@ describe('pickTopReferenceMatch', () => {
       { type: 'company', workdayId: 'co-1', referenceId: '912', confidence: 1 },
       { type: 'cost_center', workdayId: 'cc-1', referenceId: '912', confidence: 1 },
     ])).toBeUndefined();
+  });
+});
+
+describe('findCachedReferenceMatches', () => {
+  const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSearchDocumentsByTypes.mockResolvedValue([]);
+    mockCreateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+  });
+
+  it('propagates similarity lookup failures instead of returning an empty miss', async () => {
+    mockFindDocumentsByReferenceId.mockResolvedValue([]);
+    mockCreateEmbedding.mockRejectedValue(new Error('embedding down'));
+
+    await expect(findCachedReferenceMatches(db, '912')).rejects.toThrow('embedding down');
+  });
+});
+
+describe('resolveReferenceCodesFromText', () => {
+  const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSearchDocumentsByTypes.mockResolvedValue([]);
+    mockCreateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+  });
+
+  it('caps inexact embedding lookups per email', async () => {
+    const unmatched = Array.from({ length: MAX_INEXACT_REFERENCE_LOOKUPS + 3 }, (_, index) => String(300 + index));
+    mockReferenceLookup({});
+
+    await resolveReferenceCodesFromText(db, unmatched.join(' '));
+
+    expect(mockCreateEmbedding).toHaveBeenCalledTimes(MAX_INEXACT_REFERENCE_LOOKUPS);
+  });
+
+  it('does not embed codes that already have an exact metadata hit', async () => {
+    mockReferenceLookup({
+      '912': [companyDoc()],
+      '72200': [costCenterDoc()],
+    });
+
+    await resolveReferenceCodesFromText(db, 'Coding: 912 / 72200');
+
+    expect(mockCreateEmbedding).not.toHaveBeenCalled();
   });
 });
