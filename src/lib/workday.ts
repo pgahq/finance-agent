@@ -700,12 +700,36 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
   // Create has no OCR lines, so an empty merchandise list omits Invoice_Line_Replacement_Data.
   // Update falls back to OCR merchandise (freight already stripped) so all-freight finalLines
-  // do not wipe goods; send [] only when OCR merchandise is also empty.
-  const invoiceLines = providedFinalLines
+  // do not wipe goods. strong-soap drops empty repeating elements, so [] is the same as omit;
+  // when OCR is also all freight, replace with a remainder Invoice line if control exceeds
+  // freight plus tax so the shipping row is actually cleared.
+  let invoiceLines = providedFinalLines
     ? (mappedMerchandiseFinalLines.length > 0
         ? mappedMerchandiseFinalLines
         : (invoiceHadExistingLines ? (mappedMerchandiseOcrLines ?? []) : undefined))
     : mappedMerchandiseOcrLines;
+
+  if (invoiceHadExistingLines && Array.isArray(invoiceLines) && invoiceLines.length === 0) {
+    const control = typeof controlAmountTotal === 'number'
+      ? controlAmountTotal
+      : (typeof controlAmountTotal === 'string' ? parseExtractedAmount(controlAmountTotal) : undefined);
+    const freight = typeof freightAmount === 'number' ? freightAmount : 0;
+    const tax = typeof taxAmount === 'number' ? taxAmount : 0;
+    if (control != null) {
+      const remainder = Math.round((control - freight - tax) * 100) / 100;
+      if (remainder > 0) {
+        const remainderWorktags = withFallbackWorktags([]);
+        invoiceLines = [{
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 1,
+          Unit_Cost: remainder,
+          Extended_Amount: remainder,
+          ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
+        }];
+      }
+    }
+  }
 
   return {
     Submit: false,
