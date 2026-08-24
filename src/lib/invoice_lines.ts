@@ -44,6 +44,7 @@ const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery
 const FREIGHT_ALLOWED_WORDS = new Set([
   ...FREIGHT_CORE_WORDS,
   'charge', 'charges', 'fee', 'fees', 'cost', 'costs', 'and', 'inbound', 'outbound', 's', 'h',
+  'ground', 'overnight', 'express', 'ups', 'fedex', 'usps', 'dhl',
 ]);
 
 function normalizeLineDescription(description: string): string {

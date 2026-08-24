@@ -81,6 +81,11 @@ Tax and freight/shipping/handling are header amounts, not invoice lines:
 
 If the PDF lists shipping/handling as a line item, capture the amount on `Freight_Amount` and omit that row from the SOAP line payload. `splitFreightLines` in `src/lib/invoice_lines.ts` strips those rows before merge/PO matching and again when building the SOAP body.
 
+Create vs update when no merchandise lines remain:
+
+- **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping.
+- **Update** (`submitSupplierInvoiceUpdate`): send empty `Invoice_Line_Replacement_Data` when the current invoice already has OCR lines, so existing shipping rows are cleared instead of left in place.
+
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
 header. Log request byte count plus a safe error summary, and throw a new error

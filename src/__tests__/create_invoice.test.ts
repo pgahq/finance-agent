@@ -278,6 +278,46 @@ describe('create_invoice', () => {
     expect(submitArgs.finalLines).toEqual([]);
   });
 
+  it('should synthesize a merchandise remainder on create when shipping is the only extracted line and amount due is larger', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines
+      .mockResolvedValueOnce({
+        lines: [],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      })
+      .mockResolvedValueOnce({
+        lines: [{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-remainder/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual([{
+      description: 'Office supplies',
+      quantity: 1,
+      unitCost: '100',
+      totalPrice: '100',
+      hasDiscount: null,
+    }]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+    expect(submitArgs.finalLines).toEqual([
+      { lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }
+    ]);
+  });
+
   it('should fall back to the default supplier WID when none is resolved', async () => {
     process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
 

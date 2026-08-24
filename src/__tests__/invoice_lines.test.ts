@@ -15,6 +15,12 @@ describe('isFreightOrHandlingLine', () => {
     'Shipping Charges',
     'Delivery Fee',
     'Inbound Freight',
+    'Ground Shipping',
+    'UPS Freight',
+    'FedEx Shipping',
+    'USPS Postage',
+    'Overnight Shipping',
+    'DHL Express Freight',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
   });

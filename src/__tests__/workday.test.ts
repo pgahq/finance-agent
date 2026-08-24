@@ -1600,6 +1600,57 @@ describe('Workday utilities', () => {
       ]);
     });
 
+    it('should send empty Invoice_Line_Replacement_Data when every OCR line is freight so existing shipping rows are cleared', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Ground Shipping',
+        Quantity: '1',
+        Unit_Cost: '15',
+        Extended_Amount: '15'
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '15.00',
+                Invoice_Line_Replacement_Data: [freightLine]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([]);
+    });
+
     it('should apply default OCR spend category to incomplete lines missing a spend category', async () => {
       process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
 
@@ -2062,6 +2113,21 @@ describe('Workday utilities', () => {
         expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
       });
 
+      it('should send empty Invoice_Line_Replacement_Data when every finalLine is freight', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+      });
+
       it('should omit optional fields when null', async () => {
         const { getCapturedRequest } = setupMockClient();
 
@@ -2440,6 +2506,51 @@ describe('Workday utilities', () => {
         Item_Description: 'Test line',
         Quantity: 1
       });
+    });
+
+    it('should omit shipping/freight/handling finalLines from Invoice_Line_Replacement_Data and set Freight_Amount on create', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        extractedFreightAmount: '$15.00',
+        finalLines: [
+          { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ]
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toHaveLength(1);
+      expect(data.Invoice_Line_Replacement_Data[0].Item_Description).toBe('Consulting Services');
+      expect(data.Invoice_Line_Replacement_Data[0].Line_Order).toBe(1);
+    });
+
+    it('should omit Invoice_Line_Replacement_Data on freight-only create so freight is not re-included as a line', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        extractedFreightAmount: '$15.00',
+        finalLines: [
+          { lineOrder: 1, description: 'Ground Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ]
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
 
     it('should propagate SOAP errors without request headers or bodies', async () => {
