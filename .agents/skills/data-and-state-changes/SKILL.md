@@ -50,6 +50,12 @@ totals, and incomplete pulls skip prune and report `pruneSkipped` in Slack. Set
 `requireCompleteTotal: true` into `executeWorkdayQuery`; other WQL callers do
 not. Do not enable prune for windowed sources such as events.
 
+## Exact reference ID lookup
+
+`findDocumentsByReferenceId` exact-matches `metadata.code`, `metadata.referenceId`, and `metadata.companyReferenceId` across selected types. Company cache stores `companyReferenceId` from Workday `referenceID1` (Company_Reference_ID, e.g. `912`), falling back to `referenceID` when that value is not a WID. Do not use `companyID` or `company.id` — those are the 32-character Workday WID and match each other. Skip WID-shaped values and the company name. Embed the code in RAG content as `Company Reference ID`. Existing company rows need a recache before `912` lookup works.
+
+Do not dump all cached IDs into prompts. Extract candidate codes from the email, look up only those codes, and inject matches. A numeric code such as `912` may be a company, not a cost center — resolve across types before assigning.
+
 ## When adding a new document type
 
 1. Add it to `DOCUMENT_TYPES`

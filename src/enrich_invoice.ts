@@ -20,6 +20,7 @@ import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidati
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
+import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -169,9 +170,15 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const recommendedCompanyWID = result.companyVerification?.status === 'different'
       ? result.companyVerification.recommended?.workdayId ?? undefined
       : undefined;
+    const emailCompany = await resolveCompanyFromEmail({
+      db: context.dbConnection,
+      emailBody: invoiceData.emailContext?.plainTextBody,
+      emailCompany: result.emailWorktags?.company,
+    });
+    const companyWID = emailCompany?.workdayId ?? recommendedCompanyWID;
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
-    debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${recommendedCompanyWID ?? '(none - keeping existing)'}`);
+    debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
@@ -205,7 +212,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
-      costCenterId: result.emailWorktags.costCenter?.code ?? null,
+      costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
       eventWid: result.emailWorktags.event?.workdayId ?? null,
       lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
       fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
@@ -253,7 +260,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         buildNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
-        companyWID: recommendedCompanyWID,
+        companyWID,
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,

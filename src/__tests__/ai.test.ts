@@ -3,7 +3,7 @@ import { getAiResponse } from '../lib/ai.js';
 // Mock the AI SDK
 jest.mock('ai', () => ({
   generateText: jest.fn(),
-  tool: jest.fn(),
+  tool: jest.fn((definition) => definition),
   stepCountIs: jest.fn(),
   NoObjectGeneratedError: {
     isInstance: jest.fn()
@@ -67,9 +67,10 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        tools: {
-          findSuppliers: expect.any(Object)
-        }
+        tools: expect.objectContaining({
+          findSuppliers: expect.any(Object),
+          resolveReferenceCode: expect.any(Object)
+        })
       });
 
       expect(result).toEqual('{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}');
@@ -88,9 +89,10 @@ describe('AI utilities', () => {
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        tools: {
-          findSuppliers: expect.any(Object)
-        }
+        tools: expect.objectContaining({
+          findSuppliers: expect.any(Object),
+          resolveReferenceCode: expect.any(Object)
+        })
       });
     });
 
@@ -137,9 +139,10 @@ describe('AI utilities', () => {
         system: expect.stringContaining('Test prompt'),
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        tools: {
-          findSuppliers: expect.any(Object)
-        }
+        tools: expect.objectContaining({
+          findSuppliers: expect.any(Object),
+          resolveReferenceCode: expect.any(Object)
+        })
       });
 
       // Verify Step 2: structured output via generateText + Output.object

@@ -7,6 +7,7 @@ import {
   updateDocument,
   deleteDocument,
   searchDocuments,
+  findDocumentsByReferenceId,
   bulkInsertDocuments,
   bulkUpdateDocuments,
   bulkDeleteDocuments,
@@ -320,6 +321,46 @@ describe('Database Library', () => {
         'supplier',
         10
       )).rejects.toThrow('Search failed');
+    });
+  });
+
+  describe('findDocumentsByReferenceId', () => {
+    it('exact-matches code, referenceId, and companyReferenceId across selected types', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      const mockResults = [
+        {
+          workday_id: 'company-wid-912',
+          type: 'company',
+          content: 'PGA Company',
+          metadata: { companyReferenceId: '912', companyName: 'PGA Company' }
+        }
+      ];
+      mockQuery.mockResolvedValue(mockResults);
+
+      const result = await findDocumentsByReferenceId(
+        mockConnection,
+        '912',
+        ['company', 'cost_center', 'fund', 'lob', 'spend_category']
+      );
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'companyReferenceId'"),
+        [['company', 'cost_center', 'fund', 'lob', 'spend_category'], '912']
+      );
+      expect(result).toEqual(mockResults);
+    });
+
+    it('returns an empty array without querying when the code is blank', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+
+      await expect(findDocumentsByReferenceId(mockConnection, '  ', ['company'])).resolves.toEqual([]);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 

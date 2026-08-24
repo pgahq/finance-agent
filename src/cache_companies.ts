@@ -2,10 +2,13 @@ import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { createCompanyContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
+import { extractCompanyReferenceId } from './lib/workday_reference_id.js';
 
 const QUERY = `
   SELECT
     company,
+    referenceID1,
+    referenceID,
     addressPrimary,
     publicAddresses,
     emailAddresses,
@@ -32,6 +35,10 @@ export const processor = withProcessorHandler(async (context, companies, _event)
       {
         workdayId: company.company.id,
         companyName: company.company.descriptor,
+        companyReferenceId: extractCompanyReferenceId(
+          [company.referenceID1, company.referenceID],
+          { workdayId: company.company.id, companyName: company.company.descriptor }
+        ),
         addressPrimary: company.addressPrimary,
         publicAddresses: company.publicAddresses?.length > 0 ? company.publicAddresses.map((pa: any) => pa.descriptor) : undefined,
         emailAddresses: company.emailAddresses?.length > 0 ? company.emailAddresses.map((ea: any) => ea.descriptor) : undefined,
@@ -49,6 +56,7 @@ export const processor = withProcessorHandler(async (context, companies, _event)
     createMetadata: (company) => ({
       workdayId: company.workdayId,
       companyName: company.companyName,
+      companyReferenceId: company.companyReferenceId,
     }),
     notifyLabel: 'cache_companies',
     itemLabel: 'companies',

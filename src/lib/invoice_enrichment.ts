@@ -1,5 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
+import { getDatabaseConnection } from './database.js';
+import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
@@ -37,8 +39,19 @@ export async function enrichInvoiceFromAttachments(
       emailContext
     };
 
+    let referenceDirectoryText = '';
+    if (emailContext?.plainTextBody) {
+      try {
+        const db = await getDatabaseConnection(process.env);
+        const resolved = await resolveReferenceCodesFromText(db, emailContext.plainTextBody);
+        referenceDirectoryText = formatReferenceDirectory(resolved.filter((item) => item.matches.length > 0));
+      } catch (error) {
+        debug('Failed to pre-resolve email reference codes:', error);
+      }
+    }
+
     const emailContextText = emailContext
-      ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}`
+      ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
 
     const existingSupplierText = existingSupplier
@@ -54,8 +67,8 @@ export async function enrichInvoiceFromAttachments(
       : 'Please identify the supplier and verify the company on this invoice';
 
     const taskInstructions = existingSupplier
-      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, extract any worktags (cost center, event, LOB, fund) and resolve them using the appropriate find tools.'
-      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, extract any worktags (cost center, event, LOB, fund) and resolve them using the appropriate find tools.';
+      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.'
+      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.';
 
     const attachmentContentParts: Array<
       { type: 'file'; data: Buffer; mediaType: string; filename: string }
@@ -190,6 +203,12 @@ export function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string
   if (wt.fund?.extracted) {
     const resolved = wt.fund.referenceId ? ` (resolved: ${wt.fund.referenceId})` : ' (no Workday match found)';
     parts.push(`Fund: ${wt.fund.extracted}${resolved}`);
+  }
+  if (wt.company?.extracted) {
+    const resolved = wt.company.workdayId || wt.company.referenceId
+      ? ` (resolved: ${wt.company.name ?? wt.company.referenceId ?? wt.company.workdayId})`
+      : ' (no Workday match found)';
+    parts.push(`Company: ${wt.company.extracted}${resolved}`);
   }
   if (!parts.length) return '';
   return `\n\nEmail Worktags: ${parts.join('; ')}`;

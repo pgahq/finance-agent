@@ -311,6 +311,34 @@ export async function deleteAllDocumentsByType(
   }
 }
 
+export async function findDocumentsByReferenceId(
+  db: DatabaseConnection,
+  referenceId: string,
+  types: readonly DocumentType[]
+): Promise<Array<{ workday_id: string; type: DocumentType; content: string; metadata: Record<string, any> }>> {
+  const code = referenceId.trim();
+  if (!code || types.length === 0) return [];
+
+  try {
+    const results = await db.query(`
+      SELECT workday_id, type, content, metadata
+      FROM documents
+      WHERE type = ANY($1)
+        AND (
+          LOWER(COALESCE(metadata->>'code', '')) = LOWER($2)
+          OR LOWER(COALESCE(metadata->>'referenceId', '')) = LOWER($2)
+          OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = LOWER($2)
+        )
+    `, [types, code]);
+
+    debug(`Found ${results.length} documents matching reference ID ${code}`);
+    return results;
+  } catch (error) {
+    debug(`Error finding documents by reference ID ${code}:`, error);
+    throw error;
+  }
+}
+
 export async function getDocumentsByType(
   db: DatabaseConnection,
   type: DocumentType

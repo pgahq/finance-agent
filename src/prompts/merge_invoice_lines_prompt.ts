@@ -38,7 +38,7 @@ Your task is to produce final invoice lines by:
 6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
 7. For hasDiscount: copy the value directly from the matching extracted invoice line
 8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize
-9. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
+9. Do not copy codes from the email body into costCenterId, fundId, or other ID fields. Email coding is resolved upstream and applied separately. A short code in the email may be a company, cost center, fund, LOB, or spend category — do not assume it is a cost center. If there is no PO match, set those IDs to null.
 10. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 
 Guidelines:
@@ -49,5 +49,6 @@ Guidelines:
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
 - If all PO lines share the same worktags, apply those worktags to all invoice lines
 - If the invoice has fewer lines than the PO, match each invoice line to the single best-matching PO line
-- Cost center IDs and fund IDs are alphanumeric strings (e.g. "72200", "FD-001"). Spend category IDs come from PO lines only — never construct them from email text
+- Cost center IDs and fund IDs must come from matched PO lines only. Never copy a number or token from the email body into costCenterId or fundId — those values are resolved and applied outside this step
+- Spend category IDs come from PO lines only — never construct them from email text
 - Set null for any worktag field you cannot confidently determine from the available sources`;
