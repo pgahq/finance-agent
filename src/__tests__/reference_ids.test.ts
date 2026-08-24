@@ -170,23 +170,56 @@ describe('resolveCompanyFromEmail', () => {
     expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
   });
 
-  it('fills companyReferenceId from cache when a WID is already present', async () => {
+  it('keeps a claimed company WID that matches an exact cache hit', async () => {
     mockReferenceLookup({ '912': [companyDoc()] });
 
     await expect(resolveCompanyFromEmail({
       db,
       emailCompany: {
         extracted: '912',
-        workdayId: 'email-company-wid',
+        workdayId: 'company-wid-912',
         referenceId: '912',
         name: 'PGA Company',
       },
     })).resolves.toEqual({
-      workdayId: 'email-company-wid',
+      workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
     });
     expect(mockFindDocumentsByReferenceIds).toHaveBeenCalled();
+  });
+
+  it('ignores a claimed company WID that is not an exact cache hit when codes are present', async () => {
+    mockReferenceLookup({ '912': [companyDoc()] });
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailCompany: {
+        extracted: '912',
+        workdayId: 'similar-neighbor-wid',
+        referenceId: '912',
+        name: 'PGA Company',
+      },
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+    });
+  });
+
+  it('does not apply a claimed company WID when codes are present and there is no exact cache hit', async () => {
+    mockReferenceLookup({});
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Coding: 912',
+      emailCompany: {
+        extracted: '912',
+        workdayId: 'similar-neighbor-wid',
+        referenceId: '912',
+        name: 'Similar Company',
+      },
+    })).resolves.toBeUndefined();
   });
 
   it('looks up a WID when only a company referenceId is present', async () => {

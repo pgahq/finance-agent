@@ -272,11 +272,13 @@ export async function resolveCompanyFromEmail(options: {
 
   if (claimedWid) {
     const matching = exactCompanies.find((company) => company.workdayId === claimedWid);
-    return {
-      workdayId: claimedWid,
-      referenceId: matching?.referenceId || claimedReferenceId,
-      name: emailCompany?.name || matching?.name,
-    };
+    if (matching) {
+      return {
+        workdayId: claimedWid,
+        referenceId: matching.referenceId || claimedReferenceId,
+        name: emailCompany?.name || matching.name,
+      };
+    }
   }
 
   if (claimedReferenceId) {

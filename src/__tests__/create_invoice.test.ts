@@ -364,6 +364,16 @@ describe('create_invoice', () => {
 
   it('should submit the email-coded company WID when emailWorktags.company.workdayId is set', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+      ['72200', []],
+    ]));
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -422,6 +432,15 @@ describe('create_invoice', () => {
 
   it('should prefer the email-coded company over a PDF companyVerification recommendation', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -461,6 +480,15 @@ describe('create_invoice', () => {
 
   it('should not apply a cost center code that is actually the email company reference ID', async () => {
     const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
