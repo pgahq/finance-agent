@@ -305,7 +305,7 @@ describe('create_invoice', () => {
     expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual([{
-      description: 'Office supplies',
+      description: 'Invoice',
       quantity: 1,
       unitCost: '100',
       totalPrice: '100',
@@ -358,6 +358,13 @@ describe('create_invoice', () => {
     await expect(processor(event as any)).resolves.not.toThrow();
 
     expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual([{
+      description: 'Invoice',
+      quantity: 1,
+      unitCost: '100',
+      totalPrice: '100',
+      hasDiscount: null,
+    }]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.finalLines).toEqual([{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }]);
   });

@@ -168,7 +168,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         debug('No merchandise invoice lines remain after excluding freight; synthesizing a line from the non-freight remainder');
         const synthetic = await buildFinalInvoiceLines(
           [{
-            description: memo || 'Invoice',
+            // Keep memo on the invoice header. A freight-like memo would be
+            // stripped again in the SOAP builder and drop this remainder line.
+            description: 'Invoice',
             quantity: 1,
             unitCost: String(remainder),
             totalPrice: String(remainder),
@@ -186,7 +188,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         debug('No invoice lines could be extracted or matched to a PO; synthesizing a single line from the extracted total');
         const synthetic = await buildFinalInvoiceLines(
           [{
-            description: memo || 'Invoice',
+            description: 'Invoice',
             quantity: 1,
             unitCost: extractedAmountDue ?? null,
             totalPrice: extractedAmountDue ?? null,
