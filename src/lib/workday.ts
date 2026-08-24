@@ -590,11 +590,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = currentInvoice.Invoice_Line_Replacement_Data;
-  const splitOcrLines = !providedFinalLines && ocrLines?.length
-    ? splitFreightLines(ocrLines)
-    : undefined;
-  const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
   const invoiceHadExistingLines = ([] as unknown[]).concat(ocrLines ?? []).length > 0;
+  const splitOcrLines = ocrLines?.length ? splitFreightLines(ocrLines) : undefined;
+  const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
 
   const freightAmount = extractedFreightAmount
     ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
@@ -649,54 +647,63 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     return additions.length ? [...worktags, ...additions] : worktags;
   };
 
-  const invoiceLines = providedFinalLines
-    ? merchandiseFinalLines.map(line => {
-      const worktags = withFallbackWorktags([
-        ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
-        ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
-        ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
-      ]);
-      const isDiscountOverride = line.hasDiscount === true;
+  const mappedMerchandiseFinalLines = merchandiseFinalLines.map(line => {
+    const worktags = withFallbackWorktags([
+      ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
+      ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
+      ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+      ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
+    ]);
+    const isDiscountOverride = line.hasDiscount === true;
+    return {
+      Line_Order: line.lineOrder,
+      Item_Description: line.description,
+      ...(isDiscountOverride
+        ? {
+            Quantity: 0,
+            Unit_Cost: 0,
+            ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+          }
+        : {
+            Quantity: line.quantity ?? 1,
+            ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
+            ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+          }
+      ),
+      ...(worktags.length && { Worktags_Reference: worktags }),
+      ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
+        Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
+      }),
+      ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
+      ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+      ...(line.memo && { Memo: line.memo }),
+    };
+  });
+
+  const mappedMerchandiseOcrLines = merchandiseOcrLines
+    ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
+      const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
+      const applySpendCategory = defaultSpendCategoryId && (
+        applySpendCategoryFallback
+        || (filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference)
+      );
       return {
-        Line_Order: line.lineOrder,
-        Item_Description: line.description,
-        ...(isDiscountOverride
-          ? {
-              Quantity: 0,
-              Unit_Cost: 0,
-              ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
-            }
-          : {
-              Quantity: line.quantity ?? 1,
-              ...(line.unitCost != null && { Unit_Cost: line.unitCost }),
-              ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
-            }
-        ),
-        ...(worktags.length && { Worktags_Reference: worktags }),
-        ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
-          Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
+        ...line,
+        Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
+        ...(applySpendCategory && {
+          Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId!),
         }),
-        ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-        ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
-        ...(line.memo && { Memo: line.memo }),
       };
-    })
-    : merchandiseOcrLines
-      ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
-        const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
-        const applySpendCategory = defaultSpendCategoryId && (
-          applySpendCategoryFallback
-          || (filterInvoiceLines && !line.Spend_Category_Reference && !line.Item_Reference)
-        );
-        return {
-          ...line,
-          Worktags_Reference: withFallbackWorktags(([] as any[]).concat(line.Worktags_Reference ?? [])),
-          ...(applySpendCategory && {
-            Spend_Category_Reference: createReference('Spend_Category_ID', defaultSpendCategoryId!),
-          }),
-        };
-      });
+    });
+
+  // Create has no OCR lines, so an empty merchandise list omits Invoice_Line_Replacement_Data.
+  // Update falls back to OCR merchandise (freight already stripped) so all-freight finalLines
+  // do not wipe goods; send [] only when OCR merchandise is also empty.
+  const invoiceLines = providedFinalLines
+    ? (mappedMerchandiseFinalLines.length > 0
+        ? mappedMerchandiseFinalLines
+        : (invoiceHadExistingLines ? (mappedMerchandiseOcrLines ?? []) : undefined))
+    : mappedMerchandiseOcrLines;
 
   return {
     Submit: false,

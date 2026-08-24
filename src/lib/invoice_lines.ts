@@ -77,14 +77,23 @@ function lineAmount(line: {
   unitCost?: string | number | null;
   extendedAmount?: number | null;
   Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
 }): number | undefined {
   if (typeof line.extendedAmount === 'number') return line.extendedAmount;
   if (line.totalPrice) return parseExtractedAmount(line.totalPrice);
   if (typeof line.Extended_Amount === 'number') return line.Extended_Amount;
   if (typeof line.Extended_Amount === 'string') return parseExtractedAmount(line.Extended_Amount);
-  if (typeof line.unitCost === 'number') return line.unitCost;
-  if (line.unitCost) return parseExtractedAmount(line.unitCost);
-  return undefined;
+  const unitCost = typeof line.unitCost === 'number'
+    ? line.unitCost
+    : (line.unitCost ? parseExtractedAmount(line.unitCost) : undefined);
+  if (unitCost == null) return undefined;
+  const rawQuantity = line.quantity ?? line.Quantity;
+  const quantity = typeof rawQuantity === 'number'
+    ? rawQuantity
+    : (typeof rawQuantity === 'string' ? parseExtractedAmount(rawQuantity) : undefined);
+  const multiplier = quantity != null && Number.isFinite(quantity) ? quantity : 1;
+  return Math.round(unitCost * multiplier * 100) / 100;
 }
 
 export function splitFreightLines<T extends {
@@ -94,6 +103,8 @@ export function splitFreightLines<T extends {
   unitCost?: string | number | null;
   extendedAmount?: number | null;
   Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
 }>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
   const merchandiseLines: T[] = [];
   const freightLines: T[] = [];

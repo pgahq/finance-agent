@@ -81,4 +81,13 @@ describe('splitFreightLines', () => {
     expect(split.freightLines).toHaveLength(0);
     expect(split.freightAmountFromLines).toBeUndefined();
   });
+
+  it('recovers freight from unitCost times quantity when totalPrice is missing', () => {
+    const split = splitFreightLines([
+      { description: 'Freight', quantity: 2, unitCost: 15 },
+    ]);
+
+    expect(split.freightLines).toHaveLength(1);
+    expect(split.freightAmountFromLines).toBe(30);
+  });
 });

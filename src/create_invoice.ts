@@ -180,6 +180,24 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           emailWorktags
         );
         finalLines = synthetic.lines;
+      } else if (remainder != null && remainder <= 0) {
+        debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
+      } else if (!extractedFreightAmount) {
+        debug('No invoice lines could be extracted or matched to a PO; synthesizing a single line from the extracted total');
+        const synthetic = await buildFinalInvoiceLines(
+          [{
+            description: memo || 'Invoice',
+            quantity: 1,
+            unitCost: extractedAmountDue ?? null,
+            totalPrice: extractedAmountDue ?? null,
+            hasDiscount: null,
+          }],
+          undefined,
+          emailContext?.plainTextBody,
+          fallbackIds,
+          emailWorktags
+        );
+        finalLines = synthetic.lines;
       } else {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
       }

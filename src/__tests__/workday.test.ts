@@ -2128,6 +2128,82 @@ describe('Workday utilities', () => {
         expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
       });
 
+      it('should keep OCR merchandise when every finalLine is freight on update', async () => {
+        const { mockClient, getCapturedRequest } = setupMockClient();
+        const merchandiseLine = {
+          Supplier_Invoice_Line_ID: 'LINE-1',
+          Item_Description: 'Consulting Services',
+          Quantity: '1',
+          Unit_Cost: '100',
+          Extended_Amount: '100'
+        };
+        const freightLine = {
+          Supplier_Invoice_Line_ID: 'LINE-2',
+          Item_Description: 'Shipping',
+          Quantity: '1',
+          Unit_Cost: '15',
+          Extended_Amount: '15'
+        };
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                  Invoice_Line_Replacement_Data: [merchandiseLine, freightLine]
+                }
+              }
+            }
+          });
+        });
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toEqual([
+          expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting Services' })
+        ]);
+      });
+
+      it('should send empty Invoice_Line_Replacement_Data when every finalLine and OCR line is freight', async () => {
+        const { mockClient, getCapturedRequest } = setupMockClient();
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                  Invoice_Line_Replacement_Data: [{
+                    Supplier_Invoice_Line_ID: 'LINE-1',
+                    Item_Description: 'Ground Shipping',
+                    Quantity: '1',
+                    Unit_Cost: '15',
+                    Extended_Amount: '15'
+                  }]
+                }
+              }
+            }
+          });
+        });
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toEqual([]);
+      });
+
       it('should omit optional fields when null', async () => {
         const { getCapturedRequest } = setupMockClient();
 

@@ -84,7 +84,7 @@ If the PDF lists shipping/handling as a line item, capture the amount on `Freigh
 Create vs update when no merchandise lines remain:
 
 - **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping.
-- **Update** (`submitSupplierInvoiceUpdate`): send empty `Invoice_Line_Replacement_Data` when the current invoice already has OCR lines, so existing shipping rows are cleared instead of left in place.
+- **Update** (`submitSupplierInvoiceUpdate`): if `finalLines` are all freight, keep OCR merchandise (freight stripped) so goods are not wiped. Send empty `Invoice_Line_Replacement_Data` only when OCR merchandise is also empty, so existing shipping rows are cleared.
 
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
