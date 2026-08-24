@@ -71,6 +71,16 @@ Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 
+## Workday supplier invoice payload
+
+Tax and freight/shipping/handling are header amounts, not invoice lines:
+
+- `Tax_Amount` comes from `extractedTaxAmount`
+- `Freight_Amount` comes from `extractedFreightAmount` (PDF labels may be freight, shipping, handling, or delivery)
+- Those charge rows must not appear in `Invoice_Line_Replacement_Data`
+
+If the PDF lists shipping/handling as a line item, capture the amount on `Freight_Amount` and omit that row from the SOAP line payload. `splitFreightLines` in `src/lib/invoice_lines.ts` strips those rows before merge/PO matching and again when building the SOAP body.
+
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
 header. Log request byte count plus a safe error summary, and throw a new error

@@ -1540,6 +1540,66 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('should omit OCR freight/shipping lines from Invoice_Line_Replacement_Data and recover Freight_Amount', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const merchandiseLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Consulting Services',
+        Quantity: '1',
+        Unit_Cost: '100',
+        Extended_Amount: '100'
+      };
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-2',
+        Item_Description: 'Shipping',
+        Quantity: '1',
+        Unit_Cost: '15',
+        Extended_Amount: '15'
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Invoice_Line_Replacement_Data: [merchandiseLine, freightLine]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting Services' })
+      ]);
+    });
+
     it('should apply default OCR spend category to incomplete lines missing a spend category', async () => {
       process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
 
@@ -1967,6 +2027,39 @@ describe('Workday utilities', () => {
         expect(lines[0].Line_Order).toBe(1);
         expect(lines[1].Line_Order).toBe(2);
         expect(lines[2].Line_Order).toBe(3);
+      });
+
+      it('should omit shipping/freight/handling finalLines from Invoice_Line_Replacement_Data and set Freight_Amount', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toHaveLength(1);
+        expect(data.Invoice_Line_Replacement_Data[0].Item_Description).toBe('Consulting Services');
+        expect(data.Invoice_Line_Replacement_Data[0].Line_Order).toBe(1);
+      });
+
+      it('should recover Freight_Amount from stripped freight finalLines when extractedFreightAmount is missing', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Shipping & Handling', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
       });
 
       it('should omit optional fields when null', async () => {

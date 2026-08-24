@@ -3,7 +3,7 @@ import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { parseExtractedAmount } from './invoice_lines.js';
+import { parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
 
 import type {
   DownloadedAttachment,
@@ -584,9 +584,20 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
+  const usedFinalLines = !!finalLines?.length;
+  const splitFinalLines = usedFinalLines ? splitFreightLines(finalLines) : undefined;
+  const merchandiseFinalLines = splitFinalLines?.merchandiseLines ?? [];
+  const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
+
+  const ocrLines = currentInvoice.Invoice_Line_Replacement_Data;
+  const splitOcrLines = !usedFinalLines && ocrLines?.length
+    ? splitFreightLines(ocrLines)
+    : undefined;
+  const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!usedFinalLines ? ocrLines : undefined);
+
   const freightAmount = extractedFreightAmount
-    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount)
-    : currentInvoice.Freight_Amount;
+    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
+    : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
   const taxAmount = extractedTaxAmount
     ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
     : (currentInvoice.Tax_Amount ?? 0);
@@ -637,8 +648,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     return additions.length ? [...worktags, ...additions] : worktags;
   };
 
-  const invoiceLines = finalLines?.length
-    ? finalLines.map(line => {
+  const invoiceLines = usedFinalLines
+    ? merchandiseFinalLines.map(line => {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
@@ -670,7 +681,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(line.memo && { Memo: line.memo }),
       };
     })
-    : currentInvoice.Invoice_Line_Replacement_Data
+    : merchandiseOcrLines
       ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
         const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
         const applySpendCategory = defaultSpendCategoryId && (
