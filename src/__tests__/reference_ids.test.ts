@@ -1,4 +1,4 @@
-import { findDocumentsByReferenceId, type DatabaseConnection, type DocumentType } from '../lib/database.js';
+import { findDocumentsByReferenceIds, type DatabaseConnection, type DocumentType } from '../lib/database.js';
 import {
   extractReferenceCodeCandidates,
   resolveCompanyFromEmail,
@@ -13,10 +13,21 @@ jest.mock('@pga/logger', () => ({
 
 jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceId: jest.fn(),
+  findDocumentsByReferenceIds: jest.fn(),
   getDatabaseConnection: jest.fn(),
 }));
 
-const mockFindDocumentsByReferenceId = findDocumentsByReferenceId as jest.MockedFunction<typeof findDocumentsByReferenceId>;
+const mockFindDocumentsByReferenceIds = findDocumentsByReferenceIds as jest.MockedFunction<typeof findDocumentsByReferenceIds>;
+
+function mockReferenceLookup(byCode: Record<string, CachedDoc[]>) {
+  mockFindDocumentsByReferenceIds.mockImplementation((_db, codes) => {
+    const grouped = new Map<string, CachedDoc[]>();
+    for (const code of codes) {
+      grouped.set(code, byCode[code] ?? []);
+    }
+    return Promise.resolve(grouped);
+  });
+}
 
 type CachedDoc = {
   workday_id: string;
@@ -61,6 +72,12 @@ describe('extractReferenceCodeCandidates', () => {
   it('ignores single-digit numbers', () => {
     expect(extractReferenceCodeCandidates('line 1 of 2')).not.toContain('1');
   });
+
+  it('ignores lowercase English hyphenations such as follow-up', () => {
+    expect(extractReferenceCodeCandidates('Please follow-up and re-submit')).not.toEqual(
+      expect.arrayContaining(['follow-up', 're-submit'])
+    );
+  });
 });
 
 describe('resolveCompanyFromEmail', () => {
@@ -71,10 +88,9 @@ describe('resolveCompanyFromEmail', () => {
   });
 
   it('returns the unique company among mixed object types', async () => {
-    mockFindDocumentsByReferenceId.mockImplementation((_db, code) => {
-      if (code === '912') return Promise.resolve([companyDoc()]);
-      if (code === '72200') return Promise.resolve([costCenterDoc()]);
-      return Promise.resolve([]);
+    mockReferenceLookup({
+      '912': [companyDoc()],
+      '72200': [costCenterDoc()],
     });
 
     await expect(resolveCompanyFromEmail({
@@ -88,15 +104,12 @@ describe('resolveCompanyFromEmail', () => {
   });
 
   it('returns undefined when two companies match', async () => {
-    mockFindDocumentsByReferenceId.mockImplementation((_db, code) => {
-      if (code === '912') return Promise.resolve([companyDoc()]);
-      if (code === '800') {
-        return Promise.resolve([companyDoc({
-          workday_id: 'company-wid-800',
-          metadata: { companyReferenceId: '800', companyName: 'Other Company' },
-        })]);
-      }
-      return Promise.resolve([]);
+    mockReferenceLookup({
+      '912': [companyDoc()],
+      '800': [companyDoc({
+        workday_id: 'company-wid-800',
+        metadata: { companyReferenceId: '800', companyName: 'Other Company' },
+      })],
     });
 
     await expect(resolveCompanyFromEmail({
@@ -119,15 +132,32 @@ describe('resolveCompanyFromEmail', () => {
       referenceId: '912',
       name: 'PGA Company',
     });
-    expect(mockFindDocumentsByReferenceId).not.toHaveBeenCalled();
+    expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
   });
 
   it('looks up a WID when only a company referenceId is present', async () => {
-    mockFindDocumentsByReferenceId.mockResolvedValue([companyDoc()]);
+    mockReferenceLookup({ '912': [companyDoc()] });
 
     await expect(resolveCompanyFromEmail({
       db,
       emailCompany: { extracted: '912', workdayId: null, referenceId: '912', name: 'PGA Company' },
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+    });
+  });
+
+  it('does not treat a non-company AI referenceId as the company', async () => {
+    mockReferenceLookup({
+      '72200': [costCenterDoc()],
+      '912': [companyDoc()],
+    });
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Coding: 912 / 72200',
+      emailCompany: { extracted: '72200', workdayId: null, referenceId: '72200', name: null },
     })).resolves.toEqual({
       workdayId: 'company-wid-912',
       referenceId: '912',

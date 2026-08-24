@@ -58,6 +58,9 @@ export const processor = withProcessorHandler(async (context, companies, _event)
       companyName: company.companyName,
       companyReferenceId: company.companyReferenceId,
     }),
+    isUpdated: (existingMetadata, company) =>
+      existingMetadata?.companyReferenceId !== company.companyReferenceId
+      || existingMetadata?.companyName !== company.companyName,
     notifyLabel: 'cache_companies',
     itemLabel: 'companies',
   });

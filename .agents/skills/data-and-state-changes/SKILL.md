@@ -1,11 +1,12 @@
 ---
 name: data-and-state-changes
 description: >-
-  Cold-start Postgres schema init and documents RAG table migrations for
-  finance-agent. Use when changing DocumentType, documents CHECK constraints,
-  getDatabaseConnection schema setup, pgvector indexes, debugging
-  documents_type_check / schema init Lambda failures, or cache prune behavior
-  in syncDataSource.
+  Cold-start Postgres schema init, documents RAG table migrations, and cached
+  Workday reference IDs for finance-agent. Use when changing DocumentType,
+  documents CHECK constraints, getDatabaseConnection schema setup, pgvector
+  indexes, debugging documents_type_check / schema init Lambda failures, cache
+  prune in syncDataSource, companyReferenceId / exact reference ID lookup,
+  cache_companies, or email short codes such as 912.
 ---
 
 # Data and state changes

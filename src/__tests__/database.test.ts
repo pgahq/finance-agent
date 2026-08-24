@@ -348,7 +348,7 @@ describe('Database Library', () => {
 
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining("metadata->>'companyReferenceId'"),
-        [['company', 'cost_center', 'fund', 'lob', 'spend_category'], '912']
+        [['company', 'cost_center', 'fund', 'lob', 'spend_category'], ['912']]
       );
       expect(result).toEqual(mockResults);
     });

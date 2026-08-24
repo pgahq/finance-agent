@@ -311,13 +311,29 @@ export async function deleteAllDocumentsByType(
   }
 }
 
-export async function findDocumentsByReferenceId(
+type ReferenceDocument = {
+  workday_id: string;
+  type: DocumentType;
+  content: string;
+  metadata: Record<string, any>;
+};
+
+function metadataReferenceKeys(metadata: Record<string, unknown> | undefined): string[] {
+  if (!metadata) return [];
+  return ['code', 'referenceId', 'companyReferenceId']
+    .map((key) => metadata[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim().toLowerCase());
+}
+
+export async function findDocumentsByReferenceIds(
   db: DatabaseConnection,
-  referenceId: string,
+  referenceIds: string[],
   types: readonly DocumentType[]
-): Promise<Array<{ workday_id: string; type: DocumentType; content: string; metadata: Record<string, any> }>> {
-  const code = referenceId.trim();
-  if (!code || types.length === 0) return [];
+): Promise<Map<string, ReferenceDocument[]>> {
+  const uniqueCodes = [...new Set(referenceIds.map((code) => code.trim()).filter(Boolean))];
+  const grouped = new Map<string, ReferenceDocument[]>(uniqueCodes.map((code) => [code, []]));
+  if (uniqueCodes.length === 0 || types.length === 0) return grouped;
 
   try {
     const results = await db.query(`
@@ -325,18 +341,36 @@ export async function findDocumentsByReferenceId(
       FROM documents
       WHERE type = ANY($1)
         AND (
-          LOWER(COALESCE(metadata->>'code', '')) = LOWER($2)
-          OR LOWER(COALESCE(metadata->>'referenceId', '')) = LOWER($2)
-          OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = LOWER($2)
+          LOWER(COALESCE(metadata->>'code', '')) = ANY($2)
+          OR LOWER(COALESCE(metadata->>'referenceId', '')) = ANY($2)
+          OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = ANY($2)
         )
-    `, [types, code]);
+    `, [types, uniqueCodes.map((code) => code.toLowerCase())]) as ReferenceDocument[];
 
-    debug(`Found ${results.length} documents matching reference ID ${code}`);
-    return results;
+    for (const document of results) {
+      const keys = metadataReferenceKeys(document.metadata);
+      for (const code of uniqueCodes) {
+        if (keys.includes(code.toLowerCase())) {
+          grouped.get(code)!.push(document);
+        }
+      }
+    }
+
+    debug(`Found ${results.length} documents matching ${uniqueCodes.length} reference ID(s)`);
+    return grouped;
   } catch (error) {
-    debug(`Error finding documents by reference ID ${code}:`, error);
+    debug('Error finding documents by reference IDs:', error);
     throw error;
   }
+}
+
+export async function findDocumentsByReferenceId(
+  db: DatabaseConnection,
+  referenceId: string,
+  types: readonly DocumentType[]
+): Promise<ReferenceDocument[]> {
+  const grouped = await findDocumentsByReferenceIds(db, [referenceId], types);
+  return grouped.get(referenceId.trim()) ?? [];
 }
 
 export async function getDocumentsByType(

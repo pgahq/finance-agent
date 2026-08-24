@@ -34,7 +34,8 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
-  findDocumentsByReferenceId: jest.fn().mockResolvedValue([])
+  findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
+  findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/s3.js', () => ({
@@ -386,8 +387,17 @@ describe('create_invoice', () => {
     }));
   });
 
-  it('should submit the email company reference ID when only referenceId is resolved', async () => {
+  it('should submit the cached company WID when email coding only has Company_Reference_ID 912', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'cached-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -401,8 +411,8 @@ describe('create_invoice', () => {
     } as any)).resolves.not.toThrow();
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('912');
-    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
+    expect(submitArgs.companyWID).toBe('cached-company-wid');
+    expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
   it('should prefer the email-coded company over a PDF companyVerification recommendation', async () => {

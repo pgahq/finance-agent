@@ -3,6 +3,7 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import {
   findDocumentsByReferenceId,
+  findDocumentsByReferenceIds,
   getDatabaseConnection,
   type DatabaseConnection,
   type DocumentType,
@@ -31,10 +32,11 @@ export interface EmailCompanyMatch {
 
 export function extractReferenceCodeCandidates(text: string): string[] {
   const tokens = new Set<string>();
-  for (const match of text.matchAll(/\b\d{2,8}\b/g)) {
+  for (const match of text.matchAll(/\b\d{3,8}\b/g)) {
     tokens.add(match[0]);
   }
   for (const match of text.matchAll(/\b[A-Za-z]{1,8}[-_][A-Za-z0-9][A-Za-z0-9_-]{0,60}\b/g)) {
+    if (/^[a-z]+[-_][a-z]+$/.test(match[0])) continue;
     tokens.add(match[0]);
   }
   return [...tokens];
@@ -103,11 +105,13 @@ export async function resolveReferenceCodesFromText(
   text: string
 ): Promise<Array<{ code: string; matches: CachedReferenceMatch[] }>> {
   const codes = extractReferenceCodeCandidates(text);
-  const resolved = [];
-  for (const code of codes) {
-    resolved.push({ code, matches: await findCachedReferenceMatches(db, code) });
-  }
-  return resolved;
+  if (codes.length === 0) return [];
+
+  const grouped = await findDocumentsByReferenceIds(db, codes, REFERENCE_CODE_DOCUMENT_TYPES);
+  return codes.map((code) => ({
+    code,
+    matches: (grouped.get(code) ?? []).map((document) => mapDocumentToReferenceMatch(document, code)),
+  }));
 }
 
 function uniqueCompanies(matches: CachedReferenceMatch[]): EmailCompanyMatch[] {
@@ -135,35 +139,37 @@ export async function resolveCompanyFromEmail(options: {
   } | null;
 }): Promise<EmailCompanyMatch | undefined> {
   const { emailCompany, emailBody } = options;
-  if (emailCompany?.workdayId || emailCompany?.referenceId) {
-    const referenceId = emailCompany.referenceId || undefined;
-    let workdayId = emailCompany.workdayId || undefined;
-    if (!workdayId && referenceId) {
-      const companies = uniqueCompanies(await findCachedReferenceMatches(options.db, referenceId));
-      if (companies.length === 1) {
-        workdayId = companies[0].workdayId;
-      }
-    }
+  if (emailCompany?.workdayId) {
     return {
-      workdayId,
-      referenceId,
+      workdayId: emailCompany.workdayId,
+      referenceId: emailCompany.referenceId || undefined,
       name: emailCompany.name || undefined,
     };
   }
 
   const codes = [
+    ...(emailCompany?.referenceId ? [emailCompany.referenceId] : []),
     ...(emailCompany?.extracted ? extractReferenceCodeCandidates(emailCompany.extracted) : []),
     ...(emailBody ? extractReferenceCodeCandidates(emailBody) : []),
   ];
-  const uniqueCodes = [...new Set(codes)];
+  const uniqueCodes = [...new Set(codes.map((code) => code.trim()).filter(Boolean))];
   if (uniqueCodes.length === 0) return undefined;
 
-  const companyMatches: CachedReferenceMatch[] = [];
-  for (const code of uniqueCodes) {
-    companyMatches.push(...(await findCachedReferenceMatches(options.db, code)));
+  const grouped = await findDocumentsByReferenceIds(options.db, uniqueCodes, REFERENCE_CODE_DOCUMENT_TYPES);
+  const matchesFor = (code: string) =>
+    (grouped.get(code) ?? []).map((document) => mapDocumentToReferenceMatch(document, code));
+
+  if (emailCompany?.referenceId) {
+    const companies = uniqueCompanies(matchesFor(emailCompany.referenceId));
+    if (companies.length === 1) {
+      return {
+        ...companies[0],
+        name: emailCompany.name || companies[0].name,
+      };
+    }
   }
 
-  const companies = uniqueCompanies(companyMatches);
+  const companies = uniqueCompanies(uniqueCodes.flatMap((code) => matchesFor(code)));
   if (companies.length === 1) {
     debug('Resolved a unique company from email reference codes', companies[0]);
     return companies[0];
