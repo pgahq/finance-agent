@@ -154,7 +154,7 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-Only');
   });
 
-  it('fills an allowed LOB when multiple values exist and there is no default', () => {
+  it('does not fill an allowed LOB when multiple values exist and there is no default', () => {
     const related = new Map([
       ['CC-001', {
         requiredOnTransaction: true,
@@ -166,6 +166,25 @@ describe('applyRelatedLobWorktags', () => {
     const lines = applyRelatedLobWorktags(
       [{ lineOrder: 1, description: 'Service', costCenterId: 'CC-001' }],
       related
+    );
+
+    expect(lines[0].lineOfBusinessId).toBeUndefined();
+  });
+
+  it('can fill any allowed LOB when replacing a fallback id', () => {
+    const related = new Map([
+      ['CC-001', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['LOB-A', 'LOB-B'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Service', costCenterId: 'CC-001', lineOfBusinessId: 'Default_Line_Of_Business' }],
+      related,
+      undefined,
+      { replaceIds: ['Default_Line_Of_Business'], anyAllowed: true }
     );
 
     expect(lines[0].lineOfBusinessId).toBe('LOB-A');
@@ -355,7 +374,51 @@ describe('buildFinalInvoiceLines', () => {
     expect(result.appliedFallbacks.lineOfBusiness).toBe(true);
   });
 
-  it('does not apply the LOB fallback when a related allowed LOB was filled', async () => {
+  it('does not apply the LOB fallback when a unique related allowed LOB was filled', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: 'CC-Building Services-PBG',
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Building Services-PBG', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['LOB-Facilities'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      { lineOfBusinessId: 'Default_Line_Of_Business' },
+      undefined,
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+    expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
+    expect(result.relatedLobByCostCenter.get('CC-Building Services-PBG')?.allowedReferenceIds).toEqual([
+      'LOB-Facilities',
+    ]);
+  });
+
+  it('uses Default_Line_Of_Business when multiple related allowed LOBs exist and there is no default', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{
         lineOrder: 1,
@@ -392,12 +455,8 @@ describe('buildFinalInvoiceLines', () => {
       lookup
     );
 
-    expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
-    expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
-    expect(result.relatedLobByCostCenter.get('CC-Building Services-PBG')?.allowedReferenceIds).toEqual([
-      'LOB-Facilities',
-      'LOB-Events',
-    ]);
+    expect(result.lines[0].lineOfBusinessId).toBe('Default_Line_Of_Business');
+    expect(result.appliedFallbacks.lineOfBusiness).toBe(true);
   });
 
   it('does not apply the LOB fallback when a related default was filled', async () => {

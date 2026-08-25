@@ -12,6 +12,7 @@ import {
   relatedWorktagsTotalPages,
   relatedLobSoapReference,
   resolveRelatedLobId,
+  worktagsIncludeLineOfBusiness,
   type RelatedLob,
 } from './related_worktags.js';
 
@@ -584,7 +585,10 @@ function costCenterIdsFromLines(lines: FinalInvoiceLine[] | undefined): string[]
   return [...new Set((lines ?? []).map(line => line.costCenterId).filter((id): id is string => !!id))];
 }
 
-function linesWithRelatedLob(options: buildSubmitInvoiceDataOptions): FinalInvoiceLine[] | undefined {
+function linesWithRelatedLob(
+  options: buildSubmitInvoiceDataOptions,
+  anyAllowed = false
+): FinalInvoiceLine[] | undefined {
   const lines = options.finalLines;
   const related = options.relatedLobByCostCenter;
   if (!lines?.length || !related?.size) return undefined;
@@ -593,7 +597,7 @@ function linesWithRelatedLob(options: buildSubmitInvoiceDataOptions): FinalInvoi
     lines,
     related,
     process.env.FALLBACK_COST_CENTER_ID,
-    { replaceIds: fallbackLobExcludeIds() }
+    { replaceIds: fallbackLobExcludeIds(), anyAllowed }
   );
   const changed = next.some((line, index) => line.lineOfBusinessId !== lines[index].lineOfBusinessId);
   return changed ? next : undefined;
@@ -678,7 +682,7 @@ function getRelatedLobRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   if (options.omitLobWorktag || options.applyRelatedLob) return undefined;
-  const relatedLines = linesWithRelatedLob(options);
+  const relatedLines = linesWithRelatedLob(options, true);
   if (!relatedLines) return undefined;
   return {
     buildOptions: { ...options, finalLines: relatedLines, applyRelatedLob: true },
@@ -850,7 +854,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, currencyWID, attachment, relatedLobByCostCenter } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -881,7 +885,17 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ? createReference('Payment_Terms_ID', paymentTermsWID)
     : currentInvoice.Payment_Terms_Reference;
 
-  const withFallbackWorktags = (worktags: any[], costCenterId?: string | null): any[] => {
+  const fallbackLobIds = new Set(fallbackLobExcludeIds());
+  const isFallbackLobId = (id?: string | null): boolean => Boolean(id && fallbackLobIds.has(id));
+  const stripFallbackLobWorktags = (worktags: any[]): any[] => worktags.filter((tag: any) =>
+    ([] as any[]).concat(tag.ID ?? []).every((id: any) => !fallbackLobIds.has(id?.$value ?? id?.value))
+  );
+
+  const withFallbackWorktags = (
+    worktags: any[],
+    costCenterId?: string | null,
+    explicitLineOfBusinessId?: string | null
+  ): any[] => {
     const replaceTypes = new Set([
       ...(applyFundFallback && fallbackFundRef ? ['Fund_ID'] : []),
       ...(applyCostCenterFallback && fallbackCostCenterRef ? ['Cost_Center_Reference_ID'] : []),
@@ -907,17 +921,28 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       result = additions.length ? [...worktags, ...additions] : worktags;
     }
 
-    if (!omitLobWorktag && !extractLineOfBusinessId(result)) {
-      const relatedLobId = resolveRelatedLobId(
-        relatedLobByCostCenter?.get(costCenterId ?? ''),
-        costCenterId,
-        fallbackCostCenterId,
-        fallbackLobExcludeIds()
-      );
-      const lobId = relatedLobId ?? fallbackLobId;
-      if (lobId) {
-        const lobRef = relatedLobSoapReference(relatedLobByCostCenter?.get(costCenterId ?? ''), lobId);
-        result = [...result, createReference(lobRef.type, lobRef.value)];
+    if (!omitLobWorktag) {
+      const related = relatedLobByCostCenter?.get(costCenterId ?? '');
+      const extractedLob = extractLineOfBusinessId(result);
+      const hasRealLineOfBusiness = (
+        Boolean(explicitLineOfBusinessId) && !isFallbackLobId(explicitLineOfBusinessId)
+      ) || (
+        Boolean(extractedLob) && !isFallbackLobId(extractedLob)
+      ) || worktagsIncludeLineOfBusiness(stripFallbackLobWorktags(result), related);
+
+      if (!hasRealLineOfBusiness) {
+        const relatedLobId = resolveRelatedLobId(
+          related,
+          costCenterId,
+          fallbackCostCenterId,
+          fallbackLobExcludeIds(),
+          { anyAllowed: Boolean(applyRelatedLob) }
+        );
+        const lobId = relatedLobId ?? fallbackLobId;
+        if (lobId) {
+          const lobRef = relatedLobSoapReference(related, lobId);
+          result = [...stripFallbackLobWorktags(result), createReference(lobRef.type, lobRef.value)];
+        }
       }
     }
     return result;
@@ -936,7 +961,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
           return [createReference(lobRef.type, lobRef.value)];
         })() : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
-      ], line.costCenterId);
+      ], line.costCenterId, line.lineOfBusinessId);
       const isDiscountOverride = line.hasDiscount === true;
       return {
         Line_Order: line.lineOrder,

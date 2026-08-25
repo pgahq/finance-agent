@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
-import { isWorkdayTaskNotAuthorizedError } from './lib/invoice_validation_failures.js';
+import { getCostCenterRelatedLobsByCodes } from './lib/database.js';
 import { createCostCenterContent } from './lib/rag.js';
 import {
   EMPTY_RELATED_LOB,
@@ -8,7 +8,6 @@ import {
   relatedLobEquals,
   type RelatedLob,
 } from './lib/related_worktags.js';
-import { notifyResult } from './lib/slack.js';
 import { syncDataSource } from './lib/sync.js';
 import { getRelatedWorktagsForCostCenters } from './lib/workday.js';
 
@@ -70,25 +69,28 @@ export const processor = withProcessorHandler(async (context, costCenters, event
   }
 
   let relatedByKey = new Map<string, RelatedLob>();
+  let relatedFetchFailed = false;
   try {
     relatedByKey = await getRelatedWorktagsForCostCenters(
       context,
       rows.map(row => row.workdayId)
     );
   } catch (error) {
+    relatedFetchFailed = true;
     const message = error instanceof Error ? error.message : 'Unknown related worktags error';
-    debug('Failed to fetch related worktags for cost centers; continuing without related LOB metadata', { message });
-    if (isWorkdayTaskNotAuthorizedError(error)) {
-      await notifyResult(
-        'cache_cost_centers',
-        'error',
-        undefined,
-        {
-          note: 'Workday user is not authorized for Get_Related_Worktags_for_Worktags; cost center related Line of Business metadata was not cached.',
-        },
-        error,
-        'related worktags unauthorized'
+    debug('Failed to fetch related worktags for cost centers; keeping cached related LOB metadata when present', { message });
+  }
+
+  let cachedRelatedByKey = new Map<string, RelatedLob>();
+  if (relatedFetchFailed) {
+    try {
+      cachedRelatedByKey = await getCostCenterRelatedLobsByCodes(
+        context.dbConnection,
+        [...new Set(rows.flatMap(row => [row.code, row.workdayId].filter(Boolean)))]
       );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown cached related LOB lookup error';
+      debug('Failed to load cached related LOB metadata after related worktags fetch failed', { message });
     }
   }
 
@@ -101,6 +103,8 @@ export const processor = withProcessorHandler(async (context, costCenters, event
         code: row.code,
         relatedLob: relatedByKey.get(row.workdayId)
           ?? relatedByKey.get(row.code)
+          ?? cachedRelatedByKey.get(row.workdayId)
+          ?? cachedRelatedByKey.get(row.code)
           ?? EMPTY_RELATED_LOB,
       }
     ])

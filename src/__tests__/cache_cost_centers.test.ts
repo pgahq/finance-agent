@@ -1,5 +1,5 @@
 import { processor } from '../cache_cost_centers.js';
-import { bulkInsertDocuments } from '../lib/database.js';
+import { bulkInsertDocuments, getCostCenterRelatedLobsByCodes } from '../lib/database.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 import { getRelatedWorktagsForCostCenters } from '../lib/workday.js';
 
@@ -32,6 +32,7 @@ jest.mock('../lib/database.js', () => ({
     { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
     { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
   ]),
+  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   bulkInsertDocuments: jest.fn().mockResolvedValue({}),
   bulkUpdateDocuments: jest.fn().mockResolvedValue({}),
   bulkDeleteDocuments: jest.fn().mockResolvedValue(1)
@@ -65,6 +66,9 @@ describe('cache_cost_centers', () => {
     typeof getRelatedWorktagsForCostCenters
   >;
   const mockBulkInsertDocuments = bulkInsertDocuments as jest.MockedFunction<typeof bulkInsertDocuments>;
+  const mockGetCostCenterRelatedLobsByCodes = getCostCenterRelatedLobsByCodes as jest.MockedFunction<
+    typeof getCostCenterRelatedLobsByCodes
+  >;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -124,21 +128,36 @@ describe('cache_cost_centers', () => {
       data: [{ workdayID: 'cc-wid-2', name: 'Other', code: 'CC-Other' }]
     })).resolves.not.toThrow();
 
+    expect(mockGetCostCenterRelatedLobsByCodes).toHaveBeenCalled();
     const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
     expect(inserted[0]?.metadata).toMatchObject({ relatedLob: EMPTY_RELATED_LOB });
   });
 
-  it('notifies Slack when related worktags are not authorized', async () => {
+  it('keeps cached related LOB when the SOAP fetch is unauthorized', async () => {
+    const cachedRelated = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Building_Services' }],
+    };
     mockGetRelatedWorktagsForCostCenters.mockRejectedValue(
       new Error('Processing error occurred. The task submitted is not authorized.')
     );
+    mockGetCostCenterRelatedLobsByCodes.mockResolvedValue(new Map([
+      ['CC-Other', cachedRelated],
+      ['cc-wid-2', cachedRelated],
+    ]));
 
     await expect(processor({
       data: [{ workdayID: 'cc-wid-2', name: 'Other', code: 'CC-Other' }]
     })).resolves.not.toThrow();
 
+    const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
+    expect(inserted[0]?.metadata).toMatchObject({ relatedLob: cachedRelated });
+
     const { notifyResult } = require('../lib/slack.js');
-    expect(notifyResult).toHaveBeenCalledWith(
+    expect(notifyResult).not.toHaveBeenCalledWith(
       'cache_cost_centers',
       'error',
       undefined,

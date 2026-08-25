@@ -212,7 +212,7 @@ export function applyRelatedLobWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   fallbackCostCenterId?: string | null,
-  options?: { replaceIds?: Iterable<string> }
+  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean }
 ): FinalInvoiceLine[] {
   const replaceIds = new Set(options?.replaceIds ?? []);
   return lines.map(line => {
@@ -222,7 +222,8 @@ export function applyRelatedLobWorktags(
       relatedByCostCenterId.get(line.costCenterId ?? ''),
       line.costCenterId,
       fallbackCostCenterId,
-      replaceIds
+      replaceIds,
+      { anyAllowed: Boolean(options?.anyAllowed) }
     );
     return resolved && resolved !== current ? { ...line, lineOfBusinessId: resolved } : line;
   });
