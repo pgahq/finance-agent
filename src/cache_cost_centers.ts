@@ -1,13 +1,16 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
+import { isWorkdayTaskNotAuthorizedError } from './lib/invoice_validation_failures.js';
 import { createCostCenterContent } from './lib/rag.js';
 import {
+  EMPTY_RELATED_LOB,
   parseRelatedLob,
   relatedLobEquals,
   type RelatedLob,
 } from './lib/related_worktags.js';
+import { notifyResult } from './lib/slack.js';
 import { syncDataSource } from './lib/sync.js';
-import { getRelatedWorktagsForCostCenters, isRelatedWorktagsSoapEnabled } from './lib/workday.js';
+import { getRelatedWorktagsForCostCenters } from './lib/workday.js';
 
 const QUERY = `
   SELECT
@@ -27,7 +30,7 @@ interface CostCenterRecord {
   workdayId: string;
   name: string;
   code: string;
-  relatedLob?: RelatedLob;
+  relatedLob: RelatedLob;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,33 +70,40 @@ export const processor = withProcessorHandler(async (context, costCenters, event
   }
 
   let relatedByKey = new Map<string, RelatedLob>();
-  if (isRelatedWorktagsSoapEnabled()) {
-    try {
-      relatedByKey = await getRelatedWorktagsForCostCenters(
-        context,
-        rows.map(row => row.workdayId)
+  try {
+    relatedByKey = await getRelatedWorktagsForCostCenters(
+      context,
+      rows.map(row => row.workdayId)
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown related worktags error';
+    debug('Failed to fetch related worktags for cost centers; continuing without related LOB metadata', { message });
+    if (isWorkdayTaskNotAuthorizedError(error)) {
+      await notifyResult(
+        'cache_cost_centers',
+        'error',
+        undefined,
+        {
+          note: 'Workday user is not authorized for Get_Related_Worktags_for_Worktags; cost center related Line of Business metadata was not cached.',
+        },
+        error,
+        'related worktags unauthorized'
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown related worktags error';
-      debug('Failed to fetch related worktags for cost centers; continuing without related LOB metadata', { message });
     }
-  } else {
-    debug('Skipping Get_Related_Worktags_for_Worktags; set WORKDAY_RELATED_WORKTAGS_SOAP=true after the Workday user is granted that task');
   }
 
   const items = new Map<string, CostCenterRecord>(
-    rows.map(row => {
-      const relatedLob = relatedByKey.get(row.workdayId) ?? relatedByKey.get(row.code);
-      return [
-        row.workdayId,
-        {
-          workdayId: row.workdayId,
-          name: row.name,
-          code: row.code,
-          ...(relatedLob ? { relatedLob } : {}),
-        },
-      ];
-    })
+    rows.map(row => [
+      row.workdayId,
+      {
+        workdayId: row.workdayId,
+        name: row.name,
+        code: row.code,
+        relatedLob: relatedByKey.get(row.workdayId)
+          ?? relatedByKey.get(row.code)
+          ?? EMPTY_RELATED_LOB,
+      }
+    ])
   );
 
   await syncDataSource({
@@ -106,13 +116,13 @@ export const processor = withProcessorHandler(async (context, costCenters, event
       workdayId: cc.workdayId,
       name: cc.name,
       code: cc.code,
-      ...(cc.relatedLob ? { relatedLob: cc.relatedLob } : {}),
+      relatedLob: cc.relatedLob,
     }),
     isUpdated: (existingMetadata, cc) => {
       const existing = parseCostCenterMetadata(existingMetadata);
       return existing.name !== cc.name
         || existing.code !== cc.code
-        || (cc.relatedLob != null && !relatedLobEquals(existing.relatedLob, cc.relatedLob));
+        || !relatedLobEquals(existing.relatedLob, cc.relatedLob);
     },
     notifyLabel: 'cache_cost_centers',
     itemLabel: 'cost centers',

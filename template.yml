@@ -65,7 +65,6 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
-        WORKDAY_RELATED_WORKTAGS_SOAP: "false"
         WORKDAY_DEFAULT_SUPPLIER_WID: 29ce29920bac1001634359c103bb0000
         FALLBACK_FUND_ID: !Ref FallbackFundId
         FALLBACK_PAYMENT_TERMS_ID: !Ref FallbackPaymentTermsId

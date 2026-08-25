@@ -333,10 +333,6 @@ function fetchRelatedWorktagsPage(
   });
 }
 
-export function isRelatedWorktagsSoapEnabled(): boolean {
-  return process.env.WORKDAY_RELATED_WORKTAGS_SOAP === 'true';
-}
-
 export async function getRelatedWorktagsForCostCenters(
   context: { workdayConfig: WorkdayConfig },
   costCenterWorkdayIds: string[]
@@ -631,11 +627,6 @@ async function ensureRelatedLobByCostCenter(
     id !== process.env.FALLBACK_COST_CENTER_ID && !relatedLobHasUsableValue(existing.get(id))
   );
   if (missing.length === 0) {
-    return existing === options.relatedLobByCostCenter ? options : { ...options, relatedLobByCostCenter: existing };
-  }
-
-  if (!isRelatedWorktagsSoapEnabled()) {
-    debug('Skipping live Get_Related_Worktags_for_Worktags during supplier invoice submit; set WORKDAY_RELATED_WORKTAGS_SOAP=true after the Workday user is granted that task');
     return existing === options.relatedLobByCostCenter ? options : { ...options, relatedLobByCostCenter: existing };
   }
 
