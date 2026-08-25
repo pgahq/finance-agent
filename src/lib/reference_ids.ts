@@ -205,12 +205,24 @@ export async function resolveReferenceCodesFromText(
   const grouped = await findDocumentsByReferenceIds(db, codes, REFERENCE_CODE_DOCUMENT_TYPES);
   const unmatched = codes.filter((code) => (grouped.get(code) ?? []).length === 0);
   const inexactCodes = new Set(unmatched.slice(0, MAX_INEXACT_REFERENCE_LOOKUPS));
-  return Promise.all(codes.map(async (code) => ({
-    code,
-    matches: await resolveMatchesForCode(db, code, grouped.get(code) ?? [], {
-      allowInexact: inexactCodes.has(code),
-    }),
-  })));
+  return Promise.all(codes.map(async (code) => {
+    const exactDocuments = grouped.get(code) ?? [];
+    if (exactDocuments.length > 0) {
+      return {
+        code,
+        matches: exactDocuments.map((document) => mapDocumentToReferenceMatch(document, code, 1)),
+      };
+    }
+    if (!inexactCodes.has(code)) {
+      return { code, matches: [] };
+    }
+    try {
+      return { code, matches: await findSimilarReferenceMatches(db, code) };
+    } catch (error) {
+      debug(`Inexact lookup failed for reference code ${code}:`, error);
+      return { code, matches: [] };
+    }
+  }));
 }
 
 function uniqueCompanies(matches: CachedReferenceMatch[]): EmailCompanyMatch[] {

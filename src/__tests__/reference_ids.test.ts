@@ -401,6 +401,25 @@ describe('formatReferenceDirectory', () => {
     expect(directory).toContain('confidence=1.00');
     expect(directory).toContain('topMatch');
   });
+
+  it('formats codes with no cached match so the model does not invent a type', () => {
+    const directory = formatReferenceDirectory([
+      {
+        code: '912',
+        matches: [{
+          type: 'company',
+          workdayId: 'company-wid-912',
+          referenceId: '912',
+          name: 'PGA Company',
+          confidence: 1,
+        }],
+      },
+      { code: '99999', matches: [] },
+    ]);
+    expect(directory).toContain('912');
+    expect(directory).toContain('99999');
+    expect(directory).toContain('no cached company, cost center, fund, LOB, or spend category');
+  });
 });
 
 describe('pickTopReferenceMatch', () => {
@@ -483,5 +502,22 @@ describe('resolveReferenceCodesFromText', () => {
     await resolveReferenceCodesFromText(db, 'Coding: 912 / 72200');
 
     expect(mockCreateEmbedding).not.toHaveBeenCalled();
+  });
+
+  it('keeps exact metadata hits when an inexact embedding lookup fails', async () => {
+    mockReferenceLookup({
+      '912': [companyDoc()],
+    });
+    mockCreateEmbedding.mockRejectedValue(new Error('embedding down'));
+
+    const resolved = await resolveReferenceCodesFromText(db, 'Coding: 912 / 333');
+
+    expect(resolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: '912',
+        matches: [expect.objectContaining({ type: 'company', workdayId: 'company-wid-912', confidence: 1 })],
+      }),
+      expect.objectContaining({ code: '333', matches: [] }),
+    ]));
   });
 });

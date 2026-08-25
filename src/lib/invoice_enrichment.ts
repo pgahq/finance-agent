@@ -44,7 +44,7 @@ export async function enrichInvoiceFromAttachments(
       try {
         const db = await getDatabaseConnection(process.env);
         const resolved = await resolveReferenceCodesFromText(db, emailContext.plainTextBody);
-        referenceDirectoryText = formatReferenceDirectory(resolved.filter((item) => item.matches.length > 0));
+        referenceDirectoryText = formatReferenceDirectory(resolved);
       } catch (error) {
         debug('Failed to pre-resolve email reference codes:', error);
       }
