@@ -103,6 +103,14 @@ jest.mock('../lib/s3.js', () => ({
   }),
 }));
 
+jest.mock('../lib/invoice_lines.js', () => {
+  const actual = jest.requireActual('../lib/invoice_lines.js');
+  return {
+    ...actual,
+    buildFinalInvoiceLines: jest.fn()
+  };
+});
+
 describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -483,7 +491,8 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
-        poLines: undefined,
+        extractedTaxAmount: undefined,
+        finalLines: undefined,
         paymentTermsId: undefined,
       }
     );
@@ -553,7 +562,8 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
-        poLines: undefined,
+        extractedTaxAmount: undefined,
+        finalLines: undefined,
         paymentTermsId: undefined,
       }
     );
@@ -562,5 +572,77 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).');
 
     jest.useRealTimers();
+  });
+
+  it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false },
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: {
+          descriptor: 'Existing Supplier',
+          id: 'SUP-1'
+        },
+        company1: {
+          descriptor: 'Test Company',
+          id: 'COMP-1'
+        },
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+    ]);
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        extractedFreightAmount: '$15.00',
+        finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }]
+      })
+    );
   });
 });

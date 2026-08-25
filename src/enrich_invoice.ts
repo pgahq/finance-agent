@@ -15,7 +15,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
+import { buildFinalInvoiceLines, splitFreightLines, type EmailWorktags, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
@@ -175,7 +175,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
@@ -212,9 +211,13 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
-      ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
-      : [];
+    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
+      canModifyInvoice
+        ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
+        : []
+    );
+    const extractedFreightAmount = result.extractedFreightAmount
+      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
     let finalLines: FinalInvoiceLine[] | undefined;
     let lineFallbacks: LineFallbacks | undefined;
