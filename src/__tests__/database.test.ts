@@ -437,10 +437,36 @@ describe('Database Library', () => {
 
       expect(mockConnection.query).toHaveBeenCalledWith(
         expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
-        [['CC-Building Services-PBG']]
+        [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
       );
       expect(result.get('CC-Building Services-PBG')).toEqual(relatedLob);
       expect(result.get('cc-wid-1')).toEqual(relatedLob);
+    });
+
+    it('matches cost center codes with spaces or underscores', async () => {
+      const relatedLob = {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+      };
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Building_Services-PBG', relatedLob } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(
+        mockConnection,
+        ['CC-Building Services-PBG']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
+      );
+      expect(result.get('CC-Building Services-PBG')).toEqual(relatedLob);
+      expect(result.get('CC-Building_Services-PBG')).toEqual(relatedLob);
     });
 
     it('returns an empty map when no ids are provided', async () => {
@@ -471,7 +497,7 @@ describe('Database Library', () => {
 
       expect(mockConnection.query).toHaveBeenCalledWith(
         expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
-        [['CC-Enterprise Technology']]
+        [expect.arrayContaining(['CC-Enterprise Technology', 'CC-Enterprise_Technology'])]
       );
       expect(result.get('CC-Enterprise Technology')).toBe('cc-wid-1');
       expect(result.get('cc-wid-1')).toBe('cc-wid-1');
