@@ -69,7 +69,7 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Null if not visible or unclear.'),
 
-  extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping" or "delivery" charges. Null if no freight amount could be found or if it is ambiguous.'),
+  extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping", "handling", or "delivery" charges. Capture this here even if the invoice presents freight/shipping/handling as a line item — do NOT include those lines in extractedInvoiceLines. Null if no freight amount could be found or if it is ambiguous.'),
 
   extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
 
@@ -86,7 +86,7 @@ export const InvoiceEnrichmentSchema = z.object({
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.')
-  })).nullable().describe('Line items extracted from the invoice document. Null if no line items could be extracted.'),
+  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({
     event: z.object({
@@ -254,7 +254,7 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ## Part 5: Freight Amount
 
-Read the invoice attachment and extract the freight amount, which may also be labeled as "shipping" or "delivery" charges. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00"). If no freight amount can be found or if it is ambiguous, omit the field.
+Read the invoice attachment and extract the freight amount. It may be labeled as "Freight", "Shipping", "Handling", "Shipping & Handling", "Delivery", or similar. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00"). If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount can be found or if it is ambiguous, omit the field.
 
 ---
 
@@ -299,6 +299,7 @@ Extract the individual line items from the invoice document:
    - **Total Price**: The total/extended price for the line (if stated)
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
+Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

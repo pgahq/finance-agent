@@ -13,6 +13,8 @@ import {
   bulkUpdateDocuments,
   bulkDeleteDocuments,
   migrateDocumentsTypeCheck,
+  getCostCenterRelatedLobsByCodes,
+  getCostCenterWorkdayIdsByCodes,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -466,6 +468,26 @@ describe('Database Library', () => {
       );
       expect(result).toBeUndefined(); // bulkUpdateDocuments doesn't return values
     });
+
+    it('keeps the existing embedding when none is provided', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+
+      await bulkUpdateDocuments(mockConnection, [{
+        workdayId: 'doc-1',
+        type: 'cost_center',
+        content: 'Cost Center Name: Building Services',
+        metadata: { relatedLob: { allowedReferenceIds: ['LOB-Building_Services'] } },
+      }]);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET content = $3, metadata = $4, updated_at = CURRENT_TIMESTAMP'),
+        ['doc-1', 'cost_center', 'Cost Center Name: Building Services', expect.any(String)]
+      );
+      expect(mockQuery.mock.calls.some(([sql]: [string]) => typeof sql === 'string' && sql.includes('embedding'))).toBe(false);
+    });
   });
 
   describe('bulkDeleteDocuments', () => {
@@ -486,6 +508,117 @@ describe('Database Library', () => {
         [['doc-1', 'doc-2'], 'supplier']
       );
       expect(result).toBe(0); // bulkDeleteDocuments returns row count
+    });
+  });
+
+  describe('getCostCenterRelatedLobsByCodes', () => {
+    it('indexes related LOB metadata by cost center code and workday id', async () => {
+      const relatedLob = {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: ['LOB-Facilities'],
+      };
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Building Services-PBG', relatedLob } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(
+        mockConnection,
+        ['CC-Building Services-PBG', 'CC-Building Services-PBG']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
+      );
+      expect(result.get('CC-Building Services-PBG')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: ['LOB-Facilities'],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+      });
+      expect(result.get('cc-wid-1')).toEqual(result.get('CC-Building Services-PBG'));
+    });
+
+    it('matches cost center codes with spaces or underscores', async () => {
+      const relatedLob = {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+      };
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Building_Services-PBG', relatedLob } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(
+        mockConnection,
+        ['CC-Building Services-PBG']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
+      );
+      expect(result.get('CC-Building Services-PBG')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+        defaultIds: [],
+        allowedIds: [{ type: 'Organization_Reference_ID', value: 'Building Services' }],
+      });
+      expect(result.get('CC-Building_Services-PBG')).toEqual(result.get('CC-Building Services-PBG'));
+    });
+
+    it('returns an empty map when no ids are provided', async () => {
+      const mockConnection = {
+        query: jest.fn(),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterRelatedLobsByCodes(mockConnection, []);
+      expect(result.size).toBe(0);
+      expect(mockConnection.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getCostCenterWorkdayIdsByCodes', () => {
+    it('indexes cost center Workday ids by code and workday id', async () => {
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'cc-wid-1', metadata: { code: 'CC-Enterprise Technology' } }
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterWorkdayIdsByCodes(
+        mockConnection,
+        ['CC-Enterprise Technology']
+      );
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
+        [expect.arrayContaining(['CC-Enterprise Technology', 'CC-Enterprise_Technology'])]
+      );
+      expect(result.get('CC-Enterprise Technology')).toBe('cc-wid-1');
+      expect(result.get('cc-wid-1')).toBe('cc-wid-1');
+    });
+
+    it('returns an empty map when no ids are provided', async () => {
+      const mockConnection = {
+        query: jest.fn(),
+        close: jest.fn()
+      };
+
+      const result = await getCostCenterWorkdayIdsByCodes(mockConnection, []);
+      expect(result.size).toBe(0);
+      expect(mockConnection.query).not.toHaveBeenCalled();
     });
   });
 });

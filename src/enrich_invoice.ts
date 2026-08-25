@@ -15,8 +15,10 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { buildFinalInvoiceLines, type EmailWorktags, type ExtractedInvoiceLine, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
-import { isInvoiceMarkedForSkip, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { buildFinalInvoiceLines, splitFreightLines, type EmailWorktags, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
+import type { RelatedLob } from './lib/related_worktags.js';
+import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
@@ -26,27 +28,6 @@ import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInv
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
-const WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE = 'The task submitted is not authorized';
-
-function errorText(error: unknown): string {
-  if (typeof error === 'string') {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}\n${error.stack ?? ''}`;
-  }
-
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return '';
-  }
-}
-
-function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
-  return errorText(error).includes(WORKDAY_TASK_NOT_AUTHORIZED_MESSAGE);
-}
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
@@ -182,7 +163,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
@@ -219,12 +199,17 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const candidateLines: ExtractedInvoiceLine[] = canModifyInvoice
-      ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
-      : [];
+    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
+      canModifyInvoice
+        ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
+        : []
+    );
+    const extractedFreightAmount = result.extractedFreightAmount
+      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
     let finalLines: FinalInvoiceLine[] | undefined;
     let lineFallbacks: LineFallbacks | undefined;
+    let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
     if (candidateLines.length > 0) {
       debug(`Building final invoice lines from ${candidateLines.length} extracted line(s)`);
       const built = await buildFinalInvoiceLines(
@@ -235,11 +220,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           fundId: process.env.FALLBACK_FUND_ID,
           costCenterId: process.env.FALLBACK_COST_CENTER_ID,
           spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+          lineOfBusinessId: process.env.FALLBACK_LOB_ID,
         },
-        emailWorktags
+        emailWorktags,
+        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds)
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
+      relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
 
@@ -266,6 +254,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         extractedTaxAmount,
         finalLines,
+        relatedLobByCostCenter,
+        resolveCostCenterWorkdayIds: (costCenterIds) =>
+          getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
         paymentTermsId
       });
       if (!updateOutcome.success) {
@@ -321,6 +312,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         defaultSupplier: fallbacks.defaultSupplier,
         fallbackFund: fallbacks.fund ? process.env.FALLBACK_FUND_ID : undefined,
         fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
+        fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
       },
     });
@@ -363,6 +355,7 @@ interface UpfrontFallbacks {
   fund: boolean;
   costCenter: boolean;
   spendCategory: boolean;
+  lineOfBusiness: boolean;
 }
 
 interface Fallbacks extends UpfrontFallbacks {
@@ -374,7 +367,9 @@ interface Fallbacks extends UpfrontFallbacks {
 function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
   const omittedWorktags: string[] = [];
   if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
-  if (submissionFallbacks.some(f => f.field === 'worktag:lob')) omittedWorktags.push('Line of Business');
+  if (submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.startsWith('omitted'))) {
+    omittedWorktags.push('Line of Business');
+  }
   const validationErrorFields = new Set(
     submissionFallbacks.filter(f => f.dueToValidationError).map(f => f.field)
   );
@@ -383,6 +378,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     fund: upfront.fund || submissionFallbacks.some(f => f.field === 'worktag:fund'),
     costCenter: upfront.costCenter || submissionFallbacks.some(f => f.field === 'worktag:costCenter'),
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
+    lineOfBusiness: upfront.lineOfBusiness || submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.includes('fallback')),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
@@ -408,6 +404,7 @@ function getUpfrontFallbacks(
       fund: lineFallbacks.fund,
       costCenter: lineFallbacks.costCenter,
       spendCategory: lineFallbacks.spendCategory,
+      lineOfBusiness: lineFallbacks.lineOfBusiness,
     };
   }
 
@@ -426,6 +423,7 @@ function getUpfrontFallbacks(
     fund,
     costCenter,
     spendCategory,
+    lineOfBusiness: false,
   };
 }
 
@@ -447,6 +445,10 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
   if (fallbacks.spendCategory && process.env.FALLBACK_SPEND_CATEGORY_ID) {
     const reason = isValidationError('worktag:spendCategory') ? 'applied during retry due to a validation error from workday' : 'applied to lines without an existing spend category';
     parts.push(`Spend Category: ${process.env.FALLBACK_SPEND_CATEGORY_ID} (${reason})`);
+  }
+  if (fallbacks.lineOfBusiness && process.env.FALLBACK_LOB_ID) {
+    const reason = isValidationError('worktag:lob') ? 'applied during retry due to a validation error from workday' : 'applied to lines without an existing line of business';
+    parts.push(`Line of Business: ${process.env.FALLBACK_LOB_ID} (${reason})`);
   }
   if (fallbacks.paymentTerms && process.env.FALLBACK_PAYMENT_TERMS_ID) {
     parts.push(`Payment Terms: ${process.env.FALLBACK_PAYMENT_TERMS_ID} (applied during retry due to a validation error from workday)`);

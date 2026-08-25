@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -573,6 +574,7 @@ describe('Workday utilities', () => {
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+      delete process.env.FALLBACK_LOB_ID;
 
       // Mock fetch for OAuth token
       (global.fetch as jest.Mock).mockResolvedValue({
@@ -1540,6 +1542,305 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('should omit OCR freight/shipping lines from Invoice_Line_Replacement_Data and recover Freight_Amount', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const merchandiseLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Consulting Services',
+        Quantity: '1',
+        Unit_Cost: '100',
+        Extended_Amount: '100'
+      };
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-2',
+        Item_Description: 'Shipping',
+        Quantity: '1',
+        Unit_Cost: '15',
+        Extended_Amount: '15'
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Invoice_Line_Replacement_Data: [merchandiseLine, freightLine]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting Services' })
+      ]);
+    });
+
+    it('should replace OCR freight-only lines with a remainder Invoice line so existing shipping rows are replaced', async () => {
+      process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
+
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Ground Shipping',
+        Quantity: '1',
+        Unit_Cost: '15',
+        Extended_Amount: '15'
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '15.00',
+                Invoice_Line_Replacement_Data: [freightLine]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 1,
+          Unit_Cost: 0,
+          Extended_Amount: 0,
+          Spend_Category_Reference: {
+            ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'DEFAULT-SPEND-CAT' }],
+          },
+        })
+      ]);
+    });
+
+    it('should replace freight-only OCR with a remainder Invoice line when control exceeds freight', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'Ground Shipping',
+                  Quantity: '1',
+                  Unit_Cost: '15',
+                  Extended_Amount: '15'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 1,
+          Unit_Cost: 100,
+          Extended_Amount: 100,
+        })
+      ]);
+    });
+
+    it('should split a single SOAP OCR line object so freight-only updates replace that row with a remainder Invoice line', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'Ground Shipping',
+        Quantity: '1',
+        Unit_Cost: '15',
+        Extended_Amount: '15'
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '15.00',
+                Invoice_Line_Replacement_Data: freightLine
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 1,
+          Unit_Cost: 0,
+          Extended_Amount: 0,
+        })
+      ]);
+    });
+
+    it('should parse SOAP string Freight_Amount when computing a freight-only remainder Invoice line', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Freight_Amount: '15.00',
+                Tax_Amount: '0.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'Ground Shipping',
+                  Quantity: '1',
+                  Unit_Cost: '15',
+                  Extended_Amount: '15'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe('15.00');
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 1,
+          Unit_Cost: 100,
+          Extended_Amount: 100,
+        })
+      ]);
+    });
+
     it('should apply default OCR spend category to incomplete lines missing a spend category', async () => {
       process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
 
@@ -1592,6 +1893,7 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest();
 
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+      delete process.env.FALLBACK_LOB_ID;
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data).toEqual([
         expect.objectContaining({
@@ -1663,6 +1965,7 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest();
 
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+      delete process.env.FALLBACK_LOB_ID;
 
       const lines = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
       expect(lines).toHaveLength(2);
@@ -1931,7 +2234,7 @@ describe('Workday utilities', () => {
 
         await submitSupplierInvoiceUpdateForTest({
           finalLines: [
-            { lineOrder: 1, description: 'Consulting Services', quantity: 5, unitCost: 200, extendedAmount: 1000, fundId: 'FUND-001', costCenterId: 'CC-001', spendCategoryId: 'SC-001' }
+            { lineOrder: 1, description: 'Consulting Services', quantity: 5, unitCost: 200, extendedAmount: 1000, fundId: 'FUND-001', costCenterId: 'CC-001', spendCategoryId: 'SC-001', lineOfBusinessId: 'LOB-Facilities' }
           ]
         });
 
@@ -1945,10 +2248,49 @@ describe('Workday utilities', () => {
           Extended_Amount: 1000,
           Worktags_Reference: [
             { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-001' }] },
-            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-001' }] }
+            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-001' }] },
+            { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Facilities' }] }
           ],
           Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-001' }] }
         });
+      });
+
+      it('should not append fallback LOB when the line already has a related Line of Business id', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Building Services-PBG',
+            lineOfBusinessId: 'Building Services',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Building Services-PBG', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['Building Services', '737c7895dd701001ec3537bb73570000'],
+              defaultIds: [],
+              allowedIds: [
+                { type: 'Custom_Organization_Reference_ID', value: 'Building Services' },
+                { type: 'Organization_Reference_ID', value: 'Building Services' },
+                { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+              ],
+            }]
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Building Services' }] }
+        ]);
       });
 
       it('should use Line_Order from finalLines for each line', async () => {
@@ -1967,6 +2309,139 @@ describe('Workday utilities', () => {
         expect(lines[0].Line_Order).toBe(1);
         expect(lines[1].Line_Order).toBe(2);
         expect(lines[2].Line_Order).toBe(3);
+      });
+
+      it('should omit shipping/freight/handling finalLines from Invoice_Line_Replacement_Data and set Freight_Amount', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toHaveLength(1);
+        expect(data.Invoice_Line_Replacement_Data[0].Item_Description).toBe('Consulting Services');
+        expect(data.Invoice_Line_Replacement_Data[0].Line_Order).toBe(1);
+      });
+
+      it('should recover Freight_Amount from stripped freight finalLines when extractedFreightAmount is missing', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Shipping & Handling', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+      });
+
+      it('should send empty Invoice_Line_Replacement_Data when every finalLine is freight', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+      });
+
+      it('should keep OCR merchandise when every finalLine is freight on update', async () => {
+        const { mockClient, getCapturedRequest } = setupMockClient();
+        const merchandiseLine = {
+          Supplier_Invoice_Line_ID: 'LINE-1',
+          Item_Description: 'Consulting Services',
+          Quantity: '1',
+          Unit_Cost: '100',
+          Extended_Amount: '100'
+        };
+        const freightLine = {
+          Supplier_Invoice_Line_ID: 'LINE-2',
+          Item_Description: 'Shipping',
+          Quantity: '1',
+          Unit_Cost: '15',
+          Extended_Amount: '15'
+        };
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                  Invoice_Line_Replacement_Data: [merchandiseLine, freightLine]
+                }
+              }
+            }
+          });
+        });
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toEqual([
+          expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting Services' })
+        ]);
+      });
+
+      it('should replace OCR freight-only lines with a remainder Invoice line even when amount due equals freight plus tax', async () => {
+        const { mockClient, getCapturedRequest } = setupMockClient();
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                  Control_Amount_Total: '15.00',
+                  Invoice_Line_Replacement_Data: [{
+                    Supplier_Invoice_Line_ID: 'LINE-1',
+                    Item_Description: 'Ground Shipping',
+                    Quantity: '1',
+                    Unit_Cost: '15',
+                    Extended_Amount: '15'
+                  }]
+                }
+              }
+            }
+          });
+        });
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ]
+        });
+
+        const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toEqual([
+          expect.objectContaining({
+            Line_Order: 1,
+            Item_Description: 'Invoice',
+            Quantity: 1,
+            Unit_Cost: 0,
+            Extended_Amount: 0,
+          })
+        ]);
       });
 
       it('should omit optional fields when null', async () => {
@@ -2041,7 +2516,31 @@ describe('Workday utilities', () => {
         ]);
       });
 
-      it('should replace cost center with fallback on worktag validation fault retry', async () => {
+      it('should append Default_Line_Of_Business when a line has a cost center but no LOB', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+          }]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
+        ]);
+      });
+
+      it('should replace cost center with fallback on a cost-center availability fault', async () => {
         const mockClient = {
           setSecurity: jest.fn(),
           setEndpoint: jest.fn(),
@@ -2063,7 +2562,7 @@ describe('Workday utilities', () => {
             callback({
               Validation_Fault: {
                 Validation_Error: {
-                  Message: 'When "Cost Center: CC-Technology Services" is entered then these worktag types must also have a value: Line of Business.',
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-Technology Services',
                   Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
                   Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
                 }
@@ -2096,6 +2595,459 @@ describe('Workday utilities', () => {
           { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
           { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cc-id' }] }
         ]);
+      });
+
+      it('should apply fallback Line of Business when a cost center requires LOB', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const lineHasFallbackLob = (request: any) => {
+          const worktags = request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? [];
+          return JSON.stringify(worktags).includes('Default_Line_Of_Business');
+        };
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (!lineHasFallbackLob(request)) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'fallback-cc-id';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
+        ]);
+      });
+
+      it('should use a unique related allowed LOB instead of Default_Line_Of_Business', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+            lineOfBusinessId: 'Default_Line_Of_Business',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['LOB-Enterprise'],
+            }]
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+        ]);
+      });
+
+      it('should keep Default_Line_Of_Business when multiple related allowed LOBs exist', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+            lineOfBusinessId: 'Default_Line_Of_Business',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['LOB-Enterprise', 'LOB-Technology'],
+            }]
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
+        ]);
+      });
+
+      it('should swap Default LOB for a related allowed LOB after Workday rejects the default', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Results: { Total_Pages: 1 },
+            Response_Data: {
+              Related_Worktags: {
+                Related_Worktag_Reference: {
+                  ID: [
+                    { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }
+                  ]
+                },
+                Related_Worktags_Data: {
+                  Related_Worktags_by_Type_Data: {
+                    Required_On_Transaction: true,
+                    Allowed_Worktag_Data: [
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] } }
+                    ]
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        const capturedRequests: any[] = [];
+        rmClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          const worktags = JSON.stringify(request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? []);
+          if (worktags.includes('Default_Line_Of_Business')) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(result.success).toBe(true);
+        expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+          expect.objectContaining({
+            Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+              Request_References: {
+                Related_Worktag_Reference: [
+                  { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] }
+                ]
+              }
+            })
+          }),
+          expect.any(Function)
+        );
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+        ]);
+      });
+
+      it('should apply a related LOB instead of fallback cost center when Workday also says the cost center is unavailable', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Results: { Total_Pages: 1 },
+            Response_Data: {
+              Related_Worktags: {
+                Related_Worktag_Reference: {
+                  ID: [
+                    { $attributes: { type: 'WID' }, $value: 'cc-ent-tech-wid' },
+                    { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }
+                  ]
+                },
+                Related_Worktags_Data: {
+                  Related_Worktags_by_Type_Data: {
+                    Worktag_Type_Reference: {
+                      ID: [{ $attributes: { type: 'Worktag_Type_ID' }, $value: 'LINE_OF_BUSINESS' }]
+                    },
+                    Required_On_Transaction: true,
+                    Allowed_Worktag_Data: [
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] } }
+                    ]
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        const capturedRequests: any[] = [];
+        rmClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          const worktags = JSON.stringify(request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? []);
+          if (!worktags.includes('LOB-Enterprise')) {
+            callback({
+              faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+              detail: {
+                Validation_Fault: {
+                  Validation_Error: [
+                    {
+                      Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+                      Detail_Message: 'Parm Supplier_Invoice_Line_Replacement_Data (6$18900): n, Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                    },
+                    {
+                      Message: 'The Cost Center is/are not available for use with the company/s: CC-Enterprise Technology',
+                      Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                    }
+                  ]
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' },
+            { lineOrder: 9, description: 'Line 9', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', EMPTY_RELATED_LOB]
+          ]),
+          resolveCostCenterWorkdayIds: async () => new Map([
+            ['CC-Enterprise Technology', 'cc-ent-tech-wid']
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+          expect.objectContaining({
+            Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+              Request_References: {
+                Related_Worktag_Reference: expect.arrayContaining([
+                  { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+                  { ID: [{ $attributes: { type: 'WID' }, $value: 'cc-ent-tech-wid' }] }
+                ])
+              }
+            })
+          }),
+          expect.any(Function)
+        );
+
+        const retryLines = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(retryLines).toHaveLength(2);
+        for (const line of retryLines) {
+          expect(line.Worktags_Reference).toEqual([
+            { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+            { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+            { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+          ]);
+        }
+        expect(JSON.stringify(capturedRequests[1])).not.toContain('CC0000');
+      });
+
+      it('should keep the original validation error when related worktags are not authorized', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback({ body: soapBody }, null);
+        });
+        rmClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback({
+            faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+            detail: {
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                }
+              }
+            }
+          }, null);
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        await expect(submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', EMPTY_RELATED_LOB]
+          ])
+        })).rejects.toMatchObject({
+          message: expect.stringContaining('must also have a value: Line of Business')
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalled();
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
+      it('should not omit Line of Business after a required-LOB fault when related fill and fallback are already applied', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          callback({
+            faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+            detail: {
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }
+          }, null);
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await expect(submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+            lineOfBusinessId: 'LOB-Enterprise',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['LOB-Enterprise'],
+            }]
+          ])
+        })).rejects.toMatchObject({
+          message: expect.stringContaining('must also have a value: Line of Business')
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(capturedRequests[0])).toContain('LOB-Enterprise');
+        expect(JSON.stringify(capturedRequests[0])).not.toContain('Default_Line_Of_Business');
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       });
 
     });
@@ -2188,6 +3140,7 @@ describe('Workday utilities', () => {
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+      delete process.env.FALLBACK_LOB_ID;
 
       (global.fetch as jest.Mock).mockResolvedValue({
         ok: true,
@@ -2347,6 +3300,76 @@ describe('Workday utilities', () => {
         Item_Description: 'Test line',
         Quantity: 1
       });
+    });
+
+    it('should omit shipping/freight/handling finalLines from Invoice_Line_Replacement_Data and set Freight_Amount on create', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        extractedFreightAmount: '$15.00',
+        finalLines: [
+          { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ]
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toHaveLength(1);
+      expect(data.Invoice_Line_Replacement_Data[0].Item_Description).toBe('Consulting Services');
+      expect(data.Invoice_Line_Replacement_Data[0].Line_Order).toBe(1);
+    });
+
+    it('should omit Invoice_Line_Replacement_Data on freight-only create so freight is not re-included as a line', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        extractedFreightAmount: '$15.00',
+        finalLines: [
+          { lineOrder: 1, description: 'Ground Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ]
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+    });
+
+    it('should omit Invoice_Line_Replacement_Data on create when the only finalLine is a single freight SOAP object', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        extractedFreightAmount: '$15.00',
+        finalLines: {
+          lineOrder: 1,
+          description: 'Ground Shipping',
+          quantity: 1,
+          unitCost: 15,
+          extendedAmount: 15,
+        } as any,
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
 
     it('should propagate SOAP errors without request headers or bodies', async () => {
@@ -2639,6 +3662,7 @@ describe('Workday utilities', () => {
       delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
       delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
       delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+      delete process.env.FALLBACK_LOB_ID;
 
       (global.fetch as jest.Mock).mockResolvedValue({
         ok: true,
@@ -2939,6 +3963,144 @@ describe('Workday utilities', () => {
       const result = await getAllPaymentTerms(mockContext);
 
       expect(result).toEqual([{ paymentTermsId: 'NET_30', name: 'Net 30' }]);
+    });
+  });
+
+  describe('getRelatedWorktagsForCostCenters', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    beforeEach(() => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+    });
+
+    it('returns related LOB worktags keyed by cost center WID', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Related_Worktags_for_Worktags: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1 },
+          Response_Data: {
+            Related_Worktags: {
+              Related_Worktag_Reference: {
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'cc-wid-1' },
+                  { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }
+                ]
+              },
+              Related_Worktags_Data: {
+                Related_Worktags_by_Type_Data: {
+                  Required_On_Transaction: true,
+                  Default_Worktag_Data: {
+                    Default_Worktag_Reference: {
+                      ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Facilities' }]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        });
+      });
+
+      const result = await getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1']);
+
+      expect(mockClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+            Request_References: {
+              Related_Worktag_Reference: [
+                { ID: [{ $attributes: { type: 'WID' }, $value: 'cc-wid-1' }] }
+              ]
+            }
+          })
+        }),
+        expect.any(Function)
+      );
+      expect(result.get('cc-wid-1')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: [],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [],
+      });
+      expect(result.get('CC-Building Services-PBG')).toEqual(result.get('cc-wid-1'));
+    });
+
+    it('requests related worktags by cost center code when the id is not a WID', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Related_Worktags_for_Worktags: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+        callback(null, { Response_Results: { Total_Pages: 1 }, Response_Data: { Related_Worktags: [] } });
+      });
+
+      await getRelatedWorktagsForCostCenters(mockContext, ['CC-Enterprise Technology']);
+
+      expect(mockClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Get_Related_Worktags_for_Worktags_Request: expect.objectContaining({
+            Request_References: {
+              Related_Worktag_Reference: [
+                { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] }
+              ]
+            }
+          })
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it('returns an empty map when no cost center ids are provided', async () => {
+      const result = await getRelatedWorktagsForCostCenters(mockContext, []);
+      expect(result.size).toBe(0);
+    });
+
+    it('throws a sanitized error when related worktags are not authorized', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Related_Worktags_for_Worktags: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+      mockClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+        callback({ body: soapBody }, null);
+      });
+
+      await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.toMatchObject({
+        message: 'Processing error occurred. The task submitted is not authorized.'
+      });
+      await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.not.toHaveProperty('body');
     });
   });
 

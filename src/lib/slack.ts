@@ -183,6 +183,7 @@ export interface EnrichmentNotification {
     defaultSupplier: boolean;
     fallbackFund?: string;
     fallbackCostCenter?: string;
+    fallbackLineOfBusiness?: string;
     fallbackPaymentTerms?: boolean;
   };
 }
@@ -257,6 +258,9 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
   if (canModify && fallbacks.fallbackCostCenter) {
     fallbackLines.push(`Fallback cost center applied to lines: \`${fallbacks.fallbackCostCenter}\``);
+  }
+  if (canModify && fallbacks.fallbackLineOfBusiness) {
+    fallbackLines.push(`Fallback line of business applied to lines: \`${fallbacks.fallbackLineOfBusiness}\``);
   }
   if (canModify && fallbacks.fallbackPaymentTerms) {
     fallbackLines.push(`Fallback payment terms applied`);

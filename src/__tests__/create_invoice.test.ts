@@ -36,7 +36,9 @@ jest.mock('../lib/database.js', () => ({
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
   searchDocumentsByTypes: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
-  findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map())
+  findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
+  getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -67,9 +69,13 @@ jest.mock('../lib/invoice_enrichment.js', () => {
   };
 });
 
-jest.mock('../lib/invoice_lines.js', () => ({
-  buildFinalInvoiceLines: jest.fn()
-}));
+jest.mock('../lib/invoice_lines.js', () => {
+  const actual = jest.requireActual('../lib/invoice_lines.js');
+  return {
+    ...actual,
+    buildFinalInvoiceLines: jest.fn()
+  };
+});
 
 const baseEnrichmentResult = {
   supplier: {
@@ -115,7 +121,7 @@ const baseEnrichmentResult = {
 
 const defaultFinalLines = {
   lines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }],
-  appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+  appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
 };
 
 // Resets the module registry and re-requires create_invoice.js and its mocked dependencies,
@@ -231,6 +237,96 @@ describe('create_invoice', () => {
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
   });
 
+  it('should exclude freight/shipping extracted lines from merge and still submit Freight_Amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false },
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+    ]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+  });
+
+  it('should not synthesize a merchandise line that re-includes freight on a freight-only invoice', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$15.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-only/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+    expect(submitArgs.finalLines).toEqual([]);
+  });
+
+  it('should synthesize a merchandise remainder on create when shipping is the only extracted line and amount due is larger', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines
+      .mockResolvedValueOnce({
+        lines: [],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      })
+      .mockResolvedValueOnce({
+        lines: [{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-remainder/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual([{
+      description: 'Invoice',
+      quantity: 1,
+      unitCost: '100',
+      totalPrice: '100',
+      hasDiscount: null,
+    }]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+    expect(submitArgs.finalLines).toEqual([
+      { lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }
+    ]);
+  });
+
   it('should fall back to the default supplier WID when none is resolved', async () => {
     process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
 
@@ -258,10 +354,10 @@ describe('create_invoice', () => {
       extractedInvoiceLines: null
     });
     invoiceLines.buildFinalInvoiceLines
-      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false } })
+      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false } })
       .mockResolvedValueOnce({
         lines: [{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }],
-        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
       });
 
     const event = {
@@ -271,6 +367,13 @@ describe('create_invoice', () => {
     await expect(processor(event as any)).resolves.not.toThrow();
 
     expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual([{
+      description: 'Invoice',
+      quantity: 1,
+      unitCost: '100',
+      totalPrice: '100',
+      hasDiscount: null,
+    }]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.finalLines).toEqual([{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }]);
   });
