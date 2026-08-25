@@ -1,19 +1,42 @@
+export interface RelatedWorktagId {
+  type: string;
+  value: string;
+}
+
 export interface RelatedLob {
   requiredOnTransaction: boolean;
   defaultReferenceId: string | null;
   allowedReferenceIds: string[];
+  defaultIds?: RelatedWorktagId[];
+  allowedIds?: RelatedWorktagId[];
 }
 
 export const EMPTY_RELATED_LOB: RelatedLob = {
   requiredOnTransaction: false,
   defaultReferenceId: null,
   allowedReferenceIds: [],
+  defaultIds: [],
+  allowedIds: [],
 };
 
 const LINE_OF_BUSINESS_ID_TYPES = new Set([
   'Organization_Reference_ID',
   'Custom_Organization_Reference_ID',
 ]);
+
+const RELATED_LOB_ID_TYPES = new Set([
+  'WID',
+  'Organization_Reference_ID',
+  'Custom_Organization_Reference_ID',
+]);
+
+const PREFERRED_RELATED_LOB_ID_TYPES = [
+  'Organization_Reference_ID',
+  'Custom_Organization_Reference_ID',
+  'WID',
+] as const;
+
+const WORKDAY_WID = /^[0-9a-f]{32}$/i;
 
 export function asArray<T>(value: T | T[] | undefined | null): T[] {
   if (value == null) return [];
@@ -37,10 +60,76 @@ export function parseRelatedLob(value: unknown): RelatedLob | undefined {
   if (!Array.isArray(value.allowedReferenceIds) || !value.allowedReferenceIds.every(id => typeof id === 'string')) {
     return undefined;
   }
+  const defaultIds = parseTypedIds(value.defaultIds)
+    ?? typedIdsFromValues(value.defaultReferenceId ? [value.defaultReferenceId] : []);
+  const allowedIds = parseTypedIds(value.allowedIds)
+    ?? typedIdsFromValues(value.allowedReferenceIds);
+  return relatedLobFromTypedIds(
+    value.requiredOnTransaction,
+    defaultIds,
+    allowedIds,
+    value.defaultReferenceId,
+    value.allowedReferenceIds
+  );
+}
+
+function parseTypedIds(value: unknown): RelatedWorktagId[] | undefined {
+  if (value == null) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const ids: RelatedWorktagId[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.type !== 'string' || typeof item.value !== 'string' || !item.value) {
+      return undefined;
+    }
+    ids.push({ type: item.type, value: item.value });
+  }
+  return uniqueTypedIds(ids);
+}
+
+function typedIdsFromValues(values: string[]): RelatedWorktagId[] {
+  return uniqueTypedIds(values.filter(Boolean).map(value => ({
+    type: WORKDAY_WID.test(value) ? 'WID' : 'Organization_Reference_ID',
+    value,
+  })));
+}
+
+function uniqueTypedIds(ids: RelatedWorktagId[]): RelatedWorktagId[] {
+  const seen = new Set<string>();
+  const unique: RelatedWorktagId[] = [];
+  for (const id of ids) {
+    const key = `${id.type}:${id.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(id);
+  }
+  return unique.sort((a, b) => a.type.localeCompare(b.type) || a.value.localeCompare(b.value));
+}
+
+function preferredSubmitValues(ids: RelatedWorktagId[]): string[] {
+  const values: string[] = [];
+  for (const type of PREFERRED_RELATED_LOB_ID_TYPES) {
+    for (const id of ids) {
+      if (id.type === type && !values.includes(id.value)) values.push(id.value);
+    }
+  }
+  return values;
+}
+
+function relatedLobFromTypedIds(
+  requiredOnTransaction: boolean,
+  defaultIds: RelatedWorktagId[],
+  allowedIds: RelatedWorktagId[],
+  defaultReferenceId?: string | null,
+  allowedReferenceIds?: string[]
+): RelatedLob {
+  const preferredDefault = preferredSubmitValues(defaultIds)[0] ?? defaultReferenceId ?? null;
+  const preferredAllowed = preferredSubmitValues(allowedIds);
   return {
-    requiredOnTransaction: value.requiredOnTransaction,
-    defaultReferenceId: value.defaultReferenceId,
-    allowedReferenceIds: value.allowedReferenceIds,
+    requiredOnTransaction,
+    defaultIds,
+    allowedIds,
+    defaultReferenceId: preferredDefault,
+    allowedReferenceIds: preferredAllowed.length > 0 ? preferredAllowed : [...(allowedReferenceIds ?? [])],
   };
 }
 
@@ -84,22 +173,17 @@ export function extractLineOfBusinessId(worktags: unknown): string | null {
   return null;
 }
 
-function lineOfBusinessIdsFrom(node: unknown): string[] {
-  return [...new Set(
-    collectIds(node)
-      .filter((id): id is { type?: string; value: string } =>
-        LINE_OF_BUSINESS_ID_TYPES.has(id.type ?? '') && isLineOfBusinessReferenceId(id.value)
-      )
-      .map(id => id.value)
-  )];
-}
-
 function isTruthy(value: unknown): boolean {
   return value === true || value === 'true' || value === '1' || value === 1;
 }
 
 export function relatedLobHasUsableValue(related: RelatedLob | null | undefined): boolean {
-  return Boolean(related?.defaultReferenceId || related?.allowedReferenceIds?.length);
+  return Boolean(
+    related?.defaultReferenceId
+    || related?.allowedReferenceIds?.length
+    || related?.defaultIds?.length
+    || related?.allowedIds?.length
+  );
 }
 
 const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_(?:0?[1-9]|10)$/i;
@@ -137,41 +221,37 @@ function isLineOfBusinessWorktagType(typeData: Record<string, unknown>): boolean
   return collectTypeSignals(typeData.Worktag_Type_Reference).some(isLineOfBusinessTypeSignal);
 }
 
-function organizationReferenceIdsFrom(node: unknown): string[] {
-  return [...new Set(
+function relatedWorktagIdsFrom(node: unknown, requireLobPrefix: boolean): RelatedWorktagId[] {
+  return uniqueTypedIds(
     collectIds(node)
-      .filter((id): id is { type?: string; value: string } =>
-        LINE_OF_BUSINESS_ID_TYPES.has(id.type ?? '') && Boolean(id.value)
+      .filter((id): id is { type: string; value: string } =>
+        RELATED_LOB_ID_TYPES.has(id.type ?? '') && Boolean(id.value)
       )
-      .map(id => id.value)
-  )];
+      .filter(id => !requireLobPrefix || isLineOfBusinessReferenceId(id.value))
+      .map(id => ({ type: id.type, value: id.value }))
+  );
 }
 
 function parseRelatedLobFromTypeData(typeData: unknown): RelatedLob | null {
   if (!isRecord(typeData)) return null;
-  const defaultIds = isLineOfBusinessWorktagType(typeData)
-    ? organizationReferenceIdsFrom(typeData.Default_Worktag_Data)
-    : lineOfBusinessIdsFrom(typeData.Default_Worktag_Data);
-  const allowedIds = isLineOfBusinessWorktagType(typeData)
-    ? organizationReferenceIdsFrom(typeData.Allowed_Worktag_Data)
-    : lineOfBusinessIdsFrom(typeData.Allowed_Worktag_Data);
+  const requireLobPrefix = !isLineOfBusinessWorktagType(typeData);
+  const defaultIds = relatedWorktagIdsFrom(typeData.Default_Worktag_Data, requireLobPrefix);
+  const allowedIds = relatedWorktagIdsFrom(typeData.Allowed_Worktag_Data, requireLobPrefix);
   if (defaultIds.length === 0 && allowedIds.length === 0) return null;
 
-  return {
-    requiredOnTransaction: isTruthy(typeData.Required_On_Transaction)
-      || isTruthy(typeData.Required_On_Transaction_For_Validation),
-    defaultReferenceId: defaultIds[0] ?? null,
-    allowedReferenceIds: allowedIds,
-  };
+  return relatedLobFromTypedIds(
+    isTruthy(typeData.Required_On_Transaction) || isTruthy(typeData.Required_On_Transaction_For_Validation),
+    defaultIds,
+    allowedIds
+  );
 }
 
 function mergeRelatedLobs(parts: RelatedLob[]): RelatedLob {
-  const allowed = [...new Set(parts.flatMap(part => part.allowedReferenceIds))];
-  return {
-    requiredOnTransaction: parts.some(part => part.requiredOnTransaction),
-    defaultReferenceId: parts.find(part => part.defaultReferenceId)?.defaultReferenceId ?? null,
-    allowedReferenceIds: allowed,
-  };
+  return relatedLobFromTypedIds(
+    parts.some(part => part.requiredOnTransaction),
+    uniqueTypedIds(parts.flatMap(part => part.defaultIds ?? [])),
+    uniqueTypedIds(parts.flatMap(part => part.allowedIds ?? []))
+  );
 }
 
 function costCenterKeysFromReference(reference: unknown): string[] {
@@ -243,6 +323,23 @@ export function resolveRelatedLobId(
   const usable = candidates.filter(id => id && !excluded.has(id));
   const preferred = usable.filter(id => !isGlobalFallbackLobId(id));
   return preferred[0] ?? usable[0] ?? null;
+}
+
+export function relatedLobSoapReference(
+  related: RelatedLob | null | undefined,
+  id: string
+): RelatedWorktagId {
+  const ids = [...(related?.defaultIds ?? []), ...(related?.allowedIds ?? [])];
+  for (const type of PREFERRED_RELATED_LOB_ID_TYPES) {
+    const match = ids.find(item => item.type === type && item.value === id);
+    if (match) return match;
+  }
+  const match = ids.find(item => item.value === id);
+  if (match) return match;
+  return {
+    type: WORKDAY_WID.test(id) ? 'WID' : 'Organization_Reference_ID',
+    value: id,
+  };
 }
 
 export function relatedLobEquals(a: RelatedLob | null | undefined, b: RelatedLob | null | undefined): boolean {

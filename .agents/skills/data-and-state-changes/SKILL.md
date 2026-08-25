@@ -67,8 +67,12 @@ not. Do not enable prune for windowed sources such as events.
   requiredOnTransaction: boolean;
   defaultReferenceId: string | null;
   allowedReferenceIds: string[];
+  defaultIds: { type: string; value: string }[];
+  allowedIds: { type: string; value: string }[];
 }
 ```
+
+`defaultIds` / `allowedIds` keep SOAP `WID`, `Organization_Reference_ID`, and `Custom_Organization_Reference_ID`. Submit prefers `Organization_Reference_ID` (example `LOB-Building_Services`), then custom org id, then WID.
 
 Source is Financial Management `Get_Related_Worktags_for_Worktags`. PGA Line of Business is a custom organization, so SOAP `Worktag_Type_ID` is typically `CUSTOM_ORGANIZATION_01` (or a WID plus Descriptor `Line of Business`), not `LINE_OF_BUSINESS`. Allowed ids are `Organization_Reference_ID` / `Custom_Organization_Reference_ID` and often have no `LOB-` prefix (example: `Building Services` on `CC-Building Services-PBG`). Parse those as related LOB. Lookup matches `metadata.code` / `workday_id` and treats space vs underscore in the cost center code as the same key.
 

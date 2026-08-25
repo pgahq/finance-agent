@@ -77,6 +77,11 @@ describe('cache_cost_centers', () => {
         requiredOnTransaction: true,
         defaultReferenceId: 'LOB-Facilities',
         allowedReferenceIds: ['LOB-Facilities'],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [
+          { type: 'Organization_Reference_ID', value: 'LOB-Facilities' },
+          { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+        ],
       }]
     ]));
 
@@ -103,6 +108,11 @@ describe('cache_cost_centers', () => {
         requiredOnTransaction: true,
         defaultReferenceId: 'LOB-Facilities',
         allowedReferenceIds: ['LOB-Facilities'],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [
+          { type: 'Organization_Reference_ID', value: 'LOB-Facilities' },
+          { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+        ],
       }
     });
   });

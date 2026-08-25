@@ -1,6 +1,8 @@
 import {
   EMPTY_RELATED_LOB,
+  parseRelatedLob,
   parseRelatedWorktagsResponse,
+  relatedLobSoapReference,
   relatedWorktagsTotalPages,
   resolveRelatedLobId,
 } from '../lib/related_worktags.js';
@@ -41,6 +43,8 @@ describe('parseRelatedWorktagsResponse', () => {
       requiredOnTransaction: true,
       defaultReferenceId: 'LOB-Facilities',
       allowedReferenceIds: ['LOB-Facilities'],
+      defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
     });
     expect(parsed.get('CC-Building Services-PBG')).toEqual(parsed.get('cc-wid-1'));
   });
@@ -65,6 +69,8 @@ describe('parseRelatedWorktagsResponse', () => {
       requiredOnTransaction: false,
       defaultReferenceId: null,
       allowedReferenceIds: ['LOB-Only'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Custom_Organization_Reference_ID', value: 'LOB-Only' }],
     });
   });
 
@@ -113,6 +119,8 @@ describe('parseRelatedWorktagsResponse', () => {
       requiredOnTransaction: true,
       defaultReferenceId: null,
       allowedReferenceIds: ['Enterprise_Technology'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'Enterprise_Technology' }],
     });
   });
 
@@ -139,7 +147,11 @@ describe('parseRelatedWorktagsResponse', () => {
                 Required_On_Transaction: true,
                 Allowed_Worktag_Data: {
                   Allowed_Worktag_Reference: {
-                    ID: [id('Organization_Reference_ID', 'Building Services')]
+                    ID: [
+                      id('WID', '737c7895dd701001ec3537bb73570000'),
+                      id('Organization_Reference_ID', 'LOB-Building_Services'),
+                      id('Custom_Organization_Reference_ID', 'LOB-Building_Services'),
+                    ]
                   }
                 }
               }
@@ -152,7 +164,16 @@ describe('parseRelatedWorktagsResponse', () => {
     expect(parsed.get('737c7895dd701001f0f9c396f27b0000')).toEqual({
       requiredOnTransaction: true,
       defaultReferenceId: null,
-      allowedReferenceIds: ['Building Services'],
+      allowedReferenceIds: [
+        'LOB-Building_Services',
+        '737c7895dd701001ec3537bb73570000',
+      ],
+      defaultIds: [],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
     });
     expect(parsed.get('CC-Building_Services-PBG')).toEqual(
       parsed.get('737c7895dd701001f0f9c396f27b0000')
@@ -186,6 +207,8 @@ describe('parseRelatedWorktagsResponse', () => {
       requiredOnTransaction: true,
       defaultReferenceId: null,
       allowedReferenceIds: ['Building_Services'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Custom_Organization_Reference_ID', value: 'Building_Services' }],
     });
   });
 });
@@ -245,5 +268,78 @@ describe('resolveRelatedLobId', () => {
       defaultReferenceId: 'LOB-Default',
       allowedReferenceIds: ['LOB-Default'],
     }, 'CC0000', 'CC0000')).toBeNull();
+  });
+});
+
+describe('parseRelatedLob', () => {
+  it('keeps typed WID and organization ids from cache', () => {
+    expect(parseRelatedLob({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services', '737c7895dd701001ec3537bb73570000'],
+      defaultIds: [],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
+    })).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services', '737c7895dd701001ec3537bb73570000'],
+      defaultIds: [],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
+    });
+  });
+
+  it('synthesizes typed ids from legacy cache rows', () => {
+    expect(parseRelatedLob({
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Facilities',
+      allowedReferenceIds: ['LOB-Facilities', '737c7895dd701001ec3537bb73570000'],
+    })).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Facilities',
+      allowedReferenceIds: ['LOB-Facilities', '737c7895dd701001ec3537bb73570000'],
+      defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+      allowedIds: [
+        { type: 'Organization_Reference_ID', value: 'LOB-Facilities' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
+    });
+  });
+});
+
+describe('relatedLobSoapReference', () => {
+  it('prefers Organization_Reference_ID over Custom_Organization_Reference_ID for the same value', () => {
+    expect(relatedLobSoapReference({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services'],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
+    }, 'LOB-Building_Services')).toEqual({
+      type: 'Organization_Reference_ID',
+      value: 'LOB-Building_Services',
+    });
+  });
+
+  it('uses WID when submitting the stored Workday id', () => {
+    expect(relatedLobSoapReference({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['737c7895dd701001ec3537bb73570000'],
+      allowedIds: [{ type: 'WID', value: '737c7895dd701001ec3537bb73570000' }],
+    }, '737c7895dd701001ec3537bb73570000')).toEqual({
+      type: 'WID',
+      value: '737c7895dd701001ec3537bb73570000',
+    });
   });
 });
