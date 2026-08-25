@@ -319,7 +319,8 @@ export async function resolveCompanyFromEmail(options: {
 export function selectCompanyForCreateInvoice(options: {
   emailCompany?: EmailCompanyMatch;
   recommendedCompanyWID?: string;
-  defaultCompanyReferenceId: string;
+  poCompanyWID?: string;
+  defaultCompanyWID: string;
 }): { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' } {
   if (options.emailCompany?.workdayId && !isShortNumericReferenceId(options.emailCompany.workdayId)) {
     return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID' };
@@ -330,9 +331,12 @@ export function selectCompanyForCreateInvoice(options: {
   if (options.recommendedCompanyWID) {
     return { companyId: options.recommendedCompanyWID, companyReferenceType: 'WID' };
   }
+  if (options.poCompanyWID) {
+    return { companyId: options.poCompanyWID, companyReferenceType: 'WID' };
+  }
   return {
-    companyId: options.defaultCompanyReferenceId,
-    companyReferenceType: 'Company_Reference_ID',
+    companyId: options.defaultCompanyWID,
+    companyReferenceType: 'WID',
   };
 }
 

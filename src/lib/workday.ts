@@ -419,6 +419,17 @@ export interface PurchaseOrderLine {
   shipToAddressId?: string | null;
 }
 
+export interface PurchaseOrderCompany {
+  workdayId: string;
+  descriptor: string;
+}
+
+export interface ParsedPurchaseOrder {
+  documentNumber: string;
+  company?: PurchaseOrderCompany;
+  lines: PurchaseOrderLine[];
+}
+
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
@@ -1946,11 +1957,56 @@ export async function annotateSupplierInvoice(
   };
 }
 
-export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
+function getPurchaseOrderData(poResponse: any): any | undefined {
   const purchaseOrderRaw = poResponse?.Response_Data?.Purchase_Order;
   const purchaseOrder = Array.isArray(purchaseOrderRaw) ? purchaseOrderRaw[0] : purchaseOrderRaw;
   const poDataRaw = purchaseOrder?.Purchase_Order_Data;
-  const poData = Array.isArray(poDataRaw) ? poDataRaw[0] : poDataRaw;
+  return Array.isArray(poDataRaw) ? poDataRaw[0] : poDataRaw;
+}
+
+function parsePurchaseOrderCompany(poData: any): PurchaseOrderCompany | undefined {
+  const ref = poData?.Company_Reference;
+  if (!ref) return undefined;
+  const ids = ([] as any[]).concat(ref.ID ?? []);
+  const workdayId = ids.find((id: any) => id.$attributes?.type === 'WID')?.$value;
+  if (!workdayId) return undefined;
+  const descriptor = ref.descriptor
+    ?? ref.$attributes?.Descriptor
+    ?? ids.find((id: any) => id.$attributes?.type === 'Company_Reference_ID')?.$value
+    ?? workdayId;
+  return { workdayId, descriptor };
+}
+
+export function parsePurchaseOrder(poResponse: any): ParsedPurchaseOrder | undefined {
+  const poData = getPurchaseOrderData(poResponse);
+  if (!poData?.Document_Number) return undefined;
+  return {
+    documentNumber: poData.Document_Number,
+    company: parsePurchaseOrderCompany(poData),
+    lines: parsePurchaseOrderLines(poResponse),
+  };
+}
+
+export async function loadPurchaseOrder(
+  context: { workdayConfig: WorkdayConfig },
+  purchaseOrderNumber: string
+): Promise<ParsedPurchaseOrder | undefined> {
+  try {
+    const response = await getPurchaseOrder(context, purchaseOrderNumber);
+    const parsed = parsePurchaseOrder(response);
+    if (!parsed || parsed.documentNumber !== purchaseOrderNumber) {
+      debug(`PO ${purchaseOrderNumber} not found in Workday (returned: ${parsed?.documentNumber ?? 'none'}) - skipping PO processing`);
+      return undefined;
+    }
+    return parsed;
+  } catch (poError) {
+    debug(`Failed to fetch PO ${purchaseOrderNumber} from Workday - skipping PO processing:`, poError);
+    return undefined;
+  }
+}
+
+export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
+  const poData = getPurchaseOrderData(poResponse);
 
   if (!poData) return [];
 

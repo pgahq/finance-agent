@@ -9,6 +9,7 @@ import {
   searchDocuments,
   searchDocumentsByTypes,
   findDocumentsByReferenceId,
+  findCompanyByName,
   bulkInsertDocuments,
   bulkUpdateDocuments,
   bulkDeleteDocuments,
@@ -397,6 +398,43 @@ describe('Database Library', () => {
 
       await expect(findDocumentsByReferenceId(mockConnection, '  ', ['company'])).resolves.toEqual([]);
       expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findCompanyByName', () => {
+    it('should return the cached company when the name matches', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      mockQuery.mockResolvedValue([{
+        workday_id: 'pga-america-wid',
+        metadata: { companyName: 'The Professional Golfers Association of America' }
+      }]);
+
+      const result = await findCompanyByName(
+        mockConnection,
+        'The Professional Golfers Association of America'
+      );
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'companyName'"),
+        ['company', 'The Professional Golfers Association of America']
+      );
+      expect(result).toEqual({
+        workdayId: 'pga-america-wid',
+        companyName: 'The Professional Golfers Association of America'
+      });
+    });
+
+    it('should return undefined when no company matches', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      mockQuery.mockResolvedValue([]);
+
+      await expect(findCompanyByName(mockConnection, 'Missing Company')).resolves.toBeUndefined();
     });
   });
 

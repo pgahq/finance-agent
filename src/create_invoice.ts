@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
+  extractPurchaseOrderNumberFromAttachments,
   formatAmountNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
@@ -14,24 +15,80 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { findCompanyByName, getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, parseExtractedAmount, splitFreightLines } from './lib/invoice_lines.js';
+import {
+  findPurchaseOrderNumber,
+  normalizePurchaseOrderNumber,
+  type PurchaseOrderEnrichmentContext,
+} from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
-import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
-import type { AppliedFallback } from './lib/workday.js';
+import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
+import type { AppliedFallback, ParsedPurchaseOrder } from './lib/workday.js';
 import {
   costCenterCodeExcludingCompany,
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { getPurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
+import { loadPurchaseOrder, submitNewSupplierInvoice } from './lib/workday.js';
+
+function toPurchaseOrderEnrichmentContext(
+  purchaseOrder: ParsedPurchaseOrder
+): PurchaseOrderEnrichmentContext {
+  return {
+    documentNumber: purchaseOrder.documentNumber,
+    company: purchaseOrder.company
+      ? { workdayId: purchaseOrder.company.workdayId, name: purchaseOrder.company.descriptor }
+      : undefined,
+    lines: purchaseOrder.lines.map(line => ({
+      lineOrder: line.lineOrder,
+      purchaseOrderLineId: line.purchaseOrderLineId,
+      description: line.description,
+      memo: line.memo,
+    })),
+  };
+}
+
+async function resolvePurchaseOrder(
+  context: ProcessingContext,
+  fileName: string,
+  attachment: PresignedAttachment,
+  emailContext?: InvoiceData['emailContext']
+): Promise<ParsedPurchaseOrder | undefined> {
+  let purchaseOrderNumber = findPurchaseOrderNumber(
+    emailContext?.subject,
+    emailContext?.plainTextBody,
+    fileName
+  );
+  if (!purchaseOrderNumber) {
+    purchaseOrderNumber = await extractPurchaseOrderNumberFromAttachments([attachment]);
+  }
+  if (!purchaseOrderNumber) return undefined;
+
+  debug(`Fetching PO data before enrichment: ${purchaseOrderNumber}`);
+  return loadPurchaseOrder(context, purchaseOrderNumber);
+}
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
-// Default_OCR_Company is a Workday Company_Reference_ID for a placeholder company used
-// when the real company hasn't been determined yet — the same one OCR ingestion assigns.
-const DEFAULT_COMPANY_REFERENCE_ID = process.env.WORKDAY_DEFAULT_COMPANY_REFERENCE_ID || 'Default_OCR_Company';
+const DEFAULT_COMPANY_NAME = process.env.WORKDAY_DEFAULT_COMPANY_NAME
+  || 'The Professional Golfers Association of America';
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
+
+async function resolveFallbackCompany(
+  context: ProcessingContext,
+  parsedPo?: ParsedPurchaseOrder
+): Promise<{ descriptor: string; id: string }> {
+  if (parsedPo?.company) {
+    return { descriptor: parsedPo.company.descriptor, id: parsedPo.company.workdayId };
+  }
+
+  const cached = await findCompanyByName(context.dbConnection, DEFAULT_COMPANY_NAME);
+  if (!cached) {
+    throw new Error(`Default company not found in company cache: ${DEFAULT_COMPANY_NAME}`);
+  }
+  return { descriptor: cached.companyName, id: cached.workdayId };
+}
 
 export interface CreateInvoiceRequest {
   s3Key: string;
@@ -80,11 +137,21 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     };
 
     // There's no existing Workday invoice yet, so enrich against a stub with no
-    // existing supplier and the default placeholder company (to be verified/corrected).
+    // existing supplier. Prefer the PO company when a matching PO is found;
+    // otherwise use The Professional Golfers Association of America.
     const stubInvoice: WorkdayInvoice = {};
-    const existingCompany = { descriptor: 'Default Company', id: DEFAULT_COMPANY_REFERENCE_ID };
+    const parsedPo = await resolvePurchaseOrder(context, fileName, attachment, emailContext);
+    const fallbackCompany = await resolveFallbackCompany(context, parsedPo);
+    const existingCompany = fallbackCompany;
 
-    const result = await enrichInvoiceFromAttachments(stubInvoice, [attachment], undefined, existingCompany, emailContext);
+    const result = await enrichInvoiceFromAttachments(
+      stubInvoice,
+      [attachment],
+      undefined,
+      existingCompany,
+      emailContext,
+      parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined
+    );
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -103,43 +170,31 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailBody: emailContext?.plainTextBody,
       emailCompany: result.emailWorktags?.company,
     });
-    const selectedCompany = selectCompanyForCreateInvoice({
-      emailCompany,
-      recommendedCompanyWID,
-      defaultCompanyReferenceId: DEFAULT_COMPANY_REFERENCE_ID,
-    });
-    const companyWID = selectedCompany.companyId;
-    const companyReferenceType = selectedCompany.companyReferenceType;
-
-    debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
-    debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
-    const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
-    const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
-      ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
-      : undefined;
-    const extractedPurchaseOrderNumber: string | undefined = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
-      ? normalizedPurchaseOrderNumber
-      : undefined;
-
-    let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
-    if (extractedPurchaseOrderNumber) {
-      debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
-      try {
-        const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
-        poLines = parsePurchaseOrderLines(poResponse);
-        const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
-        if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
-          debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
-          poLines = undefined;
-        }
-      } catch (poError) {
-        debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
-      }
+    const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
+    let matchedPo = parsedPo;
+    if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
+      debug(`Fetching PO data for extracted PO number: ${enrichmentPoNumber}`);
+      matchedPo = await loadPurchaseOrder(context, enrichmentPoNumber) ?? matchedPo;
     }
+
+    const poCompanyWID = matchedPo?.company?.workdayId;
+    const selectedCompany = selectCompanyForCreateInvoice({
+      emailCompany,
+      recommendedCompanyWID,
+      poCompanyWID,
+      defaultCompanyWID: fallbackCompany.id,
+    });
+    const companyWID = selectedCompany.companyId;
+    const companyReferenceType = selectedCompany.companyReferenceType;
+    const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
+    const poLines = matchedPo?.lines;
+
+    debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
+    debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
     const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
       (result.extractedInvoiceLines ?? [])

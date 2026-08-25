@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -3634,6 +3634,79 @@ describe('Workday utilities', () => {
       const lines = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual([]);
+    });
+  });
+
+  describe('parsePurchaseOrder', () => {
+    it('should parse company WID and descriptor from Company_Reference', () => {
+      const parsed = parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-414498',
+              Company_Reference: {
+                descriptor: 'The Professional Golfers Association of America',
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'pga-company-wid' },
+                  { $attributes: { type: 'Company_Reference_ID' }, $value: 'PGA' }
+                ]
+              },
+              Service_Line_Data: {
+                Line_Number: 1,
+                Service_Order_Line_ID: 'POL-1',
+                Description: 'Summit ENG'
+              }
+            }
+          }
+        }
+      });
+
+      expect(parsed).toEqual({
+        documentNumber: 'PO-414498',
+        company: {
+          workdayId: 'pga-company-wid',
+          descriptor: 'The Professional Golfers Association of America'
+        },
+        lines: [
+          expect.objectContaining({
+            purchaseOrderDocumentNumber: 'PO-414498',
+            purchaseOrderLineId: 'POL-1',
+            description: 'Summit ENG'
+          })
+        ]
+      });
+    });
+
+    it('should return undefined when Document_Number is missing', () => {
+      expect(parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Company_Reference: {
+                ID: [{ $attributes: { type: 'WID' }, $value: 'company-wid' }]
+              }
+            }
+          }
+        }
+      })).toBeUndefined();
+    });
+
+    it('should omit company when Company_Reference has no WID', () => {
+      const parsed = parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-414498',
+              Company_Reference: {
+                descriptor: 'Unknown Company'
+              }
+            }
+          }
+        }
+      });
+
+      expect(parsed?.documentNumber).toBe('PO-414498');
+      expect(parsed?.company).toBeUndefined();
     });
   });
 

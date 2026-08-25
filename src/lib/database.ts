@@ -712,3 +712,23 @@ export async function searchDocumentsByTypes(
     throw error;
   }
 }
+
+export async function findCompanyByName(
+  db: DatabaseConnection,
+  companyName: string
+): Promise<{ workdayId: string; companyName: string } | undefined> {
+  const rows = await db.query(
+    `SELECT workday_id, metadata
+     FROM documents
+     WHERE type = $1
+       AND LOWER(metadata->>'companyName') = LOWER($2)
+     LIMIT 1`,
+    ['company', companyName]
+  ) as Array<{ workday_id: string; metadata?: { companyName?: string } }>;
+  const row = rows[0];
+  if (!row?.workday_id) return undefined;
+  return {
+    workdayId: row.workday_id,
+    companyName: row.metadata?.companyName ?? companyName,
+  };
+}
