@@ -544,7 +544,7 @@ describe('create_invoice', () => {
   });
 
   it('should keep a recommended company WID over the PO company', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
@@ -573,6 +573,18 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('section-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'recommended',
+          appliedId: 'section-wid',
+          appliedName: 'Tennessee Section PGA of America',
+        }),
+      })
+    );
   });
 
   it('should use a PO extracted during enrichment when email and filename have none', async () => {

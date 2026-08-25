@@ -354,7 +354,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       } : result.companyVerification ? {
         status: result.companyVerification.status,
         appliedFrom: recommendedForSubmit && companyWID === recommendedForSubmit ? 'recommended' : 'default',
-        appliedName: fallbackCompany?.descriptor,
+        appliedName: recommendedForSubmit && companyWID === recommendedForSubmit
+          ? result.companyVerification.recommended?.companyName
+          : fallbackCompany?.descriptor,
         appliedId: companyWID,
         recommendedName: result.companyVerification.recommended?.companyName,
       } : {
