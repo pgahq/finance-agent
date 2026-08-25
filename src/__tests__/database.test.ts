@@ -427,6 +427,34 @@ describe('Database Library', () => {
       });
     });
 
+    it('prefers the first matching name in the provided list', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      mockQuery.mockResolvedValue([{
+        workday_id: 'official-wid',
+        metadata: { companyName: 'The Professional Golfers Association of America' }
+      }]);
+
+      const result = await findCompanyByName(mockConnection, [
+        'The Professional Golfers Association of America',
+        'PGA of America',
+      ]);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('array_position($2::text[], LOWER(metadata->>\'companyName\'))'),
+        ['company', [
+          'the professional golfers association of america',
+          'pga of america',
+        ]]
+      );
+      expect(result).toEqual({
+        workdayId: 'official-wid',
+        companyName: 'The Professional Golfers Association of America'
+      });
+    });
+
     it('should return undefined when no company matches', async () => {
       const mockConnection = {
         query: mockQuery,

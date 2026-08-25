@@ -183,7 +183,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     }
 
     const poCompanyWID = matchedPo?.company?.workdayId;
-    const poWasAvailableDuringEnrichment = Boolean(parsedPo);
+    const poWasAvailableDuringEnrichment =
+      Boolean(parsedPo) && matchedPo?.documentNumber === parsedPo?.documentNumber;
+    const submitFallbackCompany =
+      matchedPo?.documentNumber === parsedPo?.documentNumber
+        ? fallbackCompany
+        : await resolveFallbackCompany(context, matchedPo);
     const recommendedForSubmit = poWasAvailableDuringEnrichment || !matchedPo?.company
       ? recommendedCompanyWID
       : undefined;
@@ -191,7 +196,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailCompany,
       recommendedCompanyWID: recommendedForSubmit,
       poCompanyWID,
-      defaultCompanyWID: fallbackCompany?.id,
+      defaultCompanyWID: submitFallbackCompany?.id,
     });
     const companyWID = selectedCompany.companyId;
     const companyReferenceType = selectedCompany.companyReferenceType;
@@ -356,13 +361,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         appliedFrom: recommendedForSubmit && companyWID === recommendedForSubmit ? 'recommended' : 'default',
         appliedName: recommendedForSubmit && companyWID === recommendedForSubmit
           ? result.companyVerification.recommended?.companyName
-          : fallbackCompany?.descriptor,
+          : submitFallbackCompany?.descriptor,
         appliedId: companyWID,
         recommendedName: result.companyVerification.recommended?.companyName,
       } : {
         status: 'default',
         appliedFrom: 'default',
-        appliedName: fallbackCompany?.descriptor,
+        appliedName: submitFallbackCompany?.descriptor,
         appliedId: companyWID,
       },
       extracted: {

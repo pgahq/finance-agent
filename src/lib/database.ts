@@ -727,7 +727,7 @@ export async function findCompanyByName(
      FROM documents
      WHERE type = $1
        AND LOWER(metadata->>'companyName') = ANY($2::text[])
-     ORDER BY workday_id
+     ORDER BY array_position($2::text[], LOWER(metadata->>'companyName')), workday_id
      LIMIT 1`,
     ['company', names]
   ) as Array<{ workday_id: string; metadata?: { companyName?: string } }>;

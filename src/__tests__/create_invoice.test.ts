@@ -674,6 +674,92 @@ describe('create_invoice', () => {
     expect(submitArgs.companyWID).toBe('section-wid');
   });
 
+  it('should use the enrichment PO company when it differs from the email PO', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
+      if (poNumber === 'PO-111111') {
+        return {
+          documentNumber: 'PO-111111',
+          company: { workdayId: 'early-po-wid', descriptor: 'Early PO Company' },
+          lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-A', purchaseOrderDocumentNumber: 'PO-111111' }]
+        };
+      }
+      return {
+        documentNumber: 'PO-222222',
+        company: { workdayId: 'late-po-wid', descriptor: 'Late PO Company' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-B', purchaseOrderDocumentNumber: 'PO-222222' }]
+      };
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'section-wid', companyName: 'Tennessee Section PGA of America', confidence: 0.9, reason: 'Guessed from the early PO' },
+        reason: 'Bill-to differs from the email PO company'
+      },
+      extractedPurchaseOrderNumber: 'PO-222222'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-po-mismatch/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-111111' }
+      }]
+    } as any);
+
+    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-111111');
+    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('late-po-wid');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
+    ]);
+  });
+
+  it('should not keep the email PO company as default when enrichment finds a different PO without a company', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
+      if (poNumber === 'PO-111111') {
+        return {
+          documentNumber: 'PO-111111',
+          company: { workdayId: 'early-po-wid', descriptor: 'Early PO Company' },
+          lines: []
+        };
+      }
+      return {
+        documentNumber: 'PO-222222',
+        company: undefined,
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-B', purchaseOrderDocumentNumber: 'PO-222222' }]
+      };
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        ...baseEnrichmentResult.companyVerification,
+        status: 'matching',
+        recommended: null
+      },
+      extractedPurchaseOrderNumber: 'PO-222222'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-po-mismatch-no-company/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-111111' }
+      }]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('pga-america-wid');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
+    ]);
+  });
+
   it('should error when the default company is missing from the cache and no PO is present', async () => {
     const { processor, workday, slack, invoiceEnrichment, database } = freshRequire();
     database.findCompanyByName.mockResolvedValue(undefined);
