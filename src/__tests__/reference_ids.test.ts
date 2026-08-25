@@ -364,11 +364,12 @@ describe('resolveCompanyFromEmail', () => {
 });
 
 describe('selectCompanyForCreateInvoice', () => {
-  it('prefers email company WID over email reference ID, recommended WID, and the default', () => {
+  it('prefers email company WID over email reference ID, recommended WID, PO, and the default', () => {
     expect(selectCompanyForCreateInvoice({
       emailCompany: { workdayId: 'email-wid', referenceId: '912' },
       recommendedCompanyWID: 'pdf-wid',
-      defaultCompanyReferenceId: 'Default_OCR_Company',
+      poCompanyWID: 'po-wid',
+      defaultCompanyWID: 'pga-america-wid',
     })).toEqual({ companyId: 'email-wid', companyReferenceType: 'WID' });
   });
 
@@ -376,21 +377,36 @@ describe('selectCompanyForCreateInvoice', () => {
     expect(selectCompanyForCreateInvoice({
       emailCompany: { referenceId: '912' },
       recommendedCompanyWID: 'pdf-wid',
-      defaultCompanyReferenceId: 'Default_OCR_Company',
+      defaultCompanyWID: 'pga-america-wid',
     })).toEqual({ companyId: '912', companyReferenceType: 'Company_Reference_ID' });
   });
 
   it('uses the recommended PDF company WID when email did not resolve a company', () => {
     expect(selectCompanyForCreateInvoice({
       recommendedCompanyWID: 'pdf-wid',
-      defaultCompanyReferenceId: 'Default_OCR_Company',
+      poCompanyWID: 'po-wid',
+      defaultCompanyWID: 'pga-america-wid',
     })).toEqual({ companyId: 'pdf-wid', companyReferenceType: 'WID' });
   });
 
-  it('falls back to the default company reference ID', () => {
+  it('uses the PO company WID when email and PDF recommendation are absent', () => {
     expect(selectCompanyForCreateInvoice({
-      defaultCompanyReferenceId: 'Default_OCR_Company',
-    })).toEqual({ companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' });
+      poCompanyWID: 'po-wid',
+      defaultCompanyWID: 'pga-america-wid',
+    })).toEqual({ companyId: 'po-wid', companyReferenceType: 'WID' });
+  });
+
+  it('falls back to the default company WID', () => {
+    expect(selectCompanyForCreateInvoice({
+      defaultCompanyWID: 'pga-america-wid',
+    })).toEqual({ companyId: 'pga-america-wid', companyReferenceType: 'WID' });
+  });
+
+  it('returns an empty company id when no default WID is available', () => {
+    expect(selectCompanyForCreateInvoice({})).toEqual({
+      companyId: '',
+      companyReferenceType: 'WID',
+    });
   });
 });
 

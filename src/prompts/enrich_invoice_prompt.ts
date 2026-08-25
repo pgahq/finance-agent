@@ -216,7 +216,8 @@ Always verify the company (buyer/recipient) assignment:
 2. **Compare with Existing Company**: Compare the extracted company information with the existing company already assigned to the invoice.
 3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool to search for a better match.
 4. **Email coding may identify the company**: AP coding emails often include a Company_Reference_ID (a short code such as "912") alongside cost center, event, LOB, and spend category lines. If a bare code appears in the email, call **resolveReferenceCode** before treating it as a cost center. Populate company workdayId and referenceId only from an exact match (confidence 1.0) or findCompanies. Recommend that company when it differs from the existing assignment.
-5. **Make Determination**: Decide if the current company assignment is correct or needs revision, using the same confidence/status guidelines as supplier verification. Email-coded company IDs take priority over guessing from the invoice PDF alone.
+5. **Purchase order context**: If a matching Workday purchase order is provided, treat its company as a strong billed-entity signal when email coding does not identify a company. Short-form names on the invoice (e.g. "PGA of America") that refer to the same organization as the PO company should be treated as matching. Prefer the PO company over similarly named section, chapter, or affiliate companies unless the invoice clearly bills a different legal entity. Still populate \`extractedPurchaseOrderNumber\` from the document.
+6. **Make Determination**: Decide if the current company assignment is correct or needs revision, using the same confidence/status guidelines as supplier verification. Email-coded company IDs take priority over guessing from the invoice PDF or the purchase order company.
 
 ---
 
