@@ -55,6 +55,102 @@ export function parseExtractedAmount(raw: string): number | undefined {
   return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
 }
 
+const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
+const FREIGHT_CARRIER_WORDS = new Set(['ups', 'fedex', 'usps', 'dhl']);
+const FREIGHT_ALLOWED_WORDS = new Set([
+  ...FREIGHT_CORE_WORDS,
+  ...FREIGHT_CARRIER_WORDS,
+  'charge', 'charges', 'fee', 'fees', 'cost', 'costs', 'and', 'inbound', 'outbound', 's', 'h',
+  'ground', 'overnight', 'express',
+  'standard', 'priority', 'next', 'day', 'free', 'in', 'out',
+  'air', 'ocean', 'parcel', 'home', 'local', 'rush', 'misc', 'surcharge',
+]);
+
+function isAllowedFreightToken(token: string): boolean {
+  return FREIGHT_ALLOWED_WORDS.has(token) || /^\d+$/.test(token);
+}
+
+function normalizeLineDescription(description: string): string {
+  return description
+    .toLowerCase()
+    .replace(/s\s*[&/]\s*h\b/g, 's and h')
+    .replace(/&/g, ' and ')
+    .replace(/[/_,-]+/g, ' ')
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isFreightOrHandlingLine(description: string | null | undefined): boolean {
+  if (!description) return false;
+  const normalized = normalizeLineDescription(description);
+  if (!normalized) return false;
+  if (normalized === 's and h') return true;
+  const tokens = normalized.split(' ');
+  const hasFreightAnchor = tokens.some(token => FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token));
+  return hasFreightAnchor && tokens.every(isAllowedFreightToken);
+}
+
+function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
+  return line.description ?? line.Item_Description ?? undefined;
+}
+
+function lineAmount(line: {
+  totalPrice?: string | null;
+  unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
+  extendedAmount?: number | null;
+  Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
+}): number | undefined {
+  if (typeof line.extendedAmount === 'number') return line.extendedAmount;
+  if (line.totalPrice) return parseExtractedAmount(line.totalPrice);
+  if (typeof line.Extended_Amount === 'number') return line.Extended_Amount;
+  if (typeof line.Extended_Amount === 'string') return parseExtractedAmount(line.Extended_Amount);
+  const rawUnitCost = line.unitCost ?? line.Unit_Cost;
+  const unitCost = typeof rawUnitCost === 'number'
+    ? rawUnitCost
+    : (typeof rawUnitCost === 'string' ? parseExtractedAmount(rawUnitCost) : undefined);
+  if (unitCost == null) return undefined;
+  const rawQuantity = line.quantity ?? line.Quantity;
+  const quantity = typeof rawQuantity === 'number'
+    ? rawQuantity
+    : (typeof rawQuantity === 'string' ? parseExtractedAmount(rawQuantity) : undefined);
+  const multiplier = quantity != null && Number.isFinite(quantity) ? quantity : 1;
+  return Math.round(unitCost * multiplier * 100) / 100;
+}
+
+export function splitFreightLines<T extends {
+  description?: string | null;
+  Item_Description?: string | null;
+  totalPrice?: string | null;
+  unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
+  extendedAmount?: number | null;
+  Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
+}>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
+  const merchandiseLines: T[] = [];
+  const freightLines: T[] = [];
+  for (const line of lines) {
+    if (isFreightOrHandlingLine(lineDescription(line))) {
+      freightLines.push(line);
+    } else {
+      merchandiseLines.push(line);
+    }
+  }
+  let freightAmountFromLines: number | undefined;
+  for (const line of freightLines) {
+    const amount = lineAmount(line);
+    if (amount != null) {
+      freightAmountFromLines = Math.round(((freightAmountFromLines ?? 0) + amount) * 100) / 100;
+    }
+  }
+  return { merchandiseLines, freightLines, freightAmountFromLines };
+}
+
 function extractWorktagId(worktags: any[], type: string): string | null {
   for (const worktag of worktags) {
     const ids = ([] as any[]).concat(worktag.ID ?? []);

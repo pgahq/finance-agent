@@ -15,7 +15,7 @@ import {
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
-import { buildFinalInvoiceLines, type ExtractedInvoiceLine } from './lib/invoice_lines.js';
+import { buildFinalInvoiceLines, parseExtractedAmount, splitFreightLines } from './lib/invoice_lines.js';
 import { applyProcessorLabelOutcome, getGmailConfig } from './lib/gmail.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
@@ -106,7 +106,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedFreightAmount = result.extractedFreightAmount ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
@@ -132,8 +131,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       }
     }
 
-    const candidateLines: ExtractedInvoiceLine[] = (result.extractedInvoiceLines ?? [])
-      .filter(l => l.description && (l.totalPrice || l.unitCost));
+    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
+      (result.extractedInvoiceLines ?? [])
+        .filter(l => l.description && (l.totalPrice || l.unitCost))
+    );
+    const extractedFreightAmount = result.extractedFreightAmount
+      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
     const fallbackIds = {
       fundId: process.env.FALLBACK_FUND_ID,
@@ -163,25 +166,58 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     let finalLines = merged.lines;
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
-    // could be extracted or matched to a PO, synthesize a single line from the total amount.
+    // could be extracted or matched to a PO, synthesize a single line from the merchandise
+    // remainder (amount due minus freight and tax). Do not re-include freight in that line.
     if (finalLines.length === 0) {
-      debug('No invoice lines could be extracted or matched to a PO; synthesizing a single line from the extracted total');
-      const synthetic = await buildFinalInvoiceLines(
-        [{
-          description: memo || 'Invoice',
-          quantity: 1,
-          unitCost: extractedAmountDue ?? null,
-          totalPrice: extractedAmountDue ?? null,
-          hasDiscount: null,
-        }],
-        undefined,
-        emailContext?.plainTextBody,
-        fallbackIds,
-        emailWorktags,
-        relatedLobLookup
-      );
-      finalLines = synthetic.lines;
-      relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
+      const amountDue = extractedAmountDue ? parseExtractedAmount(extractedAmountDue) : undefined;
+      const freight = extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : 0;
+      const tax = extractedTaxAmount ? parseExtractedAmount(extractedTaxAmount) : 0;
+      const remainder = amountDue != null
+        ? Math.round((amountDue - (freight ?? 0) - (tax ?? 0)) * 100) / 100
+        : undefined;
+      if (remainder != null && remainder > 0) {
+        debug('No merchandise invoice lines remain after excluding freight; synthesizing a line from the non-freight remainder');
+        const synthetic = await buildFinalInvoiceLines(
+          [{
+            // Keep memo on the invoice header. A freight-like memo would be
+            // stripped again in the SOAP builder and drop this remainder line.
+            description: 'Invoice',
+            quantity: 1,
+            unitCost: String(remainder),
+            totalPrice: String(remainder),
+            hasDiscount: null,
+          }],
+          undefined,
+          emailContext?.plainTextBody,
+          fallbackIds,
+          emailWorktags,
+          relatedLobLookup
+        );
+        finalLines = synthetic.lines;
+        relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
+      } else if (remainder != null && remainder <= 0) {
+        debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
+      } else if (!extractedFreightAmount) {
+        debug('No invoice lines could be extracted or matched to a PO; synthesizing a single line from the extracted total');
+        const synthetic = await buildFinalInvoiceLines(
+          [{
+            description: 'Invoice',
+            quantity: 1,
+            unitCost: extractedAmountDue ?? null,
+            totalPrice: extractedAmountDue ?? null,
+            hasDiscount: null,
+          }],
+          undefined,
+          emailContext?.plainTextBody,
+          fallbackIds,
+          emailWorktags,
+          relatedLobLookup
+        );
+        finalLines = synthetic.lines;
+        relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
+      } else {
+        debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
+      }
     }
 
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
