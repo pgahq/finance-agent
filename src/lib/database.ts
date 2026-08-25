@@ -417,10 +417,10 @@ export async function getCostCenterWorkdayIdsByCodes(
 export async function getDocumentsByType(
   db: DatabaseConnection,
   type: DocumentType
-): Promise<Array<{ workday_id: string; metadata: any; created_at: Date }>> {
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: any; created_at: Date }>> {
   try {
     const results = await db.query(`
-      SELECT workday_id, metadata, created_at
+      SELECT workday_id, content, metadata, created_at
       FROM documents 
       WHERE type = $1
     `, [type]);
@@ -480,7 +480,7 @@ export async function bulkUpdateDocuments(
     type: DocumentType;
     content: string;
     metadata: Record<string, any>;
-    embedding: number[];
+    embedding?: number[];
   }>
 ): Promise<void> {
   if (documents.length === 0) return;
@@ -490,12 +490,20 @@ export async function bulkUpdateDocuments(
     await db.query('BEGIN');
 
     for (const doc of documents) {
-      const vectorString = `[${doc.embedding.join(',')}]`;
-      await db.query(`
-        UPDATE documents 
-        SET content = $3, metadata = $4, embedding = '${vectorString}'::vector, updated_at = CURRENT_TIMESTAMP
-        WHERE workday_id = $1 AND type = $2
-      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      if (Array.isArray(doc.embedding)) {
+        const vectorString = `[${doc.embedding.join(',')}]`;
+        await db.query(`
+          UPDATE documents 
+          SET content = $3, metadata = $4, embedding = '${vectorString}'::vector, updated_at = CURRENT_TIMESTAMP
+          WHERE workday_id = $1 AND type = $2
+        `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      } else {
+        await db.query(`
+          UPDATE documents 
+          SET content = $3, metadata = $4, updated_at = CURRENT_TIMESTAMP
+          WHERE workday_id = $1 AND type = $2
+        `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      }
     }
 
     await db.query('COMMIT');
