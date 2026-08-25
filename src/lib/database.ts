@@ -1,6 +1,7 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { debug } from '@pga/logger';
 import { Pool } from 'pg';
+import { parseRelatedLob, type RelatedLob } from './related_worktags.js';
 
 // Database configuration interface
 export interface DatabaseConfig {
@@ -311,13 +312,115 @@ export async function deleteAllDocumentsByType(
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value == null) return {};
+  return value as Record<string, unknown>;
+}
+
+function costCenterCodeAliases(id: string): string[] {
+  const aliases = new Set([id]);
+  aliases.add(id.replace(/_/g, ' '));
+  aliases.add(id.replace(/ /g, '_'));
+  return [...aliases];
+}
+
+function indexCostCenterKeys<T>(byId: Map<string, T>, workdayId: string | undefined, code: string | undefined, value: T): void {
+  if (workdayId) byId.set(workdayId, value);
+  if (code) {
+    for (const alias of costCenterCodeAliases(code)) {
+      byId.set(alias, value);
+    }
+  }
+}
+
+export async function getCostCenterRelatedLobsByCodes(
+  db: DatabaseConnection,
+  costCenterIds: string[]
+): Promise<Map<string, RelatedLob>> {
+  const byId = new Map<string, RelatedLob>();
+  const ids = [...new Set(costCenterIds.filter(Boolean))];
+  if (ids.length === 0) return byId;
+  const lookupIds = [...new Set(ids.flatMap(costCenterCodeAliases))];
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, metadata
+      FROM documents
+      WHERE type = 'cost_center'
+        AND (
+          metadata->>'code' = ANY($1::text[])
+          OR workday_id = ANY($1::text[])
+        )
+    `, [lookupIds]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const metadata = asRecord(record.metadata);
+      const relatedLob = parseRelatedLob(metadata.relatedLob);
+      if (!relatedLob) continue;
+      indexCostCenterKeys(
+        byId,
+        typeof record.workday_id === 'string' ? record.workday_id : undefined,
+        typeof metadata.code === 'string' ? metadata.code : undefined,
+        relatedLob
+      );
+    }
+
+    debug(`Found related LOB metadata for ${byId.size} cost center key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cost center related LOBs:', error);
+    throw error;
+  }
+}
+
+export async function getCostCenterWorkdayIdsByCodes(
+  db: DatabaseConnection,
+  costCenterIds: string[]
+): Promise<Map<string, string>> {
+  const byId = new Map<string, string>();
+  const ids = [...new Set(costCenterIds.filter(Boolean))];
+  if (ids.length === 0) return byId;
+  const lookupIds = [...new Set(ids.flatMap(costCenterCodeAliases))];
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, metadata
+      FROM documents
+      WHERE type = 'cost_center'
+        AND (
+          metadata->>'code' = ANY($1::text[])
+          OR workday_id = ANY($1::text[])
+        )
+    `, [lookupIds]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const metadata = asRecord(record.metadata);
+      if (typeof record.workday_id !== 'string' || !record.workday_id) continue;
+      indexCostCenterKeys(
+        byId,
+        record.workday_id,
+        typeof metadata.code === 'string' ? metadata.code : undefined,
+        record.workday_id
+      );
+    }
+
+    debug(`Found Workday ids for ${byId.size} cost center key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cost center Workday ids:', error);
+    throw error;
+  }
+}
+
 export async function getDocumentsByType(
   db: DatabaseConnection,
   type: DocumentType
-): Promise<Array<{ workday_id: string; metadata: any; created_at: Date }>> {
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: any; created_at: Date }>> {
   try {
     const results = await db.query(`
-      SELECT workday_id, metadata, created_at
+      SELECT workday_id, content, metadata, created_at
       FROM documents 
       WHERE type = $1
     `, [type]);
@@ -377,7 +480,7 @@ export async function bulkUpdateDocuments(
     type: DocumentType;
     content: string;
     metadata: Record<string, any>;
-    embedding: number[];
+    embedding?: number[];
   }>
 ): Promise<void> {
   if (documents.length === 0) return;
@@ -387,12 +490,20 @@ export async function bulkUpdateDocuments(
     await db.query('BEGIN');
 
     for (const doc of documents) {
-      const vectorString = `[${doc.embedding.join(',')}]`;
-      await db.query(`
-        UPDATE documents 
-        SET content = $3, metadata = $4, embedding = '${vectorString}'::vector, updated_at = CURRENT_TIMESTAMP
-        WHERE workday_id = $1 AND type = $2
-      `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      if (Array.isArray(doc.embedding)) {
+        const vectorString = `[${doc.embedding.join(',')}]`;
+        await db.query(`
+          UPDATE documents 
+          SET content = $3, metadata = $4, embedding = '${vectorString}'::vector, updated_at = CURRENT_TIMESTAMP
+          WHERE workday_id = $1 AND type = $2
+        `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      } else {
+        await db.query(`
+          UPDATE documents 
+          SET content = $3, metadata = $4, updated_at = CURRENT_TIMESTAMP
+          WHERE workday_id = $1 AND type = $2
+        `, [doc.workdayId, doc.type, doc.content, JSON.stringify(doc.metadata)]);
+      }
     }
 
     await db.query('COMMIT');

@@ -1,10 +1,63 @@
 import {
+  collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
+  isDisallowedLineOfBusinessWorktagError,
+  isLineOfBusinessRelatedWorktagError,
+  isRequiredLineOfBusinessWorktagError,
+  isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
   summarizeValidationError,
 } from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
+  it('detects related-worktag faults that require Line of Business', () => {
+    expect(isRequiredLineOfBusinessWorktagError(
+      'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business'
+    )).toBe(true);
+    expect(isRequiredLineOfBusinessWorktagError('Spend Category is required')).toBe(false);
+    expect(isDisallowedLineOfBusinessWorktagError(
+      'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
+    )).toBe(true);
+    expect(isLineOfBusinessRelatedWorktagError(
+      'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
+    )).toBe(true);
+  });
+
+  it('detects a required Line of Business rule in a multi-error SOAP fault', () => {
+    const error = {
+      faultstring: 'Validation error occurred.',
+      detail: {
+        Validation_Fault: {
+          Validation_Error: [
+            {
+              Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+            },
+            {
+              Message: 'The Cost Center is/are not available for use with the company/s: CC-Enterprise Technology',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+            }
+          ]
+        }
+      }
+    };
+
+    expect(isRequiredLineOfBusinessWorktagError(error)).toBe(true);
+    expect(isLineOfBusinessRelatedWorktagError(error)).toBe(true);
+    expect(collectWorkdayValidationErrorText(error)).toContain('must also have a value: Line of Business');
+    expect(collectWorkdayValidationErrorText(error)).toContain('not available for use with the company');
+  });
+
+  it('detects a Workday processing fault that is not authorized', () => {
+    expect(isWorkdayTaskNotAuthorizedError(
+      'Processing error occurred. The task submitted is not authorized.'
+    )).toBe(true);
+    expect(isWorkdayTaskNotAuthorizedError({
+      body: '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    })).toBe(true);
+    expect(isWorkdayTaskNotAuthorizedError('Spend Category is required')).toBe(false);
+  });
+
   it('returns the plain validation message from an Error', () => {
     const error = new Error('Validation_Fault: Spend Category is required');
 

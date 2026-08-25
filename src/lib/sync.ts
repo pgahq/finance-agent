@@ -57,15 +57,24 @@ function pruneSkipReason(options: {
   return undefined;
 }
 
+type SyncDocument = {
+  workdayId: string;
+  type: DocumentType;
+  content: string;
+  metadata: Record<string, any>;
+  embedding?: number[];
+};
+
 async function processBatch<T>(
   workdayIds: string[],
   itemMap: Map<string, T>,
   type: DocumentType,
   createContent: (item: T) => string,
   createMetadata: (item: T) => Record<string, any>,
-  itemLabel: string
-): Promise<{ documents: Array<{ workdayId: string; type: DocumentType; content: string; metadata: Record<string, any>; embedding: number[] }>; errors: number }> {
-  const documents = [];
+  itemLabel: string,
+  existingById?: Map<string, { content?: string | null }>
+): Promise<{ documents: SyncDocument[]; errors: number }> {
+  const documents: SyncDocument[] = [];
   let errors = 0;
 
   for (const workdayId of workdayIds) {
@@ -73,8 +82,12 @@ async function processBatch<T>(
       const item = itemMap.get(workdayId)!;
       const content = createContent(item);
       const metadata = createMetadata(item);
-      const embedding = await createEmbedding(content);
-      documents.push({ workdayId, type, content, metadata, embedding });
+      const existingContent = existingById?.get(workdayId)?.content;
+      const document: SyncDocument = { workdayId, type, content, metadata };
+      if (existingContent !== content) {
+        document.embedding = await createEmbedding(content);
+      }
+      documents.push(document);
     } catch (error) {
       debug(`Error preparing ${itemLabel} ${workdayId}:`, error);
       errors++;
@@ -145,9 +158,10 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       for (let i = 0; i < totalBatches; i++) {
         const batch = newIds.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
         const { documents, errors } = await processBatch(batch, items, type, createContent, createMetadata, itemLabel);
-        if (documents.length > 0) {
-          await bulkInsertDocuments(dbConnection, documents);
-          successCount += documents.length;
+        const inserted = documents.filter((doc): doc is SyncDocument & { embedding: number[] } => Array.isArray(doc.embedding));
+        if (inserted.length > 0) {
+          await bulkInsertDocuments(dbConnection, inserted);
+          successCount += inserted.length;
         }
         errorCount += errors;
         debug(`Insert batch ${i + 1}/${totalBatches} complete: ${documents.length} ${itemLabel} inserted (${Math.round(((i + 1) / totalBatches) * 100)}% complete)`);
@@ -160,7 +174,15 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
 
       for (let i = 0; i < totalBatches; i++) {
         const batch = updatedIds.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
-        const { documents, errors } = await processBatch(batch, items, type, createContent, createMetadata, itemLabel);
+        const { documents, errors } = await processBatch(
+          batch,
+          items,
+          type,
+          createContent,
+          createMetadata,
+          itemLabel,
+          existingMap
+        );
         if (documents.length > 0) {
           await bulkUpdateDocuments(dbConnection, documents);
           successCount += documents.length;

@@ -14,6 +14,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, parseExtractedAmount, splitFreightLines } from './lib/invoice_lines.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
@@ -136,6 +137,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       fundId: process.env.FALLBACK_FUND_ID,
       costCenterId: process.env.FALLBACK_COST_CENTER_ID,
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+      lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
     const emailWorktags = result.emailWorktags ? {
       costCenterId: result.emailWorktags.costCenter?.code ?? null,
@@ -145,13 +147,17 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
+    const relatedLobLookup = (costCenterIds: string[]) =>
+      getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
     const merged = await buildFinalInvoiceLines(
       candidateLines,
       poLines,
       emailContext?.plainTextBody,
       fallbackIds,
-      emailWorktags
+      emailWorktags,
+      relatedLobLookup
     );
+    let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
@@ -179,9 +185,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           undefined,
           emailContext?.plainTextBody,
           fallbackIds,
-          emailWorktags
+          emailWorktags,
+          relatedLobLookup
         );
         finalLines = synthetic.lines;
+        relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else if (remainder != null && remainder <= 0) {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
       } else if (!extractedFreightAmount) {
@@ -197,9 +205,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           undefined,
           emailContext?.plainTextBody,
           fallbackIds,
-          emailWorktags
+          emailWorktags,
+          relatedLobLookup
         );
         finalLines = synthetic.lines;
+        relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
       }
@@ -223,6 +233,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      relatedLobByCostCenter,
+      resolveCostCenterWorkdayIds: (costCenterIds) =>
+        getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
       paymentTermsId,
       attachment: {
         fileName,

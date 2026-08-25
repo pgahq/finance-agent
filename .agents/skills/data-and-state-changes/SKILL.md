@@ -55,3 +55,33 @@ not. Do not enable prune for windowed sources such as events.
 1. Add it to `DOCUMENT_TYPES`
 2. Wire the cache/RAG path that writes that type
 3. Ensure the value fits `documents.type VARCHAR(20)`
+
+## Cost center related LOB metadata
+
+`cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG. Cost center codes match with spaces or underscores (`CC-Building Services-PBG` and `CC-Building_Services-PBG`). RAG content is name + code only; a relatedLob-only rewrite updates metadata and keeps the existing embedding so an OpenAI 500 cannot block the cache.
+
+`relatedLob` shape:
+
+```ts
+{
+  requiredOnTransaction: boolean;
+  defaultReferenceId: string | null;
+  allowedReferenceIds: string[];
+  defaultIds: { type: string; value: string }[];
+  allowedIds: { type: string; value: string }[];
+}
+```
+
+`defaultIds` / `allowedIds` keep SOAP `WID`, `Organization_Reference_ID`, and `Custom_Organization_Reference_ID`. Submit prefers `Organization_Reference_ID` (example `LOB-Building_Services`), then custom org id, then WID.
+
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. PGA Line of Business is a custom organization, so SOAP `Worktag_Type_ID` is typically `CUSTOM_ORGANIZATION_01` (or a WID plus Descriptor `Line of Business`), not `LINE_OF_BUSINESS`. Do not treat `CUSTOM_ORGANIZATION_02`–`10` as LOB. Allowed ids are `Organization_Reference_ID` / `Custom_Organization_Reference_ID` and often have no `LOB-` prefix (example: `Building Services` on `CC-Building Services-PBG`). Parse those as related LOB. `Related_Worktags_Data` is unbounded in the WSDL, so strong-soap returns an array; flatten `Related_Worktags_by_Type_Data` from each item. Lookup matches `metadata.code` / `workday_id` and treats space vs underscore in the cost center code as the same key.
+
+Invoice line build fills a missing `lineOfBusinessId` from the related default, or from an allowed LOB only when exactly one non-fallback allowed value exists. Do not pick the first of several allowed LOBs at extract/submit time. `Default_Line_Of_Business` is used when related worktags do not yield a unique real LOB. A validation retry that is already replacing the fallback LOB may use any allowed value. SOAP submit treats an existing related org/custom-org/WID worktag as Line of Business even without a `LOB-` prefix, and does not append the global fallback beside it. Event `Organization_Reference_ID` values are not Line of Business.
+
+If `Get_Related_Worktags_for_Worktags` fails (including unauthorized), keep previously cached `relatedLob` metadata instead of writing `EMPTY_RELATED_LOB` over it. If the follow-up `getCostCenterRelatedLobsByCodes` read also fails, existing rows still keep their stored `relatedLob` (including when name/code changes); only new cost center inserts get `EMPTY_RELATED_LOB`. Do not Slack on every unauthorized cache run; log at debug. Required-LOB faults that also mention an unavailable cost center stay on the LOB retry path; they are not classified as a cost-center value error.
+
+When Workday returns a related-worktag fault that requires Line of Business (`must also have a value: Line of Business`), retry as `worktag:lob` — even if another `Validation_Error` says the Cost Center is not available for the company. Do not send that combination to the validation-field classifier; it will pick `worktag:costCenter` and swap to the fallback cost center. If related fill and fallback LOB are already applied, do not omit Line of Business; surface the original required-LOB fault.
+
+Empty cached `relatedLob` is not a hit. Retry loads related worktags live by cost center code and Workday id (`getCostCenterWorkdayIdsByCodes`, then `Get_Related_Worktags_for_Worktags`) and applies an allowed LOB to every line missing one. If that live call is not authorized, submit keeps the original validation error and does not replace it with the processing fault. If Workday rejects the default (`does not allow worktag values: Line of Business`), the same related-LOB swap runs.
+
+Related-LOB cache and live submit lookup require the finance-agent ISU to have Get (Integration Permissions) on domain **Manage: Related Worktags** for Financial Management `Get_Related_Worktags_for_Worktags`. `Submit_Supplier_Invoice` is not enough. Without that grant, cache and live lookup soft-fail and only `FALLBACK_LOB_ID` / the original validation error remain.
