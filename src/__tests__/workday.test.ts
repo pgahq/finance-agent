@@ -1956,6 +1956,44 @@ describe('Workday utilities', () => {
         });
       });
 
+      it('should not append fallback LOB when the line already has a related Line of Business id', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Building Services-PBG',
+            lineOfBusinessId: 'Building Services',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Building Services-PBG', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['Building Services', '737c7895dd701001ec3537bb73570000'],
+              defaultIds: [],
+              allowedIds: [
+                { type: 'Custom_Organization_Reference_ID', value: 'Building Services' },
+                { type: 'Organization_Reference_ID', value: 'Building Services' },
+                { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+              ],
+            }]
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Building Services' }] }
+        ]);
+      });
+
       it('should use Line_Order from finalLines for each line', async () => {
         const { getCapturedRequest } = setupMockClient();
 
@@ -2184,7 +2222,39 @@ describe('Workday utilities', () => {
         ]);
       });
 
-      it('should use a related allowed LOB instead of Default_Line_Of_Business', async () => {
+      it('should use a unique related allowed LOB instead of Default_Line_Of_Business', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+            lineOfBusinessId: 'Default_Line_Of_Business',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['LOB-Enterprise'],
+            }]
+          ])
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+        ]);
+      });
+
+      it('should keep Default_Line_Of_Business when multiple related allowed LOBs exist', async () => {
         const { getCapturedRequest } = setupMockClient();
 
         process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
@@ -2212,7 +2282,7 @@ describe('Workday utilities', () => {
         expect(getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
           { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
           { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Enterprise Technology' }] },
-          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Enterprise' }] }
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Default_Line_Of_Business' }] }
         ]);
       });
 

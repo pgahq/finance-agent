@@ -161,16 +161,69 @@ function collectIds(node: unknown, results: Array<{ type?: string; value?: strin
   return results;
 }
 
+function worktagIdType(id: unknown): string | undefined {
+  const attributed = soapAttributeType(id);
+  if (attributed) return attributed;
+  return isRecord(id) && typeof id.type === 'string' ? id.type : undefined;
+}
+
+function worktagIdValue(id: unknown): string | undefined {
+  const nested = soapValue(id);
+  if (typeof nested === 'string' && nested.trim()) return nested.trim();
+  if (isRecord(id) && typeof id.value === 'string' && id.value.trim()) return id.value.trim();
+  return undefined;
+}
+
 export function extractLineOfBusinessId(worktags: unknown): string | null {
   for (const worktag of asArray(worktags)) {
     const ids = isRecord(worktag) ? asArray(worktag.ID) : [];
     const match = ids.find(id =>
-      LINE_OF_BUSINESS_ID_TYPES.has(soapAttributeType(id) ?? '') && isLineOfBusinessReferenceId(soapValue(id))
+      LINE_OF_BUSINESS_ID_TYPES.has(worktagIdType(id) ?? '') && isLineOfBusinessReferenceId(worktagIdValue(id))
     );
-    const matchValue = soapValue(match);
+    const matchValue = worktagIdValue(match);
     if (isLineOfBusinessReferenceId(matchValue)) return matchValue;
   }
   return null;
+}
+
+function worktagReferenceValues(worktags: unknown): string[] {
+  const values: string[] = [];
+  for (const worktag of asArray(worktags)) {
+    const ids = isRecord(worktag) ? asArray(worktag.ID) : [];
+    for (const id of ids) {
+      const type = worktagIdType(id);
+      if (type && !RELATED_LOB_ID_TYPES.has(type)) continue;
+      const value = worktagIdValue(id);
+      if (value) values.push(value);
+    }
+  }
+  return values;
+}
+
+export function worktagsIncludeLineOfBusiness(
+  worktags: unknown,
+  related?: RelatedLob | null
+): boolean {
+  if (extractLineOfBusinessId(worktags)) return true;
+  if (!related) return false;
+
+  const present = new Set(worktagReferenceValues(worktags).map(normalizeReferenceId));
+  if (present.size === 0) return false;
+
+  const relatedIds = [
+    ...(related.defaultIds ?? []),
+    ...(related.allowedIds ?? []),
+    ...(related.defaultReferenceId ? [{ type: 'WID', value: related.defaultReferenceId }] : []),
+    ...(related.allowedReferenceIds ?? []).map(value => ({ type: 'WID', value })),
+  ];
+
+  for (const id of relatedIds) {
+    if (!id?.value) continue;
+    if (present.has(normalizeReferenceId(id.value))) return true;
+    const soap = relatedLobSoapReference(related, id.value);
+    if (present.has(normalizeReferenceId(soap.value))) return true;
+  }
+  return false;
 }
 
 function isTruthy(value: unknown): boolean {
@@ -186,7 +239,11 @@ export function relatedLobHasUsableValue(related: RelatedLob | null | undefined)
   );
 }
 
-const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_(?:0?[1-9]|10)$/i;
+const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_0?1$/i;
+
+function normalizeReferenceId(value: string): string {
+  return value.trim().replace(/[\s_]+/g, '_').toLowerCase();
+}
 
 function soapDescriptor(node: unknown): string | undefined {
   if (!isRecord(node)) return undefined;
@@ -318,27 +375,47 @@ function isGlobalFallbackLobId(id: string): boolean {
   return id === DEFAULT_LINE_OF_BUSINESS_ID || id === process.env.FALLBACK_LOB_ID;
 }
 
+function relatedIdentityIds(ids: string[]): string[] {
+  const nonWid = ids.filter(id => !WORKDAY_WID.test(id));
+  return nonWid.length > 0 ? nonWid : ids;
+}
+
+function uniqueRelatedId(ids: string[]): string | null {
+  const identity = relatedIdentityIds(ids);
+  const unique = new Set(identity.map(normalizeReferenceId));
+  return unique.size === 1 ? identity[0] : null;
+}
+
 export function resolveRelatedLobId(
   related: RelatedLob | null | undefined,
   costCenterId?: string | null,
   fallbackCostCenterId?: string | null,
-  excludeIds?: Iterable<string>
+  excludeIds?: Iterable<string>,
+  options?: { anyAllowed?: boolean }
 ): string | null {
   if (!costCenterId || (fallbackCostCenterId && costCenterId === fallbackCostCenterId)) {
     return null;
   }
   if (!related) return null;
 
-  const excluded = new Set(excludeIds ?? []);
-  const candidates: string[] = [];
-  if (related.defaultReferenceId) candidates.push(related.defaultReferenceId);
-  for (const id of related.allowedReferenceIds) {
-    if (!candidates.includes(id)) candidates.push(id);
+  const excluded = new Set(
+    [...(excludeIds ?? [])].map(id => normalizeReferenceId(id)).filter(Boolean)
+  );
+  const isExcluded = (id: string) => excluded.has(normalizeReferenceId(id));
+
+  const defaultId = related.defaultReferenceId;
+  if (defaultId && !isExcluded(defaultId) && !isGlobalFallbackLobId(defaultId)) {
+    return defaultId;
   }
 
-  const usable = candidates.filter(id => id && !excluded.has(id));
-  const preferred = usable.filter(id => !isGlobalFallbackLobId(id));
-  return preferred[0] ?? usable[0] ?? null;
+  const allowed = related.allowedReferenceIds.filter(id => id && !isExcluded(id));
+  const preferredAllowed = allowed.filter(id => !isGlobalFallbackLobId(id));
+  const pool = preferredAllowed.length > 0 ? preferredAllowed : allowed;
+  if (pool.length === 0) {
+    return defaultId && !isExcluded(defaultId) ? defaultId : null;
+  }
+  if (options?.anyAllowed) return pool[0];
+  return uniqueRelatedId(pool);
 }
 
 export function relatedLobSoapReference(

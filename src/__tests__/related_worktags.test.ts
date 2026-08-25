@@ -5,6 +5,7 @@ import {
   relatedLobSoapReference,
   relatedWorktagsTotalPages,
   resolveRelatedLobId,
+  worktagsIncludeLineOfBusiness,
 } from '../lib/related_worktags.js';
 
 const id = (type: string, value: string) => ({
@@ -180,6 +181,29 @@ describe('parseRelatedWorktagsResponse', () => {
     );
   });
 
+  it('does not treat CUSTOM_ORGANIZATION_02 as Line of Business', () => {
+    const parsed = parseRelatedWorktagsResponse({
+      Response_Data: {
+        Related_Worktags: {
+          Related_Worktag_Reference: { ID: [id('WID', 'cc-wid-region')] },
+          Related_Worktags_Data: {
+            Related_Worktags_by_Type_Data: {
+              Worktag_Type_Reference: { ID: [id('Worktag_Type_ID', 'CUSTOM_ORGANIZATION_02')] },
+              Required_On_Transaction: true,
+              Allowed_Worktag_Data: {
+                Allowed_Worktag_Reference: {
+                  ID: [id('Organization_Reference_ID', 'Region_South')]
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    expect(parsed.get('cc-wid-region')).toEqual(EMPTY_RELATED_LOB);
+  });
+
   it('reads Related_Worktags_Data arrays returned by strong-soap', () => {
     const parsed = parseRelatedWorktagsResponse({
       Response_Data: {
@@ -291,12 +315,28 @@ describe('resolveRelatedLobId', () => {
     }, 'CC-001')).toBe('LOB-Only');
   });
 
-  it('uses an allowed LOB when multiple values exist and there is no default', () => {
+  it('does not pick an allowed LOB when multiple values exist and there is no default', () => {
     expect(resolveRelatedLobId({
       requiredOnTransaction: true,
       defaultReferenceId: null,
       allowedReferenceIds: ['LOB-A', 'LOB-B'],
-    }, 'CC-001')).toBe('LOB-A');
+    }, 'CC-001')).toBeNull();
+  });
+
+  it('can use any allowed LOB on the validation retry path', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-A', 'LOB-B'],
+    }, 'CC-001', undefined, undefined, { anyAllowed: true })).toBe('LOB-A');
+  });
+
+  it('treats org and WID ids for the same LOB as one allowed value', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services', '737c7895dd701001ec3537bb73570000'],
+    }, 'CC-001')).toBe('LOB-Building_Services');
   });
 
   it('skips Default_Line_Of_Business when a real related LOB is allowed', () => {
@@ -394,5 +434,32 @@ describe('relatedLobSoapReference', () => {
       type: 'WID',
       value: '737c7895dd701001ec3537bb73570000',
     });
+  });
+});
+
+describe('worktagsIncludeLineOfBusiness', () => {
+  const related = {
+    requiredOnTransaction: true,
+    defaultReferenceId: null,
+    allowedReferenceIds: ['Building Services', '737c7895dd701001ec3537bb73570000'],
+    defaultIds: [],
+    allowedIds: [
+      { type: 'Custom_Organization_Reference_ID' as const, value: 'Building Services' },
+      { type: 'Organization_Reference_ID' as const, value: 'Building Services' },
+      { type: 'WID' as const, value: '737c7895dd701001ec3537bb73570000' },
+    ],
+  };
+
+  it('matches a related LOB organization id that does not use a LOB- prefix', () => {
+    expect(worktagsIncludeLineOfBusiness([
+      { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] },
+      { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Building Services' }] },
+    ], related)).toBe(true);
+  });
+
+  it('does not treat an Event organization reference as Line of Business', () => {
+    expect(worktagsIncludeLineOfBusiness([
+      { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: '2026-PGA_Championship' }] },
+    ], related)).toBe(false);
   });
 });
