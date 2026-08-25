@@ -2987,6 +2987,69 @@ describe('Workday utilities', () => {
         expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       });
 
+      it('should not omit Line of Business after a required-LOB fault when related fill and fallback are already applied', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          callback({
+            faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+            detail: {
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }
+          }, null);
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        await expect(submitSupplierInvoiceUpdateForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Service',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-General_Fund_Unrestricted',
+            costCenterId: 'CC-Enterprise Technology',
+            lineOfBusinessId: 'LOB-Enterprise',
+          }],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', {
+              requiredOnTransaction: true,
+              defaultReferenceId: null,
+              allowedReferenceIds: ['LOB-Enterprise'],
+            }]
+          ])
+        })).rejects.toMatchObject({
+          message: expect.stringContaining('must also have a value: Line of Business')
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(capturedRequests[0])).toContain('LOB-Enterprise');
+        expect(JSON.stringify(capturedRequests[0])).not.toContain('Default_Line_Of_Business');
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
     });
 
     it('should not include Purchase_Order_Reference when purchaseOrderNumber is not provided', async () => {

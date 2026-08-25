@@ -729,6 +729,8 @@ async function getValidationFallbackField(
       debug('Validation requires Line of Business related worktags; retrying without classifier');
       return 'worktag:lob';
     }
+    debug('Validation requires Line of Business related worktags but fill options are exhausted; skipping omit retry');
+    return undefined;
   } else if (
     isLineOfBusinessRelatedWorktagError(validationText)
     && retryableFallbackFields.includes('worktag:lob')

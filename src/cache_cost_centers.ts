@@ -71,6 +71,7 @@ export const processor = withProcessorHandler(async (context, costCenters, event
   let relatedByKey = new Map<string, RelatedLob>();
   let relatedFetchFailed = false;
   try {
+    // ISU needs Get on Manage: Related Worktags. Unauthorized SOAP is a soft-fail; existing relatedLob is kept.
     relatedByKey = await getRelatedWorktagsForCostCenters(
       context,
       rows.map(row => row.workdayId)
