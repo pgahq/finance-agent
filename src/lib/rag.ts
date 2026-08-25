@@ -46,6 +46,7 @@ export function createSupplierContent(supplier: any): string {
 export function createCompanyContent(company: any): string {
   const content = [
     `Company Name: ${company.companyName}`,
+    company.companyReferenceId ? `Company Reference ID: ${company.companyReferenceId}` : null,
     `Primary Address: ${company.addressPrimary}`,
     company.publicAddresses?.length > 0 ? `Public Addresses: ${company.publicAddresses.join(', ')}` : null,
     company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
@@ -264,9 +265,10 @@ export const findCompaniesTool = tool({
 
   This tool is optimized for finding companies by:
   - Company names (e.g., "Acme Corp", "Microsoft")
-  - Company IDs (Workday IDs)
+  - Company Reference IDs (e.g., "912")
+  - Company Workday IDs (WIDs)
 
-  Examples: "Acme Corporation", "Global Modern Services"`,
+  Examples: "Acme Corporation", "912", "Global Modern Services"`,
   inputSchema: z.object({
     query: z.string().describe('Search query for companies (company name or ID)'),
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),

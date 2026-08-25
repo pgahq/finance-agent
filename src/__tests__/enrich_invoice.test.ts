@@ -48,6 +48,9 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
+  searchDocumentsByTypes: jest.fn().mockResolvedValue([]),
+  findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
+  findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
 }));
@@ -578,6 +581,98 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).');
 
     jest.useRealTimers();
+  });
+
+  it('should pass the email-coded company workdayId as companyWID on update', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      emailWorktags: {
+        company: {
+          extracted: '912',
+          name: 'PGA Company',
+          workdayId: 'email-company-wid',
+          referenceId: '912'
+        },
+        costCenter: { extracted: '912', name: null, code: null },
+        event: { extracted: null, workdayId: null },
+        lineOfBusiness: { extracted: null, referenceId: null },
+        fund: { extracted: null, referenceId: null },
+        spendCategory: { extracted: null, name: null, referenceId: null }
+      }
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: {
+          descriptor: 'Existing Supplier',
+          id: 'SUP-1'
+        },
+        company1: {
+          descriptor: 'Test Company',
+          id: 'COMP-1'
+        },
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyWID: 'email-company-wid',
+      })
+    );
+
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    expect(notifyEnrichmentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        company: expect.objectContaining({
+          status: 'email_resolved',
+          appliedFromEmail: true,
+          appliedName: 'PGA Company',
+          appliedReferenceId: '912',
+        }),
+      })
+    );
   });
 
   it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {

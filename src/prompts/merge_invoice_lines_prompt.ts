@@ -8,8 +8,8 @@ export const MergeInvoiceLinesSchema = z.object({
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00). Null if not stated.'),
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
-    costCenterId: z.string().nullable().describe('Cost_Center_Reference_ID from PO lines or email context. Null if not determinable.'),
-    fundId: z.string().nullable().describe('Fund_ID from PO lines or email context. Null if not determinable.'),
+    costCenterId: z.string().nullable().describe('Cost_Center_Reference_ID from matched PO lines only. Null if no PO line was matched. Never copy a code from the email body.'),
+    fundId: z.string().nullable().describe('Fund_ID from matched PO lines only. Null if no PO line was matched. Never copy a code from the email body.'),
     spendCategoryId: z.string().nullable().describe('Spend_Category_ID from PO lines only. Never infer this from email text — spend category is resolved upstream and applied separately. Null if no PO line was matched.'),
     lineOfBusinessId: z.string().nullable().describe('Copy lineOfBusinessId from the matched PO line when present (already extracted in code, e.g. "LOB-Technology_Services"). Null if no PO line was matched or the PO line has no lineOfBusinessId.'),
     eventId: z.string().nullable().describe('Organization_Reference_ID value of an event worktag from the matched PO line, if one can be identified. Inspect the matched PO line\'s worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Do not confuse events with line-of-business worktags. Null if no PO line was matched, no event-like worktag is present, or you are unsure.'),
@@ -26,7 +26,7 @@ export const mergeInvoiceLinesPrompt = `You are an expert at mapping invoice lin
 You will receive a JSON object with the following fields:
 - **extractedInvoiceLines**: Line items extracted from the invoice document (description, quantity, unitCost as string, totalPrice as string)
 - **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId, lineOfBusinessId (extracted ID strings), and worktagsReference (the full array of raw Workday worktag reference objects for that line)
-- **emailBody** (optional): The plain-text email body that accompanied this invoice, which may contain cost center references
+- **emailBody** (optional): The plain-text email that accompanied this invoice. Do not copy codes from it into ID fields; email coding is resolved upstream.
 
 Your task is to produce final invoice lines by:
 
@@ -38,7 +38,7 @@ Your task is to produce final invoice lines by:
 6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
 7. For hasDiscount: copy the value directly from the matching extracted invoice line
 8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize
-9. If no PO lines are available, or a line cannot be matched to a PO line, check the email body for cost center or fund references and use those
+9. Do not copy codes from the email body into costCenterId, fundId, or other ID fields. Email coding is resolved upstream and applied separately. A short code in the email may be a company, cost center, fund, LOB, or spend category — do not assume it is a cost center. If there is no PO match, set those IDs to null.
 10. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 
 Guidelines:
@@ -49,5 +49,6 @@ Guidelines:
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
 - If all PO lines share the same worktags, apply those worktags to all invoice lines
 - If the invoice has fewer lines than the PO, match each invoice line to the single best-matching PO line
-- Cost center IDs and fund IDs are alphanumeric strings (e.g. "72200", "FD-001"). Spend category IDs come from PO lines only — never construct them from email text
+- Cost center IDs and fund IDs must come from matched PO lines only. Never copy a number or token from the email body into costCenterId or fundId — those values are resolved and applied outside this step
+- Spend category IDs come from PO lines only — never construct them from email text
 - Set null for any worktag field you cannot confidently determine from the available sources`;

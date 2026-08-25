@@ -1,4 +1,4 @@
-import { createEmbedding, createSupplierContent, queryDocuments } from '../lib/rag.js';
+import { createEmbedding, createSupplierContent, createCompanyContent, queryDocuments } from '../lib/rag.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -151,6 +151,30 @@ Status: Active`);
 
       expect(result).toBe(`Company Name: Empty Corp
 Status: Active`);
+    });
+  });
+
+  describe('createCompanyContent', () => {
+    it('includes Company Reference ID when companyReferenceId is set', () => {
+      const result = createCompanyContent({
+        companyName: 'PGA of America',
+        companyReferenceId: '912',
+        addressPrimary: '100 PGA Tour Blvd',
+      });
+
+      expect(result).toContain('Company Name: PGA of America');
+      expect(result).toContain('Company Reference ID: 912');
+      expect(result).toContain('Primary Address: 100 PGA Tour Blvd');
+    });
+
+    it('omits Company Reference ID when companyReferenceId is absent', () => {
+      const result = createCompanyContent({
+        companyName: 'PGA of America',
+        addressPrimary: '100 PGA Tour Blvd',
+      });
+
+      expect(result).toBe(`Company Name: PGA of America
+Primary Address: 100 PGA Tour Blvd`);
     });
   });
 

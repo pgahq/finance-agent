@@ -34,8 +34,15 @@ jest.mock('../lib/database.js', () => ({
     close: jest.fn().mockResolvedValue({})
   }),
   searchSimilarDocuments: jest.fn().mockResolvedValue([]),
+  searchDocumentsByTypes: jest.fn().mockResolvedValue([]),
+  findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
+  findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
+}));
+
+jest.mock('../lib/rag.js', () => ({
+  createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
 jest.mock('../lib/s3.js', () => ({
@@ -456,5 +463,150 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('Custom_Placeholder_Company');
     expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
+  });
+
+  it('should submit the email-coded company WID when emailWorktags.company.workdayId is set', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+      ['72200', []],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+        costCenter: { extracted: 'Technology', name: 'Technology', code: '72200' },
+        event: { extracted: 'Championship', workdayId: 'event-wid' },
+        lineOfBusiness: { extracted: 'Championships', referenceId: 'lob-id' },
+        fund: { extracted: 'General', referenceId: 'fund-id' },
+        spendCategory: { extracted: 'Services', name: 'Services', referenceId: 'spend-id' },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-8/invoice.pdf'),
+        emailContext: { emailFrom: 'ap@pga.org', subject: 'Coding', plainTextBody: '912 / 72200' },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('email-company-wid');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+      costCenterId: '72200',
+    }));
+  });
+
+  it('should submit the cached company WID when email coding only has Company_Reference_ID 912', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'cached-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: null, referenceId: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [attachmentRequest('new-invoices/req-9/invoice.pdf')]
+    } as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('cached-company-wid');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+  });
+
+  it('should prefer the email-coded company over a PDF companyVerification recommendation', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'pdf-company-wid', companyName: 'PDF Company', confidence: 0.9, reason: 'Better match' },
+        reason: 'Extracted company differs from the default placeholder'
+      },
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [attachmentRequest('new-invoices/req-10/invoice.pdf')]
+    } as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('email-company-wid');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          status: 'email_resolved',
+          appliedFromEmail: true,
+          appliedName: 'PGA Company',
+          appliedReferenceId: '912',
+        }),
+      })
+    );
+  });
+
+  it('should not apply a cost center code that is actually the email company reference ID', async () => {
+    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+        costCenter: { extracted: '912', name: null, code: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [attachmentRequest('new-invoices/req-11/invoice.pdf')]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+      costCenterId: null,
+    }));
   });
 });
