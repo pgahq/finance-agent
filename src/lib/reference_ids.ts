@@ -47,8 +47,12 @@ function isCurrencyAmountFragment(text: string, index: number, token: string): b
   const beforePrev = index > 1 ? text[index - 2] : '';
   const afterNext = text[index + token.length + 1] ?? '';
   if (before === '$' || before === '€' || before === '£') return true;
-  if ((before === '.' || before === ',') && /\d/.test(beforePrev)) return true;
-  if ((after === '.' || after === ',') && /\d/.test(afterNext)) return true;
+  if (after === '.' && /\d/.test(afterNext)) return true;
+  if (before === '.' && /\d/.test(beforePrev)) return true;
+  // Thousands grouping is comma + exactly three digits (1,912.00). Do not treat
+  // compact coding lists such as 912,72200 as currency.
+  if (/^,\d{3}(?!\d)/.test(text.slice(index + token.length))) return true;
+  if (token.length === 3 && before === ',' && /\d/.test(beforePrev)) return true;
   return false;
 }
 

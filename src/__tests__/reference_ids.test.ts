@@ -107,6 +107,15 @@ describe('extractReferenceCodeCandidates', () => {
     );
   });
 
+  it('extracts compact comma-separated coding lists that are not currency amounts', () => {
+    expect(extractReferenceCodeCandidates('Coding: 912,72200')).toEqual(
+      expect.arrayContaining(['912', '72200'])
+    );
+    expect(extractReferenceCodeCandidates('912,72200,FD-001')).toEqual(
+      expect.arrayContaining(['912', '72200', 'FD-001'])
+    );
+  });
+
   it('ignores zip+4 and phone-number fragments', () => {
     expect(extractReferenceCodeCandidates('Ship to 30328-1234 and code 912')).toEqual(['912']);
     expect(extractReferenceCodeCandidates('Call 555-123-4567 then code 72200')).toEqual(['72200']);
