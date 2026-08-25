@@ -73,6 +73,23 @@ Custom validation rules and cost-center related worktags use `buildFinancialMana
 
 Do not add a separate Workday auth path or secret set for create-invoice.
 
+## Workday supplier invoice payload
+
+Tax and freight/shipping/handling are header amounts, not invoice lines:
+
+- `Tax_Amount` comes from `extractedTaxAmount`
+- `Freight_Amount` comes from `extractedFreightAmount` (PDF labels may be freight, shipping, handling, or delivery)
+- Those charge rows must not appear in `Invoice_Line_Replacement_Data`
+
+If the PDF lists shipping/handling as a line item, capture the amount on `Freight_Amount` and omit that row from the SOAP line payload. `splitFreightLines` in `src/lib/invoice_lines.ts` strips those rows before merge/PO matching and again when building the SOAP body. The matcher treats carrier-only service labels (`FedEx Ground`, `FedEx Home Delivery`, `UPS Ground`) and common service words (`standard`, `priority`, `2-Day`, `air`/`ocean` freight, `surcharge`, `freight in`/`out`) as freight, and still rejects merchandise lookalikes (`Shipping Container`, `Freightliner parts`, `Shipping Supplies`). Amount recovery reads SOAP `Unit_Cost` and `Quantity` when `Extended_Amount` is missing.
+
+Create vs update when no merchandise lines remain:
+
+- **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping. Create has no OCR lines, so do not send `[]`.
+- **Update** (`submitSupplierInvoiceUpdate`): if `finalLines` are all freight, keep OCR merchandise (freight stripped) so goods are not wiped. When OCR is also all freight, send a remainder `Invoice` line (control minus freight minus tax, floored at 0) so SOAP actually replaces the shipping row — strong-soap drops empty repeating `Invoice_Line_Replacement_Data` arrays, which would leave the OCR shipping line in place. Workday Get may return those header amounts as strings; parse them before subtracting so a string `Freight_Amount` is not treated as 0.
+
+Workday Get / strong-soap may return a single line as an object rather than an array. Unwrap with `[].concat(...)` before `splitFreightLines` so freight-only create still omits the line payload and freight-only update still replaces that row with a remainder `Invoice` line.
+
 Submit logging must not include `client.lastRequest` or raw strong-soap error
 objects. Those structures contain attachment bytes and the HTTP Authorization
 header. Log request byte count plus a safe error summary, and throw a new error
