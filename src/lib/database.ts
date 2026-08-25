@@ -317,6 +317,22 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function costCenterCodeAliases(id: string): string[] {
+  const aliases = new Set([id]);
+  aliases.add(id.replace(/_/g, ' '));
+  aliases.add(id.replace(/ /g, '_'));
+  return [...aliases];
+}
+
+function indexCostCenterKeys<T>(byId: Map<string, T>, workdayId: string | undefined, code: string | undefined, value: T): void {
+  if (workdayId) byId.set(workdayId, value);
+  if (code) {
+    for (const alias of costCenterCodeAliases(code)) {
+      byId.set(alias, value);
+    }
+  }
+}
+
 export async function getCostCenterRelatedLobsByCodes(
   db: DatabaseConnection,
   costCenterIds: string[]
@@ -324,6 +340,7 @@ export async function getCostCenterRelatedLobsByCodes(
   const byId = new Map<string, RelatedLob>();
   const ids = [...new Set(costCenterIds.filter(Boolean))];
   if (ids.length === 0) return byId;
+  const lookupIds = [...new Set(ids.flatMap(costCenterCodeAliases))];
 
   try {
     const results: unknown = await db.query(`
@@ -334,19 +351,19 @@ export async function getCostCenterRelatedLobsByCodes(
           metadata->>'code' = ANY($1::text[])
           OR workday_id = ANY($1::text[])
         )
-    `, [ids]);
+    `, [lookupIds]);
 
     for (const row of Array.isArray(results) ? results : []) {
       const record = asRecord(row);
       const metadata = asRecord(record.metadata);
       const relatedLob = parseRelatedLob(metadata.relatedLob);
       if (!relatedLob) continue;
-      if (typeof record.workday_id === 'string' && record.workday_id) {
-        byId.set(record.workday_id, relatedLob);
-      }
-      if (typeof metadata.code === 'string' && metadata.code) {
-        byId.set(metadata.code, relatedLob);
-      }
+      indexCostCenterKeys(
+        byId,
+        typeof record.workday_id === 'string' ? record.workday_id : undefined,
+        typeof metadata.code === 'string' ? metadata.code : undefined,
+        relatedLob
+      );
     }
 
     debug(`Found related LOB metadata for ${byId.size} cost center key(s)`);
@@ -364,6 +381,7 @@ export async function getCostCenterWorkdayIdsByCodes(
   const byId = new Map<string, string>();
   const ids = [...new Set(costCenterIds.filter(Boolean))];
   if (ids.length === 0) return byId;
+  const lookupIds = [...new Set(ids.flatMap(costCenterCodeAliases))];
 
   try {
     const results: unknown = await db.query(`
@@ -374,16 +392,18 @@ export async function getCostCenterWorkdayIdsByCodes(
           metadata->>'code' = ANY($1::text[])
           OR workday_id = ANY($1::text[])
         )
-    `, [ids]);
+    `, [lookupIds]);
 
     for (const row of Array.isArray(results) ? results : []) {
       const record = asRecord(row);
       const metadata = asRecord(record.metadata);
       if (typeof record.workday_id !== 'string' || !record.workday_id) continue;
-      byId.set(record.workday_id, record.workday_id);
-      if (typeof metadata.code === 'string' && metadata.code) {
-        byId.set(metadata.code, record.workday_id);
-      }
+      indexCostCenterKeys(
+        byId,
+        record.workday_id,
+        typeof metadata.code === 'string' ? metadata.code : undefined,
+        record.workday_id
+      );
     }
 
     debug(`Found Workday ids for ${byId.size} cost center key(s)`);

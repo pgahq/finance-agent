@@ -115,6 +115,79 @@ describe('parseRelatedWorktagsResponse', () => {
       allowedReferenceIds: ['Enterprise_Technology'],
     });
   });
+
+  it('treats custom organization related worktags as Line of Business', () => {
+    const parsed = parseRelatedWorktagsResponse({
+      Response_Data: {
+        Related_Worktags: {
+          Related_Worktag_Reference: {
+            ID: [
+              id('WID', '737c7895dd701001f0f9c396f27b0000'),
+              id('Cost_Center_Reference_ID', 'CC-Building_Services-PBG'),
+            ]
+          },
+          Related_Worktags_Data: {
+            Related_Worktags_by_Type_Data: [
+              {
+                Worktag_Type_Reference: { ID: [id('Worktag_Type_ID', 'FUND')] },
+                Default_Worktag_Data: {
+                  Default_Worktag_Reference: { ID: [id('Fund_ID', 'FUND-General_Fund_Unrestricted')] }
+                }
+              },
+              {
+                Worktag_Type_Reference: { ID: [id('Worktag_Type_ID', 'CUSTOM_ORGANIZATION_01')] },
+                Required_On_Transaction: true,
+                Allowed_Worktag_Data: {
+                  Allowed_Worktag_Reference: {
+                    ID: [id('Organization_Reference_ID', 'Building Services')]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    expect(parsed.get('737c7895dd701001f0f9c396f27b0000')).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+    });
+    expect(parsed.get('CC-Building_Services-PBG')).toEqual(
+      parsed.get('737c7895dd701001f0f9c396f27b0000')
+    );
+  });
+
+  it('detects Line of Business from the worktag type descriptor when the type id is a WID', () => {
+    const parsed = parseRelatedWorktagsResponse({
+      Response_Data: {
+        Related_Worktags: {
+          Related_Worktag_Reference: { ID: [id('WID', 'cc-wid-4')] },
+          Related_Worktags_Data: {
+            Related_Worktags_by_Type_Data: {
+              Worktag_Type_Reference: {
+                $attributes: { Descriptor: 'Line of Business' },
+                ID: [id('WID', 'lob-type-wid')]
+              },
+              Required_On_Transaction: true,
+              Allowed_Worktag_Data: {
+                Allowed_Worktag_Reference: {
+                  ID: [id('Custom_Organization_Reference_ID', 'Building_Services')]
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    expect(parsed.get('cc-wid-4')).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building_Services'],
+    });
+  });
 });
 
 describe('relatedWorktagsTotalPages', () => {

@@ -58,7 +58,7 @@ not. Do not enable prune for windowed sources such as events.
 
 ## Cost center related LOB metadata
 
-`cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is exact by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG.
+`cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG. Cost center codes match with spaces or underscores (`CC-Building Services-PBG` and `CC-Building_Services-PBG`).
 
 `relatedLob` shape:
 
@@ -70,7 +70,7 @@ not. Do not enable prune for windowed sources such as events.
 }
 ```
 
-Source is Financial Management `Get_Related_Worktags_for_Worktags`. That SOAP operation needs its own Workday security domain; Resource Management `Submit_Supplier_Invoice` access is not enough. If Workday returns `The task submitted is not authorized`, `cache_cost_centers` continues without related LOB metadata and posts Slack. Invoice submit does not log the raw SOAP envelope.
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. PGA Line of Business is a custom organization, so SOAP `Worktag_Type_ID` is typically `CUSTOM_ORGANIZATION_01` (or a WID plus Descriptor `Line of Business`), not `LINE_OF_BUSINESS`. Allowed ids are `Organization_Reference_ID` / `Custom_Organization_Reference_ID` and often have no `LOB-` prefix (example: `Building Services` on `CC-Building Services-PBG`). Parse those as related LOB. Lookup matches `metadata.code` / `workday_id` and treats space vs underscore in the cost center code as the same key.
 
 Invoice line build fills a missing `lineOfBusinessId` from the related default, or from an allowed LOB when there is no default. `Default_Line_Of_Business` is used only when related worktags do not yield a real LOB. SOAP submit prefers that related LOB over the global default.
 

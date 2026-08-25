@@ -102,10 +102,39 @@ export function relatedLobHasUsableValue(related: RelatedLob | null | undefined)
   return Boolean(related?.defaultReferenceId || related?.allowedReferenceIds?.length);
 }
 
+const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_(?:0?[1-9]|10)$/i;
+
+function soapDescriptor(node: unknown): string | undefined {
+  if (!isRecord(node)) return undefined;
+  const attributes = node.$attributes;
+  if (isRecord(attributes) && typeof attributes.Descriptor === 'string' && attributes.Descriptor) {
+    return attributes.Descriptor;
+  }
+  if (typeof node.Descriptor === 'string' && node.Descriptor) return node.Descriptor;
+  return undefined;
+}
+
+function collectTypeSignals(node: unknown, results: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) collectTypeSignals(item, results);
+    return results;
+  }
+  if (!isRecord(node)) return results;
+
+  const descriptor = soapDescriptor(node);
+  if (descriptor) results.push(descriptor);
+  const type = soapAttributeType(node);
+  if (type && node.$value != null) results.push(String(node.$value));
+  for (const child of Object.values(node)) collectTypeSignals(child, results);
+  return results;
+}
+
+function isLineOfBusinessTypeSignal(value: string): boolean {
+  return /line[_\s-]*of[_\s-]*business/i.test(value) || CUSTOM_ORGANIZATION_TYPE_ID.test(value);
+}
+
 function isLineOfBusinessWorktagType(typeData: Record<string, unknown>): boolean {
-  return collectIds(typeData.Worktag_Type_Reference).some(id =>
-    /line[_\s-]*of[_\s-]*business/i.test(id.value ?? '')
-  );
+  return collectTypeSignals(typeData.Worktag_Type_Reference).some(isLineOfBusinessTypeSignal);
 }
 
 function organizationReferenceIdsFrom(node: unknown): string[] {
