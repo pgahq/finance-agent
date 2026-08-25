@@ -3404,6 +3404,8 @@ describe('Workday utilities', () => {
         requiredOnTransaction: true,
         defaultReferenceId: 'LOB-Facilities',
         allowedReferenceIds: [],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [],
       });
       expect(result.get('CC-Building Services-PBG')).toEqual(result.get('cc-wid-1'));
     });

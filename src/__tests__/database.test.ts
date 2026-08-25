@@ -439,8 +439,14 @@ describe('Database Library', () => {
         expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
         [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
       );
-      expect(result.get('CC-Building Services-PBG')).toEqual(relatedLob);
-      expect(result.get('cc-wid-1')).toEqual(relatedLob);
+      expect(result.get('CC-Building Services-PBG')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Facilities',
+        allowedReferenceIds: ['LOB-Facilities'],
+        defaultIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+        allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Facilities' }],
+      });
+      expect(result.get('cc-wid-1')).toEqual(result.get('CC-Building Services-PBG'));
     });
 
     it('matches cost center codes with spaces or underscores', async () => {
@@ -465,8 +471,14 @@ describe('Database Library', () => {
         expect.stringContaining("metadata->>'code' = ANY($1::text[])"),
         [expect.arrayContaining(['CC-Building Services-PBG', 'CC-Building_Services-PBG'])]
       );
-      expect(result.get('CC-Building Services-PBG')).toEqual(relatedLob);
-      expect(result.get('CC-Building_Services-PBG')).toEqual(relatedLob);
+      expect(result.get('CC-Building Services-PBG')).toEqual({
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+        defaultIds: [],
+        allowedIds: [{ type: 'Organization_Reference_ID', value: 'Building Services' }],
+      });
+      expect(result.get('CC-Building_Services-PBG')).toEqual(result.get('CC-Building Services-PBG'));
     });
 
     it('returns an empty map when no ids are provided', async () => {

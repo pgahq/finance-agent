@@ -10,6 +10,7 @@ import {
   parseRelatedWorktagsResponse,
   relatedLobHasUsableValue,
   relatedWorktagsTotalPages,
+  relatedLobSoapReference,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -914,7 +915,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       );
       const lobId = relatedLobId ?? fallbackLobId;
       if (lobId) {
-        result = [...result, createReference('Organization_Reference_ID', lobId)];
+        const lobRef = relatedLobSoapReference(relatedLobByCostCenter?.get(costCenterId ?? ''), lobId);
+        result = [...result, createReference(lobRef.type, lobRef.value)];
       }
     }
     return result;
@@ -925,7 +927,13 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       const worktags = withFallbackWorktags([
         ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
         ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-        ...(!omitLobWorktag && line.lineOfBusinessId ? [createReference('Organization_Reference_ID', line.lineOfBusinessId)] : []),
+        ...(!omitLobWorktag && line.lineOfBusinessId ? (() => {
+          const lobRef = relatedLobSoapReference(
+            relatedLobByCostCenter?.get(line.costCenterId ?? ''),
+            line.lineOfBusinessId
+          );
+          return [createReference(lobRef.type, lobRef.value)];
+        })() : []),
         ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
       ], line.costCenterId);
       const isDiscountOverride = line.hasDiscount === true;
