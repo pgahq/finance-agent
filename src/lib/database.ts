@@ -712,3 +712,29 @@ export async function searchDocumentsByTypes(
     throw error;
   }
 }
+
+export async function findCompanyByName(
+  db: DatabaseConnection,
+  companyName: string | readonly string[]
+): Promise<{ workdayId: string; companyName: string } | undefined> {
+  const names = (Array.isArray(companyName) ? [...companyName] : [companyName])
+    .map(name => name.trim().toLowerCase())
+    .filter(Boolean);
+  if (names.length === 0) return undefined;
+
+  const rows = await db.query(
+    `SELECT workday_id, metadata
+     FROM documents
+     WHERE type = $1
+       AND LOWER(metadata->>'companyName') = ANY($2::text[])
+     ORDER BY array_position($2::text[], LOWER(metadata->>'companyName')), workday_id
+     LIMIT 1`,
+    ['company', names]
+  ) as Array<{ workday_id: string; metadata?: { companyName?: string } }>;
+  const row = rows[0];
+  if (!row?.workday_id) return undefined;
+  return {
+    workdayId: row.workday_id,
+    companyName: row.metadata?.companyName ?? names[0],
+  };
+}

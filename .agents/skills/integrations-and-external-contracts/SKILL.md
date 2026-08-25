@@ -39,6 +39,8 @@ Flow:
 5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
+`CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company, default, and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **The Professional Golfers Association of America** (and skips early PO lines). Company priority is: email-coded company; then a recommended `different` company, except when that PO was found only after enrichment (the late PO company wins over the recommendation); then the PO company; then **The Professional Golfers Association of America** (company-cache WID, or `WORKDAY_DEFAULT_COMPANY_WID` when set). If no other company is selected and that default cannot be resolved, create-invoice fails closed instead of submitting `Default_OCR_Company`. The cache lookup prefers the official long name over the `PGA of America` alias.
+
 | HTTP | Meaning |
 | --- | --- |
 | 202 | Accepted — body includes `status: accepted`, `message`, `requestId`, and `conversationId` |

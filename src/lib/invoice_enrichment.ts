@@ -3,14 +3,47 @@ import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
+import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
+
+function attachmentContentParts(processedAttachments: PresignedAttachment[]): Array<
+  { type: 'file'; data: Buffer; mediaType: string; filename: string }
+  | { type: 'image'; image: URL }
+> {
+  const parts: Array<
+    { type: 'file'; data: Buffer; mediaType: string; filename: string }
+    | { type: 'image'; image: URL }
+  > = [];
+
+  for (const att of processedAttachments) {
+    if (att.contentType === 'application/pdf' && att.buffer) {
+      parts.push({
+        type: 'file',
+        data: att.buffer,
+        mediaType: att.contentType,
+        filename: att.fileName
+      });
+      continue;
+    }
+
+    if (att.contentType.startsWith('image/')) {
+      parts.push({
+        type: 'image',
+        image: new URL(att.presignedUrl)
+      });
+    }
+  }
+
+  return parts;
+}
 
 export async function enrichInvoiceFromAttachments(
   invoice: WorkdayInvoice,
   processedAttachments: PresignedAttachment[],
   existingSupplier?: { descriptor: string; id: string },
   existingCompany?: { descriptor: string; id: string },
-  emailContext?: InvoiceData['emailContext']
+  emailContext?: InvoiceData['emailContext'],
+  purchaseOrder?: PurchaseOrderEnrichmentContext
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
@@ -36,7 +69,8 @@ export async function enrichInvoiceFromAttachments(
         contentType: att.contentType,
         presignedUrl: att.presignedUrl
       })),
-      emailContext
+      emailContext,
+      purchaseOrder,
     };
 
     let referenceDirectoryText = '';
@@ -54,6 +88,10 @@ export async function enrichInvoiceFromAttachments(
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
 
+    const purchaseOrderText = purchaseOrder
+      ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`
+      : '';
+
     const existingSupplierText = existingSupplier
       ? `\nExisting Supplier: ${existingSupplier.descriptor} (ID: ${existingSupplier.id})`
       : '\nExisting Supplier: None (supplier has not been assigned yet)';
@@ -66,33 +104,13 @@ export async function enrichInvoiceFromAttachments(
       ? 'Please verify the supplier and company on this invoice'
       : 'Please identify the supplier and verify the company on this invoice';
 
+    const poInstructions = purchaseOrder
+      ? ' A matching Workday purchase order is included — use its company as the strongest billed-entity signal, and use its lines as context when extracting invoice lines.'
+      : '';
+
     const taskInstructions = existingSupplier
-      ? 'Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.'
-      : 'Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.';
-
-    const attachmentContentParts: Array<
-      { type: 'file'; data: Buffer; mediaType: string; filename: string }
-      | { type: 'image'; image: URL }
-    > = [];
-
-    for (const att of processedAttachments) {
-      if (att.contentType === 'application/pdf' && att.buffer) {
-        attachmentContentParts.push({
-          type: 'file',
-          data: att.buffer,
-          mediaType: att.contentType,
-          filename: att.fileName
-        });
-        continue;
-      }
-
-      if (att.contentType.startsWith('image/')) {
-        attachmentContentParts.push({
-          type: 'image',
-          image: new URL(att.presignedUrl)
-        });
-      }
-    }
+      ? `Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`
+      : `Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed. If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`;
 
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
@@ -103,9 +121,9 @@ export async function enrichInvoiceFromAttachments(
           content: [
             {
               type: 'text',
-              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}`
+              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${purchaseOrderText}`
             },
-            ...attachmentContentParts
+            ...attachmentContentParts(processedAttachments)
           ]
         }
       ]
@@ -123,11 +141,15 @@ export function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
   return `Supplier: ${result.supplier.reason}`;
 }
 
-export function formatCompanyNotes(result: InvoiceEnrichmentResult, existingCompanyDescriptor?: string): string {
+export function formatCompanyNotes(
+  result: InvoiceEnrichmentResult,
+  existingCompanyDescriptor?: string,
+  options?: { appliedRecommended?: boolean }
+): string {
   const cv = result.companyVerification;
   if (!cv || cv.status === 'matching') return '';
   let notes = `\n\nCompany: ${cv.reason}`;
-  if (cv.status === 'different' && cv.recommended) {
+  if (cv.status === 'different' && cv.recommended && options?.appliedRecommended !== false) {
     notes += ` Changed to: ${cv.recommended.companyName}${existingCompanyDescriptor ? ` (was: ${existingCompanyDescriptor})` : ''}`;
   }
   return notes;
