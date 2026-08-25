@@ -312,6 +312,68 @@ export async function deleteAllDocumentsByType(
   }
 }
 
+type ReferenceDocument = {
+  workday_id: string;
+  type: DocumentType;
+  content: string;
+  metadata: Record<string, any>;
+};
+
+function metadataReferenceKeys(metadata: Record<string, unknown> | undefined): string[] {
+  if (!metadata) return [];
+  return ['code', 'referenceId', 'companyReferenceId']
+    .map((key) => metadata[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim().toLowerCase());
+}
+
+export async function findDocumentsByReferenceIds(
+  db: DatabaseConnection,
+  referenceIds: string[],
+  types: readonly DocumentType[]
+): Promise<Map<string, ReferenceDocument[]>> {
+  const uniqueCodes = [...new Set(referenceIds.map((code) => code.trim()).filter(Boolean))];
+  const grouped = new Map<string, ReferenceDocument[]>(uniqueCodes.map((code) => [code, []]));
+  if (uniqueCodes.length === 0 || types.length === 0) return grouped;
+
+  try {
+    const results = await db.query(`
+      SELECT workday_id, type, content, metadata
+      FROM documents
+      WHERE type = ANY($1)
+        AND (
+          LOWER(COALESCE(metadata->>'code', '')) = ANY($2)
+          OR LOWER(COALESCE(metadata->>'referenceId', '')) = ANY($2)
+          OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = ANY($2)
+        )
+    `, [types, uniqueCodes.map((code) => code.toLowerCase())]) as ReferenceDocument[];
+
+    for (const document of results) {
+      const keys = metadataReferenceKeys(document.metadata);
+      for (const code of uniqueCodes) {
+        if (keys.includes(code.toLowerCase())) {
+          grouped.get(code)!.push(document);
+        }
+      }
+    }
+
+    debug(`Found ${results.length} documents matching ${uniqueCodes.length} reference ID(s)`);
+    return grouped;
+  } catch (error) {
+    debug('Error finding documents by reference IDs:', error);
+    throw error;
+  }
+}
+
+export async function findDocumentsByReferenceId(
+  db: DatabaseConnection,
+  referenceId: string,
+  types: readonly DocumentType[]
+): Promise<ReferenceDocument[]> {
+  const grouped = await findDocumentsByReferenceIds(db, [referenceId], types);
+  return grouped.get(referenceId.trim()) ?? [];
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value == null) return {};
   return value as Record<string, unknown>;
@@ -609,6 +671,44 @@ export async function searchDocuments(
     return results;
   } catch (error) {
     debug(`Error in hybrid search for ${documentType} documents:`, error);
+    throw error;
+  }
+}
+
+export async function searchDocumentsByTypes(
+  db: DatabaseConnection,
+  queryEmbedding: number[],
+  queryText: string,
+  documentTypes: readonly DocumentType[],
+  limit: number = 8
+): Promise<Array<ReferenceDocument & { similarity: number }>> {
+  if (documentTypes.length === 0) return [];
+
+  try {
+    const vectorString = `[${queryEmbedding.join(',')}]`;
+    const results = await db.query(`
+      SELECT
+        workday_id,
+        type,
+        content,
+        metadata,
+        CASE
+          WHEN LOWER(COALESCE(metadata->>'code', '')) = LOWER($3)
+            OR LOWER(COALESCE(metadata->>'referenceId', '')) = LOWER($3)
+            OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = LOWER($3)
+          THEN 1.0
+          ELSE 1 - (embedding <=> '${vectorString}'::vector)
+        END as similarity
+      FROM documents
+      WHERE type = ANY($1)
+      ORDER BY similarity DESC
+      LIMIT $2
+    `, [documentTypes, limit, queryText.trim()]) as Array<ReferenceDocument & { similarity: number }>;
+
+    debug(`Found ${results.length} ranked matches across ${documentTypes.length} types for "${queryText}"`);
+    return results;
+  } catch (error) {
+    debug(`Error searching documents across types for "${queryText}":`, error);
     throw error;
   }
 }

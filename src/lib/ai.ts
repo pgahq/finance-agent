@@ -3,6 +3,7 @@ import { openai } from '@ai-sdk/openai';
 import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
+import { resolveReferenceCodeTool } from './reference_ids.js';
 
 // Set OpenAI API key globally
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
@@ -55,6 +56,7 @@ export async function getAiResponse({
         findLobs: findLobsTool,
         findFunds: findFundsTool,
         findSpendCategories: findSpendCategoriesTool,
+        resolveReferenceCode: resolveReferenceCodeTool,
       }
     };
 

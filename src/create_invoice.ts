@@ -21,6 +21,11 @@ import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback } from './lib/workday.js';
+import {
+  costCenterCodeExcludingCompany,
+  resolveCompanyFromEmail,
+  selectCompanyForCreateInvoice,
+} from './lib/reference_ids.js';
 import { getPurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice } from './lib/workday.js';
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -96,13 +101,23 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const targetSupplierWID = result.supplier.resolvedSupplier?.workdayId ?? DEFAULT_SUPPLIER_WID;
     const recommendedCompanyWID = result.companyVerification?.status === 'different'
-      ? result.companyVerification.recommended?.workdayId
+      ? result.companyVerification.recommended?.workdayId ?? undefined
       : undefined;
-    const companyWID = recommendedCompanyWID ?? DEFAULT_COMPANY_REFERENCE_ID;
-    const companyReferenceType = recommendedCompanyWID ? 'WID' : 'Company_Reference_ID';
+    const emailCompany = await resolveCompanyFromEmail({
+      db: context.dbConnection,
+      emailBody: emailContext?.plainTextBody,
+      emailCompany: result.emailWorktags?.company,
+    });
+    const selectedCompany = selectCompanyForCreateInvoice({
+      emailCompany,
+      recommendedCompanyWID,
+      defaultCompanyReferenceId: DEFAULT_COMPANY_REFERENCE_ID,
+    });
+    const companyWID = selectedCompany.companyId;
+    const companyReferenceType = selectedCompany.companyReferenceType;
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
-    debug(`Company resolution: status=${result.companyVerification?.status}, companyWID=${companyWID} (${companyReferenceType})`);
+    debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
     const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
@@ -145,7 +160,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
     const emailWorktags = result.emailWorktags ? {
-      costCenterId: result.emailWorktags.costCenter?.code ?? null,
+      costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
       eventWid: result.emailWorktags.event?.workdayId ?? null,
       lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
       fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
@@ -265,7 +280,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         isDefault: !result.supplier.resolvedSupplier?.workdayId,
       },
-      company: result.companyVerification ? {
+      company: emailCompany ? {
+        status: 'email_resolved',
+        appliedFromEmail: true,
+        appliedName: emailCompany.name,
+        appliedReferenceId: emailCompany.referenceId,
+        recommendedName: result.companyVerification?.recommended?.companyName,
+      } : result.companyVerification ? {
         status: result.companyVerification.status,
         recommendedName: result.companyVerification.recommended?.companyName,
       } : undefined,

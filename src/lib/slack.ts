@@ -165,6 +165,9 @@ export interface EnrichmentNotification {
     status: string;
     existingName?: string;
     recommendedName?: string;
+    appliedFromEmail?: boolean;
+    appliedName?: string;
+    appliedReferenceId?: string;
   };
   extracted: {
     invoiceDate?: string;
@@ -215,16 +218,22 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
       if (!fallbacks.defaultSupplier) changeLines.push(`*Supplier* · ${supplier.status}`);
   }
 
-  switch (company?.status) {
-    case 'different':
-      changeLines.push(`*Company* → ${company.recommendedName ?? 'Unknown'} (was: ${company.existingName ?? 'previous company'})`);
-      break;
-    case 'matching':
-      verifiedLines.push(`*Company* · ${company.existingName ?? 'Unknown'} (matching)`);
-      break;
-    case 'uncertain':
-      verifiedLines.push(`*Company* · uncertain`);
-      break;
+  if (company?.appliedFromEmail) {
+    const label = company.appliedName ?? company.appliedReferenceId ?? 'Unknown';
+    const code = company.appliedReferenceId ? ` (\`${company.appliedReferenceId}\`)` : '';
+    changeLines.push(`*Company* → ${label}${code} from email coding`);
+  } else {
+    switch (company?.status) {
+      case 'different':
+        changeLines.push(`*Company* → ${company.recommendedName ?? 'Unknown'} (was: ${company.existingName ?? 'previous company'})`);
+        break;
+      case 'matching':
+        verifiedLines.push(`*Company* · ${company.existingName ?? 'Unknown'} (matching)`);
+        break;
+      case 'uncertain':
+        verifiedLines.push(`*Company* · uncertain`);
+        break;
+    }
   }
 
   if (extracted.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
