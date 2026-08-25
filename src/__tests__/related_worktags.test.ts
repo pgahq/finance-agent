@@ -180,6 +180,59 @@ describe('parseRelatedWorktagsResponse', () => {
     );
   });
 
+  it('reads Related_Worktags_Data arrays returned by strong-soap', () => {
+    const parsed = parseRelatedWorktagsResponse({
+      Response_Data: {
+        Related_Worktags: {
+          Related_Worktag_Reference: {
+            ID: [
+              id('WID', '737c7895dd701001f0f9c396f27b0000'),
+              id('Cost_Center_Reference_ID', 'CC-Building_Services-PBG'),
+            ]
+          },
+          Related_Worktags_Data: [{
+            Related_Worktags_by_Type_Data: [
+              {
+                Worktag_Type_Reference: { ID: [id('Worktag_Type_ID', 'FUND')] },
+                Default_Worktag_Data: {
+                  Default_Worktag_Reference: { ID: [id('Fund_ID', 'FUND-General_Fund_Unrestricted')] }
+                }
+              },
+              {
+                Worktag_Type_Reference: { ID: [id('Worktag_Type_ID', 'CUSTOM_ORGANIZATION_01')] },
+                Required_On_Transaction: true,
+                Allowed_Worktag_Data: {
+                  Allowed_Worktag_Reference: {
+                    ID: [
+                      id('WID', '737c7895dd701001ec3537bb73570000'),
+                      id('Organization_Reference_ID', 'LOB-Building_Services'),
+                      id('Custom_Organization_Reference_ID', 'LOB-Building_Services'),
+                    ]
+                  }
+                }
+              }
+            ]
+          }]
+        }
+      }
+    });
+
+    expect(parsed.get('737c7895dd701001f0f9c396f27b0000')).toEqual({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: [
+        'LOB-Building_Services',
+        '737c7895dd701001ec3537bb73570000',
+      ],
+      defaultIds: [],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'Organization_Reference_ID', value: 'LOB-Building_Services' },
+        { type: 'WID', value: '737c7895dd701001ec3537bb73570000' },
+      ],
+    });
+  });
+
   it('detects Line of Business from the worktag type descriptor when the type id is a WID', () => {
     const parsed = parseRelatedWorktagsResponse({
       Response_Data: {
