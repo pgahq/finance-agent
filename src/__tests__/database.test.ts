@@ -393,6 +393,26 @@ describe('Database Library', () => {
       );
       expect(result).toBeUndefined(); // bulkUpdateDocuments doesn't return values
     });
+
+    it('keeps the existing embedding when none is provided', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+
+      await bulkUpdateDocuments(mockConnection, [{
+        workdayId: 'doc-1',
+        type: 'cost_center',
+        content: 'Cost Center Name: Building Services',
+        metadata: { relatedLob: { allowedReferenceIds: ['LOB-Building_Services'] } },
+      }]);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET content = $3, metadata = $4, updated_at = CURRENT_TIMESTAMP'),
+        ['doc-1', 'cost_center', 'Cost Center Name: Building Services', expect.any(String)]
+      );
+      expect(mockQuery.mock.calls.some(([sql]: [string]) => typeof sql === 'string' && sql.includes('embedding'))).toBe(false);
+    });
   });
 
   describe('bulkDeleteDocuments', () => {

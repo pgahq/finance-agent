@@ -1,3 +1,4 @@
+import { createEmbedding } from '../lib/rag.js';
 import { syncDataSource, type SyncDataSourceOptions } from '../lib/sync.js';
 import type { DatabaseConnection } from '../lib/database.js';
 
@@ -261,5 +262,39 @@ describe('syncDataSource', () => {
       undefined,
       '1 cost centers'
     );
+  });
+
+  it('updates metadata without re-embedding when content is unchanged', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', content: 'Active', metadata: { name: 'Old' }, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({ isUpdated: () => true }));
+
+    expect(createEmbedding).not.toHaveBeenCalled();
+    expect(bulkUpdateDocuments).toHaveBeenCalledWith(dbConnection, [
+      expect.objectContaining({
+        workdayId: 'cc-active',
+        content: 'Active',
+        metadata: { workdayId: 'cc-active', name: 'Active', code: '100' },
+      })
+    ]);
+    expect(bulkUpdateDocuments.mock.calls[0]?.[1]?.[0]?.embedding).toBeUndefined();
+  });
+
+  it('re-embeds when content changes', async () => {
+    getDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', content: 'Old Name', metadata: {}, created_at: new Date() }
+    ]);
+
+    await syncDataSource(baseOptions({ isUpdated: () => true }));
+
+    expect(createEmbedding).toHaveBeenCalledWith('Active');
+    expect(bulkUpdateDocuments).toHaveBeenCalledWith(dbConnection, [
+      expect.objectContaining({
+        workdayId: 'cc-active',
+        embedding: [0.1, 0.2, 0.3],
+      })
+    ]);
   });
 });
