@@ -29,7 +29,7 @@ interface CostCenterRecord {
   workdayId: string;
   name: string;
   code: string;
-  relatedLob: RelatedLob;
+  relatedLob?: RelatedLob;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -105,7 +105,7 @@ export const processor = withProcessorHandler(async (context, costCenters, event
           ?? relatedByKey.get(row.code)
           ?? cachedRelatedByKey.get(row.workdayId)
           ?? cachedRelatedByKey.get(row.code)
-          ?? EMPTY_RELATED_LOB,
+          ?? (relatedFetchFailed ? undefined : EMPTY_RELATED_LOB),
       }
     ])
   );
@@ -120,10 +120,13 @@ export const processor = withProcessorHandler(async (context, costCenters, event
       workdayId: cc.workdayId,
       name: cc.name,
       code: cc.code,
-      relatedLob: cc.relatedLob,
+      relatedLob: cc.relatedLob ?? EMPTY_RELATED_LOB,
     }),
     isUpdated: (existingMetadata, cc) => {
       const existing = parseCostCenterMetadata(existingMetadata);
+      if (cc.relatedLob == null) {
+        cc.relatedLob = existing.relatedLob ?? EMPTY_RELATED_LOB;
+      }
       return existing.name !== cc.name
         || existing.code !== cc.code
         || !relatedLobEquals(existing.relatedLob, cc.relatedLob);

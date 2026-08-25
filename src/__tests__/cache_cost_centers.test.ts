@@ -1,5 +1,5 @@
 import { processor } from '../cache_cost_centers.js';
-import { bulkInsertDocuments, getCostCenterRelatedLobsByCodes } from '../lib/database.js';
+import { bulkInsertDocuments, bulkUpdateDocuments, getCostCenterRelatedLobsByCodes, getDocumentsByType } from '../lib/database.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 import { getRelatedWorktagsForCostCenters } from '../lib/workday.js';
 
@@ -66,13 +66,20 @@ describe('cache_cost_centers', () => {
     typeof getRelatedWorktagsForCostCenters
   >;
   const mockBulkInsertDocuments = bulkInsertDocuments as jest.MockedFunction<typeof bulkInsertDocuments>;
+  const mockBulkUpdateDocuments = bulkUpdateDocuments as jest.MockedFunction<typeof bulkUpdateDocuments>;
   const mockGetCostCenterRelatedLobsByCodes = getCostCenterRelatedLobsByCodes as jest.MockedFunction<
     typeof getCostCenterRelatedLobsByCodes
   >;
+  const mockGetDocumentsByType = getDocumentsByType as jest.MockedFunction<typeof getDocumentsByType>;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map());
+    mockGetCostCenterRelatedLobsByCodes.mockResolvedValue(new Map());
+    mockGetDocumentsByType.mockResolvedValue([
+      { workday_id: 'cc-active', metadata: {}, created_at: new Date() },
+      { workday_id: 'cc-inactive', metadata: {}, created_at: new Date() }
+    ] as any);
   });
 
   it('stores related LOB metadata on cost center documents', async () => {
@@ -167,6 +174,72 @@ describe('cache_cost_centers', () => {
       expect.any(Error),
       'related worktags unauthorized'
     );
+  });
+
+  it('does not wipe existing related LOB when SOAP and cached lookup both fail', async () => {
+    const existingRelated = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Building_Services' }],
+    };
+    mockGetRelatedWorktagsForCostCenters.mockRejectedValue(new Error('SOAP down'));
+    mockGetCostCenterRelatedLobsByCodes.mockRejectedValue(new Error('DB down'));
+    mockGetDocumentsByType.mockResolvedValue([
+      {
+        workday_id: 'cc-wid-2',
+        metadata: {
+          name: 'Other',
+          code: 'CC-Other',
+          relatedLob: existingRelated,
+        },
+        created_at: new Date(),
+      }
+    ] as any);
+
+    await expect(processor({
+      data: [{ workdayID: 'cc-wid-2', name: 'Other', code: 'CC-Other' }]
+    })).resolves.not.toThrow();
+
+    expect(mockBulkInsertDocuments).not.toHaveBeenCalled();
+    expect(mockBulkUpdateDocuments).not.toHaveBeenCalled();
+  });
+
+  it('keeps existing related LOB on name updates when SOAP and cached lookup both fail', async () => {
+    const existingRelated = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-Building_Services'],
+      defaultIds: [],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'LOB-Building_Services' }],
+    };
+    mockGetRelatedWorktagsForCostCenters.mockRejectedValue(new Error('SOAP down'));
+    mockGetCostCenterRelatedLobsByCodes.mockRejectedValue(new Error('DB down'));
+    mockGetDocumentsByType.mockResolvedValue([
+      {
+        workday_id: 'cc-wid-2',
+        metadata: {
+          name: 'Old Name',
+          code: 'CC-Other',
+          relatedLob: existingRelated,
+        },
+        created_at: new Date(),
+      }
+    ] as any);
+
+    await expect(processor({
+      data: [{ workdayID: 'cc-wid-2', name: 'New Name', code: 'CC-Other' }]
+    })).resolves.not.toThrow();
+
+    expect(mockBulkUpdateDocuments).toHaveBeenCalled();
+    const updated = mockBulkUpdateDocuments.mock.calls[0]?.[1] ?? [];
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.metadata).toMatchObject({
+      name: 'New Name',
+      code: 'CC-Other',
+      relatedLob: existingRelated,
+    });
   });
 
   it('prunes cached cost centers that are not in the active Workday snapshot', async () => {
