@@ -88,6 +88,7 @@ describe('Workday utilities', () => {
 
       return Promise.resolve({ retryField: 'unknown', reason: 'test unknown classification' });
     });
+    delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
   });
 
   describe('getWorkdayConfig', () => {
@@ -2278,12 +2279,14 @@ describe('Workday utilities', () => {
         });
 
         process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
         const result = await submitSupplierInvoiceUpdateForTest({
           finalLines: [
             { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
           ]
         });
         delete process.env.FALLBACK_LOB_ID;
+        delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
 
         expect(result.success).toBe(true);
         expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -2383,6 +2386,7 @@ describe('Workday utilities', () => {
 
         process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
         process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
         const result = await submitSupplierInvoiceUpdateForTest({
           finalLines: [
             { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' },
@@ -2397,6 +2401,7 @@ describe('Workday utilities', () => {
         });
         delete process.env.FALLBACK_LOB_ID;
         delete process.env.FALLBACK_COST_CENTER_ID;
+        delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
 
         expect(result.success).toBe(true);
         expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -2467,6 +2472,62 @@ describe('Workday utilities', () => {
 
         process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
         process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
+        await expect(submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
+          ],
+          relatedLobByCostCenter: new Map([
+            ['CC-Enterprise Technology', EMPTY_RELATED_LOB]
+          ])
+        })).rejects.toMatchObject({
+          message: expect.stringContaining('must also have a value: Line of Business')
+        });
+        delete process.env.FALLBACK_LOB_ID;
+        delete process.env.FALLBACK_COST_CENTER_ID;
+        delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
+
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalled();
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
+      it('does not call Get_Related_Worktags_for_Worktags when SOAP related worktags are disabled', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        rmClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback({
+            faultstring: 'Validation error occurred. When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+            detail: {
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[9]/wd:Worktags_Reference'
+                }
+              }
+            }
+          }, null);
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
         await expect(submitSupplierInvoiceUpdateForTest({
           finalLines: [
             { lineOrder: 1, description: 'Service', quantity: 1, unitCost: 100, extendedAmount: 100, fundId: 'FUND-General_Fund_Unrestricted', costCenterId: 'CC-Enterprise Technology' }
@@ -2480,9 +2541,7 @@ describe('Workday utilities', () => {
         delete process.env.FALLBACK_LOB_ID;
         delete process.env.FALLBACK_COST_CENTER_ID;
 
-        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalled();
-        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
-        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(fmClient.Get_Related_Worktags_for_Worktags).not.toHaveBeenCalled();
       });
 
     });
