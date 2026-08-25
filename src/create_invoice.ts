@@ -299,7 +299,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     }
 
     const appliedRecommended = Boolean(recommendedForSubmit && companyWID === recommendedForSubmit);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, submitFallbackCompany?.descriptor, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
+    // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 
