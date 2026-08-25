@@ -1,5 +1,6 @@
 import { processor } from '../cache_cost_centers.js';
 import { bulkInsertDocuments } from '../lib/database.js';
+import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 import { getRelatedWorktagsForCostCenters } from '../lib/workday.js';
 
 jest.mock('@pga/lambda-env', () => ({
@@ -45,8 +46,7 @@ jest.mock('../lib/workday.js', () => ({
     refreshToken: 'test-refresh-token'
   }),
   executeWorkdayQuery: jest.fn(),
-  getRelatedWorktagsForCostCenters: jest.fn(),
-  isRelatedWorktagsSoapEnabled: jest.fn(() => process.env.WORKDAY_RELATED_WORKTAGS_SOAP === 'true')
+  getRelatedWorktagsForCostCenters: jest.fn()
 }));
 
 jest.mock('../lib/slack.js', () => ({
@@ -68,46 +68,10 @@ describe('cache_cost_centers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
     mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map());
   });
 
-  afterEach(() => {
-    delete process.env.WORKDAY_RELATED_WORKTAGS_SOAP;
-  });
-
-  it('skips Get_Related_Worktags_for_Worktags by default and does not post Slack', async () => {
-    await processor({
-      data: [{
-        workdayID: 'cc-wid-1',
-        name: 'Building Services PBG',
-        code: 'CC-Building Services-PBG',
-      }]
-    });
-
-    expect(mockGetRelatedWorktagsForCostCenters).not.toHaveBeenCalled();
-
-    const { notifyResult } = require('../lib/slack.js');
-    expect(notifyResult).not.toHaveBeenCalledWith(
-      'cache_cost_centers',
-      'error',
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      'related worktags unauthorized'
-    );
-
-    const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
-    expect(inserted[0]?.metadata).toEqual({
-      workdayId: 'cc-wid-1',
-      name: 'Building Services PBG',
-      code: 'CC-Building Services-PBG',
-    });
-    expect(inserted[0]?.metadata).not.toHaveProperty('relatedLob');
-  });
-
-  it('stores related LOB metadata when WORKDAY_RELATED_WORKTAGS_SOAP is enabled', async () => {
-    process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
+  it('stores related LOB metadata on cost center documents', async () => {
     mockGetRelatedWorktagsForCostCenters.mockResolvedValue(new Map([
       ['cc-wid-1', {
         requiredOnTransaction: true,
@@ -143,8 +107,7 @@ describe('cache_cost_centers', () => {
     });
   });
 
-  it('continues without related LOB metadata when the SOAP fetch fails', async () => {
-    process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
+  it('continues with empty related LOB when the SOAP fetch fails', async () => {
     mockGetRelatedWorktagsForCostCenters.mockRejectedValue(new Error('SOAP down'));
 
     await expect(processor({
@@ -152,16 +115,10 @@ describe('cache_cost_centers', () => {
     })).resolves.not.toThrow();
 
     const inserted = mockBulkInsertDocuments.mock.calls[0]?.[1] ?? [];
-    expect(inserted[0]?.metadata).toEqual({
-      workdayId: 'cc-wid-2',
-      name: 'Other',
-      code: 'CC-Other',
-    });
-    expect(inserted[0]?.metadata).not.toHaveProperty('relatedLob');
+    expect(inserted[0]?.metadata).toMatchObject({ relatedLob: EMPTY_RELATED_LOB });
   });
 
-  it('does not notify Slack when related worktags are not authorized', async () => {
-    process.env.WORKDAY_RELATED_WORKTAGS_SOAP = 'true';
+  it('notifies Slack when related worktags are not authorized', async () => {
     mockGetRelatedWorktagsForCostCenters.mockRejectedValue(
       new Error('Processing error occurred. The task submitted is not authorized.')
     );
@@ -171,12 +128,14 @@ describe('cache_cost_centers', () => {
     })).resolves.not.toThrow();
 
     const { notifyResult } = require('../lib/slack.js');
-    expect(notifyResult).not.toHaveBeenCalledWith(
+    expect(notifyResult).toHaveBeenCalledWith(
       'cache_cost_centers',
       'error',
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      undefined,
+      expect.objectContaining({
+        note: expect.stringContaining('Get_Related_Worktags_for_Worktags')
+      }),
+      expect.any(Error),
       'related worktags unauthorized'
     );
   });
