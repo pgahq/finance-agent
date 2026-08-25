@@ -573,6 +573,7 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('section-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(submitArgs.buildNotes([])).toContain('Changed to: Tennessee Section PGA of America');
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',
       'success',
@@ -644,6 +645,7 @@ describe('create_invoice', () => {
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
+    expect(submitArgs.buildNotes([])).not.toContain('Changed to:');
   });
 
   it('should keep a recommended company when a late-fetched PO has no company', async () => {
@@ -672,6 +674,7 @@ describe('create_invoice', () => {
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('section-wid');
+    expect(submitArgs.buildNotes([])).toContain('Changed to: Tennessee Section PGA of America');
   });
 
   it('should use the enrichment PO company when it differs from the email PO', async () => {
@@ -714,6 +717,7 @@ describe('create_invoice', () => {
     expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('late-po-wid');
+    expect(submitArgs.buildNotes([])).not.toContain('Changed to:');
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
       expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
     ]);

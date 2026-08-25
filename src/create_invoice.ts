@@ -298,7 +298,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       }
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const appliedRecommended = Boolean(recommendedForSubmit && companyWID === recommendedForSubmit);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, submitFallbackCompany?.descriptor, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 

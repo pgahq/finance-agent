@@ -141,11 +141,15 @@ export function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
   return `Supplier: ${result.supplier.reason}`;
 }
 
-export function formatCompanyNotes(result: InvoiceEnrichmentResult, existingCompanyDescriptor?: string): string {
+export function formatCompanyNotes(
+  result: InvoiceEnrichmentResult,
+  existingCompanyDescriptor?: string,
+  options?: { appliedRecommended?: boolean }
+): string {
   const cv = result.companyVerification;
   if (!cv || cv.status === 'matching') return '';
   let notes = `\n\nCompany: ${cv.reason}`;
-  if (cv.status === 'different' && cv.recommended) {
+  if (cv.status === 'different' && cv.recommended && options?.appliedRecommended !== false) {
     notes += ` Changed to: ${cv.recommended.companyName}${existingCompanyDescriptor ? ` (was: ${existingCompanyDescriptor})` : ''}`;
   }
   return notes;
