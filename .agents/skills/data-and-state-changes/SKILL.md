@@ -70,10 +70,14 @@ not. Do not enable prune for windowed sources such as events.
 }
 ```
 
-Source is Financial Management `Get_Related_Worktags_for_Worktags`. That SOAP operation needs its own Workday security domain; Resource Management `Submit_Supplier_Invoice` access is not enough. If Workday returns `The task submitted is not authorized`, `cache_cost_centers` continues without related LOB metadata and posts Slack. Invoice submit does not log the raw SOAP envelope.
+Source is Financial Management `Get_Related_Worktags_for_Worktags`. That SOAP operation needs its own Workday security domain; Resource Management `Submit_Supplier_Invoice` access is not enough. The finance-agent ISU is not authorized for this task, so the call is **opt-in** via `WORKDAY_RELATED_WORKTAGS_SOAP=true` (template default `"false"`).
+
+When the flag is off, `cache_cost_centers` syncs name/code only and does not call related-worktags SOAP or post Slack. Do not write empty `relatedLob` metadata on that path; it would churn every cost center and wipe existing related LOB if any. Invoice submit uses cached related LOBs, PO `LOB-*`, email overrides, and `FALLBACK_LOB_ID` only.
+
+After Workday grants **Get Related Worktags for Worktags**, set `WORKDAY_RELATED_WORKTAGS_SOAP=true` and re-run `cache_cost_centers`. If SOAP then fails, cache continues without related LOB metadata and logs at debug; it does not post Slack. Invoice submit does not log the raw SOAP envelope.
 
 Invoice line build fills a missing `lineOfBusinessId` from the related default, or from an allowed LOB when there is no default. `Default_Line_Of_Business` is used only when related worktags do not yield a real LOB. SOAP submit prefers that related LOB over the global default.
 
 When Workday returns a related-worktag fault that requires Line of Business (`must also have a value: Line of Business`), retry as `worktag:lob` — even if another `Validation_Error` says the Cost Center is not available for the company. Do not send that combination to the validation-field classifier; it will pick `worktag:costCenter` and swap to the fallback cost center.
 
-Empty cached `relatedLob` is not a hit. Retry loads related worktags live by cost center code and Workday id (`getCostCenterWorkdayIdsByCodes`, then `Get_Related_Worktags_for_Worktags`) and applies an allowed LOB to every line missing one. If that live call is not authorized, submit keeps the original validation error and does not replace it with the processing fault. If Workday rejects the default (`does not allow worktag values: Line of Business`), the same related-LOB swap runs.
+Empty cached `relatedLob` is not a hit. When `WORKDAY_RELATED_WORKTAGS_SOAP=true`, retry loads related worktags live by cost center code and Workday id (`getCostCenterWorkdayIdsByCodes`, then `Get_Related_Worktags_for_Worktags`) and applies an allowed LOB to every line missing one. If that live call is not authorized, submit keeps the original validation error and does not replace it with the processing fault. If Workday rejects the default (`does not allow worktag values: Line of Business`), the same related-LOB swap runs.
