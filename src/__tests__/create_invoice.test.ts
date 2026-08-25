@@ -764,6 +764,43 @@ describe('create_invoice', () => {
     ]);
   });
 
+  it('should drop the email PO when enrichment names a different PO that fails to load', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
+      if (poNumber === 'PO-111111') {
+        return {
+          documentNumber: 'PO-111111',
+          company: { workdayId: 'early-po-wid', descriptor: 'Early PO Company' },
+          lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-A', purchaseOrderDocumentNumber: 'PO-111111' }]
+        };
+      }
+      return undefined;
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        ...baseEnrichmentResult.companyVerification,
+        status: 'matching',
+        recommended: null
+      },
+      extractedPurchaseOrderNumber: 'PO-222222'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-po-mismatch-miss/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-111111' }
+      }]
+    } as any);
+
+    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-111111');
+    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('pga-america-wid');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+  });
+
   it('should error when the default company is missing from the cache and no PO is present', async () => {
     const { processor, workday, slack, invoiceEnrichment, database } = freshRequire();
     database.findCompanyByName.mockResolvedValue(undefined);

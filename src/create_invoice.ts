@@ -179,7 +179,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     let matchedPo = parsedPo;
     if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
       debug(`Fetching PO data for extracted PO number: ${enrichmentPoNumber}`);
-      matchedPo = await loadPurchaseOrder(context, enrichmentPoNumber) ?? matchedPo;
+      matchedPo = await loadPurchaseOrder(context, enrichmentPoNumber);
     }
 
     const poCompanyWID = matchedPo?.company?.workdayId;
