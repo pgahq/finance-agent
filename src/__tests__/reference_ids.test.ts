@@ -254,6 +254,33 @@ describe('resolveCompanyFromEmail', () => {
     expect(mockFindDocumentsByReferenceIds.mock.calls[0][1]).not.toContain('800');
   });
 
+  it('does not scan an LLM extracted company code that is absent from the email body', async () => {
+    mockReferenceLookup({
+      '912': [companyDoc()],
+      '72200': [costCenterDoc()],
+      '800': [companyDoc({
+        workday_id: 'company-wid-800',
+        metadata: { companyReferenceId: '800', companyName: 'Other Company' },
+      })],
+    });
+
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Coding: 912 / 72200',
+      emailCompany: {
+        extracted: '800',
+        workdayId: 'company-wid-800',
+        referenceId: '800',
+        name: 'Other Company',
+      },
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+    });
+    expect(mockFindDocumentsByReferenceIds.mock.calls[0][1]).not.toContain('800');
+  });
+
   it('looks up a WID when only a company referenceId is present', async () => {
     mockReferenceLookup({ '912': [companyDoc()] });
 

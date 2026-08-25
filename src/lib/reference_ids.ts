@@ -261,10 +261,13 @@ export async function resolveCompanyFromEmail(options: {
     || (rawWorkdayId && isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined)
   ) || undefined;
 
-  const emailCodes = [
-    ...(emailCompany?.extracted ? extractReferenceCodeCandidates(emailCompany.extracted) : []),
-    ...(emailBody ? extractReferenceCodeCandidates(emailBody) : []),
-  ];
+  const bodyCodes = emailBody ? extractReferenceCodeCandidates(emailBody) : [];
+  const extractedCodes = emailCompany?.extracted
+    ? extractReferenceCodeCandidates(emailCompany.extracted)
+    : [];
+  const emailCodes = bodyCodes.length > 0
+    ? bodyCodes
+    : (emailBody?.trim() ? [] : extractedCodes);
   const uniqueCodes = [...new Set(emailCodes.map((code) => code.trim()).filter(Boolean))];
 
   if (uniqueCodes.length === 0) {
