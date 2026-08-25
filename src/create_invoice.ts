@@ -184,7 +184,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const poCompanyWID = matchedPo?.company?.workdayId;
     const poWasAvailableDuringEnrichment = Boolean(parsedPo);
-    const recommendedForSubmit = poWasAvailableDuringEnrichment || !matchedPo
+    const recommendedForSubmit = poWasAvailableDuringEnrichment || !matchedPo?.company
       ? recommendedCompanyWID
       : undefined;
     const selectedCompany = selectCompanyForCreateInvoice({

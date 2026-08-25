@@ -646,6 +646,34 @@ describe('create_invoice', () => {
     expect(submitArgs.companyWID).toBe('pga-company-wid');
   });
 
+  it('should keep a recommended company when a late-fetched PO has no company', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-414498',
+      company: undefined,
+      lines: []
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'section-wid', companyName: 'Tennessee Section PGA of America', confidence: 0.9, reason: 'Bill-to is the section' },
+        reason: 'Extracted company differs from the default'
+      },
+      extractedPurchaseOrderNumber: 'PO-414498'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-late-po-no-company/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('section-wid');
+  });
+
   it('should error when the default company is missing from the cache and no PO is present', async () => {
     const { processor, workday, slack, invoiceEnrichment, database } = freshRequire();
     database.findCompanyByName.mockResolvedValue(undefined);
