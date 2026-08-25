@@ -419,7 +419,7 @@ describe('Database Library', () => {
 
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining("metadata->>'companyName'"),
-        ['company', 'The Professional Golfers Association of America']
+        ['company', ['the professional golfers association of america']]
       );
       expect(result).toEqual({
         workdayId: 'pga-america-wid',

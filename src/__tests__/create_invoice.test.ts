@@ -71,8 +71,7 @@ jest.mock('../lib/invoice_enrichment.js', () => {
   const actual = jest.requireActual('../lib/invoice_enrichment.js');
   return {
     ...actual,
-    enrichInvoiceFromAttachments: jest.fn(),
-    extractPurchaseOrderNumberFromAttachments: jest.fn().mockResolvedValue(undefined)
+    enrichInvoiceFromAttachments: jest.fn()
   };
 });
 
@@ -154,12 +153,14 @@ describe('create_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.WORKDAY_DEFAULT_COMPANY_NAME;
+    delete process.env.WORKDAY_DEFAULT_COMPANY_WID;
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
   });
 
   afterEach(() => {
     delete process.env.WORKDAY_DEFAULT_COMPANY_NAME;
+    delete process.env.WORKDAY_DEFAULT_COMPANY_WID;
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
   });
@@ -468,7 +469,7 @@ describe('create_invoice', () => {
 
     expect(database.findCompanyByName).toHaveBeenCalledWith(
       expect.anything(),
-      'The Professional Golfers Association of America'
+      expect.arrayContaining(['The Professional Golfers Association of America'])
     );
     expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][3]).toEqual({
       descriptor: 'The Professional Golfers Association of America',
@@ -518,7 +519,6 @@ describe('create_invoice', () => {
     expect(workday.loadPurchaseOrder.mock.invocationCallOrder[0])
       .toBeLessThan(invoiceEnrichment.enrichInvoiceFromAttachments.mock.invocationCallOrder[0]);
     expect(database.findCompanyByName).not.toHaveBeenCalled();
-    expect(invoiceEnrichment.extractPurchaseOrderNumberFromAttachments).not.toHaveBeenCalled();
     expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][3]).toEqual({
       descriptor: 'The Professional Golfers Association of America',
       id: 'pga-company-wid'
@@ -575,9 +575,8 @@ describe('create_invoice', () => {
     expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
-  it('should extract a PO from the attachment when email has none, then fetch before enrichment', async () => {
+  it('should use a PO extracted during enrichment when email and filename have none', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.extractPurchaseOrderNumberFromAttachments.mockResolvedValue('PO-414498');
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
@@ -589,7 +588,8 @@ describe('create_invoice', () => {
         ...baseEnrichmentResult.companyVerification,
         status: 'uncertain',
         recommended: null
-      }
+      },
+      extractedPurchaseOrderNumber: 'PO-414498'
     });
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
@@ -597,24 +597,53 @@ describe('create_invoice', () => {
       data: [attachmentRequest('new-invoices/req-10/invoice.pdf')]
     } as any);
 
-    expect(invoiceEnrichment.extractPurchaseOrderNumberFromAttachments).toHaveBeenCalledTimes(1);
-    expect(workday.loadPurchaseOrder.mock.invocationCallOrder[0])
-      .toBeLessThan(invoiceEnrichment.enrichInvoiceFromAttachments.mock.invocationCallOrder[0]);
+    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-414498');
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.invocationCallOrder[0])
+      .toBeLessThan(workday.loadPurchaseOrder.mock.invocationCallOrder[0]);
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
+  it('should prefer a late-fetched PO company over a recommendation made without PO context', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-414498',
+      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+      lines: []
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'section-wid', companyName: 'Tennessee Section PGA of America', confidence: 0.9, reason: 'Guessed from short name' },
+        reason: 'Bill-to is ambiguous without PO context'
+      },
+      extractedPurchaseOrderNumber: 'PO-414498'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-late-po/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('pga-company-wid');
+  });
+
   it('should error when the default company is missing from the cache and no PO is present', async () => {
     const { processor, workday, slack, invoiceEnrichment, database } = freshRequire();
     database.findCompanyByName.mockResolvedValue(undefined);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
 
     await expect(processor({
       data: [attachmentRequest('new-invoices/req-11/invoice.pdf')]
     } as any)).rejects.toThrow('Default company not found in company cache');
 
-    expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalled();
     expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',
@@ -667,6 +696,38 @@ describe('create_invoice', () => {
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
       costCenterId: '72200',
     }));
+  });
+
+  it('should still submit an email-coded company when the PGA cache lookup misses', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, database } = freshRequire();
+    database.findCompanyByName.mockResolvedValue(undefined);
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-cache-miss-email/invoice.pdf'),
+        emailContext: { plainTextBody: '912' },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalled();
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('email-company-wid');
   });
 
   it('should submit the cached company WID when email coding only has Company_Reference_ID 912', async () => {

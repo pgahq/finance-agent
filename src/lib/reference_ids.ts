@@ -320,7 +320,7 @@ export function selectCompanyForCreateInvoice(options: {
   emailCompany?: EmailCompanyMatch;
   recommendedCompanyWID?: string;
   poCompanyWID?: string;
-  defaultCompanyWID: string;
+  defaultCompanyWID?: string;
 }): { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' } {
   if (options.emailCompany?.workdayId && !isShortNumericReferenceId(options.emailCompany.workdayId)) {
     return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID' };
@@ -335,7 +335,7 @@ export function selectCompanyForCreateInvoice(options: {
     return { companyId: options.poCompanyWID, companyReferenceType: 'WID' };
   }
   return {
-    companyId: options.defaultCompanyWID,
+    companyId: options.defaultCompanyWID ?? '',
     companyReferenceType: 'WID',
   };
 }

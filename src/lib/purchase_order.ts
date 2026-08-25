@@ -1,8 +1,8 @@
-const PO_NUMBER_PATTERN = /\bPO[-\s]?(\w{6})\b/i;
+const PO_NUMBER_PATTERN = /\bPO[-–\s#]+(\w{6})\b/gi;
 
 export function normalizePurchaseOrderNumber(raw?: string | null): string | undefined {
   if (!raw) return undefined;
-  const stripped = raw.trim().replace(/^[Pp][Oo]-?/, '');
+  const stripped = raw.trim().replace(/^[Pp][Oo][-–\s#]*/, '');
   const normalized = `PO-${stripped}`;
   return /^PO-\w{6}$/.test(normalized) ? normalized : undefined;
 }
@@ -12,9 +12,11 @@ export function findPurchaseOrderNumber(
 ): string | undefined {
   for (const text of texts) {
     if (!text) continue;
-    const match = text.match(PO_NUMBER_PATTERN);
-    if (match) {
-      return normalizePurchaseOrderNumber(match[0]);
+    const pattern = new RegExp(PO_NUMBER_PATTERN.source, PO_NUMBER_PATTERN.flags);
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const normalized = normalizePurchaseOrderNumber(match[1] ?? match[0]);
+      if (normalized) return normalized;
     }
   }
   return undefined;

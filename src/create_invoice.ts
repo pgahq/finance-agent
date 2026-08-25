@@ -2,7 +2,6 @@ import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
-  extractPurchaseOrderNumberFromAttachments,
   formatAmountNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
@@ -24,7 +23,7 @@ import {
 } from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
-import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './lib/types.js';
+import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import type { AppliedFallback, ParsedPurchaseOrder } from './lib/workday.js';
 import {
   costCenterCodeExcludingCompany,
@@ -53,17 +52,13 @@ function toPurchaseOrderEnrichmentContext(
 async function resolvePurchaseOrder(
   context: ProcessingContext,
   fileName: string,
-  attachment: PresignedAttachment,
   emailContext?: InvoiceData['emailContext']
 ): Promise<ParsedPurchaseOrder | undefined> {
-  let purchaseOrderNumber = findPurchaseOrderNumber(
+  const purchaseOrderNumber = findPurchaseOrderNumber(
     emailContext?.subject,
     emailContext?.plainTextBody,
     fileName
   );
-  if (!purchaseOrderNumber) {
-    purchaseOrderNumber = await extractPurchaseOrderNumberFromAttachments([attachment]);
-  }
   if (!purchaseOrderNumber) return undefined;
 
   debug(`Fetching PO data before enrichment: ${purchaseOrderNumber}`);
@@ -71,22 +66,29 @@ async function resolvePurchaseOrder(
 }
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
+const DEFAULT_COMPANY_WID = process.env.WORKDAY_DEFAULT_COMPANY_WID;
 const DEFAULT_COMPANY_NAME = process.env.WORKDAY_DEFAULT_COMPANY_NAME
   || 'The Professional Golfers Association of America';
+const DEFAULT_COMPANY_NAMES = [
+  DEFAULT_COMPANY_NAME,
+  "The Professional Golfers' Association of America",
+  'PGA of America',
+];
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
 async function resolveFallbackCompany(
   context: ProcessingContext,
   parsedPo?: ParsedPurchaseOrder
-): Promise<{ descriptor: string; id: string }> {
+): Promise<{ descriptor: string; id: string } | undefined> {
   if (parsedPo?.company) {
     return { descriptor: parsedPo.company.descriptor, id: parsedPo.company.workdayId };
   }
-
-  const cached = await findCompanyByName(context.dbConnection, DEFAULT_COMPANY_NAME);
-  if (!cached) {
-    throw new Error(`Default company not found in company cache: ${DEFAULT_COMPANY_NAME}`);
+  if (DEFAULT_COMPANY_WID) {
+    return { descriptor: DEFAULT_COMPANY_NAME, id: DEFAULT_COMPANY_WID };
   }
+
+  const cached = await findCompanyByName(context.dbConnection, DEFAULT_COMPANY_NAMES);
+  if (!cached) return undefined;
   return { descriptor: cached.companyName, id: cached.workdayId };
 }
 
@@ -140,15 +142,14 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     // existing supplier. Prefer the PO company when a matching PO is found;
     // otherwise use The Professional Golfers Association of America.
     const stubInvoice: WorkdayInvoice = {};
-    const parsedPo = await resolvePurchaseOrder(context, fileName, attachment, emailContext);
+    const parsedPo = await resolvePurchaseOrder(context, fileName, emailContext);
     const fallbackCompany = await resolveFallbackCompany(context, parsedPo);
-    const existingCompany = fallbackCompany;
 
     const result = await enrichInvoiceFromAttachments(
       stubInvoice,
       [attachment],
       undefined,
-      existingCompany,
+      fallbackCompany ?? { descriptor: DEFAULT_COMPANY_NAME, id: DEFAULT_COMPANY_NAME },
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined
     );
@@ -182,14 +183,21 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     }
 
     const poCompanyWID = matchedPo?.company?.workdayId;
+    const poWasAvailableDuringEnrichment = Boolean(parsedPo);
+    const recommendedForSubmit = poWasAvailableDuringEnrichment || !matchedPo
+      ? recommendedCompanyWID
+      : undefined;
     const selectedCompany = selectCompanyForCreateInvoice({
       emailCompany,
-      recommendedCompanyWID,
+      recommendedCompanyWID: recommendedForSubmit,
       poCompanyWID,
-      defaultCompanyWID: fallbackCompany.id,
+      defaultCompanyWID: fallbackCompany?.id,
     });
     const companyWID = selectedCompany.companyId;
     const companyReferenceType = selectedCompany.companyReferenceType;
+    if (!companyWID) {
+      throw new Error(`Default company not found in company cache: ${DEFAULT_COMPANY_NAME}`);
+    }
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
     const poLines = matchedPo?.lines;
 
@@ -331,14 +339,30 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       },
       company: emailCompany ? {
         status: 'email_resolved',
+        appliedFrom: 'email',
         appliedFromEmail: true,
         appliedName: emailCompany.name,
+        appliedId: companyWID,
         appliedReferenceId: emailCompany.referenceId,
+        recommendedName: result.companyVerification?.recommended?.companyName,
+      } : poCompanyWID && companyWID === poCompanyWID ? {
+        status: 'po',
+        appliedFrom: 'po',
+        appliedName: matchedPo?.company?.descriptor,
+        appliedId: companyWID,
         recommendedName: result.companyVerification?.recommended?.companyName,
       } : result.companyVerification ? {
         status: result.companyVerification.status,
+        appliedFrom: recommendedForSubmit && companyWID === recommendedForSubmit ? 'recommended' : 'default',
+        appliedName: fallbackCompany?.descriptor,
+        appliedId: companyWID,
         recommendedName: result.companyVerification.recommended?.companyName,
-      } : undefined,
+      } : {
+        status: 'default',
+        appliedFrom: 'default',
+        appliedName: fallbackCompany?.descriptor,
+        appliedId: companyWID,
+      },
       extracted: {
         invoiceDate: extractedInvoiceDate,
         amountDue: extractedAmountDue,

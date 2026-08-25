@@ -1,15 +1,10 @@
 import { debug } from '@pga/logger';
-import { z } from 'zod';
 import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
-import { normalizePurchaseOrderNumber, type PurchaseOrderEnrichmentContext } from './purchase_order.js';
+import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
-
-const PurchaseOrderNumberSchema = z.object({
-  purchaseOrderNumber: z.string().nullable().describe('The purchase order number from the invoice if one is clearly present. Null if none is visible.'),
-});
 
 function attachmentContentParts(processedAttachments: PresignedAttachment[]): Array<
   { type: 'file'; data: Buffer; mediaType: string; filename: string }
@@ -40,37 +35,6 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   }
 
   return parts;
-}
-
-export async function extractPurchaseOrderNumberFromAttachments(
-  processedAttachments: PresignedAttachment[]
-): Promise<string | undefined> {
-  const parts = attachmentContentParts(processedAttachments);
-  if (parts.length === 0) return undefined;
-
-  try {
-    const result = await getAiResponse({
-      prompt: `Extract the purchase order number from this invoice if one is clearly present.
-It may be labeled PO Number, Purchase Order Number, PO#, or prefixed with PO-.
-Return only that number. If none is visible or it is ambiguous, return null.`,
-      schema: PurchaseOrderNumberSchema,
-      tools: {},
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Extract the purchase order number from the attached invoice if one is present.' },
-            ...parts
-          ]
-        }
-      ]
-    }) as { purchaseOrderNumber?: string | null };
-
-    return normalizePurchaseOrderNumber(result.purchaseOrderNumber);
-  } catch (error) {
-    debug('Failed to extract purchase order number from attachments; continuing without an early PO', { error });
-    return undefined;
-  }
 }
 
 export async function enrichInvoiceFromAttachments(
@@ -106,7 +70,7 @@ export async function enrichInvoiceFromAttachments(
         presignedUrl: att.presignedUrl
       })),
       emailContext,
-      purchaseOrder: purchaseOrder ?? undefined,
+      purchaseOrder,
     };
 
     let referenceDirectoryText = '';

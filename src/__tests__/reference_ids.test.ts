@@ -401,6 +401,13 @@ describe('selectCompanyForCreateInvoice', () => {
       defaultCompanyWID: 'pga-america-wid',
     })).toEqual({ companyId: 'pga-america-wid', companyReferenceType: 'WID' });
   });
+
+  it('returns an empty company id when no default WID is available', () => {
+    expect(selectCompanyForCreateInvoice({})).toEqual({
+      companyId: '',
+      companyReferenceType: 'WID',
+    });
+  });
 });
 
 describe('costCenterCodeExcludingCompany', () => {
