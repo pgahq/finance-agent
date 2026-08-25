@@ -362,7 +362,8 @@ export async function getRelatedWorktagsForCostCenters(
       } while (page <= totalPages);
     }
 
-    debug(`Fetched related worktags for ${relatedByKey.size} cost center key(s)`);
+    const usable = [...relatedByKey.values()].filter(relatedLobHasUsableValue).length;
+    debug(`Fetched related worktags for ${relatedByKey.size} cost center key(s); ${usable} with related LOB`);
     return relatedByKey;
   } catch (error) {
     throw sanitizeSoapError(error);

@@ -271,21 +271,37 @@ function relatedWorktagsFromResponse(response: unknown): unknown[] {
   ));
 }
 
+function relatedWorktagsByTypeData(entry: Record<string, unknown>): unknown[] {
+  return asArray(entry.Related_Worktags_Data).flatMap(data => {
+    if (!isRecord(data)) return [];
+    if (data.Related_Worktags_by_Type_Data != null) {
+      return asArray(data.Related_Worktags_by_Type_Data);
+    }
+    if (
+      data.Worktag_Type_Reference != null
+      || data.Allowed_Worktag_Data != null
+      || data.Default_Worktag_Data != null
+    ) {
+      return [data];
+    }
+    return [];
+  });
+}
+
 export function parseRelatedWorktagsResponse(response: unknown): Map<string, RelatedLob> {
   const byKey = new Map<string, RelatedLob>();
 
   for (const entry of relatedWorktagsFromResponse(response)) {
     if (!isRecord(entry)) continue;
     const keys = costCenterKeysFromReference(entry.Related_Worktag_Reference);
-    const relatedWorktagsData = isRecord(entry.Related_Worktags_Data) ? entry.Related_Worktags_Data : {};
-    const typeData = asArray(relatedWorktagsData.Related_Worktags_by_Type_Data);
-    const relatedParts = typeData
+    const relatedParts = relatedWorktagsByTypeData(entry)
       .map(parseRelatedLobFromTypeData)
       .filter((part): part is RelatedLob => part != null);
     const related = relatedParts.length > 0 ? mergeRelatedLobs(relatedParts) : EMPTY_RELATED_LOB;
 
     for (const key of keys) {
-      byKey.set(key, related);
+      const existing = byKey.get(key);
+      byKey.set(key, existing ? mergeRelatedLobs([existing, related]) : related);
     }
   }
 
