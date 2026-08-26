@@ -4,11 +4,10 @@ import { createCompanyContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
 import { extractCompanyReferenceId } from './lib/workday_reference_id.js';
 
-const QUERY = `
+export const QUERY = `
   SELECT
     company,
     referenceID1,
-    referenceID,
     addressPrimary,
     publicAddresses,
     emailAddresses,
@@ -36,7 +35,7 @@ export const processor = withProcessorHandler(async (context, companies, _event)
         workdayId: company.company.id,
         companyName: company.company.descriptor,
         companyReferenceId: extractCompanyReferenceId(
-          [company.referenceID1, company.referenceID],
+          [company.referenceID1],
           { workdayId: company.company.id, companyName: company.company.descriptor }
         ),
         addressPrimary: company.addressPrimary,
