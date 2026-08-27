@@ -1017,7 +1017,13 @@ describe('Workday utilities', () => {
         submitSupplierInvoiceUpdateForTest({
           invoiceDate: '2025-03-15'
         })
-      ).rejects.toThrow('Validation_Fault: invoice date must be valid');
+      ).rejects.toMatchObject({
+        message: 'Validation_Fault: invoice date must be valid',
+        priorFailures: [
+          { attempt: 1, message: 'Validation_Fault: invoice date must be valid' },
+          { attempt: 2, fallback: 'default invoice date', message: 'Validation_Fault: invoice date must be valid' },
+        ],
+      });
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-03-15');
@@ -1065,11 +1071,13 @@ describe('Workday utilities', () => {
         callback(new Error('Validation_Fault: duplicate payload should not be retried'), null);
       });
 
-      await expect(
-        submitSupplierInvoiceUpdateForTest({
-          invoiceDate: '2025-04-15'
-        })
-      ).rejects.toThrow('Validation_Fault: duplicate payload should not be retried');
+      const rejected = submitSupplierInvoiceUpdateForTest({
+        invoiceDate: '2025-04-15'
+      });
+      await expect(rejected).rejects.toMatchObject({
+        message: 'Validation_Fault: duplicate payload should not be retried',
+      });
+      await expect(rejected).rejects.not.toHaveProperty('priorFailures');
 
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-04-15');
@@ -3392,6 +3400,60 @@ describe('Workday utilities', () => {
       await expect(rejected).rejects.toThrow('Create failed');
       await expect(rejected).rejects.not.toHaveProperty('response');
       await expect(rejected).rejects.not.toHaveProperty('body');
+    });
+
+    it('should attach priorFailures when a fallback retry still fails', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+
+      const duplicateInvoiceNumber = Object.assign(
+        new Error("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+              },
+            },
+          },
+        }
+      );
+      const supplierNotValidForPo = Object.assign(
+        new Error("You can't select this supplier to invoice this purchase order."),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: "You can't select this supplier to invoice this purchase order.",
+              },
+            },
+          },
+        }
+      );
+
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((_request: any, callback: any) => {
+          callback(duplicateInvoiceNumber, null);
+        })
+        .mockImplementationOnce((_request: any, callback: any) => {
+          callback(supplierNotValidForPo, null);
+        });
+
+      await expect(submitNewSupplierInvoiceForTest()).rejects.toMatchObject({
+        message: "You can't select this supplier to invoice this purchase order.",
+        priorFailures: [
+          {
+            attempt: 1,
+            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+          },
+          {
+            attempt: 2,
+            fallback: 'default supplier',
+            message: "You can't select this supplier to invoice this purchase order.",
+          },
+        ],
+      });
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
     });
   });
 
