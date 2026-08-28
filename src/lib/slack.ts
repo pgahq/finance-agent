@@ -121,7 +121,8 @@ export async function notifyResult(
         stack: error.stack,
         code: error.code,
         statusCode: error.statusCode,
-        $metadata: error.$metadata
+        $metadata: error.$metadata,
+        ...(error.priorFailures ? { priorFailures: error.priorFailures } : {}),
       };
       detailsData = { error: safeError, details };
     } else {
