@@ -1253,6 +1253,20 @@ function priorFailureMessage(error: unknown): string {
   return parseWorkdayValidationDetails(error)?.message || summarizeValidationError(error);
 }
 
+function appendPriorFailure(
+  priorFailures: SupplierInvoiceSubmitPriorFailure[],
+  attemptNumber: number,
+  error: unknown,
+  appliedFallbacks: Array<{ label: string; dueToValidationError?: boolean }>
+): void {
+  const fallbackLabel = appliedFallbacks.find(fallback => fallback.dueToValidationError)?.label;
+  priorFailures.push({
+    attempt: attemptNumber,
+    ...(fallbackLabel ? { fallback: fallbackLabel } : {}),
+    message: priorFailureMessage(error),
+  });
+}
+
 function sanitizeSoapError(
   error: unknown,
   priorFailures?: SupplierInvoiceSubmitPriorFailure[]
@@ -1361,16 +1375,12 @@ async function submitSupplierInvoiceWithRepair({
       return { result, finalBuildOptions: attemptBuildOptions };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
+        appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
         throw sanitizeSoapError(error, priorFailures);
       }
 
       const validationError = summarizeValidationError(error);
-      const fallbackLabel = appliedFallbacks.find(fallback => fallback.dueToValidationError)?.label;
-      priorFailures.push({
-        attempt: attemptNumber,
-        ...(fallbackLabel ? { fallback: fallbackLabel } : {}),
-        message: priorFailureMessage(error),
-      });
+      appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
       if (isLineOfBusinessRelatedWorktagError(error) || isLineOfBusinessRelatedWorktagError(validationError)) {
         attemptBuildOptions = await ensureRelatedLobByCostCenter(workdayConfig, attemptBuildOptions);
       }

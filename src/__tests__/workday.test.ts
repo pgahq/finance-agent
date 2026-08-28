@@ -3455,6 +3455,54 @@ describe('Workday utilities', () => {
       });
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
     });
+
+    it('should attach priorFailures when a fallback retry fails as a non-validation SOAP error', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+
+      const duplicateInvoiceNumber = Object.assign(
+        new Error("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+              },
+            },
+          },
+        }
+      );
+      const transportError = Object.assign(new Error('Create failed'), {
+        response: { statusCode: 500 },
+        body: '<secret-response-body/>',
+      });
+
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((_request: any, callback: any) => {
+          callback(duplicateInvoiceNumber, null);
+        })
+        .mockImplementationOnce((_request: any, callback: any) => {
+          callback(transportError, null);
+        });
+
+      const rejected = submitNewSupplierInvoiceForTest();
+      await expect(rejected).rejects.toMatchObject({
+        message: 'Create failed',
+        priorFailures: [
+          {
+            attempt: 1,
+            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+          },
+          {
+            attempt: 2,
+            fallback: 'default supplier',
+            message: 'Create failed',
+          },
+        ],
+      });
+      await expect(rejected).rejects.not.toHaveProperty('body');
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('parsePurchaseOrderLines', () => {
