@@ -1136,6 +1136,16 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
 
 const MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS = 3;
 
+export type SupplierInvoiceSubmitPriorFailure = {
+  attempt: number;
+  fallback?: string;
+  message: string;
+};
+
+type SanitizedSoapError = Error & {
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+};
+
 interface SubmitSupplierInvoiceRequest {
   Submit_Supplier_Invoice_Request: {
     Supplier_Invoice_Reference?: {
@@ -1239,10 +1249,34 @@ function summarizeSoapError(error: unknown): {
   };
 }
 
-function sanitizeSoapError(error: unknown): Error {
+function priorFailureMessage(error: unknown): string {
+  return parseWorkdayValidationDetails(error)?.message || summarizeValidationError(error);
+}
+
+function appendPriorFailure(
+  priorFailures: SupplierInvoiceSubmitPriorFailure[],
+  attemptNumber: number,
+  error: unknown,
+  appliedFallbacks: Array<{ label: string; dueToValidationError?: boolean }>
+): void {
+  const fallbackLabel = appliedFallbacks.find(fallback => fallback.dueToValidationError)?.label;
+  priorFailures.push({
+    attempt: attemptNumber,
+    ...(fallbackLabel ? { fallback: fallbackLabel } : {}),
+    message: priorFailureMessage(error),
+  });
+}
+
+function sanitizeSoapError(
+  error: unknown,
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[]
+): SanitizedSoapError {
   const summary = summarizeSoapError(error);
-  const sanitizedError = new Error(summary.message);
+  const sanitizedError = new Error(summary.message) as SanitizedSoapError;
   sanitizedError.name = summary.name;
+  if (priorFailures && priorFailures.length > 1) {
+    sanitizedError.priorFailures = priorFailures;
+  }
   return sanitizedError;
 }
 
@@ -1322,6 +1356,7 @@ async function submitSupplierInvoiceWithRepair({
     : { ...buildOptions };
   const failedRequestFingerprints = new Set<string>();
   const validationTriggeredFields = new Set<FallbackField>();
+  const priorFailures: SupplierInvoiceSubmitPriorFailure[] = [];
 
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
@@ -1340,10 +1375,12 @@ async function submitSupplierInvoiceWithRepair({
       return { result, finalBuildOptions: attemptBuildOptions };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
-        throw sanitizeSoapError(error);
+        appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const validationError = summarizeValidationError(error);
+      appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
       if (isLineOfBusinessRelatedWorktagError(error) || isLineOfBusinessRelatedWorktagError(validationError)) {
         attemptBuildOptions = await ensureRelatedLobByCostCenter(workdayConfig, attemptBuildOptions);
       }
@@ -1358,11 +1395,11 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault occurred after applying fallback/default value for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacksForField.map(fallback => fallback.label), validationError }
         );
-        throw sanitizeSoapError(error);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       if (attemptNumber === MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS) {
-        throw sanitizeSoapError(error);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const fallbackRetry = validationFallbackField
@@ -1373,7 +1410,7 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault did not match a configured fallback/default retry for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacks.map(fallback => fallback.label), validationError }
         );
-        throw sanitizeSoapError(error);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const nextBuildOptions = fallbackRetry.buildOptions;
@@ -1386,7 +1423,7 @@ async function submitSupplierInvoiceWithRepair({
           `Fallback/default retry repeated a previously failed payload for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, fallbackLabel: fallbackRetry.fallbackLabel, validationError }
         );
-        throw sanitizeSoapError(error);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       attemptBuildOptions = nextBuildOptions;
@@ -1398,7 +1435,11 @@ async function submitSupplierInvoiceWithRepair({
     }
   }
 
-  throw new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceLabel}`);
+  const exceeded = new Error(`Exceeded retry loop while submitting supplier invoice ${invoiceLabel}`) as SanitizedSoapError;
+  if (priorFailures.length > 1) {
+    exceeded.priorFailures = priorFailures;
+  }
+  throw exceeded;
 }
 
 
