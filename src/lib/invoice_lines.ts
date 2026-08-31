@@ -333,6 +333,23 @@ export interface EmailWorktags {
   spendCategoryReferenceId?: string | null;
 }
 
+export function applyDefaultCompanyLineWorktags(
+  lines: FinalInvoiceLine[],
+  fallbackIds: InvoiceLineFallbackIds
+): FinalInvoiceLine[] {
+  return lines.map(line => ({
+    ...line,
+    costCenterId: fallbackIds.costCenterId ?? null,
+    fundId: fallbackIds.fundId ?? null,
+    spendCategoryId: fallbackIds.spendCategoryId ?? null,
+    lineOfBusinessId: fallbackIds.lineOfBusinessId ?? null,
+    purchaseOrderLineId: null,
+    eventId: null,
+    eventWid: null,
+    shipToAddressId: null,
+  }));
+}
+
 export function applyFallbackLineOfBusiness(
   lines: FinalInvoiceLine[],
   fallbackLineOfBusinessId?: string | null

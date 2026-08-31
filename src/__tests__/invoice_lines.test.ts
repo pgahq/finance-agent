@@ -1,4 +1,5 @@
 import {
+  applyDefaultCompanyLineWorktags,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
   isFreightOrHandlingLine,
@@ -69,6 +70,48 @@ describe('extractLineOfBusinessId', () => {
       makeWorktag('Cost_Center_Reference_ID', 'CC-Building Services-PBG'),
       makeWorktag('Organization_Reference_ID', '2026-PGA_Championship'),
     ])).toBeNull();
+  });
+});
+
+describe('applyDefaultCompanyLineWorktags', () => {
+  it('overwrites line worktags with Default OCR fallbacks and clears PO/event/ship-to', () => {
+    const lines = applyDefaultCompanyLineWorktags(
+      [{
+        lineOrder: 1,
+        description: 'Widgets',
+        quantity: 2,
+        unitCost: 50,
+        costCenterId: '72200',
+        fundId: 'fund-id',
+        spendCategoryId: 'spend-id',
+        lineOfBusinessId: 'lob-id',
+        eventId: 'event-id',
+        eventWid: 'event-wid',
+        shipToAddressId: 'ADDR-1',
+        purchaseOrderLineId: 'POL-B',
+      }],
+      {
+        costCenterId: 'Default_OCR_Cost_Center',
+        fundId: 'Default_OCR_Fund',
+        spendCategoryId: 'Default_OCR_Spend_Category',
+        lineOfBusinessId: 'Default_Line_Of_Business',
+      }
+    );
+
+    expect(lines).toEqual([{
+      lineOrder: 1,
+      description: 'Widgets',
+      quantity: 2,
+      unitCost: 50,
+      costCenterId: 'Default_OCR_Cost_Center',
+      fundId: 'Default_OCR_Fund',
+      spendCategoryId: 'Default_OCR_Spend_Category',
+      lineOfBusinessId: 'Default_Line_Of_Business',
+      eventId: null,
+      eventWid: null,
+      shipToAddressId: null,
+      purchaseOrderLineId: null,
+    }]);
   });
 });
 

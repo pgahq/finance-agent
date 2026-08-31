@@ -39,7 +39,16 @@ Flow:
 5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
-`CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company, default, and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **The Professional Golfers Association of America** (and skips early PO lines). Company priority is: email-coded company; then a recommended `different` company, except when that PO was found only after enrichment (the late PO company wins over the recommendation); then the PO company; then **The Professional Golfers Association of America** (company-cache WID, or `WORKDAY_DEFAULT_COMPANY_WID` when set). If no other company is selected and that default cannot be resolved, create-invoice fails closed instead of submitting `Default_OCR_Company`. The cache lookup prefers the official long name over the `PGA of America` alias.
+`CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **Default OCR Company** (`Company_Reference_ID` `Default_OCR_Company`, or `WORKDAY_DEFAULT_COMPANY_WID` when set) and skips early PO lines.
+
+Company priority is:
+
+1. Email-coded company
+2. PO company, if a matching PO is available
+3. Recommended `different` company from the supplier invoice PDF
+4. Default OCR Company
+
+When the default company is used and any invoice lines remain, those lines must use Default OCR fallback worktags (`FALLBACK_COST_CENTER_ID`, `FALLBACK_FUND_ID`, `FALLBACK_SPEND_CATEGORY_ID` / `Default_OCR_Spend_Category`, `FALLBACK_LOB_ID`). Do not keep PO line references, email coding, events, or ship-to on those lines. Invoice notes must not list email worktags in that case; they should say Default OCR fallback coding was applied instead.
 
 | HTTP | Meaning |
 | --- | --- |
