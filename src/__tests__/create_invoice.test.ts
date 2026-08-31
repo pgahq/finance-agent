@@ -142,6 +142,7 @@ function freshRequire() {
     invoiceEnrichment: require('../lib/invoice_enrichment.js'),
     invoiceLines: require('../lib/invoice_lines.js'),
     database: require('../lib/database.js'),
+    loadEnv: require('@pga/lambda-env').default,
   };
 }
 
@@ -163,6 +164,10 @@ describe('create_invoice', () => {
     delete process.env.WORKDAY_DEFAULT_COMPANY_WID;
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
+    delete process.env.FALLBACK_FUND_ID;
+    delete process.env.FALLBACK_COST_CENTER_ID;
+    delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+    delete process.env.FALLBACK_LOB_ID;
   });
 
   it('should create a new supplier invoice from an uploaded attachment', async () => {
@@ -196,19 +201,13 @@ describe('create_invoice', () => {
     expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
     expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][4]).toEqual(emailContext);
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][2]).toBe('Invoice attached');
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual({
-      costCenterId: '72200',
-      eventWid: 'event-wid',
-      lobReferenceId: 'lob-id',
-      fundReferenceId: 'fund-id',
-      spendCategoryReferenceId: 'spend-id',
-    });
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toBeUndefined();
 
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.supplierWID).toBe('supplier-wid-1');
-    expect(submitArgs.companyWID).toBe('pga-america-wid');
-    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
     expect(submitArgs.attachment).toEqual({
       fileName: 'invoice.pdf',
       contentType: 'application/pdf',
@@ -332,7 +331,7 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.extractedFreightAmount).toBe('$15.00');
     expect(submitArgs.finalLines).toEqual([
-      { lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }
+      expect.objectContaining({ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 })
     ]);
   });
 
@@ -384,7 +383,9 @@ describe('create_invoice', () => {
       hasDiscount: null,
     }]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.finalLines).toEqual([{ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 }]);
+    expect(submitArgs.finalLines).toEqual([
+      expect.objectContaining({ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 })
+    ]);
   });
 
   it('should notify an error and not submit when enrichment returns an error status', async () => {
@@ -456,7 +457,7 @@ describe('create_invoice', () => {
     expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
-  it('should use the cached PGA of America company when no PO is present', async () => {
+  it('should use Default OCR Company when no PO is present', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines, database } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -467,17 +468,14 @@ describe('create_invoice', () => {
 
     await expect(processor(event as any)).resolves.not.toThrow();
 
-    expect(database.findCompanyByName).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.arrayContaining(['The Professional Golfers Association of America'])
-    );
+    expect(database.findCompanyByName).not.toHaveBeenCalled();
     expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][3]).toEqual({
-      descriptor: 'The Professional Golfers Association of America',
-      id: 'pga-america-wid'
+      descriptor: 'Default OCR Company',
+      id: 'Default_OCR_Company'
     });
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('pga-america-wid');
-    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
   });
 
   it('should fetch a PO from email before enrichment and use the PO company', async () => {
@@ -543,7 +541,7 @@ describe('create_invoice', () => {
     expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
-  it('should keep a recommended company WID over the PO company', async () => {
+  it('should keep the PO company over a recommended PDF company', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
@@ -571,18 +569,18 @@ describe('create_invoice', () => {
     } as any);
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('section-wid');
+    expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
-    expect(submitArgs.buildNotes([])).toContain('Changed to: Tennessee Section PGA of America');
+    expect(submitArgs.buildNotes([])).not.toContain('Changed to:');
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',
       'success',
       expect.any(Number),
       expect.objectContaining({
         company: expect.objectContaining({
-          appliedFrom: 'recommended',
-          appliedId: 'section-wid',
-          appliedName: 'Tennessee Section PGA of America',
+          appliedFrom: 'po',
+          appliedId: 'pga-company-wid',
+          appliedName: 'PGA of America',
         }),
       })
     );
@@ -758,10 +756,9 @@ describe('create_invoice', () => {
     } as any);
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('pga-america-wid');
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
-      expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
-    ]);
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
   });
 
   it('should drop the email PO when enrichment names a different PO that fails to load', async () => {
@@ -797,32 +794,135 @@ describe('create_invoice', () => {
     expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-111111');
     expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('pga-america-wid');
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
   });
 
-  it('should error when the default company is missing from the cache and no PO is present', async () => {
-    const { processor, workday, slack, invoiceEnrichment, database } = freshRequire();
+  it('should submit Default OCR Company when no email, PO, or PDF company is selected', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, database } = freshRequire();
     database.findCompanyByName.mockResolvedValue(undefined);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
 
     await expect(processor({
       data: [attachmentRequest('new-invoices/req-11/invoice.pdf')]
-    } as any)).rejects.toThrow('Default company not found in company cache');
+    } as any)).resolves.not.toThrow();
 
-    expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalled();
-    expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    expect(database.findCompanyByName).not.toHaveBeenCalled();
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',
-      'error',
+      'success',
       expect.any(Number),
-      expect.objectContaining({ s3Key: 'new-invoices/req-11/invoice.pdf' }),
-      expect.any(Error)
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'default',
+          appliedId: 'Default_OCR_Company',
+          appliedName: 'Default OCR Company',
+        }),
+      })
     );
-    database.findCompanyByName.mockResolvedValue({
-      workdayId: 'pga-america-wid',
-      companyName: 'The Professional Golfers Association of America'
+  });
+
+  it('should force Default OCR line worktags when the default company is used', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
+    loadEnv.mockResolvedValue({
+      FALLBACK_FUND_ID: 'Default_OCR_Fund',
+      FALLBACK_COST_CENTER_ID: 'Default_OCR_Cost_Center',
+      FALLBACK_SPEND_CATEGORY_ID: 'Default_OCR_Spend_Category',
+      FALLBACK_LOB_ID: 'Default_Line_Of_Business',
     });
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-222222',
+      company: undefined,
+      lines: [{
+        lineOrder: 1,
+        purchaseOrderLineId: 'POL-B',
+        purchaseOrderDocumentNumber: 'PO-222222',
+        description: 'Summit ENG',
+      }]
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-222222',
+      emailWorktags: {
+        costCenter: { extracted: 'Technology', name: 'Technology', code: '72200' },
+        event: { extracted: 'Championship', workdayId: 'event-wid' },
+        lineOfBusiness: { extracted: 'Championships', referenceId: 'lob-id' },
+        fund: { extracted: 'General', referenceId: 'fund-id' },
+        spendCategory: { extracted: 'Services', name: 'Services', referenceId: 'spend-id' },
+      },
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Widgets',
+        quantity: 2,
+        unitCost: 50,
+        costCenterId: '72200',
+        fundId: 'fund-id',
+        spendCategoryId: 'spend-id',
+        lineOfBusinessId: 'lob-id',
+        eventWid: 'event-wid',
+        shipToAddressId: 'ADDR-1',
+        purchaseOrderLineId: 'POL-B',
+      }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map(),
+    });
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-default-lines/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-222222' },
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toBeUndefined();
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
+    expect(submitArgs.finalLines).toEqual([
+      expect.objectContaining({
+        description: 'Widgets',
+        quantity: 2,
+        unitCost: 50,
+        costCenterId: 'Default_OCR_Cost_Center',
+        fundId: 'Default_OCR_Fund',
+        spendCategoryId: 'Default_OCR_Spend_Category',
+        lineOfBusinessId: 'Default_Line_Of_Business',
+        purchaseOrderLineId: null,
+        eventId: null,
+        eventWid: null,
+        shipToAddressId: null,
+      }),
+    ]);
+    const notes = submitArgs.buildNotes([]);
+    expect(notes).not.toContain('Email Worktags:');
+    expect(notes).toContain('Line worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.');
+  });
+
+  it('should submit WORKDAY_DEFAULT_COMPANY_WID as a WID when set', async () => {
+    process.env.WORKDAY_DEFAULT_COMPANY_WID = 'ocr-company-wid';
+    process.env.WORKDAY_DEFAULT_COMPANY_NAME = 'Default OCR Company';
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await expect(processor({
+      data: [attachmentRequest('new-invoices/req-default-wid/invoice.pdf')]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][3]).toEqual({
+      descriptor: 'Default OCR Company',
+      id: 'ocr-company-wid',
+    });
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('ocr-company-wid');
+    expect(submitArgs.companyReferenceType).toBe('WID');
   });
 
   it('should submit the email-coded company WID when emailWorktags.company.workdayId is set', async () => {

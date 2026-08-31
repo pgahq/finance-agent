@@ -105,7 +105,7 @@ export async function enrichInvoiceFromAttachments(
       : 'Please identify the supplier and verify the company on this invoice';
 
     const poInstructions = purchaseOrder
-      ? ' A matching Workday purchase order is included — use its company as the strongest billed-entity signal, and use its lines as context when extracting invoice lines.'
+      ? ' A matching Workday purchase order is included — use its company as the billed-entity signal when email coding does not identify a company. Do not recommend a different company from the invoice PDF over the PO company. Use PO lines as context when extracting invoice lines.'
       : '';
 
     const taskInstructions = existingSupplier

@@ -316,27 +316,36 @@ export async function resolveCompanyFromEmail(options: {
   return undefined;
 }
 
+export type CreateInvoiceCompanySource = 'email' | 'po' | 'recommended' | 'default';
+
+export type SelectedCreateInvoiceCompany = {
+  companyId: string;
+  companyReferenceType: 'WID' | 'Company_Reference_ID';
+  source: CreateInvoiceCompanySource;
+};
+
 export function selectCompanyForCreateInvoice(options: {
   emailCompany?: EmailCompanyMatch;
   recommendedCompanyWID?: string;
   poCompanyWID?: string;
-  defaultCompanyWID?: string;
-}): { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' } {
+  defaultCompany?: { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' };
+}): SelectedCreateInvoiceCompany {
   if (options.emailCompany?.workdayId && !isShortNumericReferenceId(options.emailCompany.workdayId)) {
-    return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID' };
+    return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID', source: 'email' };
   }
   if (options.emailCompany?.referenceId) {
-    return { companyId: options.emailCompany.referenceId, companyReferenceType: 'Company_Reference_ID' };
-  }
-  if (options.recommendedCompanyWID) {
-    return { companyId: options.recommendedCompanyWID, companyReferenceType: 'WID' };
+    return { companyId: options.emailCompany.referenceId, companyReferenceType: 'Company_Reference_ID', source: 'email' };
   }
   if (options.poCompanyWID) {
-    return { companyId: options.poCompanyWID, companyReferenceType: 'WID' };
+    return { companyId: options.poCompanyWID, companyReferenceType: 'WID', source: 'po' };
+  }
+  if (options.recommendedCompanyWID) {
+    return { companyId: options.recommendedCompanyWID, companyReferenceType: 'WID', source: 'recommended' };
   }
   return {
-    companyId: options.defaultCompanyWID ?? '',
-    companyReferenceType: 'WID',
+    companyId: options.defaultCompany?.companyId ?? '',
+    companyReferenceType: options.defaultCompany?.companyReferenceType ?? 'Company_Reference_ID',
+    source: 'default',
   };
 }
 
