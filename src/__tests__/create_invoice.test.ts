@@ -900,6 +900,9 @@ describe('create_invoice', () => {
         shipToAddressId: null,
       }),
     ]);
+    const notes = submitArgs.buildNotes([]);
+    expect(notes).not.toContain('Email Worktags:');
+    expect(notes).toContain('Line worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.');
   });
 
   it('should submit WORKDAY_DEFAULT_COMPANY_WID as a WID when set', async () => {

@@ -44,7 +44,7 @@ Company priority is:
 3. Recommended `different` company from the supplier invoice PDF
 4. Default OCR Company
 
-When the default company is used and any invoice lines remain, those lines must use Default OCR fallback worktags (`FALLBACK_COST_CENTER_ID`, `FALLBACK_FUND_ID`, `FALLBACK_SPEND_CATEGORY_ID` / `Default_OCR_Spend_Category`, `FALLBACK_LOB_ID`). Do not keep PO line references, email coding, events, or ship-to on those lines.
+When the default company is used and any invoice lines remain, those lines must use Default OCR fallback worktags (`FALLBACK_COST_CENTER_ID`, `FALLBACK_FUND_ID`, `FALLBACK_SPEND_CATEGORY_ID` / `Default_OCR_Spend_Category`, `FALLBACK_LOB_ID`). Do not keep PO line references, email coding, events, or ship-to on those lines. Invoice notes must not list email worktags in that case; they should say Default OCR fallback coding was applied instead.
 
 | HTTP | Meaning |
 | --- | --- |
