@@ -364,48 +364,53 @@ describe('resolveCompanyFromEmail', () => {
 });
 
 describe('selectCompanyForCreateInvoice', () => {
-  it('prefers email company WID over email reference ID, recommended WID, PO, and the default', () => {
+  it('prefers email company WID over email reference ID, PO, recommended WID, and the default', () => {
     expect(selectCompanyForCreateInvoice({
       emailCompany: { workdayId: 'email-wid', referenceId: '912' },
       recommendedCompanyWID: 'pdf-wid',
       poCompanyWID: 'po-wid',
-      defaultCompanyWID: 'pga-america-wid',
-    })).toEqual({ companyId: 'email-wid', companyReferenceType: 'WID' });
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({ companyId: 'email-wid', companyReferenceType: 'WID', source: 'email' });
   });
 
   it('uses the email company reference ID when no WID is available', () => {
     expect(selectCompanyForCreateInvoice({
       emailCompany: { referenceId: '912' },
       recommendedCompanyWID: 'pdf-wid',
-      defaultCompanyWID: 'pga-america-wid',
-    })).toEqual({ companyId: '912', companyReferenceType: 'Company_Reference_ID' });
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({ companyId: '912', companyReferenceType: 'Company_Reference_ID', source: 'email' });
   });
 
-  it('uses the recommended PDF company WID when email did not resolve a company', () => {
+  it('uses the PO company WID over a PDF recommendation', () => {
     expect(selectCompanyForCreateInvoice({
       recommendedCompanyWID: 'pdf-wid',
       poCompanyWID: 'po-wid',
-      defaultCompanyWID: 'pga-america-wid',
-    })).toEqual({ companyId: 'pdf-wid', companyReferenceType: 'WID' });
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({ companyId: 'po-wid', companyReferenceType: 'WID', source: 'po' });
   });
 
-  it('uses the PO company WID when email and PDF recommendation are absent', () => {
+  it('uses the recommended PDF company WID when email and PO are absent', () => {
     expect(selectCompanyForCreateInvoice({
-      poCompanyWID: 'po-wid',
-      defaultCompanyWID: 'pga-america-wid',
-    })).toEqual({ companyId: 'po-wid', companyReferenceType: 'WID' });
+      recommendedCompanyWID: 'pdf-wid',
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({ companyId: 'pdf-wid', companyReferenceType: 'WID', source: 'recommended' });
   });
 
-  it('falls back to the default company WID', () => {
+  it('falls back to Default OCR Company as Company_Reference_ID', () => {
     expect(selectCompanyForCreateInvoice({
-      defaultCompanyWID: 'pga-america-wid',
-    })).toEqual({ companyId: 'pga-america-wid', companyReferenceType: 'WID' });
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({
+      companyId: 'Default_OCR_Company',
+      companyReferenceType: 'Company_Reference_ID',
+      source: 'default',
+    });
   });
 
-  it('returns an empty company id when no default WID is available', () => {
+  it('returns an empty company id when no default is available', () => {
     expect(selectCompanyForCreateInvoice({})).toEqual({
       companyId: '',
-      companyReferenceType: 'WID',
+      companyReferenceType: 'Company_Reference_ID',
+      source: 'default',
     });
   });
 });

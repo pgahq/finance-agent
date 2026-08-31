@@ -14,8 +14,13 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
-import { findCompanyByName, getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
-import { buildFinalInvoiceLines, parseExtractedAmount, splitFreightLines } from './lib/invoice_lines.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import {
+  applyDefaultCompanyLineWorktags,
+  buildFinalInvoiceLines,
+  parseExtractedAmount,
+  splitFreightLines,
+} from './lib/invoice_lines.js';
 import {
   findPurchaseOrderNumber,
   normalizePurchaseOrderNumber,
@@ -68,28 +73,31 @@ async function resolvePurchaseOrder(
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const DEFAULT_COMPANY_WID = process.env.WORKDAY_DEFAULT_COMPANY_WID;
 const DEFAULT_COMPANY_NAME = process.env.WORKDAY_DEFAULT_COMPANY_NAME
-  || 'The Professional Golfers Association of America';
-const DEFAULT_COMPANY_NAMES = [
-  DEFAULT_COMPANY_NAME,
-  "The Professional Golfers' Association of America",
-  'PGA of America',
-];
+  || 'Default OCR Company';
+const DEFAULT_COMPANY_REFERENCE_ID = 'Default_OCR_Company';
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
-async function resolveFallbackCompany(
-  context: ProcessingContext,
-  parsedPo?: ParsedPurchaseOrder
-): Promise<{ descriptor: string; id: string } | undefined> {
+function resolveDefaultCompany(): {
+  descriptor: string;
+  id: string;
+  companyReferenceType: 'WID' | 'Company_Reference_ID';
+} {
+  if (DEFAULT_COMPANY_WID) {
+    return { descriptor: DEFAULT_COMPANY_NAME, id: DEFAULT_COMPANY_WID, companyReferenceType: 'WID' };
+  }
+  return {
+    descriptor: DEFAULT_COMPANY_NAME,
+    id: DEFAULT_COMPANY_REFERENCE_ID,
+    companyReferenceType: 'Company_Reference_ID',
+  };
+}
+
+function enrichmentStubCompany(parsedPo?: ParsedPurchaseOrder) {
   if (parsedPo?.company) {
     return { descriptor: parsedPo.company.descriptor, id: parsedPo.company.workdayId };
   }
-  if (DEFAULT_COMPANY_WID) {
-    return { descriptor: DEFAULT_COMPANY_NAME, id: DEFAULT_COMPANY_WID };
-  }
-
-  const cached = await findCompanyByName(context.dbConnection, DEFAULT_COMPANY_NAMES);
-  if (!cached) return undefined;
-  return { descriptor: cached.companyName, id: cached.workdayId };
+  const fallback = resolveDefaultCompany();
+  return { descriptor: fallback.descriptor, id: fallback.id };
 }
 
 export interface CreateInvoiceRequest {
@@ -140,16 +148,16 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     // There's no existing Workday invoice yet, so enrich against a stub with no
     // existing supplier. Prefer the PO company when a matching PO is found;
-    // otherwise use The Professional Golfers Association of America.
+    // otherwise use Default OCR Company.
     const stubInvoice: WorkdayInvoice = {};
     const parsedPo = await resolvePurchaseOrder(context, fileName, emailContext);
-    const fallbackCompany = await resolveFallbackCompany(context, parsedPo);
+    const stubCompany = enrichmentStubCompany(parsedPo);
 
     const result = await enrichInvoiceFromAttachments(
       stubInvoice,
       [attachment],
       undefined,
-      fallbackCompany ?? { descriptor: DEFAULT_COMPANY_NAME, id: DEFAULT_COMPANY_NAME },
+      stubCompany,
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined
     );
@@ -183,28 +191,18 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     }
 
     const poCompanyWID = matchedPo?.company?.workdayId;
-    const poWasAvailableDuringEnrichment =
-      Boolean(parsedPo) && matchedPo?.documentNumber === parsedPo?.documentNumber;
-    const submitFallbackCompany =
-      matchedPo?.documentNumber === parsedPo?.documentNumber
-        ? fallbackCompany
-        : await resolveFallbackCompany(context, matchedPo);
-    const recommendedForSubmit = poWasAvailableDuringEnrichment || !matchedPo?.company
-      ? recommendedCompanyWID
-      : undefined;
+    const defaultCompany = resolveDefaultCompany();
     const selectedCompany = selectCompanyForCreateInvoice({
       emailCompany,
-      recommendedCompanyWID: recommendedForSubmit,
+      recommendedCompanyWID,
       poCompanyWID,
-      defaultCompanyWID: submitFallbackCompany?.id,
+      defaultCompany: { companyId: defaultCompany.id, companyReferenceType: defaultCompany.companyReferenceType },
     });
     const companyWID = selectedCompany.companyId;
     const companyReferenceType = selectedCompany.companyReferenceType;
-    if (!companyWID) {
-      throw new Error(`Default company not found in company cache: ${DEFAULT_COMPANY_NAME}`);
-    }
+    const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
-    const poLines = matchedPo?.lines;
+    const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
@@ -222,13 +220,15 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
       lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
-    const emailWorktags = result.emailWorktags ? {
-      costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
-      eventWid: result.emailWorktags.event?.workdayId ?? null,
-      lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
-      fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
-      spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
-    } : undefined;
+    const emailWorktags = usedDefaultCompany
+      ? undefined
+      : (result.emailWorktags ? {
+          costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
+          eventWid: result.emailWorktags.event?.workdayId ?? null,
+          lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
+          fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
+          spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
+        } : undefined);
 
     const relatedLobLookup = (costCenterIds: string[]) =>
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
@@ -298,7 +298,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       }
     }
 
-    const appliedRecommended = Boolean(recommendedForSubmit && companyWID === recommendedForSubmit);
+    if (usedDefaultCompany && finalLines.length > 0) {
+      finalLines = applyDefaultCompanyLineWorktags(finalLines, fallbackIds);
+      relatedLobByCostCenter = new Map();
+    }
+
+    const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
     // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
@@ -332,6 +337,33 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const processingTime = Date.now() - startTime;
 
+    const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
+      status: 'email_resolved',
+      appliedFrom: 'email',
+      appliedFromEmail: true,
+      appliedName: emailCompany.name,
+      appliedId: companyWID,
+      appliedReferenceId: emailCompany.referenceId,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : selectedCompany.source === 'po' ? {
+      status: 'po',
+      appliedFrom: 'po',
+      appliedName: matchedPo?.company?.descriptor,
+      appliedId: companyWID,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : selectedCompany.source === 'recommended' ? {
+      status: result.companyVerification?.status ?? 'different',
+      appliedFrom: 'recommended',
+      appliedName: result.companyVerification?.recommended?.companyName,
+      appliedId: companyWID,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : {
+      status: 'default',
+      appliedFrom: 'default',
+      appliedName: defaultCompany.descriptor,
+      appliedId: companyWID,
+    };
+
     await notifyResult('create_invoice', 'success', processingTime, {
       invoiceWID: createOutcome.invoiceWID,
       attachment: {
@@ -345,34 +377,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         isDefault: !result.supplier.resolvedSupplier?.workdayId,
       },
-      company: emailCompany ? {
-        status: 'email_resolved',
-        appliedFrom: 'email',
-        appliedFromEmail: true,
-        appliedName: emailCompany.name,
-        appliedId: companyWID,
-        appliedReferenceId: emailCompany.referenceId,
-        recommendedName: result.companyVerification?.recommended?.companyName,
-      } : poCompanyWID && companyWID === poCompanyWID ? {
-        status: 'po',
-        appliedFrom: 'po',
-        appliedName: matchedPo?.company?.descriptor,
-        appliedId: companyWID,
-        recommendedName: result.companyVerification?.recommended?.companyName,
-      } : result.companyVerification ? {
-        status: result.companyVerification.status,
-        appliedFrom: recommendedForSubmit && companyWID === recommendedForSubmit ? 'recommended' : 'default',
-        appliedName: recommendedForSubmit && companyWID === recommendedForSubmit
-          ? result.companyVerification.recommended?.companyName
-          : submitFallbackCompany?.descriptor,
-        appliedId: companyWID,
-        recommendedName: result.companyVerification.recommended?.companyName,
-      } : {
-        status: 'default',
-        appliedFrom: 'default',
-        appliedName: submitFallbackCompany?.descriptor,
-        appliedId: companyWID,
-      },
+      company: companyNotification,
       extracted: {
         invoiceDate: extractedInvoiceDate,
         amountDue: extractedAmountDue,
