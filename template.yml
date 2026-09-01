@@ -41,6 +41,10 @@ Globals:
     CodeUri: .
     MemorySize: 1024
     Timeout: 600
+    # Async Event and EventBridge invocations must not retry after a function error.
+    # Handlers report to Slack, then fail the invocation once.
+    EventInvokeConfig:
+      MaximumRetryAttempts: 0
     Environment:
       Variables:
         LOG_LEVEL: !Ref LogLevel
