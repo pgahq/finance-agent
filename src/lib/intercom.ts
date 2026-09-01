@@ -209,6 +209,7 @@ export async function fetchConversationInvoiceData(
   } catch {
     throw new IntercomUpstreamError('Intercom Conversations API returned invalid JSON');
   }
+  debug('Intercom conversation payload', { conversationId, payload });
   const parsed = intercomConversationSchema.safeParse(payload);
   if (!parsed.success) {
     throw new IntercomUpstreamError('Intercom Conversations API returned an unexpected response');

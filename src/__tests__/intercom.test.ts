@@ -1,3 +1,4 @@
+import { debug } from '@pga/logger';
 import {
   assertAllowedAttachmentUrl,
   downloadAttachment,
@@ -9,6 +10,10 @@ import {
   IntercomUpstreamError,
   MAX_ATTACHMENT_BYTES,
 } from '../lib/intercom.js';
+
+jest.mock('@pga/logger', () => ({
+  debug: jest.fn(),
+}));
 
 const originalFetch = global.fetch;
 
@@ -68,34 +73,35 @@ describe('intercom', () => {
     const config = { accessToken: 'token', apiBaseUrl: 'https://api.intercom.io' };
 
     it('fetches the conversation, requires a PDF, sanitizes the name, and maps email context', async () => {
+      const conversation = {
+        id: '123',
+        source: {
+          subject: 'Invoice',
+          body: 'Please process this invoice',
+          author: { email: 'ap@vendor.com' },
+          attachments: [
+            { name: 'shot.png', url: 'https://downloads.intercomcdn.com/shot.png', content_type: 'image/png' },
+            { name: 'support.pdf', url: 'https://downloads.intercomcdn.com/support.pdf', content_type: 'application/pdf' },
+          ],
+        },
+        conversation_parts: {
+          conversation_parts: [{
+            body: 'Use cost center 72200',
+            author: { email: 'approver@pgahq.com' },
+            attachments: [
+              {
+                name: '../../nested/invoice.pdf',
+                url: 'https://downloads.intercomcdn.com/invoice.pdf',
+                content_type: 'application/pdf',
+              },
+            ],
+          }],
+        },
+      };
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: async () => ({
-          id: '123',
-          source: {
-            subject: 'Invoice',
-            body: 'Please process this invoice',
-            author: { email: 'ap@vendor.com' },
-            attachments: [
-              { name: 'shot.png', url: 'https://downloads.intercomcdn.com/shot.png', content_type: 'image/png' },
-              { name: 'support.pdf', url: 'https://downloads.intercomcdn.com/support.pdf', content_type: 'application/pdf' },
-            ],
-          },
-          conversation_parts: {
-            conversation_parts: [{
-              body: 'Use cost center 72200',
-              author: { email: 'approver@pgahq.com' },
-              attachments: [
-                {
-                  name: '../../nested/invoice.pdf',
-                  url: 'https://downloads.intercomcdn.com/invoice.pdf',
-                  content_type: 'application/pdf',
-                },
-              ],
-            }],
-          },
-        }),
+        json: async () => conversation,
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
@@ -134,6 +140,10 @@ describe('intercom', () => {
           }),
         }),
       );
+      expect(debug).toHaveBeenCalledWith('Intercom conversation payload', {
+        conversationId: '123',
+        payload: conversation,
+      });
     });
 
     it('throws IntercomNotFoundError on 404', async () => {
@@ -179,14 +189,19 @@ describe('intercom', () => {
     });
 
     it('rejects malformed successful responses as upstream errors', async () => {
+      const payload = { source: { attachments: {} } };
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
-        json: async () => ({ source: { attachments: {} } }),
+        json: async () => payload,
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123'))
         .rejects.toBeInstanceOf(IntercomUpstreamError);
+      expect(debug).toHaveBeenCalledWith('Intercom conversation payload', {
+        conversationId: '123',
+        payload,
+      });
     });
 
     it('maps response JSON failures to upstream errors', async () => {
