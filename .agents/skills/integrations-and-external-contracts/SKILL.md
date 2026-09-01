@@ -28,17 +28,19 @@ Request body:
 ```
 
 This is an Intercom-only contract. Do not add Gmail fields. Direct-upload bodies
-(`fileName` / `contentType` / `fileContent`) are not accepted.
+(`fileName` / `contentType` / `fileContent`) are not accepted. Extra Data Connector
+fields such as `email` are ignored; only `conversationId` is required.
 
 Flow:
 
-1. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
-2. Debug-log the Intercom conversation JSON (`conversationId` + raw `payload`)
-3. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
-4. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
-5. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-6. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
-7. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
+1. Debug-log the decoded HTTP request body (`Trigger create invoice request body`)
+2. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
+3. Debug-log the Intercom conversation JSON (`conversationId` + raw `payload`)
+4. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
+5. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
+6. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
+7. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
+8. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 
 `CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **Default OCR Company** (`Company_Reference_ID` `Default_OCR_Company`, or `WORKDAY_DEFAULT_COMPANY_WID` when set) and skips early PO lines.
 
@@ -285,9 +287,12 @@ containing only the original name/message.
 For attachment submissions, log redacted outbound headers and only the SOAP
 envelope `Header` element.
 
-Create-invoice debug-logs the Intercom Conversations API JSON after fetch
-(`conversationId` plus the raw `payload`). That payload includes email bodies,
-author emails, and signed attachment URLs. Do not log Intercom access tokens.
+Create-invoice debug-logs the decoded Data Connector HTTP body first
+(`Trigger create invoice request body`), including extra unused fields such as
+`email`. After the Conversations API fetch it also logs that JSON
+(`conversationId` plus the raw `payload`). That conversation payload includes
+email bodies, author emails, and signed attachment URLs. Do not log Intercom
+access tokens.
 
 ## Attachment bytes
 

@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { InvokeCommand } from '@aws-sdk/client-lambda';
+import { debug } from '@pga/logger';
 import { handler } from '../trigger_create_invoice.js';
 import {
   IntercomAttachmentTooLargeError,
@@ -208,6 +209,23 @@ describe('trigger_create_invoice handler', () => {
     }));
 
     expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockFetchConversationInvoiceData).toHaveBeenCalledWith(
+      expect.anything(),
+      '1234567890',
+    );
+    expect(debug).toHaveBeenCalledWith('Trigger create invoice request body', jsonBody);
+  });
+
+  it('logs the Data Connector request body including unused extra fields', async () => {
+    const body = JSON.stringify({
+      conversationId: '1234567890',
+      email: 'ap@vendor.com',
+    });
+
+    const response = await handler(buildEvent({ body }));
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(debug).toHaveBeenCalledWith('Trigger create invoice request body', body);
     expect(mockFetchConversationInvoiceData).toHaveBeenCalledWith(
       expect.anything(),
       '1234567890',

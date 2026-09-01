@@ -57,7 +57,8 @@ async function downloadInvoiceAttachments(attachments: IntercomAttachment[]): Pr
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-  debug('Trigger create invoice request received');
+  const rawBody = readRequestBody(event);
+  debug('Trigger create invoice request body', rawBody);
   process.env = await loadEnv();
 
   const expectedToken = process.env.ENRICH_INVOICE_API_TOKEN;
@@ -76,10 +77,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   let requestBody: TriggerCreateInvoiceRequest;
   try {
-    const rawBody = readRequestBody(event);
     requestBody = rawBody ? JSON.parse(rawBody) as TriggerCreateInvoiceRequest : {};
   } catch (error) {
-    debug('Invalid JSON body', { error: formatError(error), isBase64Encoded: event.isBase64Encoded });
+    debug('Invalid JSON body', { body: rawBody, error: formatError(error), isBase64Encoded: event.isBase64Encoded });
     return jsonResponse(400, { status: 'error', message: 'Invalid JSON body' });
   }
 
