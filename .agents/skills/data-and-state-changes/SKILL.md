@@ -34,8 +34,9 @@ intentional shutdown paths.
 `DOCUMENT_TYPES` in `src/lib/database.ts` is the source of truth. The migration
 includes existing unknown values in the CHECK constraint so orphan rows do not
 block Lambda startup. Schema-init failures clear the pool so a later invocation
-(next schedule or concurrent cold start) reruns the migration. Lambda async
-retries are disabled (`MaximumRetryAttempts: 0` in `template.yml`). A
+(next schedule, concurrent cold start, or the next processor Event invoke)
+reruns the migration. Lambda async retries are disabled
+(`MaximumRetryAttempts: 0` in `template.yml`). A
 transaction-scoped advisory lock serializes the constraint DDL across concurrent
 Lambda cold starts.
 

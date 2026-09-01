@@ -18,11 +18,18 @@ packages and deploys that file (`.circleci/config.yml`).
 
 AWS defaults async invocations to two retries. Cache processors, invoice
 processors, and EventBridge schedules are async (`InvocationType: Event` or a
-Schedule event). A thrown error already Slacks; Lambda retries would run the
-same work again and Slack again.
+Schedule event). Lambda retries would run the same work again.
 
-Keep the existing report-then-throw pattern so CloudWatch still records the
-failure. Do not swallow errors just to avoid retries.
+Slack-then-throw today: `create_invoice` / `enrich_invoice` processor catches,
+`syncDataSource`, and `withQueryHandler` / `withProcessorHandler` query
+failures. `setupContext` (env + DB schema init), `withHandler` bodies that
+only notify on success (`cache_validation_rules`, EnrichInvoice query
+handler), and `query_documents` throw without Slack — CloudWatch only. Do not
+wrap those in a generic catch that also wraps paths that already Slack.
+
+Keep report-then-throw where it exists so CloudWatch still records the
+failure. Do not swallow errors just to avoid retries. Failed async events are
+discarded (no OnFailure destination).
 
 HTTP API functions (`TriggerCreateInvoice`, `TriggerEnrichInvoice`) are
 synchronous request/response. EventInvokeConfig does not retry those HTTP
