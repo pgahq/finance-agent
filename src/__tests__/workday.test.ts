@@ -3442,6 +3442,11 @@ describe('Workday utilities', () => {
         },
       }));
       expect(isWorkdayValidationError(error)).toBe(true);
+      expect(error).toEqual(expect.objectContaining({
+        serializedError: expect.objectContaining({
+          message: soapMessage,
+        }),
+      }));
     });
 
     it('should attach priorFailures when a fallback retry still fails', async () => {

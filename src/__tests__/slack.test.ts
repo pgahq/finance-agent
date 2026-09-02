@@ -64,6 +64,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('"fileName": "invoice.pdf"');
     expect(texts).not.toContain('"stack"');
     expect(texts).not.toContain('faultcode:');
+    expect(texts).not.toContain('*Full error*');
   });
 
   it('omits priorFailures when the error has none', async () => {
@@ -74,23 +75,56 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Prior submit failures*');
   });
 
-  it('includes priorFailures on the Slack success payload', async () => {
+  it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
+      conversationId: '1234567890',
+      conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
+      attachment: { fileName: 'Invoices -1-.PDF', contentType: 'application/pdf', sizeBytes: 33915, includedInline: true },
+      supplier: { status: 'found', resolvedName: 'ACUSHNET COMPANY', isDefault: false },
+      company: {
+        status: 'different',
+        appliedFrom: 'recommended',
+        appliedName: 'PGA Foundation Inc',
+        appliedId: 'company-wid',
+        recommendedName: 'PGA Foundation Inc',
+      },
+      extracted: { invoiceDate: '2026-08-21', amountDue: '$448.92' },
+      lineCount: 3,
       priorFailures: [
         { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
       ],
     });
 
-    const detailsJson = postedSlackBody(global.fetch as jest.Mock).blocks[1]?.elements?.[0]?.text
-      ?.replace(/^```/, '')
-      .replace(/```$/, '') ?? '{}';
-    expect(JSON.parse(detailsJson)).toEqual(expect.objectContaining({
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Changes*');
+    expect(texts).toContain('*Supplier* → ACUSHNET COMPANY (identified)');
+    expect(texts).toContain('*Company* → PGA Foundation Inc (recommended)');
+    expect(texts).toContain('*Invoice Date* → 2026-08-21');
+    expect(texts).toContain('*Amount Due* → $448.92');
+    expect(texts).toContain('*Prior submit failures*');
+    expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
+    expect(texts).toContain('"invoiceWID": "new-invoice-wid"');
+    expect(texts).toContain('"fileName": "Invoices -1-.PDF"');
+    expect(texts).toContain('"conversationId": "1234567890"');
+    expect(texts).not.toContain('"resolvedName"');
+    expect(texts).not.toContain('conversationUrl');
+  });
+
+  it('truncates stacked prior submit failures on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
-      priorFailures: [
-        { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
-      ],
-    }));
+      priorFailures: [1, 2, 3].map((attempt) => ({
+        attempt,
+        message: 'x'.repeat(1000),
+      })),
+    });
+
+    const priorBlock = postedSlackBody(global.fetch as jest.Mock).blocks.find((block) =>
+      block.text?.text?.startsWith('*Prior submit failures*')
+    );
+    expect(priorBlock?.text?.text?.length).toBeLessThanOrEqual(2900);
+    expect(priorBlock?.text?.text?.endsWith('…')).toBe(true);
   });
 
   it('adds an Intercom conversation link next to CloudWatch logs', async () => {

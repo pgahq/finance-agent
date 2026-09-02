@@ -24,9 +24,9 @@ type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
 const SLACK_SECTION_TEXT_LIMIT = 2900;
 
-function truncateSlackText(text: string): string {
-  if (text.length <= SLACK_SECTION_TEXT_LIMIT) return text;
-  return `${text.slice(0, SLACK_SECTION_TEXT_LIMIT - 1)}…`;
+function truncateSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1)}…`;
 }
 
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
@@ -39,16 +39,7 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
   });
 
   const priorFailures = Array.isArray(error?.priorFailures) ? error.priorFailures : [];
-  if (priorFailures.length > 0) {
-    const lines = priorFailures.map((failure: { attempt?: number; fallback?: string; message?: string }) => {
-      const fallback = failure.fallback ? ` (${failure.fallback})` : '';
-      return `• Attempt ${failure.attempt ?? '?'}${fallback}: ${failure.message ?? ''}`.trim();
-    });
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
-    });
-  }
+  appendPriorFailureBlocks(blocks, priorFailures);
 
   const slackDetails = errorDetailsForSlack(details);
   if (slackDetails) {
@@ -75,6 +66,105 @@ function errorDetailsForSlack(details: unknown): Record<string, unknown> | undef
   }
 
   return rest;
+}
+
+function appendPriorFailureBlocks(
+  blocks: SlackBlock[],
+  priorFailures: Array<{ attempt?: number; fallback?: string; message?: string }>
+): void {
+  if (priorFailures.length === 0) return;
+  const lines = priorFailures.map((failure) => {
+    const fallback = failure.fallback ? ` (${failure.fallback})` : '';
+    return `• Attempt ${failure.attempt ?? '?'}${fallback}: ${failure.message ?? ''}`.trim();
+  });
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+  });
+}
+
+function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
+  const changeLines: string[] = [];
+  const fallbackLines: string[] = [];
+
+  const supplier = details.supplier as { status?: string; resolvedName?: string; isDefault?: boolean } | undefined;
+  if (supplier?.isDefault) {
+    fallbackLines.push('Default supplier — no match found in Workday');
+  } else if (supplier?.resolvedName) {
+    const how = supplier.status === 'found' ? 'identified' : (supplier.status ?? 'set');
+    changeLines.push(`*Supplier* → ${supplier.resolvedName} (${how})`);
+  }
+
+  const company = details.company as {
+    appliedFrom?: string;
+    appliedName?: string;
+  } | undefined;
+  if (company?.appliedName) {
+    const from = company.appliedFrom === 'recommended' ? 'recommended'
+      : company.appliedFrom === 'po' ? 'from PO'
+      : company.appliedFrom === 'email' ? 'from email coding'
+      : company.appliedFrom === 'default' ? 'default'
+      : (company.appliedFrom ?? 'set');
+    changeLines.push(`*Company* → ${company.appliedName} (${from})`);
+  }
+
+  const extracted = details.extracted as {
+    invoiceDate?: string;
+    amountDue?: string;
+    suppliersInvoiceNumber?: string;
+    freightAmount?: string;
+    purchaseOrderNumber?: string;
+    paymentTerms?: string;
+  } | undefined;
+  if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
+  if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
+  if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
+  if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
+  if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
+
+  const appliedFallbacks = Array.isArray(details.appliedFallbacks)
+    ? details.appliedFallbacks.filter((label): label is string => typeof label === 'string')
+    : [];
+  fallbackLines.push(...appliedFallbacks);
+
+  if (changeLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Changes*\n${changeLines.map((line) => `• ${line}`).join('\n')}`) }
+    });
+  }
+  if (fallbackLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Fallbacks Applied*\n${fallbackLines.map((line) => `• ${line}`).join('\n')}`) }
+    });
+  }
+
+  const priorFailures = Array.isArray(details.priorFailures) ? details.priorFailures : [];
+  appendPriorFailureBlocks(
+    blocks,
+    priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
+  );
+
+  const attachment = details.attachment as { fileName?: string } | undefined;
+  const slackDetails: Record<string, unknown> = {
+    ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
+    ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
+    ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
+    ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
+  };
+  if (Object.keys(slackDetails).length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: truncateSlackText(`\`\`\`${JSON.stringify(slackDetails, null, 2)}\`\`\``)
+        }
+      ]
+    });
+  }
 }
 
 function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {
@@ -185,6 +275,8 @@ export async function notifyResult(
 
   if (error) {
     appendErrorBlocks(blocks, error, details);
+  } else if (lambdaName === 'create_invoice' && details && typeof details === 'object') {
+    appendCreateInvoiceSuccessBlocks(blocks, details as Record<string, unknown>);
   } else if (details) {
     const jsonString = JSON.stringify(details, null, 2);
     blocks.push({
@@ -192,7 +284,7 @@ export async function notifyResult(
       elements: [
         {
           type: 'mrkdwn',
-          text: `\`\`\`${jsonString}\`\`\``
+          text: truncateSlackText(`\`\`\`${jsonString}\`\`\``)
         }
       ]
     });
