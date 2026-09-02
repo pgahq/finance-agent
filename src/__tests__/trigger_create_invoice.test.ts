@@ -101,6 +101,7 @@ const supportEmailContext = {
   plainTextBody: 'Use cost center 72200',
 };
 const conversationInvoiceData = {
+  appId: 'sandbox-app',
   attachments: [
     {
       name: 'invoice.pdf',
@@ -384,6 +385,8 @@ describe('trigger_create_invoice handler', () => {
           fileName: 'invoice.pdf',
           contentType: 'application/pdf',
           emailContext: invoiceEmailContext,
+          conversationId: '1234567890',
+          intercomAppId: 'sandbox-app',
         }],
         page: 1,
         totalPages: 1,
@@ -398,6 +401,8 @@ describe('trigger_create_invoice handler', () => {
           fileName: 'support.pdf',
           contentType: 'application/pdf',
           emailContext: supportEmailContext,
+          conversationId: '1234567890',
+          intercomAppId: 'sandbox-app',
         }],
         page: 1,
         totalPages: 1,

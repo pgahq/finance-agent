@@ -21,6 +21,7 @@ export interface IntercomAttachment {
 
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
+  appId?: string;
 }
 
 export class IntercomNotFoundError extends Error {
@@ -78,6 +79,7 @@ const intercomConversationPartSchema = z.object({
 });
 const intercomConversationSchema = z.object({
   id: z.string().optional(),
+  app_id: z.string().optional(),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),
@@ -98,6 +100,17 @@ export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
 
   const apiBaseUrl = (env.INTERCOM_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
   return { accessToken, apiBaseUrl };
+}
+
+export function buildIntercomConversationUrl(
+  conversationId: string,
+  appId: string | undefined = process.env.INTERCOM_APP_ID
+): string | undefined {
+  const id = conversationId.trim();
+  const workspaceId = appId?.trim();
+  if (!id || !workspaceId) return undefined;
+
+  return `https://app.intercom.com/a/inbox/${encodeURIComponent(workspaceId)}/inbox/conversation/${encodeURIComponent(id)}`;
 }
 
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
@@ -231,6 +244,7 @@ export async function fetchConversationInvoiceData(
       ...attachment,
       name: sanitizeFileName(attachment.name),
     })),
+    ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
   };
 }
 

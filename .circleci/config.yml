@@ -54,6 +54,7 @@ references:
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             FallbackLineOfBusinessId=$FALLBACK_LOB_ID
+            IntercomAppId=$INTERCOM_APP_ID
 
 jobs:
   build:
@@ -113,6 +114,7 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
+      INTERCOM_APP_ID: c722leqk
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -126,6 +128,7 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
+      INTERCOM_APP_ID: jyi16dpc
 
 workflows:
   version: 2

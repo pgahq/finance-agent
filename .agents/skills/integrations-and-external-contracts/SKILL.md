@@ -68,8 +68,11 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Both HTTP triggers (inbound auth) |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
+| `INTERCOM_APP_ID` | CFT `IntercomAppId` (`c722leqk` on `deploy-to-dev`, `jyi16dpc` on `deploy-to-prod`) | Slack inbox permalink workspace. Create-invoice uses this stack value, not the conversation `app_id`. |
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
+
+Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP dumps. Remaining invoice details (`fileName`, `s3Key`, `workdayId`, not-authorized `note`) still appear as JSON; `conversationUrl` stays a footer link. Create-invoice Slack **success** uses the same human layout as enrich (`*Changes*`, fallbacks, `*Prior submit failures*`) plus a small JSON of `invoiceWID` / `fileName` / `conversationId` / `lineCount` — not the full create payload. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches, and keep `serializedError` for a future threaded dump once a Slack bot token exists. Successful Workday submits that retried after a validation fault also include `priorFailures` on create and enrich Slack success.
 
 ## Workday SOAP authentication
 
@@ -120,3 +123,5 @@ envelope `Header` element.
 - Each Workday invoice receives its corresponding PDF as `Attachment_Data`
 - Success Slack details include filename, content type, byte size, and
   `includedInline`; never include base64 content
+- Success Slack details include `conversationId` / Intercom conversation URL
+  for create-invoice, and `priorFailures` when submit retried before succeeding

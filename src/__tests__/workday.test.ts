@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -715,6 +716,12 @@ describe('Workday utilities', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'The invoice date must be the first day of the month.',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
@@ -834,6 +841,12 @@ describe('Workday utilities', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Validation_Fault: payment terms are invalid',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
@@ -894,6 +907,12 @@ describe('Workday utilities', () => {
       const result = await submitSupplierInvoiceUpdateForTest();
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Validation_Fault: supplier is invalid',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
@@ -3197,6 +3216,7 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
+      expect(result).not.toHaveProperty('priorFailures');
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
@@ -3400,6 +3420,33 @@ describe('Workday utilities', () => {
       await expect(rejected).rejects.toThrow('Create failed');
       await expect(rejected).rejects.not.toHaveProperty('response');
       await expect(rejected).rejects.not.toHaveProperty('body');
+    });
+
+    it('should summarize a SOAP fault string as the Workday Message', async () => {
+      const mockClient = mockSoapClient();
+      const soapMessage = 'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}';
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(new Error(soapMessage), null);
+      });
+
+      const error = await submitNewSupplierInvoiceForTest().catch((thrown: unknown) => thrown);
+      expect(error).toEqual(expect.objectContaining({
+        message: "You can't select this supplier to invoice this purchase order.",
+        Validation_Fault: {
+          Validation_Error: {
+            Message: "You can't select this supplier to invoice this purchase order.",
+            Detail_Message: expect.stringContaining("You can't select this supplier to invoice this purchase order."),
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+          },
+        },
+      }));
+      expect(isWorkdayValidationError(error)).toBe(true);
+      expect(error).toEqual(expect.objectContaining({
+        serializedError: expect.objectContaining({
+          message: soapMessage,
+        }),
+      }));
     });
 
     it('should attach priorFailures when a fallback retry still fails', async () => {

@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyRelatedLobWorktags, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -1144,6 +1144,8 @@ export type SupplierInvoiceSubmitPriorFailure = {
 
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  Validation_Fault?: unknown;
+  serializedError?: Record<string, unknown>;
 };
 
 interface SubmitSupplierInvoiceRequest {
@@ -1241,16 +1243,17 @@ function summarizeSoapError(error: unknown): {
     name?: string;
     response?: { statusCode?: number };
   };
+  const humanMessage = humanWorkdayValidationMessage(error);
 
   return {
     name: soapError?.name ?? 'Error',
-    message: soapFaultMessage(error),
+    message: humanMessage || soapFaultMessage(error),
     statusCode: soapError?.response?.statusCode
   };
 }
 
 function priorFailureMessage(error: unknown): string {
-  return parseWorkdayValidationDetails(error)?.message || summarizeValidationError(error);
+  return humanWorkdayValidationMessage(error);
 }
 
 function appendPriorFailure(
@@ -1267,6 +1270,28 @@ function appendPriorFailure(
   });
 }
 
+function snapshotSoapError(error: unknown): Record<string, unknown> {
+  const soapError = error as {
+    name?: string;
+    message?: unknown;
+    stack?: string;
+    code?: unknown;
+    statusCode?: number;
+    $metadata?: unknown;
+    response?: { statusCode?: number };
+  };
+  return {
+    name: soapError?.name,
+    message: typeof soapError?.message === 'string' ? soapError.message : String(error),
+    stack: soapError?.stack,
+    ...(soapError?.code !== undefined ? { code: soapError.code } : {}),
+    ...(soapError?.statusCode !== undefined || soapError?.response?.statusCode !== undefined
+      ? { statusCode: soapError.statusCode ?? soapError.response?.statusCode }
+      : {}),
+    ...(soapError?.$metadata !== undefined ? { $metadata: soapError.$metadata } : {}),
+  };
+}
+
 function sanitizeSoapError(
   error: unknown,
   priorFailures?: SupplierInvoiceSubmitPriorFailure[]
@@ -1274,9 +1299,19 @@ function sanitizeSoapError(
   const summary = summarizeSoapError(error);
   const sanitizedError = new Error(summary.message) as SanitizedSoapError;
   sanitizedError.name = summary.name;
+  const validationFault = getWorkdayValidationFault(error);
+  if (validationFault !== undefined) {
+    sanitizedError.Validation_Fault = validationFault;
+  } else if (isWorkdayValidationError(error)) {
+    sanitizedError.Validation_Fault = { Validation_Error: { Message: summary.message } };
+  }
   if (priorFailures && priorFailures.length > 1) {
     sanitizedError.priorFailures = priorFailures;
   }
+  sanitizedError.serializedError = {
+    ...snapshotSoapError(error),
+    ...(sanitizedError.priorFailures ? { priorFailures: sanitizedError.priorFailures } : {}),
+  };
   return sanitizedError;
 }
 
@@ -1348,7 +1383,11 @@ async function submitSupplierInvoiceWithRepair({
   operationName,
   submitLogMessage,
   requestDebugLabel,
-}: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
+}: SubmitSupplierInvoiceWithRepairOptions): Promise<{
+  result: unknown;
+  finalBuildOptions: buildSubmitInvoiceDataOptions;
+  priorFailures: SupplierInvoiceSubmitPriorFailure[];
+}> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   const relatedLines = linesWithRelatedLob(buildOptions);
   let attemptBuildOptions = relatedLines
@@ -1372,7 +1411,7 @@ async function submitSupplierInvoiceWithRepair({
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
-      return { result, finalBuildOptions: attemptBuildOptions };
+      return { result, finalBuildOptions: attemptBuildOptions, priorFailures };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -1439,6 +1478,10 @@ async function submitSupplierInvoiceWithRepair({
   if (priorFailures.length > 1) {
     exceeded.priorFailures = priorFailures;
   }
+  exceeded.serializedError = {
+    ...snapshotSoapError(exceeded),
+    ...(exceeded.priorFailures ? { priorFailures: exceeded.priorFailures } : {}),
+  };
   throw exceeded;
 }
 
@@ -1773,7 +1816,12 @@ export async function submitSupplierInvoiceUpdate(
     resolveCostCenterWorkdayIds,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
-): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
+): Promise<{
+  success: boolean;
+  message?: string;
+  appliedFallbacks: AppliedFallback[];
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+}> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier WID: ${supplierWID ?? '(none - using existing or default)'}`);
@@ -1803,7 +1851,7 @@ export async function submitSupplierInvoiceUpdate(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { finalBuildOptions } = await submitSupplierInvoiceWithRepair({
+  const { finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID,
@@ -1831,12 +1879,13 @@ export async function submitSupplierInvoiceUpdate(
   });
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
-  debug('Supplier invoice updated successfully', { appliedFallbacks });
+  debug('Supplier invoice updated successfully', { appliedFallbacks, priorFailures });
 
   return {
     success: true,
     message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
     appliedFallbacks,
+    ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
 
@@ -1880,7 +1929,13 @@ export async function submitNewSupplierInvoice(
     paymentTermsId,
     attachment
   }: SubmitNewSupplierInvoiceParams
-): Promise<{ success: boolean; message?: string; invoiceWID?: string; appliedFallbacks: AppliedFallback[] }> {
+): Promise<{
+  success: boolean;
+  message?: string;
+  invoiceWID?: string;
+  appliedFallbacks: AppliedFallback[];
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+}> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
   debug(`Company WID: ${companyWID}`);
@@ -1894,7 +1949,7 @@ export async function submitNewSupplierInvoice(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { result, finalBuildOptions } = await submitSupplierInvoiceWithRepair({
+  const { result, finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID: undefined,
@@ -1925,13 +1980,14 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks });
+  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks, priorFailures });
 
   return {
     success: true,
     message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
     invoiceWID,
     appliedFallbacks,
+    ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
 

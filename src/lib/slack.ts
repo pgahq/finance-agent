@@ -22,6 +22,168 @@ interface SlackDividerBlock {
 
 type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
+const SLACK_SECTION_TEXT_LIMIT = 2900;
+
+function truncateSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1)}…`;
+}
+
+function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
+  const errorMessage = typeof error?.message === 'string' && error.message.trim()
+    ? error.message.trim()
+    : 'Unknown error';
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
+  });
+
+  const priorFailures = Array.isArray(error?.priorFailures) ? error.priorFailures : [];
+  appendPriorFailureBlocks(blocks, priorFailures);
+
+  const slackDetails = errorDetailsForSlack(details);
+  if (slackDetails) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: truncateSlackText(`\`\`\`${JSON.stringify(slackDetails, null, 2)}\`\`\``)
+        }
+      ]
+    });
+  }
+}
+
+function errorDetailsForSlack(details: unknown): Record<string, unknown> | undefined {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    return undefined;
+  }
+
+  const { conversationUrl: _conversationUrl, ...rest } = details as Record<string, unknown>;
+  if (Object.keys(rest).length === 0) {
+    return undefined;
+  }
+
+  return rest;
+}
+
+function appendPriorFailureBlocks(
+  blocks: SlackBlock[],
+  priorFailures: Array<{ attempt?: number; fallback?: string; message?: string }>
+): void {
+  if (priorFailures.length === 0) return;
+  const lines = priorFailures.map((failure) => {
+    const fallback = failure.fallback ? ` (${failure.fallback})` : '';
+    return `• Attempt ${failure.attempt ?? '?'}${fallback}: ${failure.message ?? ''}`.trim();
+  });
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+  });
+}
+
+function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
+  const changeLines: string[] = [];
+  const fallbackLines: string[] = [];
+
+  const supplier = details.supplier as { status?: string; resolvedName?: string; isDefault?: boolean } | undefined;
+  if (supplier?.isDefault) {
+    fallbackLines.push('Default supplier — no match found in Workday');
+  } else if (supplier?.resolvedName) {
+    const how = supplier.status === 'found' ? 'identified' : (supplier.status ?? 'set');
+    changeLines.push(`*Supplier* → ${supplier.resolvedName} (${how})`);
+  }
+
+  const company = details.company as {
+    appliedFrom?: string;
+    appliedName?: string;
+  } | undefined;
+  if (company?.appliedName) {
+    const from = company.appliedFrom === 'recommended' ? 'recommended'
+      : company.appliedFrom === 'po' ? 'from PO'
+      : company.appliedFrom === 'email' ? 'from email coding'
+      : company.appliedFrom === 'default' ? 'default'
+      : (company.appliedFrom ?? 'set');
+    changeLines.push(`*Company* → ${company.appliedName} (${from})`);
+  }
+
+  const extracted = details.extracted as {
+    invoiceDate?: string;
+    amountDue?: string;
+    suppliersInvoiceNumber?: string;
+    freightAmount?: string;
+    purchaseOrderNumber?: string;
+    paymentTerms?: string;
+  } | undefined;
+  if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
+  if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
+  if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
+  if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
+  if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
+
+  const appliedFallbacks = Array.isArray(details.appliedFallbacks)
+    ? details.appliedFallbacks.filter((label): label is string => typeof label === 'string')
+    : [];
+  fallbackLines.push(...appliedFallbacks);
+
+  if (changeLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Changes*\n${changeLines.map((line) => `• ${line}`).join('\n')}`) }
+    });
+  }
+  if (fallbackLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Fallbacks Applied*\n${fallbackLines.map((line) => `• ${line}`).join('\n')}`) }
+    });
+  }
+
+  const priorFailures = Array.isArray(details.priorFailures) ? details.priorFailures : [];
+  appendPriorFailureBlocks(
+    blocks,
+    priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
+  );
+
+  const attachment = details.attachment as { fileName?: string } | undefined;
+  const slackDetails: Record<string, unknown> = {
+    ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
+    ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
+    ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
+    ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
+  };
+  if (Object.keys(slackDetails).length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: truncateSlackText(`\`\`\`${JSON.stringify(slackDetails, null, 2)}\`\`\``)
+        }
+      ]
+    });
+  }
+}
+
+function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {
+  const links: string[] = [];
+  if (conversationUrl) {
+    links.push(`<${conversationUrl}|View Intercom conversation>`);
+  }
+  const logUrl = buildCloudWatchLogUrl();
+  if (logUrl) {
+    links.push(`<${logUrl}|View CloudWatch logs>`);
+  }
+  if (links.length === 0) return;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: links.join(' · ') }]
+  });
+}
+
 function buildCloudWatchLogUrl(): string | undefined {
   const region = process.env.AWS_REGION;
   const logGroup = process.env.AWS_LAMBDA_LOG_GROUP_NAME;
@@ -111,43 +273,27 @@ export async function notifyResult(
     }
   ];
 
-  if (details || error) {
-    let detailsData;
-    if (error) {
-      // Safely serialize error object to avoid circular references
-      const safeError = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-        statusCode: error.statusCode,
-        $metadata: error.$metadata,
-        ...(error.priorFailures ? { priorFailures: error.priorFailures } : {}),
-      };
-      detailsData = { error: safeError, details };
-    } else {
-      detailsData = details;
-    }
-
-    const jsonString = JSON.stringify(detailsData, null, 2);
+  if (error) {
+    appendErrorBlocks(blocks, error, details);
+  } else if (lambdaName === 'create_invoice' && details && typeof details === 'object') {
+    appendCreateInvoiceSuccessBlocks(blocks, details as Record<string, unknown>);
+  } else if (details) {
+    const jsonString = JSON.stringify(details, null, 2);
     blocks.push({
       type: 'context',
       elements: [
         {
           type: 'mrkdwn',
-          text: `\`\`\`${jsonString}\`\`\``
+          text: truncateSlackText(`\`\`\`${jsonString}\`\`\``)
         }
       ]
     });
   }
 
-  const logUrl = buildCloudWatchLogUrl();
-  if (logUrl) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
-    });
-  }
+  appendNotificationLinks(
+    blocks,
+    typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined
+  );
 
   await sendSlackMessage(blocks);
 }
@@ -180,6 +326,7 @@ export interface EnrichmentNotification {
   };
   poLineCount?: number;
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
+  priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -190,7 +337,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, fallbacks } = notification;
+  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
   const blocks: SlackBlock[] = [];
@@ -301,13 +448,18 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
   }
 
-  const logUrl = buildCloudWatchLogUrl();
-  if (logUrl) {
+  if (priorFailures?.length) {
+    const lines = priorFailures.map((failure) => {
+      const fallback = failure.fallback ? ` (${failure.fallback})` : '';
+      return `• Attempt ${failure.attempt}${fallback}: ${failure.message}`;
+    });
     blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
     });
   }
+
+  appendNotificationLinks(blocks);
 
   await sendSlackMessage(blocks);
 }

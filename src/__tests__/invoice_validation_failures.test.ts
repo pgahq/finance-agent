@@ -1,11 +1,13 @@
 import {
   collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
+  humanWorkdayValidationMessage,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isRequiredLineOfBusinessWorktagError,
   isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
+  parseWorkdayValidationDetails,
   summarizeValidationError,
 } from '../lib/invoice_validation_failures.js';
 
@@ -118,6 +120,34 @@ describe('invoice_validation_failures', () => {
   it('does not classify AI or Zod schema validation failures as Workday validation errors', () => {
     expect(isWorkdayValidationError(new Error('Type validation failed: Value must be object'))).toBe(false);
     expect(isWorkdayValidationError(new Error('Schema validation failed'))).toBe(false);
+  });
+
+  it('reads a human Workday Message from a SOAP fault string with embedded JSON', () => {
+    const soapMessage = 'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}';
+
+    expect(humanWorkdayValidationMessage(new Error(soapMessage))).toBe(
+      "You can't select this supplier to invoice this purchase order."
+    );
+    expect(parseWorkdayValidationDetails(new Error(soapMessage))?.message).not.toBe(
+      "You can't select this supplier to invoice this purchase order."
+    );
+  });
+
+  it('reads faultstring from a SOAP XML envelope', () => {
+    expect(humanWorkdayValidationMessage(new Error(
+      '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>'
+    ))).toBe('Processing error occurred. The task submitted is not authorized.');
+  });
+
+  it('prefers Detail_Message when Message is a generic restriction notice', () => {
+    expect(humanWorkdayValidationMessage({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'The entered information does not meet the restrictions defined for this field.',
+          Detail_Message: 'The invoice date must be the first day of the month.',
+        },
+      },
+    })).toBe('The invoice date must be the first day of the month.');
   });
 
   it('does not classify RAG or infrastructure errors mentioning validation as Workday validation errors', () => {

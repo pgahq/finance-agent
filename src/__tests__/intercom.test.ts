@@ -1,5 +1,6 @@
 import {
   assertAllowedAttachmentUrl,
+  buildIntercomConversationUrl,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -39,6 +40,28 @@ describe('intercom', () => {
     });
   });
 
+  describe('buildIntercomConversationUrl', () => {
+    it('builds an inbox permalink when an app id is provided', () => {
+      expect(buildIntercomConversationUrl('1234567890', 'sandbox-app')).toBe(
+        'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890'
+      );
+    });
+
+    it('reads INTERCOM_APP_ID from the environment', () => {
+      process.env.INTERCOM_APP_ID = 'c722leqk';
+      expect(buildIntercomConversationUrl('abc')).toBe(
+        'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/abc'
+      );
+      delete process.env.INTERCOM_APP_ID;
+    });
+
+    it('returns undefined without an app id or conversation id', () => {
+      delete process.env.INTERCOM_APP_ID;
+      expect(buildIntercomConversationUrl('1234567890')).toBeUndefined();
+      expect(buildIntercomConversationUrl('  ', 'jyi16dpc')).toBeUndefined();
+    });
+  });
+
   describe('assertAllowedAttachmentUrl', () => {
     it('allows https Intercom CDN and attachment hosts', () => {
       expect(assertAllowedAttachmentUrl('https://downloads.intercomcdn.com/i/o/file.pdf').host)
@@ -73,6 +96,7 @@ describe('intercom', () => {
         ok: true,
         json: async () => ({
           id: '123',
+          app_id: 'sandbox-app',
           source: {
             subject: 'Invoice',
             body: 'Please process this invoice',
@@ -99,6 +123,7 @@ describe('intercom', () => {
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+        appId: 'sandbox-app',
         attachments: [
           {
             name: 'support.pdf',

@@ -220,6 +220,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         fileName: attachment.name,
         contentType: attachment.contentType,
         emailContext: attachment.emailContext,
+        conversationId,
+        ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
       };
     }));
 
