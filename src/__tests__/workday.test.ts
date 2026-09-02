@@ -715,6 +715,12 @@ describe('Workday utilities', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'The invoice date must be the first day of the month.',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
@@ -834,6 +840,12 @@ describe('Workday utilities', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Validation_Fault: payment terms are invalid',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual(existingPaymentTerms);
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Payment_Terms_Reference).toEqual({
@@ -894,6 +906,12 @@ describe('Workday utilities', () => {
       const result = await submitSupplierInvoiceUpdateForTest();
 
       expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Validation_Fault: supplier is invalid',
+        },
+      ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
@@ -3197,6 +3215,7 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
+      expect(result).not.toHaveProperty('priorFailures');
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]

@@ -30,13 +30,13 @@ import {
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
-import type { AppliedFallback, ParsedPurchaseOrder } from './lib/workday.js';
+import { buildIntercomConversationUrl } from './lib/intercom.js';
 import {
   costCenterCodeExcludingCompany,
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { loadPurchaseOrder, submitNewSupplierInvoice } from './lib/workday.js';
+import { loadPurchaseOrder, submitNewSupplierInvoice, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(
   purchaseOrder: ParsedPurchaseOrder
@@ -77,6 +77,7 @@ const DEFAULT_COMPANY_NAME = process.env.WORKDAY_DEFAULT_COMPANY_NAME
   || 'Default OCR Company';
 const DEFAULT_COMPANY_REFERENCE_ID = 'Default_OCR_Company';
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
+const INTERCOM_APP_ID = process.env.INTERCOM_APP_ID;
 
 function resolveDefaultCompany(): {
   descriptor: string;
@@ -109,6 +110,19 @@ export interface CreateInvoiceRequest {
   gmailMessageId?: string;
   userEmail?: string;
   gmailAccessToken?: string;
+  conversationId?: string;
+}
+
+function slackInvoiceDetails(
+  details: Record<string, unknown>,
+  conversationId?: string
+): Record<string, unknown> {
+  const conversationUrl = conversationId ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID) : undefined;
+  return {
+    ...details,
+    ...(conversationId ? { conversationId } : {}),
+    ...(conversationUrl ? { conversationUrl } : {}),
+  };
 }
 
 // Processor function - invoked by trigger_create_invoice
@@ -120,7 +134,7 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext } = request;
+  const { s3Key, fileName, contentType, emailContext, conversationId } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -128,7 +142,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       Date.now() - startTime,
-      { s3Key, fileName },
+      slackInvoiceDetails({ s3Key, fileName }, conversationId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     await updateGmailProcessorLabel(request, 'failure');
@@ -376,7 +390,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       appliedId: companyWID,
     };
 
-    await notifyResult('create_invoice', 'success', processingTime, {
+    await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
       invoiceWID: createOutcome.invoiceWID,
       attachment: {
         fileName,
@@ -400,7 +414,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       },
       lineCount: finalLines.length,
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
-    });
+      ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
+    }, conversationId));
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
@@ -408,7 +423,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       processingTime,
-      { s3Key, fileName },
+      slackInvoiceDetails({ s3Key, fileName }, conversationId),
       error
     );
     await updateGmailProcessorLabel(request, 'failure');

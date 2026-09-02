@@ -185,6 +185,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         contentType: attachment.contentType,
         buffer: buffers[index],
         emailContext: attachment.emailContext,
+        processorFields: { conversationId },
       })),
       { 'intercom-conversation-id': conversationId },
     );

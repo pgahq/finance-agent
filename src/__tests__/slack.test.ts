@@ -1,4 +1,4 @@
-import { notifyResult } from '../lib/slack.js';
+import { notifyEnrichmentResult, notifyResult } from '../lib/slack.js';
 
 jest.mock('@pga/logger', () => ({
   debug: jest.fn(),
@@ -12,6 +12,7 @@ const originalFetch = global.fetch;
 interface SlackWebhookBody {
   blocks: Array<{
     type: string;
+    text?: { text: string };
     elements?: Array<{ text: string }>;
   }>;
 }
@@ -23,10 +24,13 @@ interface SlackErrorPayload {
   };
 }
 
+function postedSlackBody(fetchMock: jest.Mock, callIndex = 0): SlackWebhookBody {
+  const [, options] = fetchMock.mock.calls[callIndex] as [string, { body: string }];
+  return JSON.parse(options.body) as SlackWebhookBody;
+}
+
 function postedSlackErrorPayload(fetchMock: jest.Mock): SlackErrorPayload {
-  const [, options] = fetchMock.mock.calls[0] as [string, { body: string }];
-  const body = JSON.parse(options.body) as SlackWebhookBody;
-  const detailsJson = body.blocks[1]?.elements?.[0]?.text
+  const detailsJson = postedSlackBody(fetchMock).blocks[1]?.elements?.[0]?.text
     ?.replace(/^```/, '')
     .replace(/```$/, '') ?? '{}';
   return JSON.parse(detailsJson) as SlackErrorPayload;
@@ -71,5 +75,92 @@ describe('notifyResult', () => {
 
     const payload = postedSlackErrorPayload(global.fetch as jest.Mock);
     expect(payload.error).not.toHaveProperty('priorFailures');
+  });
+
+  it('includes priorFailures on the Slack success payload', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      priorFailures: [
+        { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
+      ],
+    });
+
+    const detailsJson = postedSlackBody(global.fetch as jest.Mock).blocks[1]?.elements?.[0]?.text
+      ?.replace(/^```/, '')
+      .replace(/```$/, '') ?? '{}';
+    expect(JSON.parse(detailsJson)).toEqual(expect.objectContaining({
+      invoiceWID: 'new-invoice-wid',
+      priorFailures: [
+        { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
+      ],
+    }));
+  });
+
+  it('adds an Intercom conversation link next to CloudWatch logs', async () => {
+    process.env.AWS_REGION = 'us-east-1';
+    process.env.AWS_LAMBDA_LOG_GROUP_NAME = '/aws/lambda/create-invoice';
+    process.env.AWS_LAMBDA_LOG_STREAM_NAME = '2026/01/01/[$LATEST]abc';
+
+    await notifyResult(
+      'create_invoice',
+      'error',
+      1000,
+      {
+        fileName: 'invoice.pdf',
+        conversationId: '1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890',
+      },
+      new Error('Create failed')
+    );
+
+    const links = postedSlackBody(global.fetch as jest.Mock).blocks.at(-1)?.elements?.[0]?.text;
+    expect(links).toContain('<https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890|View Intercom conversation>');
+    expect(links).toContain('View CloudWatch logs');
+  });
+
+  it('omits the Intercom link when no conversation URL is provided', async () => {
+    await notifyResult('create_invoice', 'success', 1000, { invoiceWID: 'new-invoice-wid' });
+
+    const body = postedSlackBody(global.fetch as jest.Mock);
+    const texts = body.blocks.flatMap((block) => block.elements?.map((element) => element.text) ?? []);
+    expect(texts.join('\n')).not.toContain('View Intercom conversation');
+  });
+});
+
+describe('notifyEnrichmentResult', () => {
+  beforeEach(() => {
+    process.env.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/services/test';
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_LAMBDA_LOG_GROUP_NAME;
+    delete process.env.AWS_LAMBDA_LOG_STREAM_NAME;
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    delete process.env.SLACK_WEBHOOK_URL;
+    jest.restoreAllMocks();
+  });
+
+  it('includes prior submit failures on a successful enrichment message', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      priorFailures: [
+        { attempt: 1, message: 'The invoice date must be the first day of the month.' },
+      ],
+    });
+
+    const body = postedSlackBody(global.fetch as jest.Mock);
+    const texts = body.blocks.flatMap((block) => [
+      ...(block.text?.text ? [block.text.text] : []),
+      ...(block.elements?.map((element) => element.text) ?? []),
+    ]);
+    expect(texts.join('\n')).toContain('*Prior submit failures*');
+    expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
   });
 });

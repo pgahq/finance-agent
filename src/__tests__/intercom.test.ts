@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import {
   assertAllowedAttachmentUrl,
+  buildIntercomConversationUrl,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -41,6 +42,28 @@ describe('intercom', () => {
         accessToken: 'token',
         apiBaseUrl: 'https://api.intercom.io',
       });
+    });
+  });
+
+  describe('buildIntercomConversationUrl', () => {
+    it('builds an inbox permalink when an app id is provided', () => {
+      expect(buildIntercomConversationUrl('1234567890', 'jyi16dpc')).toBe(
+        'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890'
+      );
+    });
+
+    it('reads INTERCOM_APP_ID from the environment', () => {
+      process.env.INTERCOM_APP_ID = 'jyi16dpc';
+      expect(buildIntercomConversationUrl('abc')).toBe(
+        'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/abc'
+      );
+      delete process.env.INTERCOM_APP_ID;
+    });
+
+    it('returns undefined without an app id or conversation id', () => {
+      delete process.env.INTERCOM_APP_ID;
+      expect(buildIntercomConversationUrl('1234567890')).toBeUndefined();
+      expect(buildIntercomConversationUrl('  ', 'jyi16dpc')).toBeUndefined();
     });
   });
 

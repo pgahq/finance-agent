@@ -675,6 +675,56 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('passes priorFailures from a successful submit retry to Slack', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      }
+    });
+    submitSupplierInvoiceUpdate.mockResolvedValue({
+      success: true,
+      appliedFallbacks: [],
+      priorFailures: [
+        { attempt: 1, message: 'The invoice date must be the first day of the month.' },
+      ],
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(notifyEnrichmentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priorFailures: [
+          { attempt: 1, message: 'The invoice date must be the first day of the month.' },
+        ],
+      })
+    );
+  });
+
   it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

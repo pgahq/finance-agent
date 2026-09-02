@@ -1250,7 +1250,11 @@ function summarizeSoapError(error: unknown): {
 }
 
 function priorFailureMessage(error: unknown): string {
-  return parseWorkdayValidationDetails(error)?.message || summarizeValidationError(error);
+  const details = parseWorkdayValidationDetails(error);
+  if (details?.detailMessage && details.detailMessage !== details.message) {
+    return details.detailMessage.slice(0, 1000);
+  }
+  return summarizeValidationError(error);
 }
 
 function appendPriorFailure(
@@ -1348,7 +1352,11 @@ async function submitSupplierInvoiceWithRepair({
   operationName,
   submitLogMessage,
   requestDebugLabel,
-}: SubmitSupplierInvoiceWithRepairOptions): Promise<{ result: unknown; finalBuildOptions: buildSubmitInvoiceDataOptions }> {
+}: SubmitSupplierInvoiceWithRepairOptions): Promise<{
+  result: unknown;
+  finalBuildOptions: buildSubmitInvoiceDataOptions;
+  priorFailures: SupplierInvoiceSubmitPriorFailure[];
+}> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   const relatedLines = linesWithRelatedLob(buildOptions);
   let attemptBuildOptions = relatedLines
@@ -1372,7 +1380,7 @@ async function submitSupplierInvoiceWithRepair({
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
-      return { result, finalBuildOptions: attemptBuildOptions };
+      return { result, finalBuildOptions: attemptBuildOptions, priorFailures };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -1773,7 +1781,12 @@ export async function submitSupplierInvoiceUpdate(
     resolveCostCenterWorkdayIds,
     paymentTermsId
   }: SubmitSupplierInvoiceUpdateParams
-): Promise<{ success: boolean; message?: string; appliedFallbacks: AppliedFallback[] }> {
+): Promise<{
+  success: boolean;
+  message?: string;
+  appliedFallbacks: AppliedFallback[];
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+}> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
   debug(`Supplier WID: ${supplierWID ?? '(none - using existing or default)'}`);
@@ -1803,7 +1816,7 @@ export async function submitSupplierInvoiceUpdate(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { finalBuildOptions } = await submitSupplierInvoiceWithRepair({
+  const { finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID,
@@ -1831,12 +1844,13 @@ export async function submitSupplierInvoiceUpdate(
   });
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
-  debug('Supplier invoice updated successfully', { appliedFallbacks });
+  debug('Supplier invoice updated successfully', { appliedFallbacks, priorFailures });
 
   return {
     success: true,
     message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
     appliedFallbacks,
+    ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
 
@@ -1880,7 +1894,13 @@ export async function submitNewSupplierInvoice(
     paymentTermsId,
     attachment
   }: SubmitNewSupplierInvoiceParams
-): Promise<{ success: boolean; message?: string; invoiceWID?: string; appliedFallbacks: AppliedFallback[] }> {
+): Promise<{
+  success: boolean;
+  message?: string;
+  invoiceWID?: string;
+  appliedFallbacks: AppliedFallback[];
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+}> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
   debug(`Company WID: ${companyWID}`);
@@ -1894,7 +1914,7 @@ export async function submitNewSupplierInvoice(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { result, finalBuildOptions } = await submitSupplierInvoiceWithRepair({
+  const { result, finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID: undefined,
@@ -1925,13 +1945,14 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks });
+  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks, priorFailures });
 
   return {
     success: true,
     message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
     invoiceWID,
     appliedFallbacks,
+    ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
 

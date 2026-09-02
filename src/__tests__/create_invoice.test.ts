@@ -172,6 +172,7 @@ describe('create_invoice', () => {
       apiBaseUrl: 'https://gmail.googleapis.com',
     });
     mockApplyProcessorLabelOutcome.mockResolvedValue('success');
+    delete process.env.INTERCOM_APP_ID;
   });
 
   afterEach(() => {
@@ -179,6 +180,7 @@ describe('create_invoice', () => {
     delete process.env.WORKDAY_DEFAULT_COMPANY_WID;
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
+    delete process.env.INTERCOM_APP_ID;
     delete process.env.FALLBACK_FUND_ID;
     delete process.env.FALLBACK_COST_CENTER_ID;
     delete process.env.FALLBACK_SPEND_CATEGORY_ID;
@@ -422,6 +424,70 @@ describe('create_invoice', () => {
       'error',
       expect.any(Number),
       expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
+      expect.any(Error)
+    );
+  });
+
+  it('includes conversation link and priorFailures on Slack success details', async () => {
+    process.env.INTERCOM_APP_ID = 'jyi16dpc';
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    workday.submitNewSupplierInvoice.mockResolvedValue({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      appliedFallbacks: [],
+      priorFailures: [
+        { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
+      ],
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-conv/invoice.pdf'),
+        conversationId: '1234567890',
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        invoiceWID: 'new-invoice-wid',
+        conversationId: '1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890',
+        priorFailures: [
+          { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
+        ],
+      })
+    );
+  });
+
+  it('includes conversationId on Slack error details', async () => {
+    process.env.INTERCOM_APP_ID = 'jyi16dpc';
+    const { processor, slack, invoiceEnrichment } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-conv-err/invoice.pdf'),
+        conversationId: '1234567890',
+      }]
+    } as any)).rejects.toThrow('Invoice enrichment returned error status');
+
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({
+        s3Key: 'new-invoices/req-conv-err/invoice.pdf',
+        conversationId: '1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890',
+      }),
       expect.any(Error)
     );
   });
