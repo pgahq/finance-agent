@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -3429,9 +3430,18 @@ describe('Workday utilities', () => {
         callback(new Error(soapMessage), null);
       });
 
-      await expect(submitNewSupplierInvoiceForTest()).rejects.toMatchObject({
+      const error = await submitNewSupplierInvoiceForTest().catch((thrown: unknown) => thrown);
+      expect(error).toEqual(expect.objectContaining({
         message: "You can't select this supplier to invoice this purchase order.",
-      });
+        Validation_Fault: {
+          Validation_Error: {
+            Message: "You can't select this supplier to invoice this purchase order.",
+            Detail_Message: expect.stringContaining("You can't select this supplier to invoice this purchase order."),
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+          },
+        },
+      }));
+      expect(isWorkdayValidationError(error)).toBe(true);
     });
 
     it('should attach priorFailures when a fallback retry still fails', async () => {

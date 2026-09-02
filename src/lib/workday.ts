@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyRelatedLobWorktags, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -1144,6 +1144,7 @@ export type SupplierInvoiceSubmitPriorFailure = {
 
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  Validation_Fault?: unknown;
 };
 
 interface SubmitSupplierInvoiceRequest {
@@ -1275,6 +1276,12 @@ function sanitizeSoapError(
   const summary = summarizeSoapError(error);
   const sanitizedError = new Error(summary.message) as SanitizedSoapError;
   sanitizedError.name = summary.name;
+  const validationFault = getWorkdayValidationFault(error);
+  if (validationFault !== undefined) {
+    sanitizedError.Validation_Fault = validationFault;
+  } else if (isWorkdayValidationError(error)) {
+    sanitizedError.Validation_Fault = { Validation_Error: { Message: summary.message } };
+  }
   if (priorFailures && priorFailures.length > 1) {
     sanitizedError.priorFailures = priorFailures;
   }

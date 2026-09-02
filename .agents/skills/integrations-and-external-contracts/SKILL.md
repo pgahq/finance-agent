@@ -72,7 +72,7 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
-Create-invoice Slack success and error details include `conversationId` and an inbox permalink built from the conversation's Intercom `app_id` (sandbox vs prod workspace). `INTERCOM_APP_ID` is a fallback when `app_id` is missing. Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP `faultcode` dumps, stack traces, or Parm `Detail_Message` blobs. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
+Create-invoice Slack success and error details include `conversationId` and an inbox permalink built from the conversation's Intercom `app_id` (sandbox vs prod workspace). `INTERCOM_APP_ID` is a fallback when `app_id` is missing. Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP `faultcode` dumps, stack traces, or Parm `Detail_Message` blobs. Remaining invoice details (`fileName`, `s3Key`, `workdayId`, not-authorized `note`) still appear as JSON; `conversationUrl` stays a footer link. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
 
 ## Workday SOAP authentication
 
