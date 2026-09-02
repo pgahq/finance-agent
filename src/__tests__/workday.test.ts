@@ -3421,6 +3421,19 @@ describe('Workday utilities', () => {
       await expect(rejected).rejects.not.toHaveProperty('body');
     });
 
+    it('should summarize a SOAP fault string as the Workday Message', async () => {
+      const mockClient = mockSoapClient();
+      const soapMessage = 'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}';
+
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(new Error(soapMessage), null);
+      });
+
+      await expect(submitNewSupplierInvoiceForTest()).rejects.toMatchObject({
+        message: "You can't select this supplier to invoice this purchase order.",
+      });
+    });
+
     it('should attach priorFailures when a fallback retry still fails', async () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';

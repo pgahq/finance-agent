@@ -42,8 +42,8 @@ describe('intercom', () => {
 
   describe('buildIntercomConversationUrl', () => {
     it('builds an inbox permalink when an app id is provided', () => {
-      expect(buildIntercomConversationUrl('1234567890', 'jyi16dpc')).toBe(
-        'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890'
+      expect(buildIntercomConversationUrl('1234567890', 'sandbox-app')).toBe(
+        'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890'
       );
     });
 
@@ -96,6 +96,7 @@ describe('intercom', () => {
         ok: true,
         json: async () => ({
           id: '123',
+          app_id: 'sandbox-app',
           source: {
             subject: 'Invoice',
             body: 'Please process this invoice',
@@ -122,6 +123,7 @@ describe('intercom', () => {
       }) as unknown as typeof fetch;
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+        appId: 'sandbox-app',
         attachments: [
           {
             name: 'support.pdf',

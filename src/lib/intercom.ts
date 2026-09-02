@@ -21,6 +21,7 @@ export interface IntercomAttachment {
 
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
+  appId?: string;
 }
 
 export class IntercomNotFoundError extends Error {
@@ -78,6 +79,7 @@ const intercomConversationPartSchema = z.object({
 });
 const intercomConversationSchema = z.object({
   id: z.string().optional(),
+  app_id: z.string().optional(),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),
@@ -242,6 +244,7 @@ export async function fetchConversationInvoiceData(
       ...attachment,
       name: sanitizeFileName(attachment.name),
     })),
+    ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
   };
 }
 

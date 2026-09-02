@@ -17,23 +17,17 @@ interface SlackWebhookBody {
   }>;
 }
 
-interface SlackErrorPayload {
-  error: {
-    message?: string;
-    priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
-  };
-}
-
 function postedSlackBody(fetchMock: jest.Mock, callIndex = 0): SlackWebhookBody {
   const [, options] = fetchMock.mock.calls[callIndex] as [string, { body: string }];
   return JSON.parse(options.body) as SlackWebhookBody;
 }
 
-function postedSlackErrorPayload(fetchMock: jest.Mock): SlackErrorPayload {
-  const detailsJson = postedSlackBody(fetchMock).blocks[1]?.elements?.[0]?.text
-    ?.replace(/^```/, '')
-    .replace(/```$/, '') ?? '{}';
-  return JSON.parse(detailsJson) as SlackErrorPayload;
+function postedSlackTexts(fetchMock: jest.Mock): string {
+  const body = postedSlackBody(fetchMock);
+  return body.blocks.flatMap((block) => [
+    ...(block.text?.text ? [block.text.text] : []),
+    ...(block.elements?.map((element) => element.text) ?? []),
+  ]).join('\n');
 }
 
 describe('notifyResult', () => {
@@ -62,19 +56,22 @@ describe('notifyResult', () => {
     await notifyResult('create_invoice', 'error', 72000, { fileName: 'invoice.pdf' }, error);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const payload = postedSlackErrorPayload(global.fetch as jest.Mock);
-    expect(payload.error.priorFailures).toEqual([
-      { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
-      { attempt: 2, fallback: 'default supplier', message: "You can't select this supplier to invoice this purchase order." },
-    ]);
-    expect(payload.error.message).toBe("You can't select this supplier to invoice this purchase order.");
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain("*Error*\nYou can't select this supplier to invoice this purchase order.");
+    expect(texts).toContain('*Prior submit failures*');
+    expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
+    expect(texts).toContain("Attempt 2 (default supplier): You can't select this supplier to invoice this purchase order.");
+    expect(texts).toContain('File: `invoice.pdf`');
+    expect(texts).not.toContain('"stack"');
+    expect(texts).not.toContain('faultcode:');
   });
 
   it('omits priorFailures when the error has none', async () => {
     await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, new Error('Create failed'));
 
-    const payload = postedSlackErrorPayload(global.fetch as jest.Mock);
-    expect(payload.error).not.toHaveProperty('priorFailures');
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Error*\nCreate failed');
+    expect(texts).not.toContain('*Prior submit failures*');
   });
 
   it('includes priorFailures on the Slack success payload', async () => {

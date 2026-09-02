@@ -68,11 +68,11 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Both HTTP triggers (inbound auth) |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
-| `INTERCOM_APP_ID` | Lambda env (`jyi16dpc`) | Slack inbox permalink for the Intercom conversation |
+| `INTERCOM_APP_ID` | Lambda env fallback (`jyi16dpc`) | Slack inbox permalink only when the conversation payload has no `app_id` |
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
-Create-invoice Slack success and error details include `conversationId` and, when `INTERCOM_APP_ID` is set, a clickable `View Intercom conversation` link plus `conversationUrl`. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
+Create-invoice Slack success and error details include `conversationId` and an inbox permalink built from the conversation's Intercom `app_id` (sandbox vs prod workspace). `INTERCOM_APP_ID` is a fallback when `app_id` is missing. Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP `faultcode` dumps, stack traces, or Parm `Detail_Message` blobs. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
 
 ## Workday SOAP authentication
 
