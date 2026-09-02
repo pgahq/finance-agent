@@ -80,6 +80,7 @@ references:
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             FallbackLineOfBusinessId=$FALLBACK_LOB_ID
+            IntercomAppId=$INTERCOM_APP_ID
             AddonEnvironment=$ADDON_ENVIRONMENT
             GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
             GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
@@ -159,6 +160,7 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
+      INTERCOM_APP_ID: c722leqk
       ADDON_ENVIRONMENT: sandbox
 
   deploy-to-prod:
@@ -173,6 +175,7 @@ jobs:
       INVOICE_MOD_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
+      INTERCOM_APP_ID: jyi16dpc
       ADDON_ENVIRONMENT: production
 
 workflows:
