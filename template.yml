@@ -64,6 +64,7 @@ Globals:
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
+        INTERCOM_APP_ID: jyi16dpc
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName
         DATABASE_SECRET_ARN: !Ref DatabaseSecret

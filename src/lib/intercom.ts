@@ -100,6 +100,17 @@ export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
   return { accessToken, apiBaseUrl };
 }
 
+export function buildIntercomConversationUrl(
+  conversationId: string,
+  appId: string | undefined = process.env.INTERCOM_APP_ID
+): string | undefined {
+  const id = conversationId.trim();
+  const workspaceId = appId?.trim();
+  if (!id || !workspaceId) return undefined;
+
+  return `https://app.intercom.com/a/inbox/${encodeURIComponent(workspaceId)}/inbox/conversation/${encodeURIComponent(id)}`;
+}
+
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const sourceContext = {
     emailFrom: conversation.source?.author?.email || undefined,

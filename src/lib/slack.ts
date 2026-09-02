@@ -22,6 +22,23 @@ interface SlackDividerBlock {
 
 type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
+function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {
+  const links: string[] = [];
+  if (conversationUrl) {
+    links.push(`<${conversationUrl}|View Intercom conversation>`);
+  }
+  const logUrl = buildCloudWatchLogUrl();
+  if (logUrl) {
+    links.push(`<${logUrl}|View CloudWatch logs>`);
+  }
+  if (links.length === 0) return;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: links.join(' · ') }]
+  });
+}
+
 function buildCloudWatchLogUrl(): string | undefined {
   const region = process.env.AWS_REGION;
   const logGroup = process.env.AWS_LAMBDA_LOG_GROUP_NAME;
@@ -86,7 +103,8 @@ export async function notifyResult(
   processingTime?: number,
   details?: any,
   error?: any,
-  context?: string
+  context?: string,
+  conversationUrl?: string
 ): Promise<void> {
   const statusEmoji = status === 'success' ? '✅' : '🚨';
   const statusText = status === 'success' ? 'successfully' : 'with error';
@@ -141,13 +159,9 @@ export async function notifyResult(
     });
   }
 
-  const logUrl = buildCloudWatchLogUrl();
-  if (logUrl) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
-    });
-  }
+  const resolvedConversationUrl = conversationUrl
+    ?? (typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined);
+  appendNotificationLinks(blocks, resolvedConversationUrl);
 
   await sendSlackMessage(blocks);
 }
@@ -180,6 +194,7 @@ export interface EnrichmentNotification {
   };
   poLineCount?: number;
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
+  priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -190,7 +205,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, fallbacks } = notification;
+  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
   const blocks: SlackBlock[] = [];
@@ -301,13 +316,18 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
   }
 
-  const logUrl = buildCloudWatchLogUrl();
-  if (logUrl) {
+  if (priorFailures?.length) {
+    const lines = priorFailures.map((failure) => {
+      const fallback = failure.fallback ? ` (${failure.fallback})` : '';
+      return `• Attempt ${failure.attempt}${fallback}: ${failure.message}`;
+    });
     blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `<${logUrl}|View CloudWatch logs>` }]
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Prior submit failures*\n${lines.join('\n')}` }
     });
   }
+
+  appendNotificationLinks(blocks);
 
   await sendSlackMessage(blocks);
 }

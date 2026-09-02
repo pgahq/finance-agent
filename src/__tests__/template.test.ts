@@ -8,4 +8,8 @@ describe('SAM template', () => {
     expect(globals).toContain('EventInvokeConfig:');
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);
   });
+
+  it('sets INTERCOM_APP_ID for Slack conversation links', () => {
+    expect(globals).toMatch(/INTERCOM_APP_ID:\s*jyi16dpc/);
+  });
 });

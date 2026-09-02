@@ -237,6 +237,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
     let fallbacks: Fallbacks;
+    let priorFailures: Array<{ attempt: number; fallback?: string; message: string }> | undefined;
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
 
@@ -264,6 +265,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         return;
       }
       fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
+      priorFailures = updateOutcome.priorFailures;
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       fallbacks = mergeFallbacks(upfrontFallbacks, []);
@@ -315,6 +317,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
       },
+      ...(priorFailures?.length ? { priorFailures } : {}),
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;
