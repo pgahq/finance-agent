@@ -181,4 +181,25 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
   });
+
+  it('truncates stacked prior submit failures on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      priorFailures: [1, 2, 3].map((attempt) => ({
+        attempt,
+        message: 'x'.repeat(1000),
+      })),
+    });
+
+    const priorBlock = postedSlackBody(global.fetch as jest.Mock).blocks.find((block) =>
+      block.text?.text?.startsWith('*Prior submit failures*')
+    );
+    expect(priorBlock?.text?.text?.length).toBeLessThanOrEqual(2900);
+    expect(priorBlock?.text?.text?.endsWith('…')).toBe(true);
+  });
 });

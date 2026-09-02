@@ -363,7 +363,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Prior submit failures*\n${lines.join('\n')}` }
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
     });
   }
 
