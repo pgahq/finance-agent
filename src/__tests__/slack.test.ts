@@ -61,7 +61,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Prior submit failures*');
     expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
     expect(texts).toContain("Attempt 2 (default supplier): You can't select this supplier to invoice this purchase order.");
-    expect(texts).toContain('File: `invoice.pdf`');
+    expect(texts).toContain('"fileName": "invoice.pdf"');
     expect(texts).not.toContain('"stack"');
     expect(texts).not.toContain('faultcode:');
   });
@@ -121,6 +121,27 @@ describe('notifyResult', () => {
     const body = postedSlackBody(global.fetch as jest.Mock);
     const texts = body.blocks.flatMap((block) => block.elements?.map((element) => element.text) ?? []);
     expect(texts.join('\n')).not.toContain('View Intercom conversation');
+  });
+
+  it('prints remaining error details besides conversationUrl', async () => {
+    await notifyResult(
+      'enrich_invoice',
+      'error',
+      1000,
+      {
+        workdayId: 'invoice-wid',
+        fileName: 'invoice.pdf',
+        note: 'Workday returned "The task submitted is not authorized"; not retrying this Lambda invocation.',
+        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/123',
+      },
+      new Error('Create failed')
+    );
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"workdayId": "invoice-wid"');
+    expect(texts).toContain('"fileName": "invoice.pdf"');
+    expect(texts).toContain('not retrying this Lambda invocation');
+    expect(texts).not.toContain('conversationUrl');
   });
 });
 

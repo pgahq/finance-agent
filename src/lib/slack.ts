@@ -50,13 +50,31 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
     });
   }
 
-  const fileName = typeof details?.fileName === 'string' ? details.fileName : undefined;
-  if (fileName) {
+  const slackDetails = errorDetailsForSlack(details);
+  if (slackDetails) {
     blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Details*\n• File: \`${fileName}\`` }
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: truncateSlackText(`\`\`\`${JSON.stringify(slackDetails, null, 2)}\`\`\``)
+        }
+      ]
     });
   }
+}
+
+function errorDetailsForSlack(details: unknown): Record<string, unknown> | undefined {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    return undefined;
+  }
+
+  const { conversationUrl: _conversationUrl, ...rest } = details as Record<string, unknown>;
+  if (Object.keys(rest).length === 0) {
+    return undefined;
+  }
+
+  return rest;
 }
 
 function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {

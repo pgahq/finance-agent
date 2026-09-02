@@ -7,6 +7,7 @@ import {
   isRequiredLineOfBusinessWorktagError,
   isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
+  parseWorkdayValidationDetails,
   summarizeValidationError,
 } from '../lib/invoice_validation_failures.js';
 
@@ -125,6 +126,9 @@ describe('invoice_validation_failures', () => {
     const soapMessage = 'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}';
 
     expect(humanWorkdayValidationMessage(new Error(soapMessage))).toBe(
+      "You can't select this supplier to invoice this purchase order."
+    );
+    expect(parseWorkdayValidationDetails(new Error(soapMessage))?.message).not.toBe(
       "You can't select this supplier to invoice this purchase order."
     );
   });

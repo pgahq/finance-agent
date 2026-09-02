@@ -184,14 +184,9 @@ function parseEmbeddedValidationFault(text: string): unknown | undefined {
   return undefined;
 }
 
-function extractValidationDetailsIncludingEmbedded(
+function extractValidationDetailsForHumanMessage(
   error: unknown
 ): Array<Omit<WorkdayValidationDetails, 'field'>> {
-  const fromObject = extractWorkdayValidationErrorDetailsList(error);
-  if (fromObject.length > 0) {
-    return fromObject;
-  }
-
   for (const text of errorTextCandidates(error)) {
     const embedded = parseEmbeddedValidationFault(text);
     if (!embedded) continue;
@@ -201,15 +196,45 @@ function extractValidationDetailsIncludingEmbedded(
     }
   }
 
+  if (error && typeof error === 'object' && !(error instanceof Error)) {
+    return extractWorkdayValidationErrorDetailsList(error);
+  }
+
   return [];
 }
 
 export function parseWorkdayValidationDetails(error: unknown): Omit<WorkdayValidationDetails, 'field'> | undefined {
-  return extractValidationDetailsIncludingEmbedded(error)[0];
+  return extractWorkdayValidationErrorDetailsList(error)[0];
+}
+
+export function getWorkdayValidationFault(error: unknown): unknown | undefined {
+  if (error && typeof error === 'object') {
+    const objectValue = error as Record<string, unknown>;
+    if (objectValue.Validation_Fault) {
+      return objectValue.Validation_Fault;
+    }
+    if (objectValue.detail && typeof objectValue.detail === 'object') {
+      const detail = objectValue.detail as Record<string, unknown>;
+      if (detail.Validation_Fault) {
+        return detail.Validation_Fault;
+      }
+    }
+  }
+
+  for (const text of errorTextCandidates(error)) {
+    const embedded = parseEmbeddedValidationFault(text);
+    if (!embedded || typeof embedded !== 'object') continue;
+    const parsed = embedded as Record<string, unknown>;
+    if (parsed.Validation_Fault) {
+      return parsed.Validation_Fault;
+    }
+  }
+
+  return undefined;
 }
 
 export function humanWorkdayValidationMessage(error: unknown): string {
-  const details = parseWorkdayValidationDetails(error);
+  const details = extractValidationDetailsForHumanMessage(error)[0];
   const message = details?.message?.trim();
   const detailMessage = details?.detailMessage?.trim();
 
@@ -254,7 +279,7 @@ function stripSoapFaultEnvelope(text: string): string {
 }
 
 export function collectWorkdayValidationErrorText(error: unknown): string {
-  const details = extractValidationDetailsIncludingEmbedded(error);
+  const details = extractWorkdayValidationErrorDetailsList(error);
   if (details.length > 0) {
     return details.map(formatWorkdayValidationErrorDetails).join(' ');
   }
