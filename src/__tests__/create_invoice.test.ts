@@ -446,6 +446,7 @@ describe('create_invoice', () => {
       data: [{
         ...attachmentRequest('new-invoices/req-conv/invoice.pdf'),
         conversationId: '1234567890',
+        intercomAppId: 'sandbox-app',
       }]
     } as any)).resolves.not.toThrow();
 
@@ -456,7 +457,7 @@ describe('create_invoice', () => {
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
         conversationId: '1234567890',
-        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890',
         priorFailures: [
           { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
         ],
@@ -476,6 +477,7 @@ describe('create_invoice', () => {
       data: [{
         ...attachmentRequest('new-invoices/req-conv-err/invoice.pdf'),
         conversationId: '1234567890',
+        intercomAppId: 'sandbox-app',
       }]
     } as any)).rejects.toThrow('Invoice enrichment returned error status');
 
@@ -486,7 +488,7 @@ describe('create_invoice', () => {
       expect.objectContaining({
         s3Key: 'new-invoices/req-conv-err/invoice.pdf',
         conversationId: '1234567890',
-        conversationUrl: 'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890',
       }),
       expect.any(Error)
     );

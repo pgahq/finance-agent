@@ -22,6 +22,43 @@ interface SlackDividerBlock {
 
 type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
+const SLACK_SECTION_TEXT_LIMIT = 2900;
+
+function truncateSlackText(text: string): string {
+  if (text.length <= SLACK_SECTION_TEXT_LIMIT) return text;
+  return `${text.slice(0, SLACK_SECTION_TEXT_LIMIT - 1)}…`;
+}
+
+function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
+  const errorMessage = typeof error?.message === 'string' && error.message.trim()
+    ? error.message.trim()
+    : 'Unknown error';
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
+  });
+
+  const priorFailures = Array.isArray(error?.priorFailures) ? error.priorFailures : [];
+  if (priorFailures.length > 0) {
+    const lines = priorFailures.map((failure: { attempt?: number; fallback?: string; message?: string }) => {
+      const fallback = failure.fallback ? ` (${failure.fallback})` : '';
+      return `• Attempt ${failure.attempt ?? '?'}${fallback}: ${failure.message ?? ''}`.trim();
+    });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+    });
+  }
+
+  const fileName = typeof details?.fileName === 'string' ? details.fileName : undefined;
+  if (fileName) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Details*\n• File: \`${fileName}\`` }
+    });
+  }
+}
+
 function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {
   const links: string[] = [];
   if (conversationUrl) {
@@ -128,25 +165,10 @@ export async function notifyResult(
     }
   ];
 
-  if (details || error) {
-    let detailsData;
-    if (error) {
-      // Safely serialize error object to avoid circular references
-      const safeError = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-        statusCode: error.statusCode,
-        $metadata: error.$metadata,
-        ...(error.priorFailures ? { priorFailures: error.priorFailures } : {}),
-      };
-      detailsData = { error: safeError, details };
-    } else {
-      detailsData = details;
-    }
-
-    const jsonString = JSON.stringify(detailsData, null, 2);
+  if (error) {
+    appendErrorBlocks(blocks, error, details);
+  } else if (details) {
+    const jsonString = JSON.stringify(details, null, 2);
     blocks.push({
       type: 'context',
       elements: [

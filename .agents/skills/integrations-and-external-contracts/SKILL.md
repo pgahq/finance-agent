@@ -157,7 +157,7 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Intercom and Gmail HTTP triggers (inbound auth). Not the add-on. |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
-| `INTERCOM_APP_ID` | Lambda env (`jyi16dpc`) | Slack inbox permalink for the Intercom conversation |
+| `INTERCOM_APP_ID` | Lambda env fallback (`jyi16dpc`) | Slack inbox permalink only when the conversation payload has no `app_id` |
 | `GMAIL_SERVICE_ACCOUNT_SECRET_ARN` | Secrets Manager name `finance-agent/gmail-service-account` | Fallback only for `POST /create-invoice/gmail` when no `gmailAccessToken` is provided (JSON `client_email` + `private_key`). The add-on path does not use this. Never put the PEM in Lambda env or SSM `ssm:` dynamic refs. |
 | `ADDON_ENVIRONMENT` | CFT `AddonEnvironment` | `sandbox` on `deploy-to-dev` (development); `production` on `deploy-to-prod` (main) |
 | `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Audience for the **user** ID token (`authorizationEventObject.userIdToken`) |
@@ -171,7 +171,7 @@ the user access token, the service account JSON, or the private key.
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
-Create-invoice Slack success and error details include `conversationId` and, when `INTERCOM_APP_ID` is set, a clickable `View Intercom conversation` link plus `conversationUrl`. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
+Create-invoice Slack success and error details include `conversationId` and an inbox permalink built from the conversation's Intercom `app_id` (sandbox vs prod workspace). `INTERCOM_APP_ID` is a fallback when `app_id` is missing. Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP `faultcode` dumps, stack traces, or Parm `Detail_Message` blobs. Successful Workday submits that retried after a validation fault also include `priorFailures` on the Slack success payload (create JSON details and enrich `Prior submit failures` section).
 
 ## AWS sandbox vs prod (already CFT)
 

@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyRelatedLobWorktags, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -1241,20 +1241,17 @@ function summarizeSoapError(error: unknown): {
     name?: string;
     response?: { statusCode?: number };
   };
+  const humanMessage = humanWorkdayValidationMessage(error);
 
   return {
     name: soapError?.name ?? 'Error',
-    message: soapFaultMessage(error),
+    message: humanMessage || soapFaultMessage(error),
     statusCode: soapError?.response?.statusCode
   };
 }
 
 function priorFailureMessage(error: unknown): string {
-  const details = parseWorkdayValidationDetails(error);
-  if (details?.detailMessage && details.detailMessage !== details.message) {
-    return details.detailMessage.slice(0, 1000);
-  }
-  return summarizeValidationError(error);
+  return humanWorkdayValidationMessage(error);
 }
 
 function appendPriorFailure(

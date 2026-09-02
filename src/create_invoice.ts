@@ -111,13 +111,17 @@ export interface CreateInvoiceRequest {
   userEmail?: string;
   gmailAccessToken?: string;
   conversationId?: string;
+  intercomAppId?: string;
 }
 
 function slackInvoiceDetails(
   details: Record<string, unknown>,
-  conversationId?: string
+  conversationId?: string,
+  intercomAppId?: string
 ): Record<string, unknown> {
-  const conversationUrl = conversationId ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID) : undefined;
+  const conversationUrl = conversationId
+    ? buildIntercomConversationUrl(conversationId, intercomAppId || INTERCOM_APP_ID)
+    : undefined;
   return {
     ...details,
     ...(conversationId ? { conversationId } : {}),
@@ -134,7 +138,7 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext, conversationId } = request;
+  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -142,7 +146,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails({ s3Key, fileName }, conversationId),
+      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     await updateGmailProcessorLabel(request, 'failure');
@@ -415,7 +419,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       lineCount: finalLines.length,
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
-    }, conversationId));
+    }, conversationId, intercomAppId));
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
@@ -423,7 +427,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       processingTime,
-      slackInvoiceDetails({ s3Key, fileName }, conversationId),
+      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       error
     );
     await updateGmailProcessorLabel(request, 'failure');
