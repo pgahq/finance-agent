@@ -1145,6 +1145,7 @@ export type SupplierInvoiceSubmitPriorFailure = {
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   Validation_Fault?: unknown;
+  serializedError?: Record<string, unknown>;
 };
 
 interface SubmitSupplierInvoiceRequest {
@@ -1269,6 +1270,28 @@ function appendPriorFailure(
   });
 }
 
+function snapshotSoapError(error: unknown): Record<string, unknown> {
+  const soapError = error as {
+    name?: string;
+    message?: unknown;
+    stack?: string;
+    code?: unknown;
+    statusCode?: number;
+    $metadata?: unknown;
+    response?: { statusCode?: number };
+  };
+  return {
+    name: soapError?.name,
+    message: typeof soapError?.message === 'string' ? soapError.message : String(error),
+    stack: soapError?.stack,
+    ...(soapError?.code !== undefined ? { code: soapError.code } : {}),
+    ...(soapError?.statusCode !== undefined || soapError?.response?.statusCode !== undefined
+      ? { statusCode: soapError.statusCode ?? soapError.response?.statusCode }
+      : {}),
+    ...(soapError?.$metadata !== undefined ? { $metadata: soapError.$metadata } : {}),
+  };
+}
+
 function sanitizeSoapError(
   error: unknown,
   priorFailures?: SupplierInvoiceSubmitPriorFailure[]
@@ -1285,6 +1308,10 @@ function sanitizeSoapError(
   if (priorFailures && priorFailures.length > 1) {
     sanitizedError.priorFailures = priorFailures;
   }
+  sanitizedError.serializedError = {
+    ...snapshotSoapError(error),
+    ...(sanitizedError.priorFailures ? { priorFailures: sanitizedError.priorFailures } : {}),
+  };
   return sanitizedError;
 }
 
@@ -1451,6 +1478,10 @@ async function submitSupplierInvoiceWithRepair({
   if (priorFailures.length > 1) {
     exceeded.priorFailures = priorFailures;
   }
+  exceeded.serializedError = {
+    ...snapshotSoapError(exceeded),
+    ...(exceeded.priorFailures ? { priorFailures: exceeded.priorFailures } : {}),
+  };
   throw exceeded;
 }
 

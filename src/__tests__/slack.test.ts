@@ -62,8 +62,30 @@ describe('notifyResult', () => {
     expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
     expect(texts).toContain("Attempt 2 (default supplier): You can't select this supplier to invoice this purchase order.");
     expect(texts).toContain('"fileName": "invoice.pdf"');
-    expect(texts).not.toContain('"stack"');
-    expect(texts).not.toContain('faultcode:');
+    expect(texts).toContain('*Full error*');
+    expect(texts).toContain('"stack"');
+    expect(texts.split('*Full error*')[0]).not.toContain('"stack"');
+    expect(texts.split('*Full error*')[0]).not.toContain('faultcode:');
+  });
+
+  it('puts the original SOAP dump under Full error, not in the summary', async () => {
+    const soapMessage = 'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred.';
+    const error = Object.assign(new Error("You can't select this supplier to invoice this purchase order."), {
+      serializedError: {
+        name: 'Error',
+        message: soapMessage,
+        stack: `${soapMessage}\n    at Submit_Supplier_Invoice`,
+      },
+    });
+
+    await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    const summary = texts.split('*Full error*')[0];
+    const fullError = texts.split('*Full error*')[1];
+    expect(summary).toContain("*Error*\nYou can't select this supplier to invoice this purchase order.");
+    expect(summary).not.toContain('faultcode:');
+    expect(fullError).toContain('faultcode: SOAP-ENV:Client.validationError');
   });
 
   it('omits priorFailures when the error has none', async () => {
@@ -91,6 +113,21 @@ describe('notifyResult', () => {
         { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
       ],
     }));
+  });
+
+  it('truncates create success JSON that would exceed the Slack context cap', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      fileName: 'invoice.pdf',
+      priorFailures: [1, 2, 3].map((attempt) => ({
+        attempt,
+        message: 'x'.repeat(1000),
+      })),
+    });
+
+    const detailsText = postedSlackBody(global.fetch as jest.Mock).blocks[1]?.elements?.[0]?.text ?? '';
+    expect(detailsText.length).toBeLessThanOrEqual(2900);
+    expect(detailsText.endsWith('…')).toBe(true);
   });
 
   it('adds an Intercom conversation link next to CloudWatch logs', async () => {

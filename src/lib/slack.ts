@@ -23,10 +23,77 @@ interface SlackDividerBlock {
 type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
 const SLACK_SECTION_TEXT_LIMIT = 2900;
+const SLACK_MESSAGE_JSON_LIMIT = 35000;
 
-function truncateSlackText(text: string): string {
-  if (text.length <= SLACK_SECTION_TEXT_LIMIT) return text;
-  return `${text.slice(0, SLACK_SECTION_TEXT_LIMIT - 1)}…`;
+function truncateSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 1)}…`;
+}
+
+function chunkSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  for (let offset = 0; offset < text.length; offset += limit) {
+    chunks.push(text.slice(offset, offset + limit));
+  }
+  return chunks;
+}
+
+interface SlackSerializableError {
+  name?: string;
+  message?: string;
+  stack?: string;
+  code?: unknown;
+  statusCode?: number;
+  $metadata?: unknown;
+  priorFailures?: unknown;
+  serializedError?: Record<string, unknown>;
+}
+
+function serializeErrorForSlack(error: SlackSerializableError | undefined): Record<string, unknown> {
+  if (error?.serializedError && !Array.isArray(error.serializedError)) {
+    return error.serializedError;
+  }
+
+  return {
+    name: error?.name,
+    message: error?.message,
+    stack: error?.stack,
+    code: error?.code,
+    statusCode: error?.statusCode,
+    $metadata: error?.$metadata,
+    ...(error?.priorFailures ? { priorFailures: error.priorFailures } : {}),
+  };
+}
+
+function fullErrorPayload(
+  error: SlackSerializableError | undefined,
+  details?: unknown
+): { error: Record<string, unknown>; details: unknown } {
+  return {
+    error: serializeErrorForSlack(error),
+    details: errorDetailsForSlack(details),
+  };
+}
+
+function fullErrorBlocks(error: SlackSerializableError | undefined, details?: unknown): SlackBlock[] {
+  const jsonString = truncateSlackText(
+    JSON.stringify(fullErrorPayload(error, details), null, 2),
+    SLACK_MESSAGE_JSON_LIMIT
+  );
+  const blocks: SlackBlock[] = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*Full error*' }
+    }
+  ];
+  for (const chunk of chunkSlackText(jsonString, SLACK_SECTION_TEXT_LIMIT - 6)) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `\`\`\`${chunk}\`\`\`` }
+    });
+  }
+  return blocks;
 }
 
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
@@ -185,6 +252,7 @@ export async function notifyResult(
 
   if (error) {
     appendErrorBlocks(blocks, error, details);
+    blocks.push(...fullErrorBlocks(error, details));
   } else if (details) {
     const jsonString = JSON.stringify(details, null, 2);
     blocks.push({
@@ -192,7 +260,7 @@ export async function notifyResult(
       elements: [
         {
           type: 'mrkdwn',
-          text: `\`\`\`${jsonString}\`\`\``
+          text: truncateSlackText(`\`\`\`${jsonString}\`\`\``)
         }
       ]
     });
