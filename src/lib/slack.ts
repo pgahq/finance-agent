@@ -103,8 +103,7 @@ export async function notifyResult(
   processingTime?: number,
   details?: any,
   error?: any,
-  context?: string,
-  conversationUrl?: string
+  context?: string
 ): Promise<void> {
   const statusEmoji = status === 'success' ? '✅' : '🚨';
   const statusText = status === 'success' ? 'successfully' : 'with error';
@@ -159,9 +158,10 @@ export async function notifyResult(
     });
   }
 
-  const resolvedConversationUrl = conversationUrl
-    ?? (typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined);
-  appendNotificationLinks(blocks, resolvedConversationUrl);
+  appendNotificationLinks(
+    blocks,
+    typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined
+  );
 
   await sendSlackMessage(blocks);
 }

@@ -1250,7 +1250,11 @@ function summarizeSoapError(error: unknown): {
 }
 
 function priorFailureMessage(error: unknown): string {
-  return parseWorkdayValidationDetails(error)?.message || summarizeValidationError(error);
+  const details = parseWorkdayValidationDetails(error);
+  if (details?.detailMessage && details.detailMessage !== details.message) {
+    return details.detailMessage.slice(0, 1000);
+  }
+  return summarizeValidationError(error);
 }
 
 function appendPriorFailure(

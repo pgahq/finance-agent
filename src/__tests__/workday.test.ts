@@ -718,7 +718,7 @@ describe('Workday utilities', () => {
       expect(result.priorFailures).toEqual([
         {
           attempt: 1,
-          message: 'The entered information does not meet the restrictions defined for this field.',
+          message: 'The invoice date must be the first day of the month.',
         },
       ]);
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
