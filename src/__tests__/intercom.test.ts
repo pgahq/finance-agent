@@ -48,9 +48,9 @@ describe('intercom', () => {
     });
 
     it('reads INTERCOM_APP_ID from the environment', () => {
-      process.env.INTERCOM_APP_ID = 'jyi16dpc';
+      process.env.INTERCOM_APP_ID = 'c722leqk';
       expect(buildIntercomConversationUrl('abc')).toBe(
-        'https://app.intercom.com/a/inbox/jyi16dpc/inbox/conversation/abc'
+        'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/abc'
       );
       delete process.env.INTERCOM_APP_ID;
     });

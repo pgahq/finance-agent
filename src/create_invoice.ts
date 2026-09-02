@@ -116,7 +116,7 @@ function slackInvoiceDetails(
   intercomAppId?: string
 ): Record<string, unknown> {
   const conversationUrl = conversationId
-    ? buildIntercomConversationUrl(conversationId, intercomAppId || INTERCOM_APP_ID)
+    ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID || intercomAppId)
     : undefined;
   return {
     ...details,

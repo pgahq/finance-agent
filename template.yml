@@ -34,6 +34,10 @@ Parameters:
     Type: String
     Description: Workday Organization_Reference_ID to apply when a line has no Line of Business
     Default: Default_Line_Of_Business
+  IntercomAppId:
+    Type: String
+    Description: Intercom workspace app_id for Slack inbox permalinks (sandbox vs prod)
+    Default: jyi16dpc
 
 Globals:
   Function:
@@ -64,7 +68,7 @@ Globals:
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
-        INTERCOM_APP_ID: jyi16dpc
+        INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName
         DATABASE_SECRET_ARN: !Ref DatabaseSecret

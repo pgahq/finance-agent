@@ -414,7 +414,7 @@ describe('create_invoice', () => {
   });
 
   it('includes conversation link and priorFailures on Slack success details', async () => {
-    process.env.INTERCOM_APP_ID = 'jyi16dpc';
+    process.env.INTERCOM_APP_ID = 'c722leqk';
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -442,7 +442,7 @@ describe('create_invoice', () => {
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
         conversationId: '1234567890',
-        conversationUrl: 'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
         priorFailures: [
           { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
         ],
@@ -451,7 +451,7 @@ describe('create_invoice', () => {
   });
 
   it('includes conversationId on Slack error details', async () => {
-    process.env.INTERCOM_APP_ID = 'jyi16dpc';
+    process.env.INTERCOM_APP_ID = 'c722leqk';
     const { processor, slack, invoiceEnrichment } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -473,7 +473,7 @@ describe('create_invoice', () => {
       expect.objectContaining({
         s3Key: 'new-invoices/req-conv-err/invoice.pdf',
         conversationId: '1234567890',
-        conversationUrl: 'https://app.intercom.com/a/inbox/sandbox-app/inbox/conversation/1234567890',
+        conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
       }),
       expect.any(Error)
     );
