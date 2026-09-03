@@ -65,7 +65,9 @@ function stripTrailingCityStateZip(text: string): string {
     peeled += 1;
   }
   if (peeled < 2) {
-    end = beforeCity;
+    if (!(peeled === 1 && end >= 3)) {
+      end = beforeCity;
+    }
   }
 
   const name = tokens.slice(0, end);

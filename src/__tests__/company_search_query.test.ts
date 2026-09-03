@@ -43,6 +43,12 @@ describe('companyNameSearchQuery', () => {
     expect(companyNameSearchQuery('PGA of America NY 10001')).toBe('PGA of America');
   });
 
+  it('drops a one-word city when a billed name remains', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE Miami FL 33418'
+    )).toBe('PGA JR. LEAGUE');
+  });
+
   it('drops a comma-separated city, state, and ZIP', () => {
     expect(companyNameSearchQuery(
       'PGA JR. LEAGUE, Palm Beach Gardens, FL 33418'
