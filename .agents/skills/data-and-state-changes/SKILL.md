@@ -6,7 +6,7 @@ description: >-
   documents CHECK constraints, getDatabaseConnection schema setup, pgvector
   indexes, debugging documents_type_check / schema init Lambda failures, cache
   prune in syncDataSource, companyReferenceId / exact reference ID lookup,
-  cache_companies, or email short codes such as 912.
+  cache_companies, findCompanies billed-name search, or email short codes such as 912.
 ---
 
 # Data and state changes
@@ -61,6 +61,8 @@ not. Do not enable prune for windowed sources such as events.
 When a code has no exact metadata hit (or the token is not guaranteed exact), `searchDocumentsByTypes` ranks company, cost center, fund, LOB, and spend category by confidence. `pickTopReferenceMatch` treats the highest-confidence document as the object type for `resolveReferenceCode` and the email directory. Do not assign a type when two different types are nearly tied. Create/enrich company SOAP override uses exact metadata matches only (`confidence === 1`); do not submit an inexact similar neighbor as `Company_Reference_ID`. An LLM-supplied company WID is applied only when it matches an exact company from codes in the email body, or when the email has no codes (findCompanies-only). When the body is present, do not add `emailWorktags.company.extracted` or the model's `referenceId` to the lookup set unless that code appears in the body. Use extracted text only when there is no email body. Skip 4-digit calendar years (`19xx` / `20xx`), currency digit groups (`$1,912.00`), zip+4 fragments, and phone-number fragments so invoice amounts and contact data do not trigger lookups. Cap inexact embedding searches at `MAX_INEXACT_REFERENCE_LOOKUPS` per email. `resolveReferenceCode` / `findCachedReferenceMatches` rethrow similarity outages (do not treat an outage as "no match"). The email directory (`resolveReferenceCodesFromText`) keeps exact metadata rows when an inexact embedding fails; that failed code is listed as no cached match. Include empty-match rows in the prompt so the model sees codes the extractor found but the cache missed.
 
 Do not dump all cached IDs into prompts. Extract candidate codes from the email, look up only those codes, and inject matches. A numeric code such as `912` may be a company, not a cost center — resolve across types before assigning. Use the highest-confidence match to decide the object type in the directory and `resolveReferenceCode`. Auto-select the invoice company only from a unique exact company hit.
+
+`findCompanies` searches by billed company name or Company_Reference_ID only. Street, city, state, and ZIP are stripped from the query (`companyNameSearchQuery`) before embedding so a bill-to line such as `PGA JR. LEAGUE 100 Avenue of the Stars Palm Beach Gardens FL 33418` does not rank a similarly named affiliate. Keep address on `extractedInformation` and compare it after name candidates exist. Do not put the bill-to address in the search string. `findSuppliers` may still search by address.
 
 ## When adding a new document type
 

@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
+import { companyNameSearchQuery } from './company_search_query.js';
 import { getDatabaseConnection, searchDocuments } from './database.js';
 export type { DocumentType } from './database.js';
 
@@ -264,19 +265,33 @@ export const findCompaniesTool = tool({
   description: `Search for companies using semantic similarity and exact text matching.
 
   This tool is optimized for finding companies by:
-  - Company names (e.g., "Acme Corp", "Microsoft")
+  - Company names (e.g., "PGA JR. LEAGUE", "Acme Corp")
   - Company Reference IDs (e.g., "912")
   - Company Workday IDs (WIDs)
 
-  Examples: "Acme Corporation", "912", "Global Modern Services"`,
+  Pass the billed company name or ID only. Do not include street, city, state, or ZIP — those tokens are stripped before search.
+
+  Examples: "PGA JR. LEAGUE", "Acme Corporation", "912"`,
   inputSchema: z.object({
-    query: z.string().describe('Search query for companies (company name or ID)'),
+    query: z.string().describe('Billed company name or ID only (omit street, city, state, and ZIP)'),
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
   execute: async ({ query, limit, similarityThreshold }) => {
+    const nameQuery = companyNameSearchQuery(query);
+    if (!nameQuery) {
+      debug(`Find Companies Tool: skipped search; query was only an address: "${query}"`);
+      return {
+        success: true,
+        results: []
+      };
+    }
+    if (nameQuery !== query.replace(/\s+/g, ' ').trim()) {
+      debug(`Find Companies Tool: searching "${nameQuery}" (address omitted from "${query}")`);
+    }
+
     const results = await queryDocuments({
-      query,
+      query: nameQuery,
       documentType: 'company',
       limit,
       similarityThreshold

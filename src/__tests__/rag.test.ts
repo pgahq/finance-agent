@@ -414,5 +414,35 @@ Primary Address: 100 PGA Tour Blvd`);
     ])('%s propagates query failures instead of returning success: false', async (_name, ragTool) => {
       await expect(ragTool.execute({ query: 'Acme Corp' })).rejects.toThrow('Database connection failed');
     });
+
+    it('omits a concatenated bill-to address from the company embedding query', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      mockSearchDocuments.mockResolvedValue([]);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
+      } as any);
+
+      await findCompaniesTool.execute({
+        query: 'PGA JR. LEAGUE 100 Avenue of the Stars Palm Beach Gardens FL 33418'
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.openai.com/v1/embeddings',
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: 'text-embedding-3-small',
+            input: 'PGA JR. LEAGUE'
+          })
+        })
+      );
+    });
+
+    it('skips company search when the query is only an address', async () => {
+      await expect(findCompaniesTool.execute({
+        query: '100 Avenue of the Stars Palm Beach Gardens FL 33418'
+      })).resolves.toEqual({ success: true, results: [] });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
   });
 });
