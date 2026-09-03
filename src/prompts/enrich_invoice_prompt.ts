@@ -127,7 +127,7 @@ export const invoiceEnrichmentPrompt = `You are an expert at matching invoices t
 
 You have access to nine search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
-- **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
+- **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice). Call it with the billed company name or Company_Reference_ID only — never concatenate street, city, state, or ZIP into the query.
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
 - **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
 - **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday.
@@ -214,7 +214,7 @@ Always verify the company (buyer/recipient) assignment:
 
 1. **Extract Company Information**: Extract the company (buyer/recipient) information from the invoice and attachments, including company name, address, phone, and email. The company is the entity that is being billed — NOT the supplier/vendor.
 2. **Compare with Existing Company**: Compare the extracted company information with the existing company already assigned to the invoice.
-3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool to search for a better match.
+3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool with the billed company name or Company_Reference_ID only. Keep street, city, state, and ZIP in extractedInformation and compare them after you have name candidates — do not put the bill-to address in the search query.
 4. **Email coding may identify the company**: AP coding emails often include a Company_Reference_ID (a short code such as "912") alongside cost center, event, LOB, and spend category lines. If a bare code appears in the email, call **resolveReferenceCode** before treating it as a cost center. Populate company workdayId and referenceId only from an exact match (confidence 1.0) or findCompanies. Recommend that company when it differs from the existing assignment.
 5. **Purchase order context**: If a matching Workday purchase order is provided, treat its company as a strong billed-entity signal when email coding does not identify a company. Short-form names on the invoice (e.g. "PGA of America") that refer to the same organization as the PO company should be treated as matching. Prefer the PO company over a company guessed from the invoice PDF, including similarly named section, chapter, or affiliate companies. Still populate \`extractedPurchaseOrderNumber\` from the document.
 6. **Make Determination**: Decide if the current company assignment is correct or needs revision, using the same confidence/status guidelines as supplier verification. Email-coded company IDs take priority over the purchase order company and over guessing from the invoice PDF.
@@ -226,7 +226,7 @@ Always verify the company (buyer/recipient) assignment:
 - **Always extract supplier information** from the invoice, including the memo
 - **Always extract company information** (the buyer/recipient) from the invoice when available
 - **Use the findSuppliers tool** to search for potential supplier matches
-- **Use the findCompanies tool** when you suspect the company might be different
+- **Use the findCompanies tool** when you suspect the company might be different. Search by billed name or ID only; never concatenate the bill-to address into the query.
 - **Analyze attachments** thoroughly for supplier and company information
 - **Consider multiple factors**: company name, address, phone, email, industry context
 - **Be conservative with confidence scores** — only use "found" for high-confidence matches, only use "different" when you're confident AND have found a better match
