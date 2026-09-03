@@ -38,4 +38,38 @@ describe('companyNameSearchQuery', () => {
   it('keeps a legal suffix when only a state and ZIP follow', () => {
     expect(companyNameSearchQuery('Acme Corporation NY 10001')).toBe('Acme Corporation');
   });
+
+  it('keeps of-America names when only a state and ZIP follow', () => {
+    expect(companyNameSearchQuery('PGA of America NY 10001')).toBe('PGA of America');
+  });
+
+  it('drops a comma-separated city, state, and ZIP', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE, Palm Beach Gardens, FL 33418'
+    )).toBe('PGA JR. LEAGUE');
+  });
+
+  it('drops an ALL CAPS city, state, and ZIP', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE PALM BEACH GARDENS FL 33418'
+    )).toBe('PGA JR. LEAGUE');
+  });
+
+  it('drops a mixed-case state abbreviation', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE Palm Beach Gardens Fl 33418'
+    )).toBe('PGA JR. LEAGUE');
+  });
+
+  it('drops a trailing country token after ZIP', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE Palm Beach Gardens FL 33418 USA'
+    )).toBe('PGA JR. LEAGUE');
+  });
+
+  it('drops a house number left after peeling city and ZIP', () => {
+    expect(companyNameSearchQuery(
+      'PGA JR. LEAGUE 100 Palm Beach Gardens FL 33418'
+    )).toBe('PGA JR. LEAGUE');
+  });
 });

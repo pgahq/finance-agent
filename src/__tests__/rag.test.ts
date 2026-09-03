@@ -441,7 +441,11 @@ Primary Address: 100 PGA Tour Blvd`);
     it('skips company search when the query is only an address', async () => {
       await expect(findCompaniesTool.execute({
         query: '100 Avenue of the Stars Palm Beach Gardens FL 33418'
-      })).resolves.toEqual({ success: true, results: [] });
+      })).resolves.toEqual({
+        success: true,
+        results: [],
+        message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
+      });
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });

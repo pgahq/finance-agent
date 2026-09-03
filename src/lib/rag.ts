@@ -283,7 +283,8 @@ export const findCompaniesTool = tool({
       debug(`Find Companies Tool: skipped search; query was only an address: "${query}"`);
       return {
         success: true,
-        results: []
+        results: [],
+        message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
       };
     }
     if (nameQuery !== query.replace(/\s+/g, ' ').trim()) {
