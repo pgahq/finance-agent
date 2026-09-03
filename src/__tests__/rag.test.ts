@@ -448,5 +448,16 @@ Primary Address: 100 PGA Tour Blvd`);
       });
       expect(mockFetch).not.toHaveBeenCalled();
     });
+
+    it('skips company search when a house number is the only remainder', async () => {
+      await expect(findCompaniesTool.execute({
+        query: '100 Palm Beach Gardens FL 33418'
+      })).resolves.toEqual({
+        success: true,
+        results: [],
+        message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
   });
 });

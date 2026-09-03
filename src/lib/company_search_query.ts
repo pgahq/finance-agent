@@ -59,6 +59,9 @@ function stripTrailingCityStateZip(text: string): string {
   if (name.length > 1 && /^\d{1,6}$/.test(name[name.length - 1])) {
     name.pop();
   }
+  if (name.length === 1 && /^\d{1,6}$/.test(name[0])) {
+    return '';
+  }
   return name.join(' ');
 }
 

@@ -72,4 +72,10 @@ describe('companyNameSearchQuery', () => {
       'PGA JR. LEAGUE 100 Palm Beach Gardens FL 33418'
     )).toBe('PGA JR. LEAGUE');
   });
+
+  it('returns empty when a house number is the only remainder', () => {
+    expect(companyNameSearchQuery(
+      '100 Palm Beach Gardens FL 33418'
+    )).toBe('');
+  });
 });
