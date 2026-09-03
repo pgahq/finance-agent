@@ -43,6 +43,14 @@ describe('companyNameSearchQuery', () => {
     expect(companyNameSearchQuery('PGA of America NY 10001')).toBe('PGA of America');
   });
 
+  it('does not treat Jr as a state before a ZIP', () => {
+    expect(companyNameSearchQuery('PGA Jr 33418')).toBe('PGA Jr 33418');
+  });
+
+  it('does not treat Co as a state before a ZIP', () => {
+    expect(companyNameSearchQuery('Acme Co 80202')).toBe('Acme Co 80202');
+  });
+
   it('drops a one-word city when a billed name remains', () => {
     expect(companyNameSearchQuery(
       'PGA JR. LEAGUE Miami FL 33418'

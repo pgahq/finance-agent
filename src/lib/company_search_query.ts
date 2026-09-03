@@ -10,6 +10,13 @@ const FROM_UNIT = /\b(?:Suite|Ste\.?|Unit|Apt\.?|Apartment|#)\s*[A-Z0-9-]+\b.*$/
 const COMPANY_SUFFIX = /^(?:Inc|LLC|Ltd|Corp|Corporation|Company|Co|Association|Foundation|Group|Partners|LLP|PLLC|PC)\.?$/i;
 const ORG_STOP = /^(?:PGA|JR\.?|LEAGUE|SECTION|OF|THE|AND|INC|LLC|LTD|CORP|CORPORATION|COMPANY|CO|ASSOCIATION|FOUNDATION|GROUP|PARTNERS|LLP|PLLC|PC)\.?$/i;
 const MAX_CITY_WORDS = 4;
+const USPS_STATES = new Set([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID',
+  'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO',
+  'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA',
+  'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'AS',
+  'GU', 'MP', 'PR', 'VI',
+]);
 
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').replace(/[,\s]+$/g, '').trim();
@@ -24,7 +31,10 @@ function isZip(token: string): boolean {
 }
 
 function isState(token: string): boolean {
-  return /^[A-Za-z]{2}$/.test(token);
+  if (!/^[A-Za-z]{2}$/.test(token)) return false;
+  if (!USPS_STATES.has(token.toUpperCase())) return false;
+  if (COMPANY_SUFFIX.test(token) && token !== token.toUpperCase()) return false;
+  return true;
 }
 
 function isHouseNumberToken(token: string): boolean {
