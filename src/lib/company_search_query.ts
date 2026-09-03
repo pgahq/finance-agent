@@ -27,6 +27,15 @@ function isState(token: string): boolean {
   return /^[A-Za-z]{2}$/.test(token);
 }
 
+function isHouseNumberToken(token: string): boolean {
+  return /^\d{1,6}$/.test(token);
+}
+
+function remainderIsAddressSkip(tokens: string[], end: number): boolean {
+  if (end <= 0) return true;
+  return end === 1 && isHouseNumberToken(tokens[0]);
+}
+
 function looksLikeCityWord(token: string): boolean {
   if (ORG_STOP.test(token) || COMPANY_SUFFIX.test(token) || isState(token)) return false;
   if (/^[A-Z]{3,}\.?$/.test(token)) return true;
@@ -48,7 +57,11 @@ function stripTrailingCityStateZip(text: string): string {
   let peeled = 0;
   const beforeCity = end;
   while (end > 0 && peeled < MAX_CITY_WORDS && looksLikeCityWord(tokens[end - 1])) {
-    end -= 1;
+    const nextEnd = end - 1;
+    if (nextEnd < 2 && !remainderIsAddressSkip(tokens, nextEnd)) {
+      break;
+    }
+    end = nextEnd;
     peeled += 1;
   }
   if (peeled < 2) {
@@ -56,14 +69,17 @@ function stripTrailingCityStateZip(text: string): string {
   }
 
   const name = tokens.slice(0, end);
-  if (name.length > 1 && /^\d{1,6}$/.test(name[name.length - 1])) {
+  if (name.length > 1 && isHouseNumberToken(name[name.length - 1])) {
     name.pop();
   }
-  if (name.length === 1 && /^\d{1,6}$/.test(name[0])) {
+  if (name.length === 1 && isHouseNumberToken(name[0])) {
+    return '';
+  }
+  if (name.length === 1 && ORG_STOP.test(name[0])) {
     return '';
   }
   if (name.length === 0) {
-    if (/^\d{1,6}$/.test(tokens[0])) {
+    if (isHouseNumberToken(tokens[0])) {
       return '';
     }
     return tokens.slice(0, zipIndex - 1).join(' ');

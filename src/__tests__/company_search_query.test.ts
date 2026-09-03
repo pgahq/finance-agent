@@ -86,4 +86,22 @@ describe('companyNameSearchQuery', () => {
   it('keeps an ALL-CAPS two-word billed name before state and ZIP', () => {
     expect(companyNameSearchQuery('SPORTS ENGINE FL 33418')).toBe('SPORTS ENGINE');
   });
+
+  it('keeps PGA TOUR when a Title Case city, state, and ZIP follow', () => {
+    expect(companyNameSearchQuery(
+      'PGA TOUR, Ponte Vedra, FL 32082'
+    )).toBe('PGA TOUR');
+  });
+
+  it('keeps PGA TOUR when an ALL-CAPS city, state, and ZIP follow', () => {
+    expect(companyNameSearchQuery(
+      'PGA TOUR PONTE VEDRA FL 32082'
+    )).toBe('PGA TOUR');
+  });
+
+  it('keeps an ALL-CAPS two-word name when an ALL-CAPS city follows', () => {
+    expect(companyNameSearchQuery(
+      'ACME WIDGETS PALM BEACH FL 33418'
+    )).toBe('ACME WIDGETS');
+  });
 });
