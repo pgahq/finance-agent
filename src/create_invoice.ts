@@ -9,11 +9,17 @@ import {
   formatInvoiceDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import {
+  applyInvoiceMemoIdentifiersToLines,
+  composeInvoiceMemo,
+  memoIdentifiersFromEnrichment,
+} from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import {
   applyDefaultCompanyLineWorktags,
@@ -185,7 +191,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       throw new Error(`Invoice enrichment returned error status: ${result.supplier.reason}`);
     }
 
-    const memo = result.supplier.extractedInformation?.memo || undefined;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
     const targetSupplierWID = result.supplier.resolvedSupplier?.workdayId ?? DEFAULT_SUPPLIER_WID;
@@ -221,6 +226,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
     const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
+    const memo = composeInvoiceMemo({
+      ...memoIdentifiers,
+      description: result.supplier.extractedInformation?.memo,
+    });
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
@@ -321,6 +331,10 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       relatedLobByCostCenter = new Map();
     }
 
+    if (finalLines.length > 0) {
+      finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+    }
+
     const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
     // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
@@ -330,7 +344,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 

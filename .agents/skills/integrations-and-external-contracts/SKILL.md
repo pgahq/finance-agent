@@ -61,6 +61,18 @@ Error bodies include `status: error` and `message` so Fin can map response field
 
 On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplierInvoiceId": "<WID or invoice number>" }`. Looks up email context from Workday OCR inbound email data, not Intercom.
 
+## Invoice memos
+
+Create and enrich compose Workday header and line `Memo` values in code after enrichment. Include a token only when that field was extracted from the document (any combination). Token order: normalized PGA PO (`PO-` + 6 word chars), `AC #`, `Job #`, `Customer ID`, `Service Period`, then the existing one-sentence description.
+
+- Account number is PGA's customer/sold-to account at the supplier (`Account #`, `Sold To Number`). Skip bank/ABA/ACH remittance account numbers (Cushman `FOR ELECTRONIC PAYMENTS`). Do not use GL, cost center, company code, or the supplier invoice number.
+- Job # aliases include **Order #**. Do not map unlabeled Project / `PRJ…` to Job #.
+- Customer ID aliases include **Bill-To Customer ID**. If it equals the account number, emit only `AC #`.
+- Service period may appear inside a line description; keep the document wording.
+- Free-text PO column values that are not `PO-xxxxxx` (e.g. `PGA COACHING`) are not put in the memo.
+- The same identifier prefix is applied to every invoice line memo. Identifiers are not prepended by the line-merge prompt.
+- On submit, a composed memo replaces an existing OCR header memo. If no composed memo is produced, keep the current Workday memo.
+
 ## Secrets / env
 
 | Name | Source | Used by |

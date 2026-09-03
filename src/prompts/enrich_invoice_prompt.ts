@@ -73,7 +73,15 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
 
-  extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear.'),
+  extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
+
+  extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
+
+  extractedJobNumber: z.string().nullable().describe('Job or order number from the invoice. Labels include "Job #", "Job Number", "Job No", "Order #", and "Order Number". Order # is the same as Job #. Null if not visible. Do not use an unlabeled Project / PRJ value as the job number.'),
+
+  extractedCustomerId: z.string().nullable().describe('Customer ID from the invoice. Labels include "Customer ID", "Bill-To Customer ID", "Customer #", and "Cust ID". Null if not visible. Distinct from account number: if the same value was already captured as extractedAccountNumber, leave this null.'),
+
+  extractedServicePeriod: z.string().nullable().describe('Billing or service period as shown on the document, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", or From/To date ranges. Keep the document wording; do not invent dates. Null if not visible.'),
 
   extractedPaymentTerms: z.object({
     name: z.string().describe('The payment terms as they appear on the invoice document (e.g. "Net 30", "Net 60")'),
@@ -273,7 +281,21 @@ Read the invoice attachment and extract the supplier's invoice number as it appe
 
 ## Part 7: Purchase Order Number
 
-Read the invoice attachment and extract the purchase order number if one is referenced. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Populate \`extractedPurchaseOrderNumber\` with the value as it appears on the document. If no PO number is visible or the value is ambiguous, omit the field.
+Read the invoice attachment and extract the purchase order number if one is referenced. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Populate \`extractedPurchaseOrderNumber\` with the value as it appears on the document. If no PO number is visible or the value is ambiguous, omit the field. Do not treat a non-numeric PO column (e.g. "PGA COACHING") as a purchase order number.
+
+---
+
+## Part 7.5: Memo identifiers
+
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code will put extracted values on the Workday header and line memos.
+
+1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
+
+2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number.
+
+3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
+
+4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", or From/To. Keep the document wording; do not invent dates.
 
 ---
 

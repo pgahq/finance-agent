@@ -10,11 +10,18 @@ import {
   formatInvoiceDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import {
+  applyInvoiceMemoIdentifiersToLines,
+  composeInvoiceMemo,
+  memoIdentifiersFromEnrichment,
+} from './lib/invoice_memo.js';
+import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { buildFinalInvoiceLines, splitFreightLines, type EmailWorktags, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
@@ -142,7 +149,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const processingTime = Date.now() - startTime;
-    const memo = result.supplier.extractedInformation?.memo || undefined;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
 
     const resolvedSupplierWID = result.supplier.resolvedSupplier?.workdayId
@@ -231,8 +237,20 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
 
+    const memoIdentifiers = memoIdentifiersFromEnrichment(
+      result,
+      extractedPurchaseOrderNumber ?? normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber)
+    );
+    const memo = composeInvoiceMemo({
+      ...memoIdentifiers,
+      description: result.supplier.extractedInformation?.memo,
+    });
+    if (finalLines?.length) {
+      finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+    }
+
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
