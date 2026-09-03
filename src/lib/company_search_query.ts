@@ -106,5 +106,9 @@ export function companyNameSearchQuery(query: string): string {
   text = collapseWhitespace(text.replace(FROM_STREET_ADDRESS, ''));
   text = collapseWhitespace(text.replace(FROM_PO_BOX, ''));
   text = collapseWhitespace(text.replace(FROM_UNIT, ''));
+  const leftover = tokenize(text);
+  if (leftover.length === 1 && ORG_STOP.test(leftover[0])) {
+    return '';
+  }
   return stripTrailingCityStateZip(text);
 }

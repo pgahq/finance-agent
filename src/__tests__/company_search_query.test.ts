@@ -118,4 +118,12 @@ describe('companyNameSearchQuery', () => {
       'ACME WIDGETS PALM BEACH FL 33418'
     )).toBe('ACME WIDGETS');
   });
+
+  it('skips when a street strip leaves a single org-stop token', () => {
+    expect(companyNameSearchQuery('PGA 100 Avenue of the Stars')).toBe('');
+  });
+
+  it('skips when a PO Box strip leaves a single org-stop token', () => {
+    expect(companyNameSearchQuery('PGA P.O. Box 74007056')).toBe('');
+  });
 });
