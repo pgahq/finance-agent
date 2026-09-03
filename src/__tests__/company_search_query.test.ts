@@ -78,4 +78,12 @@ describe('companyNameSearchQuery', () => {
       '100 Palm Beach Gardens FL 33418'
     )).toBe('');
   });
+
+  it('keeps a two-word billed name before state and ZIP', () => {
+    expect(companyNameSearchQuery('Acme Holdings TX 75034')).toBe('Acme Holdings');
+  });
+
+  it('keeps an ALL-CAPS two-word billed name before state and ZIP', () => {
+    expect(companyNameSearchQuery('SPORTS ENGINE FL 33418')).toBe('SPORTS ENGINE');
+  });
 });
