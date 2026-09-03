@@ -16,9 +16,9 @@ export interface InvoiceMemoInput extends InvoiceMemoIdentifierFields {
   description?: string | null;
 }
 
-const ACCOUNT_LABEL = /^(?:account(?:\s*(?:number|#))?|acct(?:\s*#)?|ac(?:\s*#)?|customer\s+account|sold\s*to(?:\s*(?:number|#))?)\s*[:#.-]*\s*/i;
+const ACCOUNT_LABEL = /^(?:account(?:\s*(?:number|#))?|acct(?:\s*#)?|ac(?:\s*#|\s+|:\s*)|customer\s+account|sold\s*to(?:\s*(?:number|#))?)\s*[:#.-]*\s*/i;
 const JOB_LABEL = /^(?:job(?:\s*(?:number|#|no\.?)?)?|order(?:\s*(?:number|#))?)\s*[:#.-]*\s*/i;
-const CUSTOMER_LABEL = /^(?:bill[-\s]?to\s+)?customer(?:\s*(?:id|#|number))?\s*[:#.-]*\s*/i;
+const CUSTOMER_LABEL = /^(?:bill[-\s]?to\s+)?(?:customer|cust)(?:\s*(?:id|#|number))?\s*[:#.-]*\s*/i;
 const SERVICE_PERIOD_LABEL = /^(?:service\s+period|billing\s+period|period\s+covered)\s*[:#.-]*\s*/i;
 
 function blankToNull(value?: string | null): string | null {
@@ -34,6 +34,10 @@ function stripLeadingLabel(value: string | null, label: RegExp): string | null {
 
 function comparableId(value: string): string {
   return value.replace(/[\s#-]+/g, '').toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function memoIdentifiersFromEnrichment(
@@ -66,12 +70,32 @@ function identifierTokens(fields: InvoiceMemoIdentifierFields): string[] {
   const tokens: string[] = [];
   if (po) tokens.push(po);
   if (accountNumber) tokens.push(`AC #${accountNumber}`);
-  if (jobNumber) tokens.push(`Job #${jobNumber}`);
+  const jobAsPo = jobNumber ? normalizePurchaseOrderNumber(jobNumber) : undefined;
+  if (jobNumber && jobAsPo !== po) {
+    tokens.push(`Job #${jobNumber}`);
+  }
   if (customerId && (!accountNumber || comparableId(customerId) !== comparableId(accountNumber))) {
     tokens.push(`Customer ID ${customerId}`);
   }
   if (servicePeriod) tokens.push(`Service Period ${servicePeriod}`);
   return tokens;
+}
+
+export function hasMemoIdentifiers(fields: InvoiceMemoIdentifierFields): boolean {
+  return identifierTokens(fields).length > 0;
+}
+
+function stripIdentifierTokensFromDescription(description: string, tokens: string[]): string {
+  let result = description;
+  for (const token of tokens) {
+    const pattern = new RegExp(`(?:^|\\s*\\|\\s*|\\s+)${escapeRegExp(token)}(?=\\s*\\||\\s+|$)`, 'ig');
+    result = result.replace(pattern, ' | ');
+  }
+  return result
+    .replace(/\s*\|\s*/g, ' | ')
+    .replace(/^(?:\s*\|\s*)+|(?:\s*\|\s*)+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function capMemo(value: string): string {
@@ -83,8 +107,8 @@ export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined 
   const tokens = identifierTokens(input);
   const prefix = tokens.join(' | ');
   let description = blankToNull(input.description) ?? '';
-  if (prefix && description.startsWith(prefix)) {
-    description = description.slice(prefix.length).replace(/^\s*\|\s*/, '').trim();
+  if (tokens.length && description) {
+    description = stripIdentifierTokensFromDescription(description, tokens);
   }
 
   if (!prefix && !description) return undefined;

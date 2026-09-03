@@ -1,6 +1,7 @@
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
+  hasMemoIdentifiers,
   INVOICE_MEMO_MAX_LENGTH,
   memoIdentifiersFromEnrichment,
 } from '../lib/invoice_memo.js';
@@ -54,6 +55,31 @@ describe('composeInvoiceMemo', () => {
       customerId: 'Bill-To Customer ID: CU0122145',
       servicePeriod: 'Service Period: 2026 - September',
     })).toBe('AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September');
+
+    expect(composeInvoiceMemo({
+      customerId: 'Cust ID 44012',
+    })).toBe('Customer ID 44012');
+  });
+
+  it('does not treat an AC- sold-to value as an AC # label', () => {
+    expect(composeInvoiceMemo({
+      accountNumber: 'AC-1033562',
+      description: 'License fee',
+    })).toBe('AC #AC-1033562 | License fee');
+  });
+
+  it('drops Job # when it normalizes to the same PGA PO', () => {
+    expect(composeInvoiceMemo({
+      po: 'PO-414498',
+      jobNumber: '414498',
+      description: 'Summit ENG',
+    })).toBe('PO-414498 | Summit ENG');
+
+    expect(composeInvoiceMemo({
+      po: 'PO-414498',
+      jobNumber: 'Order #414498',
+      description: 'Summit ENG',
+    })).toBe('PO-414498 | Summit ENG');
   });
 
   it('does not emit Customer ID when it duplicates the account number', () => {
@@ -75,11 +101,28 @@ describe('composeInvoiceMemo', () => {
     })).toBe('PO-404770 | Office supplies');
   });
 
+  it('strips identifier tokens from the description even when they are not a leading full prefix', () => {
+    expect(composeInvoiceMemo({
+      po: 'PO-404770',
+      accountNumber: '12345',
+      description: 'AC #12345 monthly software',
+    })).toBe('PO-404770 | AC #12345 | monthly software');
+  });
+
   it('caps memo length', () => {
     const memo = composeInvoiceMemo({
       description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH + 50),
     });
     expect(memo).toHaveLength(INVOICE_MEMO_MAX_LENGTH);
+  });
+});
+
+describe('hasMemoIdentifiers', () => {
+  it('is true only when at least one identifier token would be emitted', () => {
+    expect(hasMemoIdentifiers({})).toBe(false);
+    expect(hasMemoIdentifiers({ po: 'PGA COACHING' })).toBe(false);
+    expect(hasMemoIdentifiers({ po: 'PO-414498' })).toBe(true);
+    expect(hasMemoIdentifiers({ accountNumber: '1033562' })).toBe(true);
   });
 });
 

@@ -19,6 +19,7 @@ import {
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
+  hasMemoIdentifiers,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
@@ -241,10 +242,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       result,
       extractedPurchaseOrderNumber ?? normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber)
     );
-    const memo = composeInvoiceMemo({
-      ...memoIdentifiers,
-      description: result.supplier.extractedInformation?.memo,
-    });
+    const memo = hasMemoIdentifiers(memoIdentifiers)
+      ? composeInvoiceMemo({
+          ...memoIdentifiers,
+          description: result.supplier.extractedInformation?.memo,
+        })
+      : undefined;
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
     }

@@ -17,7 +17,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
+      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription"). Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
@@ -156,7 +156,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 
 1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including:
    - Supplier contact details (name, address, phone, email)
-   - A terse 1-sentence memo summarizing what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty.
+   - A terse 1-sentence memo summarizing what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.
 2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
@@ -198,7 +198,7 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 
 ### If an existing supplier IS assigned — Verify the supplier:
 
-1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including the memo
+1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including a terse 1-sentence memo. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.
 2. **Compare with Existing Supplier**: Compare the extracted information with the existing supplier already assigned to the invoice
 3. **Search Workday**: If the extracted info doesn't match, use the findSuppliers tool to find the correct supplier
 4. **Make Determination**: Decide if the current supplier is correct or needs revision
@@ -231,7 +231,7 @@ Always verify the company (buyer/recipient) assignment:
 
 ## Important Guidelines:
 
-- **Always extract supplier information** from the invoice, including the memo
+- **Always extract supplier information** from the invoice, including the memo (description only; identifiers are applied in code)
 - **Always extract company information** (the buyer/recipient) from the invoice when available
 - **Use the findSuppliers tool** to search for potential supplier matches
 - **Use the findCompanies tool** when you suspect the company might be different. Search by billed name or ID only; never concatenate the bill-to address into the query.
@@ -287,11 +287,11 @@ Read the invoice attachment and extract the purchase order number if one is refe
 
 ## Part 7.5: Memo identifiers
 
-Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code will put extracted values on the Workday header and line memos.
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code will put extracted values on the Workday header and line memos. Do not copy these identifiers into \`extractedInformation.memo\`.
 
 1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
 
-2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number.
+2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number. If Order # / Job # is the same PGA PO already extracted (\`PO-\` + 6 word chars), leave job number null.
 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 

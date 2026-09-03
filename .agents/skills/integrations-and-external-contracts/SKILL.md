@@ -63,15 +63,16 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 
 ## Invoice memos
 
-Create and enrich compose Workday header and line `Memo` values in code after enrichment. Include a token only when that field was extracted from the document (any combination). Token order: normalized PGA PO (`PO-` + 6 word chars), `AC #`, `Job #`, `Customer ID`, `Service Period`, then the existing one-sentence description.
+Create and enrich compose Workday header and line `Memo` values in code after enrichment (`src/lib/invoice_memo.ts`). Include a token only when that field is present (any combination). Token order: PO, `AC #`, `Job #`, `Customer ID`, `Service Period`, then the existing one-sentence description.
 
-- Account number is PGA's customer/sold-to account at the supplier (`Account #`, `Sold To Number`). Skip bank/ABA/ACH remittance account numbers (Cushman `FOR ELECTRONIC PAYMENTS`). Do not use GL, cost center, company code, or the supplier invoice number.
-- Job # aliases include **Order #**. Do not map unlabeled Project / `PRJ…` to Job #.
-- Customer ID aliases include **Bill-To Customer ID**. If it equals the account number, emit only `AC #`.
+- Memo PO is the **matched Workday document number** when a PO was loaded, otherwise the normalized extracted value (`PO-` + 6 word chars). Free-text PO column values that are not `PO-xxxxxx` (e.g. `PGA COACHING`) are not put in the memo.
+- Account number is PGA's customer/sold-to account at the supplier (`Account #`, `Sold To Number`). Skip bank/ABA/ACH remittance account numbers (Cushman `FOR ELECTRONIC PAYMENTS`) in the **enrichment prompt only** — there is no code-side remittance parser. Do not use GL, cost center, company code, or the supplier invoice number. Do not strip an `AC-` prefix from a sold-to value such as `AC-1033562`.
+- Job # aliases include **Order #**. Do not map unlabeled Project / `PRJ…` to Job #. Drop Job # when it normalizes to the same PGA PO already in the memo.
+- Customer ID aliases include **Bill-To Customer ID** and **Cust ID**. If it equals the account number, emit only `AC #`.
 - Service period may appear inside a line description; keep the document wording.
-- Free-text PO column values that are not `PO-xxxxxx` (e.g. `PGA COACHING`) are not put in the memo.
-- The same identifier prefix is applied to every invoice line memo. Identifiers are not prepended by the line-merge prompt.
-- On submit, a composed memo replaces an existing OCR header memo. If no composed memo is produced, keep the current Workday memo.
+- The same identifier prefix is applied to every invoice line memo. Header `extractedInformation.memo` and the line-merge prompt must not prepend identifiers — composition strips those tokens if the model still includes them.
+- **Create** always submits the composed memo, including a description-only sentence on a new invoice.
+- **Enrich** submits a composed header memo only when identifier tokens exist, so a description-only extraction does not overwrite an existing OCR header memo. Workday keeps `currentInvoice.Memo` when `memo` is omitted. Line memos still get the identifier prefix when identifiers exist.
 
 ## Secrets / env
 
