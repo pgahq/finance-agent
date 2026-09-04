@@ -38,6 +38,10 @@ Parameters:
     Type: String
     Description: Intercom workspace app_id for Slack inbox permalinks (sandbox vs prod)
     Default: jyi16dpc
+  DivotErrorsUrl:
+    Type: String
+    Description: Divot POST /api/errors URL. Empty skips Divot reporting (fail-soft).
+    Default: https://divot-pgahq-bot.pgahq.com/api/errors
 
 Globals:
   Function:
@@ -68,6 +72,7 @@ Globals:
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
+        DIVOT_ERRORS_URL: !Ref DivotErrorsUrl
         INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName

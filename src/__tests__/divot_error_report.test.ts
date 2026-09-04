@@ -59,6 +59,25 @@ describe('divot error report', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it('no-ops when DIVOT_ERRORS_URL is unset even if the secret is present', async () => {
+    global.fetch = jest.fn();
+    process.env.DIVOT_SECRET = 'shared-secret';
+
+    await reportError(new Error('boom'));
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when DIVOT_ERRORS_URL is blank', async () => {
+    global.fetch = jest.fn();
+    process.env.DIVOT_ERRORS_URL = '  ';
+    process.env.DIVOT_SECRET = 'shared-secret';
+
+    await reportError(new Error('boom'));
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('POSTs a signed finance-agent payload and swallows HTTP failures', async () => {
     process.env.DIVOT_ERRORS_URL = 'http://localhost:3000/api/errors';
     process.env.DIVOT_SECRET = 'shared-secret';
