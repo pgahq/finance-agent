@@ -153,7 +153,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
 
   const attachment = details.attachment as { fileName?: string } | undefined;
   const slackDetails: Record<string, unknown> = {
-    ...(typeof details.invoiceNumber === 'string' ? { invoiceNumber: details.invoiceNumber } : {}),
+    ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
@@ -313,7 +313,7 @@ export async function notifyResult(
 
 export interface EnrichmentNotification {
   processingTime: number;
-  invoiceNumber: string;
+  invoiceNumber?: string;
   canModify: boolean;
   supplier: {
     status: string;
@@ -354,17 +354,20 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
   const blocks: SlackBlock[] = [];
+  const processedHeadline = invoiceNumber
+    ? `✅ *enrich_invoice* processed \`${invoiceNumber}\` in ${timeText}`
+    : `✅ *enrich_invoice* processed in ${timeText}`;
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: `✅ *enrich_invoice* processed \`${invoiceNumber}\` in ${timeText}` }
+    text: { type: 'mrkdwn', text: processedHeadline }
   });
 
   const changeLines: string[] = [];
   const verifiedLines: string[] = [];
   const fallbackLines: string[] = [];
 
-  if (invoiceNumber && invoiceNumber !== 'Unknown') {
+  if (invoiceNumber) {
     changeLines.push(`*Workday Invoice* → \`${invoiceNumber}\``);
   }
 

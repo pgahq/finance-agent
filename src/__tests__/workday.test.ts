@@ -3350,7 +3350,18 @@ describe('Workday utilities', () => {
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
       expect(result.invoiceNumber).toBe('SUPIN-456378');
-      expect(mockClient.Get_Supplier_Invoices).toHaveBeenCalled();
+      expect(mockClient.Get_Supplier_Invoices).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Get_Supplier_Invoices_Request: expect.objectContaining({
+            Request_References: {
+              Supplier_Invoice_Reference: {
+                ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+              }
+            }
+          })
+        }),
+        expect.any(Function)
+      );
       expect(result).not.toHaveProperty('priorFailures');
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
