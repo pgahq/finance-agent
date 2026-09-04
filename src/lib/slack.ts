@@ -87,6 +87,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   const changeLines: string[] = [];
   const fallbackLines: string[] = [];
 
+  if (typeof details.invoiceNumber === 'string' && details.invoiceNumber) {
+    changeLines.push(`*Workday Invoice* → \`${details.invoiceNumber}\``);
+  }
   const supplier = details.supplier as { status?: string; resolvedName?: string; isDefault?: boolean } | undefined;
   if (supplier?.isDefault) {
     fallbackLines.push('Default supplier — no match found in Workday');
@@ -149,6 +152,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
 
   const attachment = details.attachment as { fileName?: string } | undefined;
   const slackDetails: Record<string, unknown> = {
+    ...(typeof details.invoiceNumber === 'string' ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
@@ -256,8 +260,16 @@ export async function notifyResult(
   // Format processing time
   const timeText = processingTime ? `${(processingTime / 1000).toFixed(2)}s` : 'unknown time';
 
+  const createdInvoiceNumber = lambdaName === 'create_invoice' && status === 'success'
+    && typeof details?.invoiceNumber === 'string'
+    && details.invoiceNumber
+    ? details.invoiceNumber
+    : undefined;
+
   // Build the main message
-  let mainMessage = `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = createdInvoiceNumber
+    ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+    : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;
@@ -350,6 +362,10 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   const changeLines: string[] = [];
   const verifiedLines: string[] = [];
   const fallbackLines: string[] = [];
+
+  if (invoiceNumber && invoiceNumber !== 'Unknown') {
+    changeLines.push(`*Workday Invoice* → \`${invoiceNumber}\``);
+  }
 
   // Supplier
   switch (supplier.status) {

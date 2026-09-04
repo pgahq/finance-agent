@@ -232,6 +232,11 @@ function extractIdsByType(obj: any, type: string): string[] {
   return [...new Set(results)];
 }
 
+function extractSupplierInvoiceReferenceId(obj: unknown): string | undefined {
+  return extractIdsByType(obj, 'Supplier_Invoice_Reference_ID')[0]
+    ?? extractIdsByType(obj, 'Supplier_Invoice_ID')[0];
+}
+
 function parseValidationRules(rules: any[]): ParsedValidationRule[] {
   return rules.flatMap(r =>
     [r.Custom_Validation_Rule_Data].flatMap(d => d ?? [])
@@ -1110,7 +1115,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       Invoice_Line_Replacement_Data: invoiceLines,
     }),
 
-    ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
+    ...((memo || currentInvoice.Memo) && { Memo: memo || currentInvoice.Memo }),
 
     ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
     ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
@@ -1547,6 +1552,11 @@ export async function getSupplierInvoiceWithAttachments(
     ? invoiceDataArray[0]
     : {};
 
+  const referenceId = extractSupplierInvoiceReferenceId(supplierInvoice);
+  if (referenceId && !invoice.Invoice_Number) {
+    invoice.Invoice_Number = referenceId;
+  }
+
   debug('Invoice data from SOAP', invoice);
 
   // Process attachments: upload them to S3 and preserve metadata for AI inputs
@@ -1933,6 +1943,7 @@ export async function submitNewSupplierInvoice(
   success: boolean;
   message?: string;
   invoiceWID?: string;
+  invoiceNumber?: string;
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
 }> {
@@ -1980,12 +1991,14 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  debug('Supplier invoice created successfully', { invoiceWID, appliedFallbacks, priorFailures });
+  const invoiceNumber = extractSupplierInvoiceReferenceId(result);
+  debug('Supplier invoice created successfully', { invoiceWID, invoiceNumber, appliedFallbacks, priorFailures });
 
   return {
     success: true,
-    message: `Successfully created new invoice${invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
+    message: `Successfully created new invoice${invoiceNumber ? ` ${invoiceNumber}` : invoiceWID ? ` ${invoiceWID}` : ''} with supplier ${supplierWID ?? '(default)'}`,
     invoiceWID,
+    invoiceNumber,
     appliedFallbacks,
     ...(priorFailures.length ? { priorFailures } : {}),
   };

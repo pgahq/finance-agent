@@ -24,6 +24,7 @@ jest.mock('../lib/workday.js', () => ({
   getSupplierInvoiceWithAttachments: jest.fn().mockResolvedValue({
     invoice: {
       Invoice_ID: 'test-invoice-id',
+      Invoice_Number: 'SUPIN-412727',
       Attachment_Data: []
     },
     presignedAttachments: []
@@ -490,7 +491,7 @@ describe('enrich_invoice', () => {
         invoiceWorkdayID: 'test-invoice-id',
         supplierWID: 'SUP-1',
         buildNotes: expect.any(Function),
-        memo: 'Test invoice',
+        memo: undefined,
         invoiceDate: '2026-04-15',
         companyWID: undefined,
         extractedAmountDue: undefined,
@@ -563,7 +564,7 @@ describe('enrich_invoice', () => {
         invoiceWorkdayID: 'test-invoice-id',
         supplierWID: 'SUP-1',
         buildNotes: expect.any(Function),
-        memo: 'Test invoice',
+        memo: undefined,
         invoiceDate: undefined,
         companyWID: undefined,
         extractedAmountDue: undefined,
@@ -718,6 +719,7 @@ describe('enrich_invoice', () => {
 
     expect(notifyEnrichmentResult).toHaveBeenCalledWith(
       expect.objectContaining({
+        invoiceNumber: 'SUPIN-412727',
         priorFailures: [
           { attempt: 1, message: 'The invoice date must be the first day of the month.' },
         ],
@@ -795,5 +797,124 @@ describe('enrich_invoice', () => {
         finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }]
       })
     );
+  });
+
+  it('should put extracted identifiers on the header and line memos', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: 'INV|001>>>',
+      extractedAccountNumber: '1033562',
+      extractedJobNumber: '5914196',
+      extractedCustomerId: 'CU0122145',
+      extractedServicePeriod: '2026 - September',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.memo).toBe(
+      'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Test invoice'
+    );
+    expect(params.suppliersInvoiceNumber).toBe('INV-001');
+    expect(params.finalLines).toEqual([
+      expect.objectContaining({
+        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Widget purchase',
+      }),
+    ]);
+    expect(params.buildNotes([])).toContain('Account Number (from document): 1033562');
+  });
+
+  it('does not pass a header memo when enrichment has a description but no identifiers', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.memo).toBeUndefined();
+    expect(params.finalLines).toEqual([
+      expect.objectContaining({ memo: 'Widget purchase' }),
+    ]);
   });
 });

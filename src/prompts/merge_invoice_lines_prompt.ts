@@ -4,7 +4,7 @@ export const MergeInvoiceLinesSchema = z.object({
   lines: z.array(z.object({
     lineOrder: z.number().describe('Sequential line number starting at 1'),
     description: z.string().describe('Line item description from the invoice'),
-    memo: z.string().nullable().describe('A terse 1-sentence memo describing what this line item is for, generated from the invoice line description (e.g. "Monthly software subscription", "Event catering services"). If a matched PO line has a memo, use it as context but still generate your own. Null only if the description is too vague to summarize.'),
+    memo: z.string().nullable().describe('A terse 1-sentence memo describing what this line item is for, generated from the invoice line description (e.g. "Monthly software subscription", "Event catering services"). If a matched PO line has a memo, use it as context but still generate your own. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Null only if the description is too vague to summarize.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00). Null if not stated.'),
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
@@ -37,7 +37,7 @@ Your task is to produce final invoice lines by:
 5. For shipToAddressId: copy the shipToAddressId value directly from the matched PO line
 6. For purchaseOrderLineId: copy the purchaseOrderLineId value directly from the matched PO line
 7. For hasDiscount: copy the value directly from the matching extracted invoice line
-8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Set null only if the description is too vague to summarize
+8. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Set null only if the description is too vague to summarize
 9. Do not copy codes from the email body into costCenterId, fundId, or other ID fields. Email coding is resolved upstream and applied separately. A short code in the email may be a company, cost center, fund, LOB, or spend category — do not assume it is a cost center. If there is no PO match, set those IDs to null.
 10. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 

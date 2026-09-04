@@ -5,7 +5,9 @@ description: >-
   create-invoice, Gmail create-invoice, Gmail Workspace add-on, enrich-invoice,
   Workday, SSM and Secrets Manager). Use when changing POST /create-invoice,
   POST /create-invoice/gmail, POST /gmail-addon, Intercom Data Connectors,
-  Gmail labels, bearer auth tokens, or attachment upload contracts.
+  Gmail labels, bearer auth tokens, attachment upload contracts, or Workday
+  invoice memos / supplier invoice numbers (check-print order and pay-file-safe
+  characters).
 ---
 
 # Integrations and external contracts
@@ -150,6 +152,25 @@ failure+failure → Failure; mixed → Partial.
 
 On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplierInvoiceId": "<WID or invoice number>" }`. Looks up email context from Workday OCR inbound email data, not Intercom.
 
+## Invoice memos
+
+Create and enrich compose Workday header and line `Memo` values in code after enrichment (`src/lib/invoice_memo.ts`). Include a token only when that field is present (any combination). Join with `. ` (never `|`). Token order is check-print first: `AC`, `Customer ID`, `Job`, PO, `Service Period`, then the existing one-sentence description.
+
+Pay-file / check print safety:
+
+- Do not emit `|`, `>`, or `<`. Labels we control do not use `#` (`AC 1033562`, `Job 5914196`). A `#` that is part of a supplier-provided value may stay.
+- After compose, keep letters, digits, space, hyphen, period, comma, apostrophe, slash, and `#`; replace other characters with a space.
+- `sanitizeSuppliersInvoiceNumber` runs on create and enrich before SOAP `Suppliers_Invoice_Number` (letters, digits, hyphen, period, slash, `#`; other characters become `-`). Do not rewrite an existing Workday `Invoice_Number` on enrich.
+
+- Memo PO is the **matched Workday document number** when a PO was loaded, otherwise the normalized extracted value (`PO-` + 6 word chars). Free-text PO column values that are not `PO-xxxxxx` (e.g. `PGA COACHING`) are not put in the memo.
+- Account number is PGA's customer/sold-to account at the supplier (`Account #`, `Sold To Number`). Skip bank/ABA/ACH remittance account numbers (Cushman `FOR ELECTRONIC PAYMENTS`) in the **enrichment prompt only** — there is no code-side remittance parser. Do not use GL, cost center, company code, or the supplier invoice number. Do not strip an `AC-` prefix from a sold-to value such as `AC-1033562`.
+- Job aliases include **Order #**. Do not map unlabeled Project / `PRJ…` to Job. Drop Job when it normalizes to the same PGA PO already in the memo.
+- Customer ID aliases include **Bill-To Customer ID** and **Cust ID**. If it equals the account number, emit only `AC`.
+- Service period may appear inside a line description; keep the document wording.
+- The same identifier prefix is applied to every invoice line memo. Header `extractedInformation.memo` and the line-merge prompt must not prepend identifiers — composition strips those tokens if the model still includes them.
+- **Create** always submits the composed memo, including a description-only sentence on a new invoice.
+- **Enrich** submits a composed header memo only when identifier tokens exist, so a description-only extraction does not overwrite an existing OCR header memo. Workday keeps `currentInvoice.Memo` when `memo` is omitted. Line memos still get the identifier prefix when identifiers exist.
+
 ## Secrets / env
 
 | Name | Source | Used by |
@@ -171,7 +192,7 @@ the user access token, the service account JSON, or the private key.
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
-Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP dumps. Remaining invoice details (`fileName`, `s3Key`, `workdayId`, not-authorized `note`) still appear as JSON; `conversationUrl` stays a footer link. Create-invoice Slack **success** uses the same human layout as enrich (`*Changes*`, fallbacks, `*Prior submit failures*`) plus a small JSON of `invoiceWID` / `fileName` / `conversationId` / `lineCount` — not the full create payload. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches, and keep `serializedError` for a future threaded dump once a Slack bot token exists. Successful Workday submits that retried after a validation fault also include `priorFailures` on create and enrich Slack success.
+Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP dumps. Remaining invoice details (`fileName`, `s3Key`, `workdayId`, not-authorized `note`) still appear as JSON; `conversationUrl` stays a footer link. Create-invoice Slack **success** uses the same human layout as enrich (`*Changes*`, fallbacks, `*Prior submit failures*`). The Workday invoice number (`SUPIN-XXXX`, SOAP `Supplier_Invoice_Reference_ID`) is in the headline and as the first Changes bullet, plus a small JSON of `invoiceNumber` / `invoiceWID` / `fileName` / `conversationId` / `lineCount`. Enrich success already puts that number in the `processed \`SUPIN-XXXX\`` headline and repeats it as `*Workday Invoice*`. Extract it from the Submit SOAP reference on create and from Get `Invoice_Number` (falling back to the same reference id) on enrich. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches, and keep `serializedError` for a future threaded dump once a Slack bot token exists. Successful Workday submits that retried after a validation fault also include `priorFailures` on create and enrich Slack success.
 
 ## AWS sandbox vs prod (already CFT)
 

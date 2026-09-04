@@ -17,7 +17,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription")')
+      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription"). Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
@@ -67,13 +67,21 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
-  extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Null if not visible or unclear.'),
+  extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Prefer letters, digits, hyphen, period, and slash. Do not use pipe |, greater-than, or less-than characters. Null if not visible or unclear.'),
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping", "handling", or "delivery" charges. Capture this here even if the invoice presents freight/shipping/handling as a line item — do NOT include those lines in extractedInvoiceLines. Null if no freight amount could be found or if it is ambiguous.'),
 
   extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
 
-  extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear.'),
+  extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
+
+  extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
+
+  extractedJobNumber: z.string().nullable().describe('Job or order number from the invoice. Labels include "Job #", "Job Number", "Job No", "Order #", and "Order Number". Order # is the same as Job #. Null if not visible. Do not use an unlabeled Project / PRJ value as the job number.'),
+
+  extractedCustomerId: z.string().nullable().describe('Customer ID from the invoice. Labels include "Customer ID", "Bill-To Customer ID", "Customer #", and "Cust ID". Null if not visible. Distinct from account number: if the same value was already captured as extractedAccountNumber, leave this null.'),
+
+  extractedServicePeriod: z.string().nullable().describe('Billing or service period as shown on the document, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", or From/To date ranges. Keep the document wording; do not invent dates. Null if not visible.'),
 
   extractedPaymentTerms: z.object({
     name: z.string().describe('The payment terms as they appear on the invoice document (e.g. "Net 30", "Net 60")'),
@@ -127,7 +135,7 @@ export const invoiceEnrichmentPrompt = `You are an expert at matching invoices t
 
 You have access to nine search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
-- **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice).
+- **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice). Call it with the billed company name or Company_Reference_ID only — never concatenate street, city, state, or ZIP into the query.
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
 - **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
 - **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday.
@@ -148,7 +156,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 
 1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including:
    - Supplier contact details (name, address, phone, email)
-   - A terse 1-sentence memo summarizing what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty.
+   - A terse 1-sentence memo summarizing what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.
 2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
@@ -190,7 +198,7 @@ Only include suppliers in \`potentialDuplicateSuppliers\` if they meet STRICT si
 
 ### If an existing supplier IS assigned — Verify the supplier:
 
-1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including the memo
+1. **Extract Information**: Extract all available supplier information from the invoice and attachments, including a terse 1-sentence memo. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.
 2. **Compare with Existing Supplier**: Compare the extracted information with the existing supplier already assigned to the invoice
 3. **Search Workday**: If the extracted info doesn't match, use the findSuppliers tool to find the correct supplier
 4. **Make Determination**: Decide if the current supplier is correct or needs revision
@@ -214,7 +222,7 @@ Always verify the company (buyer/recipient) assignment:
 
 1. **Extract Company Information**: Extract the company (buyer/recipient) information from the invoice and attachments, including company name, address, phone, and email. The company is the entity that is being billed — NOT the supplier/vendor.
 2. **Compare with Existing Company**: Compare the extracted company information with the existing company already assigned to the invoice.
-3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool to search for a better match.
+3. **Search Workday**: If the extracted company info doesn't match the existing company, use the findCompanies tool with the billed company name or Company_Reference_ID only. Keep street, city, state, and ZIP in extractedInformation and compare them after you have name candidates — do not put the bill-to address in the search query.
 4. **Email coding may identify the company**: AP coding emails often include a Company_Reference_ID (a short code such as "912") alongside cost center, event, LOB, and spend category lines. If a bare code appears in the email, call **resolveReferenceCode** before treating it as a cost center. Populate company workdayId and referenceId only from an exact match (confidence 1.0) or findCompanies. Recommend that company when it differs from the existing assignment.
 5. **Purchase order context**: If a matching Workday purchase order is provided, treat its company as a strong billed-entity signal when email coding does not identify a company. Short-form names on the invoice (e.g. "PGA of America") that refer to the same organization as the PO company should be treated as matching. Prefer the PO company over a company guessed from the invoice PDF, including similarly named section, chapter, or affiliate companies. Still populate \`extractedPurchaseOrderNumber\` from the document.
 6. **Make Determination**: Decide if the current company assignment is correct or needs revision, using the same confidence/status guidelines as supplier verification. Email-coded company IDs take priority over the purchase order company and over guessing from the invoice PDF.
@@ -223,10 +231,10 @@ Always verify the company (buyer/recipient) assignment:
 
 ## Important Guidelines:
 
-- **Always extract supplier information** from the invoice, including the memo
+- **Always extract supplier information** from the invoice, including the memo (description only; identifiers are applied in code)
 - **Always extract company information** (the buyer/recipient) from the invoice when available
 - **Use the findSuppliers tool** to search for potential supplier matches
-- **Use the findCompanies tool** when you suspect the company might be different
+- **Use the findCompanies tool** when you suspect the company might be different. Search by billed name or ID only; never concatenate the bill-to address into the query.
 - **Analyze attachments** thoroughly for supplier and company information
 - **Consider multiple factors**: company name, address, phone, email, industry context
 - **Be conservative with confidence scores** — only use "found" for high-confidence matches, only use "different" when you're confident AND have found a better match
@@ -267,13 +275,27 @@ Read the invoice attachment and extract the tax amount. It may be labeled as "Ta
 
 ## Part 6: Supplier's Invoice Number
 
-Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
+Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
 
 ---
 
 ## Part 7: Purchase Order Number
 
-Read the invoice attachment and extract the purchase order number if one is referenced. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Populate \`extractedPurchaseOrderNumber\` with the value as it appears on the document. If no PO number is visible or the value is ambiguous, omit the field.
+Read the invoice attachment and extract the purchase order number if one is referenced. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Populate \`extractedPurchaseOrderNumber\` with the value as it appears on the document. If no PO number is visible or the value is ambiguous, omit the field. Do not treat a non-numeric PO column (e.g. "PGA COACHING") as a purchase order number.
+
+---
+
+## Part 7.5: Memo identifiers
+
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code joins values with a period, in check-print order (account, customer ID, job/order, PO, service period, then the memo sentence). Do not copy these identifiers into \`extractedInformation.memo\`, and do not use pipe \`|\` or \`#\` labels there.
+
+1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
+
+2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number. If Order # / Job # is the same PGA PO already extracted (\`PO-\` + 6 word chars), leave job number null.
+
+3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
+
+4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", or From/To. Keep the document wording; do not invent dates.
 
 ---
 

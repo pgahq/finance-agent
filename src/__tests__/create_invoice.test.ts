@@ -27,7 +27,7 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
   parsePurchaseOrder: jest.fn(),
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
-  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] })
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] })
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -237,6 +237,7 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-412727',
         attachment: {
           fileName: 'invoice.pdf',
           contentType: 'application/pdf',
@@ -436,6 +437,7 @@ describe('create_invoice', () => {
     workday.submitNewSupplierInvoice.mockResolvedValue({
       success: true,
       invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
       appliedFallbacks: [],
       priorFailures: [
         { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
@@ -456,6 +458,7 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-412727',
         conversationId: '1234567890',
         conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
         priorFailures: [
@@ -1262,5 +1265,42 @@ describe('create_invoice', () => {
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
       costCenterId: null,
     }));
+  });
+
+  it('should put extracted identifiers on the header and line memos', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: 'INV|001>>>',
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedAccountNumber: '1033562',
+      extractedJobNumber: '5914196',
+      extractedCustomerId: 'CU0122145',
+      extractedServicePeriod: '2026 - September',
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-memo/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.memo).toBe(
+      'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Office supplies'
+    );
+    expect(submitArgs.suppliersInvoiceNumber).toBe('INV-001');
+    expect(submitArgs.finalLines).toEqual([
+      expect.objectContaining({
+        description: 'Widgets',
+        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Widget purchase',
+      }),
+    ]);
+    expect(submitArgs.buildNotes([])).toContain('Account Number (from document): 1033562');
+    expect(submitArgs.buildNotes([])).toContain('Job Number (from document): 5914196');
+    expect(submitArgs.buildNotes([])).toContain('Customer ID (from document): CU0122145');
+    expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
   });
 });
