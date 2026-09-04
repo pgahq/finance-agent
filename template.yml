@@ -42,6 +42,10 @@ Parameters:
     Type: String
     Description: Divot POST /api/errors URL. Empty skips Divot reporting (fail-soft).
     Default: https://divot-pgahq-bot.pgahq.com/api/errors
+  DivotSlackChannel:
+    Type: String
+    Description: Optional Slack channel name or ID sent on each Divot error report. Empty skips Divot Slack.
+    Default: ""
 
 Globals:
   Function:
@@ -74,6 +78,7 @@ Globals:
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         DIVOT_ERRORS_URL: !Ref DivotErrorsUrl
         DIVOT_SECRET: ssm:/finance-agent/divot-secret
+        DIVOT_SLACK_CHANNEL: !Ref DivotSlackChannel
         INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName

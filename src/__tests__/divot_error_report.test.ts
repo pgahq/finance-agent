@@ -44,6 +44,7 @@ describe('divot error report', () => {
     delete process.env.ERROR_REPORTING_WEBHOOK_SECRET;
     delete process.env.AWS_ACCOUNT_ID;
     delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    delete process.env.DIVOT_SLACK_CHANNEL;
   });
 
   afterEach(() => {
@@ -96,7 +97,51 @@ describe('divot error report', () => {
     expect(parsed.error.name).toBe('Error');
     expect(parsed.error.message).toBe('invoice failed');
     expect(parsed.context.functionName).toBe('CreateInvoiceProcessor');
+    expect(parsed).not.toHaveProperty('slackChannel');
     expect(debug).toHaveBeenCalled();
+  });
+
+  it('omits slackChannel when unset so Divot skips Slack', async () => {
+    process.env.DIVOT_ERRORS_URL = 'http://localhost:3000/api/errors';
+    process.env.DIVOT_SECRET = 'shared-secret';
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 202 });
+
+    await reportError(new Error('boom'));
+
+    expect(postedPayload(global.fetch as jest.Mock)).not.toHaveProperty('slackChannel');
+  });
+
+  it('passes slackChannel from the call, overriding DIVOT_SLACK_CHANNEL', async () => {
+    process.env.DIVOT_ERRORS_URL = 'http://localhost:3000/api/errors';
+    process.env.DIVOT_SECRET = 'shared-secret';
+    process.env.DIVOT_SLACK_CHANNEL = '#from-env';
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 202 });
+
+    await reportError(new Error('boom'), {
+      functionName: 'create_invoice',
+      slackChannel: '#notify-finance-agent-dev',
+    });
+
+    const parsed = postedPayload(global.fetch as jest.Mock) as {
+      slackChannel?: string;
+      context: { functionName: string; slackChannel?: string };
+    };
+    expect(parsed.slackChannel).toBe('#notify-finance-agent-dev');
+    expect(parsed.context.functionName).toBe('create_invoice');
+    expect(parsed.context.slackChannel).toBeUndefined();
+  });
+
+  it('uses DIVOT_SLACK_CHANNEL when the call omits slackChannel', async () => {
+    process.env.DIVOT_ERRORS_URL = 'http://localhost:3000/api/errors';
+    process.env.DIVOT_SECRET = 'shared-secret';
+    process.env.DIVOT_SLACK_CHANNEL = '#notify-finance-agent-dev';
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 202 });
+
+    await reportError(new Error('boom'));
+
+    expect((postedPayload(global.fetch as jest.Mock) as { slackChannel?: string }).slackChannel).toBe(
+      '#notify-finance-agent-dev'
+    );
   });
 
   it('uses ERROR_REPORTING_WEBHOOK_SECRET when DIVOT_SECRET is unset', async () => {

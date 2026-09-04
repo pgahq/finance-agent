@@ -146,6 +146,7 @@ Additive fail-soft path. Do **not** change `src/lib/slack.ts` or `notifyResult`.
 
 - Native `fetch` + HMAC (`X-Divot-Signature: sha256=<hex>` over the raw body). No `@cursor/sdk`, no `@pgahq/divot` package
 - Env: `DIVOT_ERRORS_URL`, `DIVOT_SECRET` (or `ERROR_REPORTING_WEBHOOK_SECRET`). Both required or the reporter no-ops (does not throw, does not send). `template.yml` sets `DIVOT_ERRORS_URL` from `DivotErrorsUrl` (default `https://divot-pgahq-bot.pgahq.com/api/errors`) and `DIVOT_SECRET` from `ssm:/finance-agent/divot-secret`. Empty URL skips Divot. Create the SSM parameter in each AWS account before deploy (CloudFormation resolves it at deploy time).
+- Optional `slackChannel` on the payload (Slack channel name or ID). Per-call `reportError(..., { slackChannel })` wins; otherwise `DIVOT_SLACK_CHANNEL` from `template.yml` `DivotSlackChannel` (default empty). Omitted/blank → Divot does not Slack. Does not change `notifyResult` / `src/lib/slack.ts`.
 - Payload `service` is always `finance-agent`; `awsAccountId` is `AWS_ACCOUNT_ID` or `000000000000`
 - Divot failures must not throw, change Slack, or change Lambda success/failure
 - Local probe: `npm run report:test-error` (`--coalesce`, `--bad-hmac`, `--unknown-service`) against Divot `npm run dev:auth` on :3000. The probe does not post to Slack

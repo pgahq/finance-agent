@@ -4,6 +4,12 @@ import { debug } from '@pga/logger';
 export const DIVOT_ERROR_REPORT_SERVICE = 'finance-agent';
 const SIGNATURE_HEADER = 'X-Divot-Signature';
 
+export type DivotErrorReportContext = {
+  functionName?: string;
+  slackChannel?: string;
+  [key: string]: unknown;
+};
+
 export type DivotErrorReportPayload = {
   service: string;
   awsAccountId: string;
@@ -16,6 +22,7 @@ export type DivotErrorReportPayload = {
     functionName?: string;
     [key: string]: unknown;
   };
+  slackChannel?: string;
 };
 
 function webhookSecret(): string | undefined {
@@ -30,6 +37,15 @@ function errorsUrl(): string | undefined {
 
 function awsAccountId(): string {
   return process.env.AWS_ACCOUNT_ID?.trim() || '000000000000';
+}
+
+function slackChannelFrom(context?: DivotErrorReportContext): string | undefined {
+  const fromCall = typeof context?.slackChannel === 'string' ? context.slackChannel.trim() : '';
+  if (fromCall) {
+    return fromCall;
+  }
+  const fromEnv = process.env.DIVOT_SLACK_CHANNEL?.trim();
+  return fromEnv ? fromEnv : undefined;
 }
 
 export function errorFieldsFromUnknown(error: unknown): DivotErrorReportPayload['error'] {
@@ -53,23 +69,33 @@ export function signDivotErrorReportBody(body: string, secret: string): string {
 
 export function buildDivotErrorReportPayload(
   error: unknown,
-  context?: DivotErrorReportPayload['context']
+  context?: DivotErrorReportContext
 ): DivotErrorReportPayload {
   const functionName = context?.functionName || process.env.AWS_LAMBDA_FUNCTION_NAME;
-  return {
+  const slackChannel = slackChannelFrom(context);
+  const restContext = { ...context };
+  delete restContext.slackChannel;
+
+  const payload: DivotErrorReportPayload = {
     service: DIVOT_ERROR_REPORT_SERVICE,
     awsAccountId: awsAccountId(),
     error: errorFieldsFromUnknown(error),
     context: {
-      ...context,
+      ...restContext,
       ...(functionName ? { functionName } : {}),
     },
   };
+
+  if (slackChannel) {
+    payload.slackChannel = slackChannel;
+  }
+
+  return payload;
 }
 
 export async function reportError(
   error: unknown,
-  context?: DivotErrorReportPayload['context']
+  context?: DivotErrorReportContext
 ): Promise<void> {
   try {
     const url = errorsUrl();

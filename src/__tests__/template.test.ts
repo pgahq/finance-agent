@@ -14,6 +14,8 @@ describe('SAM template', () => {
     expect(globals).toMatch(/DIVOT_SECRET:\s*ssm:\/finance-agent\/divot-secret/);
     expect(globals).toMatch(/DivotErrorsUrl:/);
     expect(globals).toMatch(/DIVOT_ERRORS_URL:\s*!Ref DivotErrorsUrl/);
+    expect(globals).toMatch(/DivotSlackChannel:/);
+    expect(globals).toMatch(/DIVOT_SLACK_CHANNEL:\s*!Ref DivotSlackChannel/);
   });
 
   it('wires INTERCOM_APP_ID from the IntercomAppId parameter', () => {

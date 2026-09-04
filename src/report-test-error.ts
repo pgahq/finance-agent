@@ -31,6 +31,7 @@ function errorsUrl(): string {
 }
 
 function probePayload(service: string, message: string) {
+  const slackChannel = process.env.DIVOT_SLACK_CHANNEL?.trim();
   return {
     service,
     awsAccountId: '000000000000',
@@ -39,6 +40,7 @@ function probePayload(service: string, message: string) {
       message,
     },
     context: { functionName: 'local-probe' },
+    ...(slackChannel ? { slackChannel } : {}),
   };
 }
 
