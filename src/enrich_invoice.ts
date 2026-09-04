@@ -28,6 +28,7 @@ import { buildFinalInvoiceLines, splitFreightLines, type EmailWorktags, type Fin
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
+import { reportError } from './lib/divot_error_report.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
@@ -359,6 +360,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       error,
       shouldSkipRetry ? 'Workday task not authorized - no retry' : undefined
     );
+    await reportError(error, { functionName: 'enrich_invoice' });
 
     if (shouldSkipRetry) {
       return;

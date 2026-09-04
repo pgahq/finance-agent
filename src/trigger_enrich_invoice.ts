@@ -3,6 +3,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
+import { reportError } from './lib/divot_error_report.js';
 import { clearInvoiceValidationFailure, getInvoiceValidationFailuresConfig } from './lib/invoice_validation_failures.js';
 import { getWorkdayConfig, executeWorkdayQuery, getInboundEmailsForOCRInvoices } from './lib/workday.js';
 import type { InvoiceData } from './lib/types.js';
@@ -92,6 +93,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const expectedToken = process.env.ENRICH_INVOICE_API_TOKEN;
   if (!expectedToken) {
     debug('ENRICH_INVOICE_API_TOKEN is not configured');
+    await reportError(new Error('ENRICH_INVOICE_API_TOKEN is not configured'), {
+      functionName: 'trigger_enrich_invoice',
+    });
     return jsonResponse(500, { message: 'Internal server error' });
   }
 
@@ -161,6 +165,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
           ? Buffer.from(invokeResult.Payload).toString('utf8')
           : undefined,
       });
+      await reportError(new Error(`Enrich invoice processor invoke error: ${invokeResult.FunctionError}`), {
+        functionName: 'trigger_enrich_invoice',
+      });
       return jsonResponse(500, { message: 'Internal server error' });
     }
 
@@ -173,6 +180,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       body: event.body,
       error: formatError(error),
     });
+    await reportError(error, { functionName: 'trigger_enrich_invoice' });
     return jsonResponse(500, { message: 'Internal server error' });
   }
 }

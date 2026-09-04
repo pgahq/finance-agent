@@ -58,6 +58,10 @@ jest.mock('../lib/slack.js', () => ({
   notifyResult: jest.fn().mockResolvedValue(undefined)
 }));
 
+jest.mock('../lib/divot_error_report.js', () => ({
+  reportError: jest.fn().mockResolvedValue(undefined)
+}));
+
 describe('handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -174,6 +178,8 @@ describe('handlers', () => {
       await expect(queryHandler()).rejects.toThrow('Workday 400: Bad Request');
 
       expect(notifyResult).toHaveBeenCalledWith('test-query-lambda', 'error', undefined, undefined, queryError);
+      const { reportError } = require('../lib/divot_error_report.js');
+      expect(reportError).toHaveBeenCalledWith(queryError, { functionName: 'test-query-lambda' });
     });
 
     it('should pass resolved query string to processor when pageSize is null and query is a function', async () => {
@@ -284,6 +290,8 @@ describe('handlers', () => {
       await expect(processor({ query: 'SELECT * FROM test' })).rejects.toThrow('Workday 400: Bad Request');
 
       expect(notifyResult).toHaveBeenCalledWith('test-processor-lambda', 'error', undefined, undefined, queryError);
+      const { reportError } = require('../lib/divot_error_report.js');
+      expect(reportError).toHaveBeenCalledWith(queryError, { functionName: 'test-processor-lambda' });
       expect(mockProcessAction).not.toHaveBeenCalled();
     });
   });

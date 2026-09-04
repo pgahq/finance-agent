@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { deleteAllDocumentsByType } from './lib/database.js';
 import { notifyResult } from './lib/slack.js';
+import { reportError } from './lib/divot_error_report.js';
 import { withHandler, withQueryHandler, type ProcessingContext } from './lib/handlers.js';
 
 const QUERY = `
@@ -48,6 +49,7 @@ export const handler = withHandler(async (context: ProcessingContext, _event) =>
       { processingTime: `${processingTime}ms` },
       error
     );
+    await reportError(error, { functionName: 'refresh_spend_categories' });
 
     throw error;
   }

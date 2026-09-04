@@ -26,6 +26,8 @@ failures. `setupContext` (env + DB schema init), `withHandler` bodies that
 only notify on success (`cache_validation_rules`, EnrichInvoice query
 handler), and `query_documents` throw without Slack — CloudWatch only. Do not
 wrap those in a generic catch that also wraps paths that already Slack.
+Divot `reportError` is a parallel fail-soft call beside those Slack error
+notifies; it must not replace Slack or wrap the CloudWatch-only paths.
 
 Keep report-then-throw where it exists so CloudWatch still records the
 failure. Do not swallow errors just to avoid retries. Failed async events are

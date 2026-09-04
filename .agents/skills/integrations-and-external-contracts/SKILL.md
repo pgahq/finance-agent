@@ -2,9 +2,10 @@
 name: integrations-and-external-contracts
 description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
-  create-invoice, enrich-invoice, Workday, SSM secrets). Use when changing
-  POST /create-invoice or /enrich-invoice, Intercom Data Connectors, bearer
-  auth tokens, or attachment upload contracts.
+  create-invoice, enrich-invoice, Workday, SSM secrets, Divot error reporting).
+  Use when changing POST /create-invoice or /enrich-invoice, Intercom Data
+  Connectors, bearer auth tokens, attachment upload contracts, or the fail-soft
+  HMAC reporter to Divot POST /api/errors.
 ---
 
 # Integrations and external contracts
@@ -138,3 +139,14 @@ envelope `Header` element.
   `includedInline`; never include base64 content
 - Success Slack details include `conversationId` / Intercom conversation URL
   for create-invoice, and `priorFailures` when submit retried before succeeding
+
+## Divot error reporting
+
+Additive fail-soft path. Do **not** change `src/lib/slack.ts` or `notifyResult`. Call `reportError` from `src/lib/divot_error_report.ts` **beside** existing error Slack notifies and unexpected HTTP 500s.
+
+- Native `fetch` + HMAC (`X-Divot-Signature: sha256=<hex>` over the raw body). No `@cursor/sdk`, no `@pgahq/divot` package
+- Env: `DIVOT_ERRORS_URL`, `DIVOT_SECRET` (or `ERROR_REPORTING_WEBHOOK_SECRET`). Both required or the reporter no-ops. Unset in AWS this pass — no SSM / `template.yml` secrets yet
+- Payload `service` is always `finance-agent`; `awsAccountId` is `AWS_ACCOUNT_ID` or `000000000000`
+- Divot failures must not throw, change Slack, or change Lambda success/failure
+- Local probe: `npm run report:test-error` (`--coalesce`, `--bad-hmac`, `--unknown-service`) against Divot `npm run dev:auth` on :3000. The probe does not post to Slack
+

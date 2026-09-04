@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { deleteAllDocumentsByType } from './lib/database.js';
 import { executeWorkdayQuery } from './lib/workday.js';
 import { notifyResult } from './lib/slack.js';
+import { reportError } from './lib/divot_error_report.js';
 import { withQueryHandler, withHandler, type ProcessingContext } from './lib/handlers.js';
 
 const QUERY = `
@@ -95,6 +96,7 @@ export const handler = withHandler(async (context: ProcessingContext, _event) =>
       },
       error
     );
+    await reportError(error, { functionName: 'refresh_suppliers' });
     
     throw error;
   }

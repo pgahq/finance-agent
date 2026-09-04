@@ -138,6 +138,7 @@ src/
 │   ├── database.ts                 # PostgreSQL database
 │   ├── rag.ts                      # RAG and embedding functionality
 │   ├── slack.ts                    # Slack notifications
+│   ├── divot_error_report.ts       # Fail-soft HMAC reporter to Divot /api/errors (parallel to Slack)
 │   ├── workday.ts                  # Workday API client
 │   └── types.ts                    # Type definitions
 └── __tests__/                      # Test suite
@@ -259,7 +260,8 @@ Deployment is automated via CircleCI:
 ## 📈 Monitoring
 
 - **CloudWatch**: Function logs and metrics
-- **Slack**: Real-time notifications to #notify-finance-agent-dev
+- **Slack**: Real-time notifications to #notify-finance-agent-dev (unchanged)
+- **Divot error reporting**: fail-soft HMAC `POST` to Divot `/api/errors` beside Slack error notifies. Unset `DIVOT_ERRORS_URL` / `DIVOT_SECRET` skips Divot; Slack still fires. Local probe: `npm run report:test-error`
 - **Error Tracking**: Detailed error context and processing statistics
 
 ## 🔒 Security

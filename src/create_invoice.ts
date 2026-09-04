@@ -34,6 +34,7 @@ import {
 } from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
+import { reportError } from './lib/divot_error_report.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import {
@@ -151,6 +152,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
+    await reportError(new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices'), {
+      functionName: 'create_invoice',
+    });
     return;
   }
 
@@ -438,6 +442,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       error
     );
+    await reportError(error, { functionName: 'create_invoice' });
     throw error;
   }
 }

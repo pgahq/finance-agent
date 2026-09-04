@@ -4,6 +4,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
+import { reportError } from './lib/divot_error_report.js';
 import {
   downloadAttachment,
   fetchConversationInvoiceData,
@@ -90,6 +91,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const expectedToken = process.env.ENRICH_INVOICE_API_TOKEN;
   if (!expectedToken) {
     debug('ENRICH_INVOICE_API_TOKEN is not configured');
+    await reportError(new Error('ENRICH_INVOICE_API_TOKEN is not configured'), {
+      functionName: 'trigger_create_invoice',
+    });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
@@ -125,6 +129,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     intercomConfig = getIntercomConfig(process.env);
   } catch (error) {
     debug('INTERCOM_ACCESS_TOKEN is not configured', { error: formatError(error) });
+    await reportError(error, { functionName: 'trigger_create_invoice' });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
@@ -164,6 +169,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       conversationId,
       error: formatError(error),
     });
+    await reportError(error, { functionName: 'trigger_create_invoice' });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
@@ -201,6 +207,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       conversationId,
       error: formatError(error),
     });
+    await reportError(error, { functionName: 'trigger_create_invoice' });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 
@@ -254,6 +261,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error) {
     debug('Error triggering invoice creation', { error: formatError(error), conversationId });
+    await reportError(error, { functionName: 'trigger_create_invoice' });
     return jsonResponse(500, { status: 'error', message: 'Internal server error' });
   }
 }

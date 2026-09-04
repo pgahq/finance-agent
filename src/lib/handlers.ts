@@ -10,6 +10,7 @@ import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './wor
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { notifyResult } from './slack.js';
+import { reportError } from './divot_error_report.js';
 
 export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
@@ -92,6 +93,7 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
         } catch (error) {
           const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
           await notifyResult(lambdaName, 'error', undefined, undefined, error);
+          await reportError(error, { functionName: lambdaName });
           throw error;
         }
 
@@ -141,6 +143,7 @@ export const withProcessorHandler = <T = unknown>(
     } catch (error) {
       const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
       await notifyResult(lambdaName, 'error', undefined, undefined, error);
+      await reportError(error, { functionName: lambdaName });
       throw error;
     }
     await processAction(context, data as T[], event);

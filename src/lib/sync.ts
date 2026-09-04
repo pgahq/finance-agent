@@ -3,6 +3,7 @@ import { bulkDeleteDocuments, bulkInsertDocuments, bulkUpdateDocuments, getDocum
 import type { DatabaseConnection, DocumentType } from './database.js';
 import { createEmbedding } from './rag.js';
 import { notifyResult } from './slack.js';
+import { reportError } from './divot_error_report.js';
 
 const BATCH_SIZE = 50;
 const ABSENT_ID_SAMPLE_LIMIT = 50;
@@ -247,6 +248,7 @@ export async function syncDataSource<T>(options: SyncDataSourceOptions<T>): Prom
       { processingTime: `${processingTime}ms` },
       error
     );
+    await reportError(error, { functionName: notifyLabel });
 
     throw error;
   }
