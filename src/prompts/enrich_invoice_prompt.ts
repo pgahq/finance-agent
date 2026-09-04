@@ -17,7 +17,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription"). Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction.')
+      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription"). Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
@@ -67,7 +67,7 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
-  extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Null if not visible or unclear.'),
+  extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Prefer letters, digits, hyphen, period, and slash. Do not use pipe |, greater-than, or less-than characters. Null if not visible or unclear.'),
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping", "handling", or "delivery" charges. Capture this here even if the invoice presents freight/shipping/handling as a line item — do NOT include those lines in extractedInvoiceLines. Null if no freight amount could be found or if it is ambiguous.'),
 
@@ -275,7 +275,7 @@ Read the invoice attachment and extract the tax amount. It may be labeled as "Ta
 
 ## Part 6: Supplier's Invoice Number
 
-Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. If no invoice number is visible or the value is ambiguous, omit the field.
+Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
 
 ---
 
@@ -287,7 +287,7 @@ Read the invoice attachment and extract the purchase order number if one is refe
 
 ## Part 7.5: Memo identifiers
 
-Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code will put extracted values on the Workday header and line memos. Do not copy these identifiers into \`extractedInformation.memo\`.
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code joins values with a period, in check-print order (account, customer ID, job/order, PO, service period, then the memo sentence). Do not copy these identifiers into \`extractedInformation.memo\`, and do not use pipe \`|\` or \`#\` labels there.
 
 1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
 

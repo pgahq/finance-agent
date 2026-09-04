@@ -541,6 +541,41 @@ describe('Workday utilities', () => {
       });
       expect(result.presignedAttachments).toEqual([]);
     });
+
+    it('fills Invoice_Number from Supplier_Invoice_Reference_ID when SOAP omits it', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: [
+              {
+                Supplier_Invoice_Reference: {
+                  ID: [
+                    { $attributes: { type: 'WID' }, $value: mockWorkdayID },
+                    { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SUPIN-412727' },
+                  ]
+                },
+                Supplier_Invoice_Data: [{ Invoice_ID: 'INV-001' }]
+              }
+            ]
+          }
+        });
+      });
+
+      const result = await getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID);
+
+      expect(result.invoice.Invoice_Number).toBe('SUPIN-412727');
+    });
   });
 
   describe('submitSupplierInvoiceUpdate', () => {
@@ -3258,7 +3293,10 @@ describe('Workday utilities', () => {
         capturedRequest = request;
         callback(null, {
           Supplier_Invoice_Reference: {
-            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }]
+            ID: [
+              { $attributes: { type: 'WID' }, $value: 'new-invoice-wid' },
+              { $attributes: { type: 'Supplier_Invoice_Reference_ID' }, $value: 'SUPIN-412727' },
+            ]
           }
         });
       });
@@ -3267,6 +3305,7 @@ describe('Workday utilities', () => {
 
       expect(result.success).toBe(true);
       expect(result.invoiceWID).toBe('new-invoice-wid');
+      expect(result.invoiceNumber).toBe('SUPIN-412727');
       expect(result).not.toHaveProperty('priorFailures');
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({

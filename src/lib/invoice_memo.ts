@@ -3,6 +3,7 @@ import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.j
 import type { FinalInvoiceLine } from './invoice_lines.js';
 
 export const INVOICE_MEMO_MAX_LENGTH = 500;
+export const INVOICE_MEMO_TOKEN_SEPARATOR = '. ';
 
 export interface InvoiceMemoIdentifierFields {
   po?: string | null;
@@ -40,6 +41,29 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export function sanitizeMemoText(value: string): string {
+  return value
+    .replace(/[^A-Za-z0-9 #./,'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function sanitizeSuppliersInvoiceNumber(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const sanitized = trimmed
+    .replace(/[^A-Za-z0-9#./-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return sanitized || undefined;
+}
+
+function sanitizeMemoFragment(value: string | null): string | null {
+  if (!value) return null;
+  const sanitized = sanitizeMemoText(value);
+  return sanitized || null;
+}
+
 export function memoIdentifiersFromEnrichment(
   result: Pick<
     InvoiceEnrichmentResult,
@@ -61,22 +85,22 @@ export function memoIdentifiersFromEnrichment(
 }
 
 function identifierTokens(fields: InvoiceMemoIdentifierFields): string[] {
-  const po = normalizePurchaseOrderNumber(fields.po) ?? null;
-  const accountNumber = stripLeadingLabel(blankToNull(fields.accountNumber), ACCOUNT_LABEL);
-  const jobNumber = stripLeadingLabel(blankToNull(fields.jobNumber), JOB_LABEL);
-  const customerId = stripLeadingLabel(blankToNull(fields.customerId), CUSTOMER_LABEL);
-  const servicePeriod = stripLeadingLabel(blankToNull(fields.servicePeriod), SERVICE_PERIOD_LABEL);
+  const po = sanitizeMemoFragment(normalizePurchaseOrderNumber(fields.po) ?? null);
+  const accountNumber = sanitizeMemoFragment(stripLeadingLabel(blankToNull(fields.accountNumber), ACCOUNT_LABEL));
+  const jobNumber = sanitizeMemoFragment(stripLeadingLabel(blankToNull(fields.jobNumber), JOB_LABEL));
+  const customerId = sanitizeMemoFragment(stripLeadingLabel(blankToNull(fields.customerId), CUSTOMER_LABEL));
+  const servicePeriod = sanitizeMemoFragment(stripLeadingLabel(blankToNull(fields.servicePeriod), SERVICE_PERIOD_LABEL));
 
   const tokens: string[] = [];
-  if (po) tokens.push(po);
-  if (accountNumber) tokens.push(`AC #${accountNumber}`);
-  const jobAsPo = jobNumber ? normalizePurchaseOrderNumber(jobNumber) : undefined;
-  if (jobNumber && jobAsPo !== po) {
-    tokens.push(`Job #${jobNumber}`);
-  }
+  if (accountNumber) tokens.push(`AC ${accountNumber}`);
   if (customerId && (!accountNumber || comparableId(customerId) !== comparableId(accountNumber))) {
     tokens.push(`Customer ID ${customerId}`);
   }
+  const jobAsPo = jobNumber ? normalizePurchaseOrderNumber(jobNumber) : undefined;
+  if (jobNumber && jobAsPo !== po) {
+    tokens.push(`Job ${jobNumber}`);
+  }
+  if (po) tokens.push(po);
   if (servicePeriod) tokens.push(`Service Period ${servicePeriod}`);
   return tokens;
 }
@@ -86,16 +110,21 @@ export function hasMemoIdentifiers(fields: InvoiceMemoIdentifierFields): boolean
 }
 
 function stripIdentifierTokensFromDescription(description: string, tokens: string[]): string {
-  let result = description;
+  let result = description
+    .replace(/\bAC\s*#/gi, 'AC ')
+    .replace(/\bJob\s*#/gi, 'Job ')
+    .replace(/\s*\|\s*/g, ' ');
+
+  const separator = escapeRegExp(INVOICE_MEMO_TOKEN_SEPARATOR);
   for (const token of tokens) {
-    const pattern = new RegExp(`(?:^|\\s*\\|\\s*|\\s+)${escapeRegExp(token)}(?=\\s*\\||\\s+|$)`, 'ig');
-    result = result.replace(pattern, ' | ');
+    const pattern = new RegExp(
+      `(?:^|\\s+|${separator})${escapeRegExp(token)}(?:\\s+|${separator}|$)`,
+      'ig'
+    );
+    result = result.replace(pattern, ' ');
   }
-  return result
-    .replace(/\s*\|\s*/g, ' | ')
-    .replace(/^(?:\s*\|\s*)+|(?:\s*\|\s*)+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+
+  return result.replace(/^\.+\s*/, '').replace(/\s+/g, ' ').trim();
 }
 
 function capMemo(value: string): string {
@@ -105,16 +134,19 @@ function capMemo(value: string): string {
 
 export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined {
   const tokens = identifierTokens(input);
-  const prefix = tokens.join(' | ');
-  let description = blankToNull(input.description) ?? '';
+  const prefix = tokens.join(INVOICE_MEMO_TOKEN_SEPARATOR);
+  let description = sanitizeMemoFragment(blankToNull(input.description)) ?? '';
   if (tokens.length && description) {
     description = stripIdentifierTokensFromDescription(description, tokens);
   }
 
   if (!prefix && !description) return undefined;
-  if (!prefix) return capMemo(description);
-  if (!description) return capMemo(prefix);
-  return capMemo(`${prefix} | ${description}`);
+  const composed = !prefix
+    ? description
+    : !description
+      ? prefix
+      : `${prefix}${INVOICE_MEMO_TOKEN_SEPARATOR}${description}`;
+  return capMemo(sanitizeMemoText(composed));
 }
 
 export function applyInvoiceMemoIdentifiersToLines(
