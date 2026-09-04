@@ -10,6 +10,12 @@ describe('SAM template', () => {
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);
   });
 
+  it('wires DIVOT_SECRET from SSM and DIVOT_ERRORS_URL from DivotErrorsUrl', () => {
+    expect(globals).toMatch(/DIVOT_SECRET:\s*ssm:\/finance-agent\/divot-secret/);
+    expect(globals).toMatch(/DivotErrorsUrl:/);
+    expect(globals).toMatch(/DIVOT_ERRORS_URL:\s*!Ref DivotErrorsUrl/);
+  });
+
   it('wires INTERCOM_APP_ID from the IntercomAppId parameter', () => {
     expect(globals).toMatch(/IntercomAppId:/);
     expect(globals).toMatch(/INTERCOM_APP_ID:\s*!Ref IntercomAppId/);

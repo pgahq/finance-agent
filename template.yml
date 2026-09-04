@@ -73,6 +73,7 @@ Globals:
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         DIVOT_ERRORS_URL: !Ref DivotErrorsUrl
+        DIVOT_SECRET: ssm:/finance-agent/divot-secret
         INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName

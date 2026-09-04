@@ -261,7 +261,7 @@ Deployment is automated via CircleCI:
 
 - **CloudWatch**: Function logs and metrics
 - **Slack**: Real-time notifications to #notify-finance-agent-dev (unchanged)
-- **Divot error reporting**: fail-soft HMAC `POST` to Divot `/api/errors` beside Slack error notifies. Deployed Lambdas get `DIVOT_ERRORS_URL` from `template.yml` (`DivotErrorsUrl`, default `https://divot-pgahq-bot.pgahq.com/api/errors`). Unset/empty `DIVOT_ERRORS_URL` or unset `DIVOT_SECRET` skips Divot; Slack still fires. Local probe: `npm run report:test-error`
+- **Divot error reporting**: fail-soft HMAC `POST` to Divot `/api/errors` beside Slack error notifies. Deployed Lambdas get `DIVOT_ERRORS_URL` from `template.yml` (`DivotErrorsUrl`, default `https://divot-pgahq-bot.pgahq.com/api/errors`) and `DIVOT_SECRET` from `ssm:/finance-agent/divot-secret`. Unset/empty `DIVOT_ERRORS_URL` skips Divot; Slack still fires. Create the SSM parameter in each AWS account before deploy. Local probe: `npm run report:test-error`
 - **Error Tracking**: Detailed error context and processing statistics
 
 ## 🔒 Security
