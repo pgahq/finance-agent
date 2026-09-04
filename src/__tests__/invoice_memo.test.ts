@@ -111,6 +111,13 @@ describe('composeInvoiceMemo', () => {
     })).toBe('AC 12345. PO-404770. monthly software');
   });
 
+  it('does not treat periods inside amounts or abbreviations as token separators', () => {
+    expect(composeInvoiceMemo({
+      accountNumber: '1033562',
+      description: 'License fee 12.50 monthly for U.S. Open e.g. hospitality',
+    })).toBe('AC 1033562. License fee 12.50 monthly for U.S. Open e.g. hospitality');
+  });
+
   it('replaces pay-file-unsafe characters in identifier values and descriptions', () => {
     expect(composeInvoiceMemo({
       accountNumber: '103|3562',

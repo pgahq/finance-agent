@@ -113,22 +113,17 @@ function stripIdentifierTokensFromDescription(description: string, tokens: strin
   let result = description
     .replace(/\bAC\s*#/gi, 'AC ')
     .replace(/\bJob\s*#/gi, 'Job ')
-    .replace(/\s*\|\s*/g, INVOICE_MEMO_TOKEN_SEPARATOR);
+    .replace(/\s*\|\s*/g, ' ');
 
   for (const token of tokens) {
     const pattern = new RegExp(
-      `(?:^|\\s*(?:\\||\\.)\\s*|\\s+)${escapeRegExp(token)}(?=\\s*(?:\\||\\.)\\s*|\\s+|$)`,
+      `(?:^|\\s+|\\|)${escapeRegExp(token)}(?=\\s+|\\||$)`,
       'ig'
     );
-    result = result.replace(pattern, INVOICE_MEMO_TOKEN_SEPARATOR);
+    result = result.replace(pattern, ' ');
   }
 
-  return result
-    .replace(/\s*\|\s*/g, INVOICE_MEMO_TOKEN_SEPARATOR)
-    .replace(/(?:\s*\.\s*)+/g, INVOICE_MEMO_TOKEN_SEPARATOR)
-    .replace(/^(?:\s*\.\s*)+|(?:\s*\.\s*)+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return result.replace(/\s+/g, ' ').trim();
 }
 
 function capMemo(value: string): string {
