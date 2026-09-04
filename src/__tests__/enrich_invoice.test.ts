@@ -825,6 +825,7 @@ describe('enrich_invoice', () => {
         recommended: null,
         reason: 'Company matches existing assignment'
       },
+      extractedSuppliersInvoiceNumber: 'INV|001>>>',
       extractedAccountNumber: '1033562',
       extractedJobNumber: '5914196',
       extractedCustomerId: 'CU0122145',
@@ -850,11 +851,12 @@ describe('enrich_invoice', () => {
 
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.memo).toBe(
-      'AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Test invoice'
+      'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Test invoice'
     );
+    expect(params.suppliersInvoiceNumber).toBe('INV-001');
     expect(params.finalLines).toEqual([
       expect.objectContaining({
-        memo: 'AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Widget purchase',
+        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Widget purchase',
       }),
     ]);
     expect(params.buildNotes([])).toContain('Account Number (from document): 1033562');

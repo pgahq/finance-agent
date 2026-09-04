@@ -19,6 +19,7 @@ import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   memoIdentifiersFromEnrichment,
+  sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import {
@@ -203,7 +204,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailCompany: result.emailWorktags?.company,
     });
 
-    const extractedSuppliersInvoiceNumber = result.extractedSuppliersInvoiceNumber || undefined;
+    const extractedSuppliersInvoiceNumber = sanitizeSuppliersInvoiceNumber(result.extractedSuppliersInvoiceNumber);
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);

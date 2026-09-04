@@ -1178,6 +1178,7 @@ describe('create_invoice', () => {
     });
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: 'INV|001>>>',
       extractedPurchaseOrderNumber: 'PO-414498',
       extractedAccountNumber: '1033562',
       extractedJobNumber: '5914196',
@@ -1191,12 +1192,13 @@ describe('create_invoice', () => {
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.memo).toBe(
-      'PO-414498 | AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Office supplies'
+      'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Office supplies'
     );
+    expect(submitArgs.suppliersInvoiceNumber).toBe('INV-001');
     expect(submitArgs.finalLines).toEqual([
       expect.objectContaining({
         description: 'Widgets',
-        memo: 'PO-414498 | AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Widget purchase',
+        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Widget purchase',
       }),
     ]);
     expect(submitArgs.buildNotes([])).toContain('Account Number (from document): 1033562');
