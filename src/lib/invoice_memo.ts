@@ -117,7 +117,7 @@ function stripIdentifierTokensFromDescription(description: string, tokens: strin
 
   for (const token of tokens) {
     const pattern = new RegExp(
-      `(?:^|\\s+|\\|)${escapeRegExp(token)}(?=\\s+|\\||$)`,
+      `(?:^|\\s+|\\.\\s+)${escapeRegExp(token)}(?=\\s+|\\.\\s+|$)`,
       'ig'
     );
     result = result.replace(pattern, ' ');
