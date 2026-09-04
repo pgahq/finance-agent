@@ -1169,4 +1169,39 @@ describe('create_invoice', () => {
       costCenterId: null,
     }));
   });
+
+  it('should put extracted identifiers on the header and line memos', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedAccountNumber: '1033562',
+      extractedJobNumber: '5914196',
+      extractedCustomerId: 'CU0122145',
+      extractedServicePeriod: '2026 - September',
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-memo/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.memo).toBe(
+      'PO-414498 | AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Office supplies'
+    );
+    expect(submitArgs.finalLines).toEqual([
+      expect.objectContaining({
+        description: 'Widgets',
+        memo: 'PO-414498 | AC #1033562 | Job #5914196 | Customer ID CU0122145 | Service Period 2026 - September | Widget purchase',
+      }),
+    ]);
+    expect(submitArgs.buildNotes([])).toContain('Account Number (from document): 1033562');
+    expect(submitArgs.buildNotes([])).toContain('Job Number (from document): 5914196');
+    expect(submitArgs.buildNotes([])).toContain('Customer ID (from document): CU0122145');
+    expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
+  });
 });

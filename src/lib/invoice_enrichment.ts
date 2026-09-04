@@ -189,6 +189,28 @@ export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): strin
   return `\n\nPurchase Order Number (from document): ${result.extractedPurchaseOrderNumber}`;
 }
 
+export function formatMemoIdentifierNotes(
+  result: Pick<
+    InvoiceEnrichmentResult,
+    'extractedAccountNumber' | 'extractedJobNumber' | 'extractedCustomerId' | 'extractedServicePeriod'
+  >
+): string {
+  const parts: string[] = [];
+  if (result.extractedAccountNumber) {
+    parts.push(`Account Number (from document): ${result.extractedAccountNumber}`);
+  }
+  if (result.extractedJobNumber) {
+    parts.push(`Job Number (from document): ${result.extractedJobNumber}`);
+  }
+  if (result.extractedCustomerId) {
+    parts.push(`Customer ID (from document): ${result.extractedCustomerId}`);
+  }
+  if (result.extractedServicePeriod) {
+    parts.push(`Service Period (from document): ${result.extractedServicePeriod}`);
+  }
+  return parts.length ? `\n\n${parts.join('\n\n')}` : '';
+}
+
 export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPaymentTerms) return '';
   const { name, workdayId } = result.extractedPaymentTerms;

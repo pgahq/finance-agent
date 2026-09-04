@@ -1110,7 +1110,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       Invoice_Line_Replacement_Data: invoiceLines,
     }),
 
-    ...((currentInvoice.Memo || memo) && { Memo: currentInvoice.Memo || memo }),
+    ...((memo || currentInvoice.Memo) && { Memo: memo || currentInvoice.Memo }),
 
     ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
     ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
