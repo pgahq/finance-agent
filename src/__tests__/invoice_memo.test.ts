@@ -106,6 +106,12 @@ describe('composeInvoiceMemo', () => {
       po: 'PO-404770',
       description: 'PO-404770. Office supplies',
     })).toBe('PO-404770. Office supplies');
+
+    expect(composeInvoiceMemo({
+      po: 'PO-404770',
+      accountNumber: '1033562',
+      description: 'AC 1033562. PO-404770. Office supplies',
+    })).toBe('AC 1033562. PO-404770. Office supplies');
   });
 
   it('strips identifier tokens from the description even when they are not a leading full prefix', () => {
