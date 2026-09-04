@@ -78,6 +78,7 @@ describe('notifyResult', () => {
   it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
       conversationId: '1234567890',
       conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
       attachment: { fileName: 'Invoices -1-.PDF', contentType: 'application/pdf', sizeBytes: 33915, includedInline: true },
@@ -97,6 +98,8 @@ describe('notifyResult', () => {
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412727`');
+    expect(texts).toContain('*Workday Invoice* → `SUPIN-412727`');
     expect(texts).toContain('*Changes*');
     expect(texts).toContain('*Supplier* → ACUSHNET COMPANY (identified)');
     expect(texts).toContain('*Company* → PGA Foundation Inc (recommended)');
@@ -104,6 +107,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Amount Due* → $448.92');
     expect(texts).toContain('*Prior submit failures*');
     expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
+    expect(texts).toContain('"invoiceNumber": "SUPIN-412727"');
     expect(texts).toContain('"invoiceWID": "new-invoice-wid"');
     expect(texts).toContain('"fileName": "Invoices -1-.PDF"');
     expect(texts).toContain('"conversationId": "1234567890"');
@@ -214,6 +218,7 @@ describe('notifyEnrichmentResult', () => {
     ]);
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
+    expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
   });
 
   it('truncates stacked prior submit failures on enrich success', async () => {
