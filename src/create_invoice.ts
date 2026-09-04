@@ -405,6 +405,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
       invoiceWID: createOutcome.invoiceWID,
+      invoiceNumber: createOutcome.invoiceNumber,
       attachment: {
         fileName,
         contentType,

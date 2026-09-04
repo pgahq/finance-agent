@@ -24,6 +24,7 @@ jest.mock('../lib/workday.js', () => ({
   getSupplierInvoiceWithAttachments: jest.fn().mockResolvedValue({
     invoice: {
       Invoice_ID: 'test-invoice-id',
+      Invoice_Number: 'SUPIN-412727',
       Attachment_Data: []
     },
     presignedAttachments: []
@@ -718,6 +719,7 @@ describe('enrich_invoice', () => {
 
     expect(notifyEnrichmentResult).toHaveBeenCalledWith(
       expect.objectContaining({
+        invoiceNumber: 'SUPIN-412727',
         priorFailures: [
           { attempt: 1, message: 'The invoice date must be the first day of the month.' },
         ],

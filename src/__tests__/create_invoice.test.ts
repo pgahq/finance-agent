@@ -27,7 +27,7 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
   parsePurchaseOrder: jest.fn(),
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
-  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', appliedFallbacks: [] })
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] })
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -222,6 +222,7 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-412727',
         attachment: {
           fileName: 'invoice.pdf',
           contentType: 'application/pdf',
@@ -421,6 +422,7 @@ describe('create_invoice', () => {
     workday.submitNewSupplierInvoice.mockResolvedValue({
       success: true,
       invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
       appliedFallbacks: [],
       priorFailures: [
         { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
@@ -441,6 +443,7 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({
         invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-412727',
         conversationId: '1234567890',
         conversationUrl: 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890',
         priorFailures: [
