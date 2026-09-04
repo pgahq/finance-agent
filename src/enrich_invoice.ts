@@ -300,7 +300,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     await notifyEnrichmentResult({
       processingTime,
-      invoiceNumber: detailedInvoice.Invoice_Number || 'Unknown',
+      ...(typeof detailedInvoice.Invoice_Number === 'string' && detailedInvoice.Invoice_Number
+        ? { invoiceNumber: detailedInvoice.Invoice_Number }
+        : {}),
       canModify: canModifyInvoice && !!targetSupplierWID,
       supplier: {
         status: result.supplier.status,
