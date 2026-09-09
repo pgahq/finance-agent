@@ -193,6 +193,18 @@ Primary Address: 100 PGA Tour Blvd`);
     it('omits primary address when it is missing', () => {
       expect(createCompanyContent({ companyName: 'PGA of America' })).toBe('Company Name: PGA of America');
     });
+
+    it('uses Workday instance descriptors for public addresses', () => {
+      const result = createCompanyContent({
+        companyName: 'PGA of America',
+        publicAddresses: [
+          { id: 'pub-1', descriptor: 'PO Box 109601, Palm Beach Gardens, FL 33410' },
+        ],
+      });
+
+      expect(result).toContain('Public Addresses: PO Box 109601, Palm Beach Gardens, FL 33410');
+      expect(result).not.toContain('[object Object]');
+    });
   });
 
   describe('queryDocuments', () => {
@@ -573,6 +585,55 @@ Primary Address: 100 PGA Tour Blvd`);
       );
       expect(result.addressMatch).toBe('unique');
       expect(result.results[0].workdayId).toBe('pga-wid');
+    });
+
+    it('lists shared headquarters ahead of a section at a different street', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      mockSearchDocuments.mockResolvedValue([
+        {
+          workday_id: 'wisconsin-wid',
+          type: 'company',
+          content: 'Company Name: Wisconsin Section of the PGA of America, Inc.',
+          metadata: {
+            addressPrimary: '11370 N. Cedarburg Road, Mequon, WI 53092',
+          },
+          similarity: 1,
+        },
+        {
+          workday_id: 'jr-wid',
+          type: 'company',
+          content: 'Company Name: PGA JR. LEAGUE',
+          metadata: {
+            addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+          },
+          similarity: 0.7,
+        },
+        {
+          workday_id: 'pga-wid',
+          type: 'company',
+          content: 'Company Name: The Professional Golfers Association of America',
+          metadata: {
+            addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+          },
+          similarity: 0.65,
+        },
+      ]);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
+      } as any);
+
+      const result = await findCompaniesTool.execute({
+        query: 'PGA of America',
+        address: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418-3653',
+      });
+
+      expect(result.addressMatch).toBe('shared');
+      expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
+        'jr-wid',
+        'pga-wid',
+        'wisconsin-wid',
+      ]);
     });
   });
 });

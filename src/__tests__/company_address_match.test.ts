@@ -47,7 +47,7 @@ describe('rankCompaniesByAddress', () => {
     expect(ranked.results[1].addressMatch).toBe('none');
   });
 
-  it('does not reorder when several candidates share headquarters', () => {
+  it('lists shared headquarters ahead of a section at a different street', () => {
     const juniorLeague = {
       workday_id: 'jr-wid',
       metadata: {
@@ -58,11 +58,74 @@ describe('rankCompaniesByAddress', () => {
     const ranked = rankCompaniesByAddress([wisconsin, juniorLeague, national], BILL_TO);
     expect(ranked.addressMatch).toBe('shared');
     expect(ranked.results.map((result) => result.workday_id)).toEqual([
-      'wisconsin-wid',
       'jr-wid',
       'pga-wid',
+      'wisconsin-wid',
     ]);
-    expect(ranked.results.map((result) => result.addressMatch)).toEqual(['none', 'shared', 'shared']);
+    expect(ranked.results.map((result) => result.addressMatch)).toEqual(['shared', 'shared', 'none']);
+  });
+
+  it('promotes a unique PO Box match', () => {
+    const ranked = rankCompaniesByAddress(
+      [
+        wisconsin,
+        {
+          ...national,
+          metadata: {
+            ...national.metadata,
+            addressPrimary: 'PO Box 109601, Palm Beach Gardens, FL 33410',
+          },
+        },
+      ],
+      'PO Box 109601, Palm Beach Gardens, FL 33410-9601'
+    );
+    expect(ranked.addressMatch).toBe('unique');
+    expect(ranked.results[0].workday_id).toBe('pga-wid');
+  });
+
+  it('lists shared PO Box matches ahead of a different street', () => {
+    const ranked = rankCompaniesByAddress(
+      [
+        wisconsin,
+        {
+          workday_id: 'jr-wid',
+          metadata: {
+            companyName: 'PGA JR. LEAGUE',
+            addressPrimary: 'PO Box 109601, Palm Beach Gardens, FL 33410',
+          },
+        },
+        {
+          ...national,
+          metadata: {
+            ...national.metadata,
+            addressPrimary: 'P.O. Box 109601 Palm Beach Gardens FL',
+          },
+        },
+      ],
+      'PO Box 109601, Palm Beach Gardens, FL 33410'
+    );
+    expect(ranked.addressMatch).toBe('shared');
+    expect(ranked.results.map((result) => result.workday_id)).toEqual([
+      'jr-wid',
+      'pga-wid',
+      'wisconsin-wid',
+    ]);
+  });
+
+  it('does not treat different PO Box numbers as a match', () => {
+    const ranked = rankCompaniesByAddress(
+      [
+        {
+          ...national,
+          metadata: {
+            ...national.metadata,
+            addressPrimary: 'PO Box 109601, Palm Beach Gardens, FL 33410',
+          },
+        },
+      ],
+      'PO Box 12, Palm Beach Gardens, FL 33410'
+    );
+    expect(ranked.addressMatch).toBe('none');
   });
 
   it('does not treat matching ZIP alone as a unique street', () => {

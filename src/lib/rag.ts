@@ -48,11 +48,16 @@ export function createSupplierContent(supplier: any): string {
 
 export function createCompanyContent(company: any): string {
   const addressPrimary = textFromWqlValue(company.addressPrimary);
+  const publicAddresses = Array.isArray(company.publicAddresses)
+    ? (company.publicAddresses as unknown[])
+      .map((value) => textFromWqlValue(value))
+      .filter((value): value is string => Boolean(value))
+    : [];
   const content = [
     `Company Name: ${company.companyName}`,
     company.companyReferenceId ? `Company Reference ID: ${company.companyReferenceId}` : null,
     addressPrimary ? `Primary Address: ${addressPrimary}` : null,
-    company.publicAddresses?.length > 0 ? `Public Addresses: ${company.publicAddresses.join(', ')}` : null,
+    publicAddresses.length > 0 ? `Public Addresses: ${publicAddresses.join(', ')}` : null,
     company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
     company.phoneNumbers?.length > 0 ? `Phone Numbers: ${company.phoneNumbers.join(', ')}` : null,
   ].filter(Boolean).join('\n');
@@ -272,7 +277,7 @@ export const findCompaniesTool = tool({
   - Company Reference IDs (e.g., "912")
   - Company Workday IDs (WIDs)
 
-  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Address is used only to rerank name candidates when a unique street or PO Box matches.
+  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Address reranks name candidates: unique street or PO Box is a strong match; shared street matches are listed before name-only misses, but address must not pick among those shared companies.
 
   Examples: query "PGA of America" with address "100 Avenue of the Champions, Palm Beach Gardens, FL 33418"`,
   inputSchema: z.object({

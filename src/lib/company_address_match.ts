@@ -96,11 +96,11 @@ export function rankCompaniesByAddress<T extends { metadata?: Record<string, unk
     addressMatch: matchedIndexes.includes(index) ? addressMatch : 'none',
   }));
 
-  if (addressMatch !== 'unique') {
+  if (addressMatch === 'none') {
     return { results: tagged, addressMatch };
   }
 
-  const winner = tagged[matchedIndexes[0]];
-  const rest = tagged.filter((_, index) => index !== matchedIndexes[0]);
-  return { results: [winner, ...rest], addressMatch };
+  const matched = tagged.filter((_, index) => matchedIndexes.includes(index));
+  const unmatched = tagged.filter((_, index) => !matchedIndexes.includes(index));
+  return { results: [...matched, ...unmatched], addressMatch };
 }
