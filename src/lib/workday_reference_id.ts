@@ -4,7 +4,7 @@ export function isWorkdayWid(value: string): boolean {
   return WORKDAY_WID_PATTERN.test(value.trim());
 }
 
-function textFromWqlValue(value: unknown): string | undefined {
+export function textFromWqlValue(value: unknown): string | undefined {
   if (typeof value === 'string' && value.trim()) {
     return value.trim();
   }

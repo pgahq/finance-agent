@@ -1,4 +1,4 @@
-import { extractCompanyReferenceId, isWorkdayWid } from '../lib/workday_reference_id.js';
+import { extractCompanyReferenceId, isWorkdayWid, textFromWqlValue } from '../lib/workday_reference_id.js';
 
 const WID = 'cab0b1d2505a016b332c2e17822708ea';
 
@@ -6,6 +6,24 @@ describe('isWorkdayWid', () => {
   it('matches 32-character hex Workday IDs', () => {
     expect(isWorkdayWid(WID)).toBe(true);
     expect(isWorkdayWid('912')).toBe(false);
+  });
+});
+
+describe('textFromWqlValue', () => {
+  it('returns a trimmed string', () => {
+    expect(textFromWqlValue('  100 Avenue of the Champions  ')).toBe('100 Avenue of the Champions');
+  });
+
+  it('returns a Workday instance descriptor', () => {
+    expect(textFromWqlValue({
+      id: WID,
+      descriptor: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+    })).toBe('100 Avenue of the Champions, Palm Beach Gardens, FL 33418');
+  });
+
+  it('returns undefined for empty or non-text values', () => {
+    expect(textFromWqlValue(undefined)).toBeUndefined();
+    expect(textFromWqlValue({ id: WID })).toBeUndefined();
   });
 });
 
