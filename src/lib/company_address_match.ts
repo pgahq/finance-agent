@@ -4,7 +4,7 @@ const STREET_TYPE =
   '(?:Avenue|Ave\\.?|Boulevard|Blvd\\.?|Street|St\\.?|Road|Rd\\.?|Drive|Dr\\.?|Lane|Ln\\.?|Way|Parkway|Pkwy\\.?|Highway|Hwy\\.?|Circle|Cir\\.?|Court|Ct\\.?|Place|Pl\\.?|Trail|Trl\\.?|Terrace|Ter\\.?|Plaza|Square|Sq\\.?)';
 
 const STREET_LINE = new RegExp(
-  String.raw`\b(\d{1,6}(?:-\d{1,6})?)\s+((?:[NSEW]\.?\s+)?(?:[A-Za-z0-9.'#-]+\s+){0,8}${STREET_TYPE}\b(?:\s+of(?:\s+the)?(?:\s+[A-Za-z][A-Za-z.'-]*){1,3})?)`,
+  String.raw`\b(\d{1,6}(?:-\d{1,6})?)\s+((?:[NSEW]\.?\s+)?(?:[A-Za-z0-9.'#-]+\s+){0,8}${STREET_TYPE}\b(?:\s+of(?:\s+the)?(?:\s+[A-Za-z][A-Za-z.'-]*))?)`,
   'i'
 );
 
@@ -44,10 +44,11 @@ export function addressesShareStreet(billTo: string, candidate: string): boolean
   const right = streetFingerprint(candidate);
   if (left.poBox && right.poBox && left.poBox === right.poBox) return true;
   if (!left.house || left.house !== right.house) return false;
+  if (left.tokens.size === 0 || left.tokens.size !== right.tokens.size) return false;
   for (const token of left.tokens) {
-    if (right.tokens.has(token)) return true;
+    if (!right.tokens.has(token)) return false;
   }
-  return false;
+  return true;
 }
 
 export function cachedCompanyAddresses(metadata: Record<string, unknown> | null | undefined): string[] {

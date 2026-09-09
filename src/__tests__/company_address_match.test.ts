@@ -21,6 +21,20 @@ describe('streetFingerprint', () => {
       '100 Avenue of the Stars, Palm Beach Gardens, FL 33418'
     )).toBe(false);
   });
+
+  it('does not treat PGA Tour Blvd and PGA Drive as the same street', () => {
+    expect(addressesShareStreet(
+      '100 PGA Tour Blvd, Palm Beach Gardens, FL 33418',
+      '100 PGA Drive, Palm Beach Gardens, FL 33418'
+    )).toBe(false);
+  });
+
+  it('matches a concatenated Champions line to the comma-separated cache address', () => {
+    expect(addressesShareStreet(
+      '100 Avenue of the Champions Palm Beach Gardens FL 33418-3653',
+      '100 Avenue of the Champions, Palm Beach Gardens, FL 33418'
+    )).toBe(true);
+  });
 });
 
 describe('rankCompaniesByAddress', () => {
