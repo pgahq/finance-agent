@@ -2,7 +2,15 @@ import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { createCompanyContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
-import { extractCompanyReferenceId } from './lib/workday_reference_id.js';
+import { extractCompanyReferenceId, textFromWqlValue } from './lib/workday_reference_id.js';
+
+function wqlDescriptors(values: unknown[] | undefined): string[] | undefined {
+  if (!values?.length) return undefined;
+  const descriptors = values
+    .map((value) => textFromWqlValue(value))
+    .filter((value): value is string => Boolean(value));
+  return descriptors.length > 0 ? descriptors : undefined;
+}
 
 export const QUERY = `
   SELECT
@@ -38,10 +46,10 @@ export const processor = withProcessorHandler(async (context, companies, _event)
           [company.referenceID1],
           { workdayId: company.company.id, companyName: company.company.descriptor }
         ),
-        addressPrimary: company.addressPrimary,
-        publicAddresses: company.publicAddresses?.length > 0 ? company.publicAddresses.map((pa: any) => pa.descriptor) : undefined,
-        emailAddresses: company.emailAddresses?.length > 0 ? company.emailAddresses.map((ea: any) => ea.descriptor) : undefined,
-        phoneNumbers: company.phoneNumbers?.length > 0 ? company.phoneNumbers.map((pn: any) => pn.descriptor) : undefined,
+        addressPrimary: textFromWqlValue(company.addressPrimary),
+        publicAddresses: wqlDescriptors(company.publicAddresses),
+        emailAddresses: wqlDescriptors(company.emailAddresses),
+        phoneNumbers: wqlDescriptors(company.phoneNumbers),
       }
     ])
   );
@@ -56,10 +64,14 @@ export const processor = withProcessorHandler(async (context, companies, _event)
       workdayId: company.workdayId,
       companyName: company.companyName,
       companyReferenceId: company.companyReferenceId,
+      addressPrimary: company.addressPrimary,
+      publicAddresses: company.publicAddresses,
     }),
     isUpdated: (existingMetadata, company) =>
       existingMetadata?.companyReferenceId !== company.companyReferenceId
-      || existingMetadata?.companyName !== company.companyName,
+      || existingMetadata?.companyName !== company.companyName
+      || existingMetadata?.addressPrimary !== company.addressPrimary
+      || JSON.stringify(existingMetadata?.publicAddresses ?? null) !== JSON.stringify(company.publicAddresses ?? null),
     notifyLabel: 'cache_companies',
     itemLabel: 'companies',
   });

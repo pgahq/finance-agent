@@ -727,6 +727,29 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('omits Slack invoiceNumber when Get has no Invoice_Number', async () => {
+    const { getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id' },
+      presignedAttachments: []
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const slackPayload = notifyEnrichmentResult.mock.calls.at(-1)?.[0];
+    expect(slackPayload).toBeDefined();
+    expect(slackPayload).not.toHaveProperty('invoiceNumber');
+  });
+
   it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

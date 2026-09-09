@@ -112,3 +112,19 @@ export function companyNameSearchQuery(query: string): string {
   }
   return stripTrailingCityStateZip(text);
 }
+
+export function parseCompanySearchQuery(query: string): { nameQuery: string; billToAddress?: string } {
+  const collapsed = collapseWhitespace(query);
+  const nameQuery = companyNameSearchQuery(query);
+  if (!nameQuery) {
+    return { nameQuery: '', billToAddress: collapsed || undefined };
+  }
+  if (collapsed.toLowerCase() === nameQuery.toLowerCase()) {
+    return { nameQuery };
+  }
+  if (collapsed.toLowerCase().startsWith(nameQuery.toLowerCase())) {
+    const billToAddress = collapseWhitespace(collapsed.slice(nameQuery.length));
+    return billToAddress ? { nameQuery, billToAddress } : { nameQuery };
+  }
+  return { nameQuery };
+}

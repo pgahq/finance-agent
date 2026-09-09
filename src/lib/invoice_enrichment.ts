@@ -108,7 +108,7 @@ export async function enrichInvoiceFromAttachments(
       ? ' A matching Workday purchase order is included — use its company as the billed-entity signal when email coding does not identify a company. Do not recommend a different company from the invoice PDF over the PO company. Use PO lines as context when extracting invoice lines.'
       : '';
 
-    const companySearchInstructions = ' When calling findCompanies, pass the billed company name or Company_Reference_ID only — never concatenate street, city, state, or ZIP into the query.';
+    const companySearchInstructions = ' When calling findCompanies, pass the billed company name or Company_Reference_ID in query and the bill-to street address in address. Never concatenate street, city, state, or ZIP into query. Prefer any unique or shared street match over a name-only miss. Unique is a strong extra signal. Shared means ignore address only among those shared companies.';
 
     const taskInstructions = existingSupplier
       ? `Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`

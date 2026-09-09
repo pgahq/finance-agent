@@ -1,4 +1,4 @@
-import { companyNameSearchQuery } from '../lib/company_search_query.js';
+import { companyNameSearchQuery, parseCompanySearchQuery } from '../lib/company_search_query.js';
 
 describe('companyNameSearchQuery', () => {
   it('keeps a billed company name that has no address', () => {
@@ -125,5 +125,29 @@ describe('companyNameSearchQuery', () => {
 
   it('skips when a PO Box strip leaves a single org-stop token', () => {
     expect(companyNameSearchQuery('PGA P.O. Box 74007056')).toBe('');
+  });
+});
+
+describe('parseCompanySearchQuery', () => {
+  it('returns only a name when there is no address', () => {
+    expect(parseCompanySearchQuery('PGA of America')).toEqual({ nameQuery: 'PGA of America' });
+  });
+
+  it('keeps the billed name and recovers the bill-to remainder', () => {
+    expect(parseCompanySearchQuery(
+      'PGA of America 100 Avenue of the Champions Palm Beach Gardens FL 33418-3653'
+    )).toEqual({
+      nameQuery: 'PGA of America',
+      billToAddress: '100 Avenue of the Champions Palm Beach Gardens FL 33418-3653',
+    });
+  });
+
+  it('treats an address-only query as having no name', () => {
+    expect(parseCompanySearchQuery(
+      '100 Avenue of the Champions Palm Beach Gardens FL 33418'
+    )).toEqual({
+      nameQuery: '',
+      billToAddress: '100 Avenue of the Champions Palm Beach Gardens FL 33418',
+    });
   });
 });

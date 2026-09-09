@@ -1,8 +1,10 @@
 import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { companyNameSearchQuery } from './company_search_query.js';
+import { rankCompaniesByAddress } from './company_address_match.js';
+import { parseCompanySearchQuery } from './company_search_query.js';
 import { getDatabaseConnection, searchDocuments } from './database.js';
+import { textFromWqlValue } from './workday_reference_id.js';
 export type { DocumentType } from './database.js';
 
 // Create embedding for text using OpenAI
@@ -45,11 +47,17 @@ export function createSupplierContent(supplier: any): string {
 }
 
 export function createCompanyContent(company: any): string {
+  const addressPrimary = textFromWqlValue(company.addressPrimary);
+  const publicAddresses = Array.isArray(company.publicAddresses)
+    ? (company.publicAddresses as unknown[])
+      .map((value) => textFromWqlValue(value))
+      .filter((value): value is string => Boolean(value))
+    : [];
   const content = [
     `Company Name: ${company.companyName}`,
     company.companyReferenceId ? `Company Reference ID: ${company.companyReferenceId}` : null,
-    `Primary Address: ${company.addressPrimary}`,
-    company.publicAddresses?.length > 0 ? `Public Addresses: ${company.publicAddresses.join(', ')}` : null,
+    addressPrimary ? `Primary Address: ${addressPrimary}` : null,
+    publicAddresses.length > 0 ? `Public Addresses: ${publicAddresses.join(', ')}` : null,
     company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
     company.phoneNumbers?.length > 0 ? `Phone Numbers: ${company.phoneNumbers.join(', ')}` : null,
   ].filter(Boolean).join('\n');
@@ -265,25 +273,29 @@ export const findCompaniesTool = tool({
   description: `Search for companies using semantic similarity and exact text matching.
 
   This tool is optimized for finding companies by:
-  - Company names (e.g., "PGA JR. LEAGUE", "Acme Corp")
+  - Company names (e.g., "PGA JR. LEAGUE", "PGA of America", "Acme Corp")
   - Company Reference IDs (e.g., "912")
   - Company Workday IDs (WIDs)
 
-  Pass the billed company name or ID only. Do not include street, city, state, or ZIP — those tokens are stripped before search.
+  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Address reranks name candidates: unique street or PO Box is a strong match; shared street matches are listed before name-only misses, but address must not pick among those shared companies.
 
-  Examples: "PGA JR. LEAGUE", "Acme Corporation", "912"`,
+  Examples: query "PGA of America" with address "100 Avenue of the Champions, Palm Beach Gardens, FL 33418"`,
   inputSchema: z.object({
     query: z.string().describe('Billed company name or ID only (omit street, city, state, and ZIP)'),
+    address: z.string().optional().describe('Bill-to street address from the invoice. Used to rerank name candidates; not embedded.'),
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
-    const nameQuery = companyNameSearchQuery(query);
+  execute: async ({ query, address, limit, similarityThreshold }) => {
+    const parsed = parseCompanySearchQuery(query);
+    const nameQuery = parsed.nameQuery;
+    const billToAddress = address?.trim() || parsed.billToAddress;
     if (!nameQuery) {
       debug(`Find Companies Tool: skipped search; query was only an address: "${query}"`);
       return {
         success: true,
         results: [],
+        addressMatch: 'none',
         message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
       };
     }
@@ -298,16 +310,19 @@ export const findCompaniesTool = tool({
       similarityThreshold
     });
 
-    debug(`Find Companies Tool: Found ${results.length} companies`);
+    const ranked = rankCompaniesByAddress(results, billToAddress);
+    debug(`Find Companies Tool: Found ${ranked.results.length} companies (addressMatch=${ranked.addressMatch})`);
 
     return {
       success: true,
-      results: results.map(result => ({
+      addressMatch: ranked.addressMatch,
+      results: ranked.results.map(result => ({
         workdayId: result.workday_id,
         type: result.type,
         content: result.content,
         metadata: result.metadata,
-        similarity: result.similarity
+        similarity: result.similarity,
+        addressMatch: result.addressMatch
       }))
     };
   }

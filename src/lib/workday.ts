@@ -232,9 +232,10 @@ function extractIdsByType(obj: any, type: string): string[] {
   return [...new Set(results)];
 }
 
-function extractSupplierInvoiceReferenceId(obj: unknown): string | undefined {
-  return extractIdsByType(obj, 'Supplier_Invoice_Reference_ID')[0]
-    ?? extractIdsByType(obj, 'Supplier_Invoice_ID')[0];
+function readInvoiceNumber(invoice: unknown): string | undefined {
+  if (!invoice || typeof invoice !== 'object') return undefined;
+  const invoiceNumber = (invoice as { Invoice_Number?: unknown }).Invoice_Number;
+  return typeof invoiceNumber === 'string' && invoiceNumber ? invoiceNumber : undefined;
 }
 
 function parseValidationRules(rules: any[]): ParsedValidationRule[] {
@@ -1552,11 +1553,6 @@ export async function getSupplierInvoiceWithAttachments(
     ? invoiceDataArray[0]
     : {};
 
-  const referenceId = extractSupplierInvoiceReferenceId(supplierInvoice);
-  if (referenceId && !invoice.Invoice_Number) {
-    invoice.Invoice_Number = referenceId;
-  }
-
   debug('Invoice data from SOAP', invoice);
 
   // Process attachments: upload them to S3 and preserve metadata for AI inputs
@@ -1991,7 +1987,14 @@ export async function submitNewSupplierInvoice(
 
   const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
   const invoiceWID = extractIdsByType(result, 'WID')[0];
-  const invoiceNumber = extractSupplierInvoiceReferenceId(result);
+  let invoiceNumber: string | undefined;
+  if (invoiceWID) {
+    try {
+      invoiceNumber = readInvoiceNumber(await getSupplierInvoice(context, invoiceWID));
+    } catch (error) {
+      debug('Could not load Invoice_Number after create', { invoiceWID, error });
+    }
+  }
   debug('Supplier invoice created successfully', { invoiceWID, invoiceNumber, appliedFallbacks, priorFailures });
 
   return {

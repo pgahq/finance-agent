@@ -115,6 +115,20 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('omits the Workday invoice number on create when Invoice_Number is missing', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      supplier: { status: 'found', resolvedName: 'ACUSHNET COMPANY', isDefault: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('function ran *successfully* in 12.00s');
+    expect(texts).not.toContain('created `');
+    expect(texts).not.toContain('Workday Invoice');
+    expect(texts).not.toContain('"invoiceNumber"');
+    expect(texts).toContain('"invoiceWID": "new-invoice-wid"');
+  });
+
   it('truncates stacked prior submit failures on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -219,6 +233,21 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
+  });
+
+  it('omits the Workday invoice number when Invoice_Number is missing', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('processed in 1.50s');
+    expect(texts).not.toContain('Workday Invoice');
+    expect(texts).not.toContain('Unknown');
   });
 
   it('truncates stacked prior submit failures on enrich success', async () => {
