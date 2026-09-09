@@ -128,6 +128,25 @@ describe('rankCompaniesByAddress', () => {
     expect(ranked.addressMatch).toBe('none');
   });
 
+  it('matches a unique bill-to on publicAddresses when primary is a different street', () => {
+    const ranked = rankCompaniesByAddress(
+      [
+        wisconsin,
+        {
+          ...national,
+          metadata: {
+            ...national.metadata,
+            addressPrimary: '11370 N. Cedarburg Road, Mequon, WI 53092',
+            publicAddresses: ['100 Avenue of the Champions, Palm Beach Gardens, FL 33418'],
+          },
+        },
+      ],
+      BILL_TO
+    );
+    expect(ranked.addressMatch).toBe('unique');
+    expect(ranked.results[0].workday_id).toBe('pga-wid');
+  });
+
   it('does not treat matching ZIP alone as a unique street', () => {
     const ranked = rankCompaniesByAddress(
       [wisconsin, national],
