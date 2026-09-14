@@ -1303,6 +1303,49 @@ describe('Workday utilities', () => {
       jest.useRealTimers();
     });
 
+    it('preserves Invoice_Received_Date from Get on update when invoiceReceivedDate is not set', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Invoice_Received_Date: '2024-06-15',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Received_Date).toBe('2024-06-15');
+    });
+
     it('should preserve optional fields when present', async () => {
       const mockClient = {
         setSecurity: jest.fn(),

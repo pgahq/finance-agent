@@ -81,7 +81,7 @@ const intercomConversationPartSchema = z.object({
 const intercomConversationSchema = z.object({
   id: z.string().optional(),
   app_id: z.string().optional(),
-  created_at: z.number().optional(),
+  created_at: z.number().optional().catch(undefined),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),

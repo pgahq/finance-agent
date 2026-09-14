@@ -1085,9 +1085,13 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       : currentInvoice.Currency_Reference ?? createReference('Currency_ID', 'USD'),
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
     ...(() => {
-      const resolvedReceived = normalizeInvoiceDate(options.invoiceReceivedDate)
-        ?? normalizeInvoiceDate(currentInvoice.Invoice_Received_Date);
-      return resolvedReceived ? { Invoice_Received_Date: resolvedReceived } : {};
+      const override = normalizeInvoiceDate(options.invoiceReceivedDate);
+      if (override) {
+        return { Invoice_Received_Date: override };
+      }
+      return currentInvoice.Invoice_Received_Date
+        ? { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }
+        : {};
     })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
