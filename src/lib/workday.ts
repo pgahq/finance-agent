@@ -446,6 +446,7 @@ interface buildSubmitInvoiceDataOptions {
   notes?: string;
   memo?: string;
   invoiceDate?: string;
+  invoiceReceivedDate?: string;
   paymentTermsWID?: string;
   applyFundFallback?: boolean;
   applyCostCenterFallback?: boolean;
@@ -1083,7 +1084,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ? createReference('Currency_ID', currencyWID)
       : currentInvoice.Currency_Reference ?? createReference('Currency_ID', 'USD'),
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
-    ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
+    ...(() => {
+      const resolvedReceived = normalizeInvoiceDate(options.invoiceReceivedDate)
+        ?? normalizeInvoiceDate(currentInvoice.Invoice_Received_Date);
+      return resolvedReceived ? { Invoice_Received_Date: resolvedReceived } : {};
+    })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
     Invoice_Number: currentInvoice.Invoice_Number,
@@ -1903,6 +1908,7 @@ export interface SubmitNewSupplierInvoiceParams {
   buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
   memo?: string;
   invoiceDate?: string;
+  invoiceReceivedDate?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -1925,6 +1931,7 @@ export async function submitNewSupplierInvoice(
     buildNotes,
     memo,
     invoiceDate,
+    invoiceReceivedDate,
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
@@ -1970,6 +1977,7 @@ export async function submitNewSupplierInvoice(
       workQueueTags,
       memo,
       invoiceDate,
+      invoiceReceivedDate,
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,

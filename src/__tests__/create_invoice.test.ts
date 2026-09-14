@@ -468,6 +468,22 @@ describe('create_invoice', () => {
     );
   });
 
+  it('forwards conversationCreatedAt as invoiceReceivedDate to Workday submit', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-received/invoice.pdf'),
+        conversationId: '1234567890',
+        conversationCreatedAt: '2024-03-15',
+      }]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceReceivedDate).toBe('2024-03-15');
+  });
+
   it('includes conversationId on Slack error details', async () => {
     process.env.INTERCOM_APP_ID = 'c722leqk';
     const { processor, slack, invoiceEnrichment } = freshRequire();

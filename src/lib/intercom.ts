@@ -22,6 +22,7 @@ export interface IntercomAttachment {
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
   appId?: string;
+  conversationCreatedAt?: string;
 }
 
 export class IntercomNotFoundError extends Error {
@@ -80,6 +81,7 @@ const intercomConversationPartSchema = z.object({
 const intercomConversationSchema = z.object({
   id: z.string().optional(),
   app_id: z.string().optional(),
+  created_at: z.number().optional(),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),
@@ -100,6 +102,19 @@ export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
 
   const apiBaseUrl = (env.INTERCOM_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
   return { accessToken, apiBaseUrl };
+}
+
+/** Intercom conversation created_at is Unix seconds; returns YYYY-MM-DD for Workday xsd:date. */
+export function intercomConversationCreatedAtToIsoDate(createdAt: number): string | undefined {
+  if (!Number.isFinite(createdAt)) {
+    return undefined;
+  }
+  const ms = createdAt > 1e12 ? createdAt : createdAt * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  return date.toISOString().split('T')[0];
 }
 
 export function buildIntercomConversationUrl(
@@ -240,12 +255,17 @@ export async function fetchConversationInvoiceData(
     attachmentCount: invoiceAttachments.length,
   });
 
+  const conversationCreatedAt = conversation.created_at != null
+    ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
+    : undefined;
+
   return {
     attachments: invoiceAttachments.map((attachment) => ({
       ...attachment,
       name: sanitizeFileName(attachment.name),
     })),
     ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
+    ...(conversationCreatedAt ? { conversationCreatedAt } : {}),
   };
 }
 
