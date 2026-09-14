@@ -364,16 +364,60 @@ export function applyFallbackLineOfBusiness(
   return { lines: next, applied };
 }
 
+export function resolveInvoiceLineQuantityDisplayed(
+  flag: boolean | undefined | null,
+  extractedLines: ExtractedInvoiceLine[]
+): boolean {
+  if (extractedLines.some(l => l.quantity != null)) {
+    return true;
+  }
+  if (flag === true) return true;
+  if (flag === false) return false;
+  if (
+    extractedLines.length > 0
+    && extractedLines.every(l => l.quantity == null)
+    && extractedLines.some(l => l.totalPrice || l.unitCost)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function finalLineExtendedAmount(line: FinalInvoiceLine): number | null {
+  if (line.extendedAmount != null) return line.extendedAmount;
+  if (line.unitCost != null) return line.unitCost;
+  return null;
+}
+
+export function applyMissingQuantityColumnLines(
+  lines: FinalInvoiceLine[],
+  invoiceLineQuantityDisplayed: boolean
+): FinalInvoiceLine[] {
+  if (invoiceLineQuantityDisplayed) return lines;
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    const extendedAmount = finalLineExtendedAmount(line);
+    return {
+      ...line,
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount,
+    };
+  });
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
   fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
-  relatedLobLookup?: RelatedLobLookup
+  relatedLobLookup?: RelatedLobLookup,
+  invoiceLineQuantityDisplayed?: boolean
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   const mergeInput = {
+    invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
