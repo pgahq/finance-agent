@@ -35,6 +35,7 @@ Flow:
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
 5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
+7. Workday `Invoice_Received_Date` on each new supplier invoice is set from the Intercom conversation `created_at` (mailbox receipt), formatted as `YYYY-MM-DD` like other SOAP dates
 
 `CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **Default OCR Company** (`Company_Reference_ID` `Default_OCR_Company`, or `WORKDAY_DEFAULT_COMPANY_WID` when set) and skips early PO lines.
 

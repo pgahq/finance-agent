@@ -102,6 +102,7 @@ const supportEmailContext = {
 };
 const conversationInvoiceData = {
   appId: 'sandbox-app',
+  conversationCreatedAt: '2024-01-01',
   attachments: [
     {
       name: 'invoice.pdf',
@@ -387,6 +388,7 @@ describe('trigger_create_invoice handler', () => {
           emailContext: invoiceEmailContext,
           conversationId: '1234567890',
           intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
         }],
         page: 1,
         totalPages: 1,
@@ -403,6 +405,7 @@ describe('trigger_create_invoice handler', () => {
           emailContext: supportEmailContext,
           conversationId: '1234567890',
           intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
         }],
         page: 1,
         totalPages: 1,
