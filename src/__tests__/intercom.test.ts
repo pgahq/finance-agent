@@ -4,6 +4,7 @@ import {
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
+  intercomConversationCreatedAtToIsoDate,
   IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
   IntercomNotFoundError,
@@ -62,6 +63,16 @@ describe('intercom', () => {
     });
   });
 
+  describe('intercomConversationCreatedAtToIsoDate', () => {
+    it('converts Unix seconds to YYYY-MM-DD', () => {
+      expect(intercomConversationCreatedAtToIsoDate(1704067200)).toBe('2024-01-01');
+    });
+
+    it('returns undefined for invalid values', () => {
+      expect(intercomConversationCreatedAtToIsoDate(Number.NaN)).toBeUndefined();
+    });
+  });
+
   describe('assertAllowedAttachmentUrl', () => {
     it('allows https Intercom CDN and attachment hosts', () => {
       expect(assertAllowedAttachmentUrl('https://downloads.intercomcdn.com/i/o/file.pdf').host)
@@ -97,6 +108,7 @@ describe('intercom', () => {
         json: async () => ({
           id: '123',
           app_id: 'sandbox-app',
+          created_at: 1704067200,
           source: {
             subject: 'Invoice',
             body: 'Please process this invoice',
@@ -124,6 +136,7 @@ describe('intercom', () => {
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
         appId: 'sandbox-app',
+        conversationCreatedAt: '2024-01-01',
         attachments: [
           {
             name: 'support.pdf',
@@ -159,6 +172,47 @@ describe('intercom', () => {
           }),
         }),
       );
+    });
+
+    it('ignores non-numeric created_at and still returns invoice attachments', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          app_id: 'sandbox-app',
+          created_at: 'not-a-timestamp',
+          source: {
+            subject: 'Invoice',
+            body: 'Please process',
+            author: { email: 'ap@vendor.com' },
+            attachments: [
+              {
+                name: 'invoice.pdf',
+                url: 'https://downloads.intercomcdn.com/invoice.pdf',
+                content_type: 'application/pdf',
+              },
+            ],
+          },
+          conversation_parts: { conversation_parts: [] },
+        }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+        appId: 'sandbox-app',
+        attachments: [
+          {
+            name: 'invoice.pdf',
+            url: 'https://downloads.intercomcdn.com/invoice.pdf',
+            contentType: 'application/pdf',
+            emailContext: {
+              emailFrom: 'ap@vendor.com',
+              subject: 'Invoice',
+              plainTextBody: 'Please process',
+            },
+          },
+        ],
+      });
     });
 
     it('throws IntercomNotFoundError on 404', async () => {

@@ -117,6 +117,7 @@ export interface CreateInvoiceRequest {
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
+  conversationCreatedAt?: string;
 }
 
 function slackInvoiceDetails(
@@ -143,7 +144,7 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId } = request;
+  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId, conversationCreatedAt } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -369,6 +370,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       buildNotes,
       memo,
       invoiceDate: extractedInvoiceDate,
+      ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
