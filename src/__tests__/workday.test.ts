@@ -2708,6 +2708,20 @@ describe('Workday utilities', () => {
         expect(lines[0].Extended_Amount).toBe(1250);
       });
 
+      it('should recover Extended_Amount from unit cost on amount-only lines when extended amount is null', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{ lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 250, extendedAmount: null }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(250);
+      });
+
       it('should keep Purchase_Order_Line_Reference when invoice has no quantity column', async () => {
         const { getCapturedRequest } = setupMockClient();
 

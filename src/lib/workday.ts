@@ -995,6 +995,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = line.hasDiscount === true;
     const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
+    const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
@@ -1002,7 +1003,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ? {
             Quantity: 0,
             Unit_Cost: 0,
-            ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+            ...(extendedAmountForSoap != null && { Extended_Amount: extendedAmountForSoap }),
           }
         : {
             Quantity: line.quantity ?? 1,

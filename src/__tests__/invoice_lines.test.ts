@@ -668,9 +668,23 @@ describe('splitFreightLines', () => {
 });
 
 describe('resolveInvoiceLineQuantityDisplayed', () => {
-  it('returns explicit true or false from the model', () => {
+  it('returns explicit true or false from the model when lines lack quantity', () => {
     expect(resolveInvoiceLineQuantityDisplayed(true, [])).toBe(true);
-    expect(resolveInvoiceLineQuantityDisplayed(false, [{ description: 'A', quantity: 2, totalPrice: '10' }])).toBe(false);
+    expect(resolveInvoiceLineQuantityDisplayed(false, [{ description: 'A', quantity: null, totalPrice: '10' }])).toBe(false);
+  });
+
+  it('treats the document as quantity-displayed when any extracted line has quantity', () => {
+    const lines = [{ description: 'Widgets', quantity: 2, totalPrice: '100.00' }];
+    expect(resolveInvoiceLineQuantityDisplayed(false, lines)).toBe(true);
+    expect(resolveInvoiceLineQuantityDisplayed(undefined, lines)).toBe(true);
+  });
+
+  it('keeps explicit true when every line lacks quantity but has amounts', () => {
+    const lines = [
+      { description: 'Service A', quantity: null, totalPrice: '100.00' },
+      { description: 'Service B', quantity: null, unitCost: '50.00' },
+    ];
+    expect(resolveInvoiceLineQuantityDisplayed(true, lines)).toBe(true);
   });
 
   it('infers false when every line lacks quantity but has amounts', () => {
@@ -686,13 +700,6 @@ describe('resolveInvoiceLineQuantityDisplayed', () => {
     expect(resolveInvoiceLineQuantityDisplayed(undefined, lines)).toBe(true);
   });
 
-  it('overrides true when every line lacks quantity but has amounts', () => {
-    const lines = [
-      { description: 'Service A', quantity: null, totalPrice: '100.00' },
-      { description: 'Service B', quantity: null, unitCost: '50.00' },
-    ];
-    expect(resolveInvoiceLineQuantityDisplayed(true, lines)).toBe(false);
-  });
 });
 
 describe('applyMissingQuantityColumnLines', () => {
@@ -712,5 +719,11 @@ describe('applyMissingQuantityColumnLines', () => {
     const lines = [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -25 }];
     const result = applyMissingQuantityColumnLines(lines, false);
     expect(result[0]).toMatchObject({ hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -25 });
+  });
+
+  it('copies unit cost onto extended amount when extended amount is missing', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: null, unitCost: 250, extendedAmount: null }];
+    const result = applyMissingQuantityColumnLines(lines, false);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 250 });
   });
 });
