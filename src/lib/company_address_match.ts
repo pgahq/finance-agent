@@ -71,7 +71,7 @@ function resultMatchesBillToAddress<T extends { metadata?: Record<string, unknow
   return cachedCompanyAddresses(result.metadata).some((address) => addressesShareStreet(billToAddress, address));
 }
 
-export function rankCompaniesByAddress<T extends { metadata?: Record<string, unknown> | null }>(
+export function tagCompaniesByAddress<T extends { metadata?: Record<string, unknown> | null }>(
   results: T[],
   billToAddress: string | undefined
 ): { results: Array<T & { addressMatch: CompanyAddressMatch }>; addressMatch: CompanyAddressMatch } {
@@ -92,16 +92,44 @@ export function rankCompaniesByAddress<T extends { metadata?: Record<string, unk
       ? 'unique'
       : 'shared';
 
-  const tagged = results.map((result, index) => ({
-    ...result,
-    addressMatch: matchedIndexes.includes(index) ? addressMatch : 'none',
-  }));
+  return {
+    addressMatch,
+    results: results.map((result, index) => ({
+      ...result,
+      addressMatch: matchedIndexes.includes(index) ? addressMatch : 'none' as const,
+    })),
+  };
+}
 
-  if (addressMatch === 'none') {
-    return { results: tagged, addressMatch };
+export function includeCompaniesMatchingBillToAddress<T extends {
+  workday_id: string;
+  metadata?: Record<string, unknown> | null;
+}>(
+  nameResults: T[],
+  cachedCompanies: T[] | undefined,
+  billToAddress: string | undefined
+): { results: Array<T & { addressMatch: CompanyAddressMatch }>; addressMatch: CompanyAddressMatch } {
+  if (!billToAddress?.trim() || !cachedCompanies?.length) {
+    return tagCompaniesByAddress(nameResults, billToAddress);
   }
 
-  const matched = tagged.filter((_, index) => matchedIndexes.includes(index));
-  const unmatched = tagged.filter((_, index) => !matchedIndexes.includes(index));
-  return { results: [...matched, ...unmatched], addressMatch };
+  const fromCache = tagCompaniesByAddress(cachedCompanies, billToAddress);
+  if (fromCache.addressMatch === 'none') {
+    return tagCompaniesByAddress(nameResults, billToAddress);
+  }
+
+  const hitIds = new Set(
+    fromCache.results.filter((row) => row.addressMatch !== 'none').map((row) => row.workday_id)
+  );
+  const nameIds = new Set(nameResults.map((row) => row.workday_id));
+  const taggedName = nameResults.map((row) => ({
+    ...row,
+    addressMatch: hitIds.has(row.workday_id) ? fromCache.addressMatch : 'none' as const,
+  }));
+  const extras = fromCache.results.filter((row) => row.addressMatch !== 'none' && !nameIds.has(row.workday_id));
+
+  return {
+    addressMatch: fromCache.addressMatch,
+    results: [...taggedName, ...extras],
+  };
 }

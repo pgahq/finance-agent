@@ -7,7 +7,8 @@ jest.mock('@pga/logger', () => ({
 
 jest.mock('../lib/database.js', () => ({
   getDatabaseConnection: jest.fn(),
-  searchDocuments: jest.fn()
+  searchDocuments: jest.fn(),
+  getDocumentsByType: jest.fn().mockResolvedValue([])
 }));
 
 // Mock fetch for OpenAI API
@@ -17,10 +18,12 @@ describe('rag', () => {
   const mockDebug = require('@pga/logger').debug;
   const mockGetDatabaseConnection = require('../lib/database.js').getDatabaseConnection;
   const mockSearchDocuments = require('../lib/database.js').searchDocuments;
+  const mockGetDocumentsByType = require('../lib/database.js').getDocumentsByType;
   const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetDocumentsByType.mockResolvedValue([]);
     process.env.OPENAI_API_KEY = 'test-api-key';
   });
 
@@ -491,7 +494,7 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('reranks PGA of America above a section using the bill-to street', async () => {
+    it('tags a unique bill-to street without reordering name results', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([
         {
@@ -536,11 +539,66 @@ Primary Address: 100 PGA Tour Blvd`);
       );
       expect(result.addressMatch).toBe('unique');
       expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
-        'pga-wid',
         'wisconsin-wid',
+        'pga-wid',
       ]);
-      expect(result.results[0].similarity).toBe(0.65);
-      expect(result.results[0].addressMatch).toBe('unique');
+      expect(result.results[0].similarity).toBe(1);
+      expect(result.results[0].addressMatch).toBe('none');
+      expect(result.results[1].addressMatch).toBe('unique');
+    });
+
+    it('appends a unique cached street when name search only returned sections', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      mockGetDocumentsByType.mockResolvedValueOnce([
+        {
+          workday_id: 'georgia-wid',
+          content: 'Company Name: Georgia Section PGA of America, Inc.',
+          metadata: {
+            companyName: 'Georgia Section PGA of America, Inc.',
+            addressPrimary: '123 Main Street, Atlanta, GA 30301',
+          },
+          created_at: new Date('2026-01-01T00:00:00Z'),
+        },
+        {
+          workday_id: 'pga-wid',
+          content: 'Company Name: The Professional Golfers Association of America',
+          metadata: {
+            companyName: 'The Professional Golfers Association of America',
+            companyReferenceId: '310',
+            addressPrimary: '1916 PGA Parkway, Frisco, TX 75033',
+          },
+          created_at: new Date('2026-01-01T00:00:00Z'),
+        },
+      ]);
+      mockSearchDocuments.mockResolvedValue([
+        {
+          workday_id: 'georgia-wid',
+          type: 'company',
+          content: 'Company Name: Georgia Section PGA of America, Inc.',
+          metadata: {
+            companyName: 'Georgia Section PGA of America, Inc.',
+            addressPrimary: '123 Main Street, Atlanta, GA 30301',
+          },
+          similarity: 1,
+        },
+      ]);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
+      } as any);
+
+      const result = await findCompaniesTool.execute({
+        query: 'PGA of America',
+        address: '1916 PGA Parkway, Frisco, TX 75033',
+      });
+
+      expect(result.addressMatch).toBe('unique');
+      expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
+        'georgia-wid',
+        'pga-wid',
+      ]);
+      expect(result.results[0].addressMatch).toBe('none');
+      expect(result.results[1].addressMatch).toBe('unique');
     });
 
     it('recovers a concatenated bill-to remainder for rerank', async () => {
@@ -584,10 +642,15 @@ Primary Address: 100 PGA Tour Blvd`);
         })
       );
       expect(result.addressMatch).toBe('unique');
-      expect(result.results[0].workdayId).toBe('pga-wid');
+      expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
+        'wisconsin-wid',
+        'pga-wid',
+      ]);
+      expect(result.results[1].workdayId).toBe('pga-wid');
+      expect(result.results[1].addressMatch).toBe('unique');
     });
 
-    it('lists shared headquarters ahead of a section at a different street', async () => {
+    it('tags shared headquarters without moving them ahead of other name hits', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([
         {
@@ -630,9 +693,14 @@ Primary Address: 100 PGA Tour Blvd`);
 
       expect(result.addressMatch).toBe('shared');
       expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
+        'wisconsin-wid',
         'jr-wid',
         'pga-wid',
-        'wisconsin-wid',
+      ]);
+      expect(result.results.map((row: { addressMatch: string }) => row.addressMatch)).toEqual([
+        'none',
+        'shared',
+        'shared',
       ]);
     });
   });
