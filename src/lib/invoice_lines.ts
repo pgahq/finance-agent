@@ -368,7 +368,16 @@ export function resolveInvoiceLineQuantityDisplayed(
   flag: boolean | undefined | null,
   extractedLines: ExtractedInvoiceLine[]
 ): boolean {
-  if (flag === true) return true;
+  if (flag === true) {
+    if (
+      extractedLines.length > 0
+      && extractedLines.every(l => l.quantity == null)
+      && extractedLines.some(l => l.totalPrice || l.unitCost)
+    ) {
+      return false;
+    }
+    return true;
+  }
   if (flag === false) return false;
   if (
     extractedLines.length > 0

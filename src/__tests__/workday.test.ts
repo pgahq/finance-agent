@@ -1871,6 +1871,65 @@ describe('Workday utilities', () => {
       ]);
     });
 
+    it('should use quantity zero on remainder Invoice line when invoice has no quantity column', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'Ground Shipping',
+                  Quantity: '1',
+                  Unit_Cost: '15',
+                  Extended_Amount: '15'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        extractedFreightAmount: '$15.00',
+        invoiceLineQuantityDisplayed: false,
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 0,
+          Unit_Cost: 0,
+          Extended_Amount: 100,
+        })
+      ]);
+    });
+
     it('should split a single SOAP OCR line object so freight-only updates replace that row with a remainder Invoice line', async () => {
       const mockClient = {
         setSecurity: jest.fn(),

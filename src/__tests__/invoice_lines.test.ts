@@ -685,6 +685,14 @@ describe('resolveInvoiceLineQuantityDisplayed', () => {
     const lines = [{ description: 'Widgets', quantity: 2, totalPrice: '100.00' }];
     expect(resolveInvoiceLineQuantityDisplayed(undefined, lines)).toBe(true);
   });
+
+  it('overrides true when every line lacks quantity but has amounts', () => {
+    const lines = [
+      { description: 'Service A', quantity: null, totalPrice: '100.00' },
+      { description: 'Service B', quantity: null, unitCost: '50.00' },
+    ];
+    expect(resolveInvoiceLineQuantityDisplayed(true, lines)).toBe(false);
+  });
 });
 
 describe('applyMissingQuantityColumnLines', () => {

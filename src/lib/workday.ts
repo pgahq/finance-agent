@@ -1065,9 +1065,10 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       invoiceLines = [{
         Line_Order: 1,
         Item_Description: 'Invoice',
-        Quantity: 1,
-        Unit_Cost: remainder,
-        Extended_Amount: remainder,
+        ...(invoiceLineQuantityDisplayed === false
+          ? { Quantity: 0, Unit_Cost: 0, Extended_Amount: remainder }
+          : { Quantity: 1, Unit_Cost: remainder, Extended_Amount: remainder }
+        ),
         ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
         ...(fallbackSpendCategoryId && {
           Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId),
