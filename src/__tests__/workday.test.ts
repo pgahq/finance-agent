@@ -2635,6 +2635,44 @@ describe('Workday utilities', () => {
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
+      it('should set Quantity and Unit_Cost to 0 with Extended_Amount when invoice has no quantity column', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{ lineOrder: 1, description: 'Janitorial services', quantity: 0, unitCost: 0, extendedAmount: 1250 }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1250);
+      });
+
+      it('should keep Purchase_Order_Line_Reference when invoice has no quantity column', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Janitorial services',
+            quantity: 0,
+            unitCost: 0,
+            extendedAmount: 1250,
+            purchaseOrderLineId: 'POL-001',
+          }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1250);
+        expect(lines[0].Purchase_Order_Line_Reference).toEqual({
+          ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }]
+        });
+      });
+
       it('should include Purchase_Order_Line_Reference when purchaseOrderLineId is present', async () => {
         const { getCapturedRequest } = setupMockClient();
 

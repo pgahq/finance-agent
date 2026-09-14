@@ -118,6 +118,7 @@ const baseEnrichmentResult = {
   extractedTaxAmount: null,
   extractedPurchaseOrderNumber: null,
   extractedPaymentTerms: null,
+  invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [
     { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
   ],
@@ -270,6 +271,35 @@ describe('create_invoice', () => {
     ]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+  });
+
+  it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'Janitorial', quantity: null, unitCost: null, totalPrice: '1250.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Janitorial', quantity: null, unitCost: null, extendedAmount: 1250 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-no-qty/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][6]).toBe(false);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceLineQuantityDisplayed).toBe(false);
+    expect(submitArgs.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1250,
+    });
   });
 
   it('should not synthesize a merchandise line that re-includes freight on a freight-only invoice', async () => {

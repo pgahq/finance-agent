@@ -462,6 +462,7 @@ interface buildSubmitInvoiceDataOptions {
   extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
 }
@@ -873,7 +874,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -993,10 +994,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
     ], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = line.hasDiscount === true;
+    const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
-      ...(isDiscountOverride
+      ...(isDiscountOverride || isExtendedAmountOnly
         ? {
             Quantity: 0,
             Unit_Cost: 0,
@@ -1799,6 +1801,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
@@ -1818,6 +1821,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId
@@ -1874,6 +1878,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
@@ -1908,6 +1913,7 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
@@ -1930,6 +1936,7 @@ export async function submitNewSupplierInvoice(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId,
@@ -1975,6 +1982,7 @@ export async function submitNewSupplierInvoice(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,

@@ -117,6 +117,8 @@ Tax and freight/shipping/handling are header amounts, not invoice lines:
 
 If the PDF lists shipping/handling as a line item, capture the amount on `Freight_Amount` and omit that row from the SOAP line payload. `splitFreightLines` in `src/lib/invoice_lines.ts` strips those rows before merge/PO matching and again when building the SOAP body. The matcher treats carrier-only service labels (`FedEx Ground`, `FedEx Home Delivery`, `UPS Ground`) and common service words (`standard`, `priority`, `2-Day`, `air`/`ocean` freight, `surcharge`, `freight in`/`out`) as freight, and still rejects merchandise lookalikes (`Shipping Container`, `Freightliner parts`, `Shipping Supplies`). Amount recovery reads SOAP `Unit_Cost` and `Quantity` when `Extended_Amount` is missing.
 
+When the invoice document does not display a per-line quantity column (`invoiceLineQuantityDisplayed: false` from enrichment), merchandise lines submit as `Quantity: 0`, `Unit_Cost: 0`, and `Extended_Amount` equal to the line total. This is distinct from discount lines (`hasDiscount`), which use the same SOAP amounts but drop `Purchase_Order_Line_Reference`.
+
 Create vs update when no merchandise lines remain:
 
 - **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping. Create has no OCR lines, so do not send `[]`.
