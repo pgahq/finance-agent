@@ -227,7 +227,10 @@ export function formatInvoiceLinesNotes(result: InvoiceEnrichmentResult): string
     if (line.totalPrice) parts.push(`Total: ${line.totalPrice}`);
     return `${i + 1}. ${parts.join(' | ')}`;
   });
-  return `\n\nInvoice Lines (from document):\n${lineTexts.join('\n')}`;
+  const noQtyNote = result.invoiceLineQuantityDisplayed === false
+    ? '\n(Document has no quantity column — lines will submit with Quantity 0 and Extended Amount from line total.)'
+    : '';
+  return `\n\nInvoice Lines (from document):\n${lineTexts.join('\n')}${noQtyNote}`;
 }
 
 export function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string {
