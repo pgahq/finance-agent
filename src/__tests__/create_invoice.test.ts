@@ -302,6 +302,34 @@ describe('create_invoice', () => {
     });
   });
 
+  it('should submit amount-only lines when quantity times unit cost does not equal extended amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'Sintra Signs', quantity: 37, unitCost: '29.88', totalPrice: '1105.49', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-qty-mismatch/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceLineQuantityDisplayed).toBeUndefined();
+    expect(submitArgs.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1105.49,
+    });
+  });
+
   it('should not synthesize a merchandise line that re-includes freight on a freight-only invoice', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({

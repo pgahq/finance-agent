@@ -24,8 +24,8 @@ import {
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import {
   applyDefaultCompanyLineWorktags,
-  applyMissingQuantityColumnLines,
   buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -345,7 +345,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
-      finalLines = applyMissingQuantityColumnLines(finalLines, invoiceLineQuantityDisplayed);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const appliedRecommended = selectedCompany.source === 'recommended';

@@ -434,6 +434,12 @@ export function isLineOfBusinessRelatedWorktagError(text: unknown): boolean {
   return isRequiredLineOfBusinessWorktagError(text) || isDisallowedLineOfBusinessWorktagError(text);
 }
 
+export function isQuantityUnitExtendedMismatchError(text: unknown): boolean {
+  return /Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity \* Unit Cost/i.test(
+    asValidationText(text)
+  );
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }
