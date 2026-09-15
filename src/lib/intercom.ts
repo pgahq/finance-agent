@@ -22,6 +22,7 @@ export interface IntercomAttachment {
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
   appId?: string;
+  assigneeEmail?: string;
   conversationCreatedAt?: string;
 }
 
@@ -72,8 +73,12 @@ const intercomAttachmentSchema = z.object({
   url: z.string().optional(),
   content_type: z.string().optional(),
 });
-const intercomAuthorSchema = z.object({ email: z.string().nullable().optional() });
+const intercomAuthorSchema = z.object({
+  email: z.string().nullable().optional(),
+  type: z.string().nullable().optional(),
+});
 const intercomConversationPartSchema = z.object({
+  part_type: z.string().optional(),
   body: z.string().nullable().optional(),
   author: intercomAuthorSchema.optional(),
   attachments: z.array(intercomAttachmentSchema).optional(),
@@ -126,6 +131,16 @@ export function buildIntercomConversationUrl(
   if (!id || !workspaceId) return undefined;
 
   return `https://app.intercom.com/a/inbox/${encodeURIComponent(workspaceId)}/inbox/conversation/${encodeURIComponent(id)}`;
+}
+
+export function resolveCustomActionStarterEmail(
+  conversation: IntercomConversationResponse,
+): string | undefined {
+  const parts = conversation.conversation_parts?.conversation_parts ?? [];
+  const customActionParts = parts.filter((part) => part.part_type === 'custom_action_started');
+  const lastPart = customActionParts[customActionParts.length - 1];
+  const email = lastPart?.author?.email?.trim();
+  return email && email.includes('@') ? email : undefined;
 }
 
 function appendBodySegment(segments: string[], body: string | null | undefined): void {
@@ -276,6 +291,11 @@ export async function fetchConversationInvoiceData(
     attachmentCount: invoiceAttachments.length,
   });
 
+  const assigneeEmail = resolveCustomActionStarterEmail(conversation);
+  if (assigneeEmail) {
+    debug('Resolved assignee email from custom_action_started', { conversationId, assigneeEmail });
+  }
+
   const conversationCreatedAt = conversation.created_at != null
     ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
     : undefined;
@@ -286,6 +306,7 @@ export async function fetchConversationInvoiceData(
       name: sanitizeFileName(attachment.name),
     })),
     ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
+    ...(assigneeEmail ? { assigneeEmail } : {}),
     ...(conversationCreatedAt ? { conversationCreatedAt } : {}),
   };
 }

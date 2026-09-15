@@ -84,6 +84,7 @@ references:
             AddonEnvironment=$ADDON_ENVIRONMENT
             GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
             GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
+            WorkdayApAgentWorkersReportPath=$WORKDAY_AP_AGENT_WORKERS_REPORT_PATH
       - run:
           name: Publish Gmail Workspace add-on
           command: |
@@ -162,6 +163,7 @@ jobs:
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: c722leqk
       ADDON_ENVIRONMENT: sandbox
+      WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: ""
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -177,6 +179,7 @@ jobs:
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: jyi16dpc
       ADDON_ENVIRONMENT: production
+      WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: ""
 
 workflows:
   version: 2

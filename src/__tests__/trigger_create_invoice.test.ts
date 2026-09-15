@@ -432,4 +432,34 @@ describe('trigger_create_invoice handler', () => {
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
+  it('forwards assigneeEmail from the conversation to the processor payload', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      assigneeEmail: 'jcarey@pgahq.com',
+      attachments: [conversationInvoiceData.attachments[0]],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    await handler(buildEvent());
+
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: invoiceEmailContext,
+          conversationId: '1234567890',
+          intercomAppId: 'sandbox-app',
+          assigneeEmail: 'jcarey@pgahq.com',
+          conversationCreatedAt: '2024-01-01',
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+  });
+
 });

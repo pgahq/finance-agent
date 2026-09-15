@@ -43,6 +43,8 @@ Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
 
+`employee` documents cache rows from the **Worker Assignment For AP Agent** custom report (`metadata.email` for exact assignee lookup on create-invoice). Populated by `cache_employees`, not WQL.
+
 ## Cache prune
 
 `syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing

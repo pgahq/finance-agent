@@ -440,6 +440,10 @@ export function isQuantityUnitExtendedMismatchError(text: unknown): boolean {
   );
 }
 
+export function isAssigneeValidationError(text: unknown): boolean {
+  return /\bassignee\b/i.test(asValidationText(text));
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

@@ -30,6 +30,10 @@ jest.mock('../lib/workday.js', () => ({
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] })
 }));
 
+jest.mock('../lib/employees.js', () => ({
+  getEmployeeWidByEmail: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../lib/database.js', () => ({
   getDatabaseConnection: jest.fn().mockResolvedValue({
     query: jest.fn().mockResolvedValue([]),
@@ -139,6 +143,7 @@ function freshRequire() {
   return {
     processor,
     workday: require('../lib/workday.js'),
+    employees: require('../lib/employees.js'),
     slack: require('../lib/slack.js'),
     invoiceEnrichment: require('../lib/invoice_enrichment.js'),
     invoiceLines: require('../lib/invoice_lines.js'),
@@ -171,6 +176,28 @@ describe('create_invoice', () => {
     delete process.env.FALLBACK_COST_CENTER_ID;
     delete process.env.FALLBACK_SPEND_CATEGORY_ID;
     delete process.env.FALLBACK_LOB_ID;
+  });
+
+  it('passes assigneeWID when the AP agent employee cache matches assigneeEmail', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, workday, invoiceEnrichment, invoiceLines, employees } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    employees.getEmployeeWidByEmail.mockResolvedValue({
+      workdayId: 'wid-jcarey',
+      name: 'Joe Carey',
+    });
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-1/invoice.pdf'),
+        assigneeEmail: 'jcarey@pgahq.com',
+      }],
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.assigneeWID).toBe('wid-jcarey');
+    expect(employees.getEmployeeWidByEmail).toHaveBeenCalledWith(expect.anything(), 'jcarey@pgahq.com');
   });
 
   it('should create a new supplier invoice from an uploaded attachment', async () => {
@@ -216,6 +243,7 @@ describe('create_invoice', () => {
       contentType: 'application/pdf',
       base64Content: Buffer.from('fake-pdf-content').toString('base64')
     });
+    expect(submitArgs.assigneeWID).toBeUndefined();
 
     expect(slack.notifyResult).toHaveBeenCalledWith(
       'create_invoice',

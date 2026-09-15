@@ -17,4 +17,12 @@ describe('SAM template', () => {
     expect(circleci).toMatch(/INTERCOM_APP_ID:\s*c722leqk/);
     expect(circleci).toMatch(/INTERCOM_APP_ID:\s*jyi16dpc/);
   });
+
+  it('wires WORKDAY_AP_AGENT_WORKERS_REPORT_PATH from WorkdayApAgentWorkersReportPath', () => {
+    expect(globals).toMatch(/WorkdayApAgentWorkersReportPath:/);
+    expect(globals).toMatch(
+      /WORKDAY_AP_AGENT_WORKERS_REPORT_PATH:\s*!Ref WorkdayApAgentWorkersReportPath/,
+    );
+    expect(circleci).toMatch(/WorkdayApAgentWorkersReportPath=\$WORKDAY_AP_AGENT_WORKERS_REPORT_PATH/);
+  });
 });

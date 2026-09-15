@@ -188,6 +188,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         processorFields: {
           conversationId,
           ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+          ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
           ...(conversationData.conversationCreatedAt
             ? { conversationCreatedAt: conversationData.conversationCreatedAt }
             : {}),
