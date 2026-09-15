@@ -194,6 +194,53 @@ export async function executeWorkdayQuery(
   };
 }
 
+export function getApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string {
+  const reportPath = env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH?.trim();
+  if (!reportPath) {
+    throw new Error('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is required');
+  }
+  return reportPath;
+}
+
+export async function executeWorkdayCustomReport(
+  config: WorkdayConfig,
+  reportPath: string,
+): Promise<unknown> {
+  const trimmedPath = reportPath.trim();
+  if (!trimmedPath) {
+    throw new Error('Workday custom report path is required');
+  }
+
+  const accessToken = await getAccessToken(config);
+  const encodedPath = trimmedPath
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const url = `https://${config.domain}/ccx/service/customreport2/${config.tenant}/${encodedPath}?format=json`;
+
+  debug('Fetching Workday custom report', { reportPath: trimmedPath });
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Workday custom report error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new Error('Workday custom report returned invalid JSON');
+  }
+}
+
 async function buildFinancialManagementClient(
   context: { workdayConfig: WorkdayConfig }
 ): Promise<any> {
@@ -464,6 +511,7 @@ interface buildSubmitInvoiceDataOptions {
   finalLines?: FinalInvoiceLine[];
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
+  assigneeWID?: string;
 }
 
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
@@ -873,7 +921,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1086,6 +1134,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
+    ...(assigneeWID && { Assignee_Reference: createReference('WID', assigneeWID) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
@@ -1912,6 +1961,7 @@ export interface SubmitNewSupplierInvoiceParams {
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
   attachment: { fileName: string; contentType: string; base64Content: string };
+  assigneeWID?: string;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -1933,7 +1983,8 @@ export async function submitNewSupplierInvoice(
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId,
-    attachment
+    attachment,
+    assigneeWID,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -1978,7 +2029,8 @@ export async function submitNewSupplierInvoice(
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
-      attachment
+      attachment,
+      assigneeWID,
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',

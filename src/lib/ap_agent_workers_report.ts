@@ -1,0 +1,127 @@
+/**
+ * Parses rows from the Workday custom report "Worker Assignment For AP Agent".
+ */
+
+export interface ApAgentWorkerRow {
+  workdayId: string;
+  email: string;
+  name?: string;
+  employeeId?: string;
+}
+
+function normalizeHeaderKey(key: string): string {
+  return key
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+function cellValue(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>;
+    const descriptor = record.descriptor ?? record.Descriptor;
+    if (typeof descriptor === 'string' && descriptor.trim()) {
+      return descriptor.trim();
+    }
+    const id = record.id ?? record.$value;
+    if (typeof id === 'string' && id.trim()) {
+      return id.trim();
+    }
+  }
+  return undefined;
+}
+
+function readField(row: Record<string, unknown>, ...headerHints: string[]): string | undefined {
+  const normalizedHints = new Set(headerHints.map(normalizeHeaderKey));
+  for (const [key, value] of Object.entries(row)) {
+    if (normalizedHints.has(normalizeHeaderKey(key))) {
+      return cellValue(value);
+    }
+  }
+  return undefined;
+}
+
+function isTruthyYes(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'active';
+}
+
+function isTerminated(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'terminated';
+}
+
+export function normalizeEmployeeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | undefined {
+  if (!row || typeof row !== 'object') return undefined;
+  const record = row as Record<string, unknown>;
+
+  const workdayId = readField(record, 'Workday ID', 'Workday_ID', 'workdayId', 'worker');
+  const emailRaw = readField(
+    record,
+    'Primary Work - Email',
+    'Primary_Work_-_Email',
+    'Primary Work Email',
+    'email_PrimaryWork',
+    'PrimaryWorkEmail',
+  );
+  if (!workdayId || !emailRaw) return undefined;
+
+  const activeStatus = readField(record, 'Active Status', 'Active_Status', 'activeStatus');
+  if (activeStatus && !isTruthyYes(activeStatus)) return undefined;
+
+  const terminated = readField(record, 'Terminated', 'terminated');
+  if (isTerminated(terminated)) return undefined;
+
+  const email = normalizeEmployeeEmail(emailRaw);
+  if (!email.includes('@')) return undefined;
+
+  const name = readField(record, 'Full Legal Name', 'Full_Legal_Name', 'fullLegalName');
+  const employeeId = readField(record, 'Employee ID', 'Employee_ID', 'employeeId');
+
+  return {
+    workdayId,
+    email,
+    ...(name ? { name } : {}),
+    ...(employeeId ? { employeeId } : {}),
+  };
+}
+
+export function extractApAgentWorkerReportEntries(payload: unknown): unknown[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as Record<string, unknown>;
+
+  const reportEntry = record.Report_Entry ?? record.report_Entry ?? record.report_entry;
+  if (Array.isArray(reportEntry)) return reportEntry;
+  if (reportEntry && typeof reportEntry === 'object') return [reportEntry];
+
+  if (Array.isArray(payload)) return payload;
+
+  const data = record.data;
+  if (Array.isArray(data)) return data;
+
+  return [];
+}
+
+export function parseApAgentWorkerReport(payload: unknown): ApAgentWorkerRow[] {
+  const entries = extractApAgentWorkerReportEntries(payload);
+  const parsed: ApAgentWorkerRow[] = [];
+  for (const entry of entries) {
+    const row = parseApAgentWorkerReportRow(entry);
+    if (row) parsed.push(row);
+  }
+  return parsed;
+}

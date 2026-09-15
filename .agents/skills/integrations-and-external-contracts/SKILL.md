@@ -33,8 +33,11 @@ Flow:
 2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
-6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
+5. Resolve **assignee email** from the same conversation GET: among `conversation_parts.conversation_parts`, use the **last** part with `part_type === "custom_action_started"` and take `author.email` (any `author.type`). Forward as `assigneeEmail` on each processor invoke.
+6. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext` and shared `assigneeEmail`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
+7. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
+
+**Workday assignee on create:** `CreateInvoiceProcessor` looks up `assigneeEmail` in the daily **Worker Assignment For AP Agent** custom report cache (`employee` documents, exact email match). When a Worker WID is found, SOAP `Submit_Supplier_Invoice` includes `Assignee_Reference`; when the part is missing, email is blank, or there is no cache match, **omit** `Assignee_Reference` (create still succeeds). Cache job: `CacheEmployees` / `CacheEmployeesProcessor` via `WORKDAY_AP_AGENT_WORKERS_REPORT_PATH` (`customreport2` JSON).
 
 `CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **Default OCR Company** (`Company_Reference_ID` `Default_OCR_Company`, or `WORKDAY_DEFAULT_COMPANY_WID` when set) and skips early PO lines.
 

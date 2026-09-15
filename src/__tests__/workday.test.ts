@@ -3367,8 +3367,28 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
       });
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Assignee_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
+      });
+    });
+
+    it('includes Assignee_Reference when assigneeWID is provided', async () => {
+      const mockClient = mockSoapClient();
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
+          },
+        });
+      });
+
+      await submitNewSupplierInvoiceForTest({ assigneeWID: 'assignee-worker-wid' });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Assignee_Reference).toEqual({
+        ID: [{ $attributes: { type: 'WID' }, $value: 'assignee-worker-wid' }],
       });
     });
 
