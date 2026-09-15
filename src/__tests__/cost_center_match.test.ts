@@ -4,6 +4,7 @@ import {
   isDoNotUseCostCenter,
   rankCostCenterSearchResults,
   shouldSkipDoNotUsePenalty,
+  shouldSkipDoNotUseTieBreak,
 } from '../lib/cost_center_match.js';
 
 describe('isDoNotUseCostCenter', () => {
@@ -26,6 +27,12 @@ describe('shouldSkipDoNotUsePenalty', () => {
 
   it('does not skip for a normal name query', () => {
     expect(shouldSkipDoNotUsePenalty('Legal', { code: 'zDNU-CC6015', name: 'Legal Dept' })).toBe(false);
+  });
+
+  it('skips tie-break for DNU-prefixed queries', () => {
+    expect(shouldSkipDoNotUseTieBreak('DNU Legal')).toBe(true);
+    expect(shouldSkipDoNotUseTieBreak('zDNU-CC6015')).toBe(true);
+    expect(shouldSkipDoNotUseTieBreak('Legal')).toBe(false);
   });
 });
 
@@ -86,5 +93,26 @@ describe('rankCostCenterSearchResults', () => {
     );
 
     expect(results[0]?.metadata?.code).toBe('CC-Legal Dept');
+  });
+
+  it('does not rerank on DNU tie-break when query starts with DNU', () => {
+    const results = rankCostCenterSearchResults(
+      [
+        {
+          workday_id: 'dnu-wid',
+          similarity: 1,
+          metadata: { code: 'zDNU-CC6015', name: 'zDNU-CC6015 Legal Dept' },
+        },
+        {
+          workday_id: 'active-wid',
+          similarity: 1,
+          metadata: { code: 'CC-Legal Dept', name: 'CC-Legal Dept' },
+        },
+      ],
+      'DNU Legal'
+    );
+
+    expect(results[0]?.workday_id).toBe('dnu-wid');
+    expect(results[1]?.workday_id).toBe('active-wid');
   });
 });

@@ -504,6 +504,25 @@ describe('pickTopReferenceMatch', () => {
       { type: 'cost_center', workdayId: 'cc-1', referenceId: '912', confidence: 1 },
     ])).toBeUndefined();
   });
+
+  it('prefers non-DNU cost center when same-type confidence ties', () => {
+    expect(pickTopReferenceMatch([
+      {
+        type: 'cost_center',
+        workdayId: 'dnu-wid',
+        referenceId: 'zDNU-CC6015',
+        name: 'zDNU-CC6015 Legal Dept',
+        confidence: 0.88,
+      },
+      {
+        type: 'cost_center',
+        workdayId: 'active-wid',
+        referenceId: 'CC-Legal Dept',
+        name: 'CC-Legal Dept',
+        confidence: 0.88,
+      },
+    ])).toEqual(expect.objectContaining({ workdayId: 'active-wid' }));
+  });
 });
 
 describe('findCachedReferenceMatches', () => {
@@ -576,6 +595,7 @@ describe('findCachedReferenceMatches', () => {
     expect(matches[0]?.workdayId).toBe('active-wid');
     expect(matches[0]?.confidence).toBe(0.88);
     expect(matches[1]?.confidence).toBe(0.88);
+    expect(pickTopReferenceMatch(matches)).toEqual(expect.objectContaining({ workdayId: 'active-wid' }));
   });
 });
 

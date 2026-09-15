@@ -24,6 +24,12 @@ export function shouldSkipDoNotUsePenalty(
   if (code && code.toLowerCase() === trimmed.toLowerCase()) {
     return true;
   }
+  return shouldSkipDoNotUseTieBreak(trimmed);
+}
+
+export function shouldSkipDoNotUseTieBreak(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return false;
   return DO_NOT_USE_PREFIX.test(trimmed);
 }
 
@@ -66,9 +72,11 @@ export function rankCostCenterSearchResults<T extends CostCenterRankableResult>(
     }))
     .sort((left, right) => {
       if (right.adjusted !== left.adjusted) return right.adjusted - left.adjusted;
-      const leftDnu = isDoNotUseCostCenter(left.result.metadata) ? 1 : 0;
-      const rightDnu = isDoNotUseCostCenter(right.result.metadata) ? 1 : 0;
-      if (leftDnu !== rightDnu) return leftDnu - rightDnu;
+      if (!shouldSkipDoNotUseTieBreak(query)) {
+        const leftDnu = isDoNotUseCostCenter(left.result.metadata) ? 1 : 0;
+        const rightDnu = isDoNotUseCostCenter(right.result.metadata) ? 1 : 0;
+        if (leftDnu !== rightDnu) return leftDnu - rightDnu;
+      }
       return left.index - right.index;
     })
     .map(({ result, adjusted }) => ({
