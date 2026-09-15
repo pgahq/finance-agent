@@ -810,6 +810,97 @@ describe('Workday utilities', () => {
       jest.useRealTimers();
     });
 
+    it('should retry quantity times unit cost faults by zeroing quantity and unit cost', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '1105.49'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.',
+                Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Extended_Amount'
+              }
+            }
+          }, null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        finalLines: [{
+          lineOrder: 1,
+          description: 'Sintra Signs',
+          quantity: 37,
+          unitCost: 29.88,
+          extendedAmount: 1105.49,
+        }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.',
+        },
+      ]);
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'invoiceLineAmounts',
+            label: 'quantity and unit cost set to zero',
+          }),
+        ])
+      );
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 37,
+        Unit_Cost: 29.88,
+        Extended_Amount: 1105.49,
+      });
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 1105.49,
+      });
+
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
 
@@ -1301,6 +1392,49 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2026-04-01');
 
       jest.useRealTimers();
+    });
+
+    it('preserves Invoice_Received_Date from Get on update when invoiceReceivedDate is not set', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Invoice_Received_Date: '2024-06-15',
+              Control_Amount_Total: '100.00'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Received_Date).toBe('2024-06-15');
     });
 
     it('should preserve optional fields when present', async () => {
@@ -1866,6 +2000,65 @@ describe('Workday utilities', () => {
           Item_Description: 'Invoice',
           Quantity: 1,
           Unit_Cost: 100,
+          Extended_Amount: 100,
+        })
+      ]);
+    });
+
+    it('should use quantity zero on remainder Invoice line when invoice has no quantity column', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '115.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'Ground Shipping',
+                  Quantity: '1',
+                  Unit_Cost: '15',
+                  Extended_Amount: '15'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        extractedFreightAmount: '$15.00',
+        invoiceLineQuantityDisplayed: false,
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Line_Order: 1,
+          Item_Description: 'Invoice',
+          Quantity: 0,
+          Unit_Cost: 0,
           Extended_Amount: 100,
         })
       ]);
@@ -2633,6 +2826,71 @@ describe('Workday utilities', () => {
         expect(lines[0].Unit_Cost).toBe(0);
         expect(lines[0].Extended_Amount).toBe(-50);
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+      });
+
+      it('should set Quantity and Unit_Cost to 0 with Extended_Amount when invoice has no quantity column', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{ lineOrder: 1, description: 'Janitorial services', quantity: 0, unitCost: 0, extendedAmount: 1250 }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1250);
+      });
+
+      it('should keep Quantity and Unit_Cost at 0 on the quantity-displayed SOAP path', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 0, unitCost: 0, extendedAmount: 1105.49 }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1105.49);
+      });
+
+      it('should recover Extended_Amount from unit cost on amount-only lines when extended amount is null', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{ lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 250, extendedAmount: null }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(250);
+      });
+
+      it('should keep Purchase_Order_Line_Reference when invoice has no quantity column', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Janitorial services',
+            quantity: 0,
+            unitCost: 0,
+            extendedAmount: 1250,
+            purchaseOrderLineId: 'POL-001',
+          }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1250);
+        expect(lines[0].Purchase_Order_Line_Reference).toEqual({
+          ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }]
+        });
       });
 
       it('should include Purchase_Order_Line_Reference when purchaseOrderLineId is present', async () => {
@@ -3436,6 +3694,7 @@ describe('Workday utilities', () => {
         $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
         File_Content: 'ZmFrZS1wZGYtY29udGVudA=='
       }]);
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Received_Date).toBeUndefined();
       expect(debug).toHaveBeenCalledWith(
         'Submit_Supplier_Invoice outbound HTTP headers (attachment present)',
         {
@@ -3449,6 +3708,20 @@ describe('Workday utilities', () => {
       );
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('secret-access-token');
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
+    });
+
+    it('sets Invoice_Received_Date when invoiceReceivedDate is provided', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({ invoiceReceivedDate: '2024-01-01' });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Received_Date).toBe('2024-01-01');
     });
 
     it('should set Currency_Reference when currencyWID is provided', async () => {

@@ -23,6 +23,7 @@ export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
   appId?: string;
   assigneeEmail?: string;
+  conversationCreatedAt?: string;
 }
 
 export class IntercomNotFoundError extends Error {
@@ -85,6 +86,7 @@ const intercomConversationPartSchema = z.object({
 const intercomConversationSchema = z.object({
   id: z.string().optional(),
   app_id: z.string().optional(),
+  created_at: z.number().optional().catch(undefined),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),
@@ -105,6 +107,19 @@ export function getIntercomConfig(env: NodeJS.ProcessEnv): IntercomConfig {
 
   const apiBaseUrl = (env.INTERCOM_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
   return { accessToken, apiBaseUrl };
+}
+
+/** Intercom conversation created_at is Unix seconds; returns YYYY-MM-DD for Workday xsd:date. */
+export function intercomConversationCreatedAtToIsoDate(createdAt: number): string | undefined {
+  if (!Number.isFinite(createdAt)) {
+    return undefined;
+  }
+  const ms = createdAt > 1e12 ? createdAt : createdAt * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  return date.toISOString().split('T')[0];
 }
 
 export function buildIntercomConversationUrl(
@@ -128,11 +143,32 @@ export function resolveCustomActionStarterEmail(
   return email && email.includes('@') ? email : undefined;
 }
 
+function appendBodySegment(segments: string[], body: string | null | undefined): void {
+  if (body == null) {
+    return;
+  }
+  const trimmed = body.trim();
+  if (trimmed.length > 0) {
+    segments.push(body);
+  }
+}
+
+/** Source email body plus non-empty conversation part bodies, in API order. */
+export function buildIntercomPlainTextBody(conversation: IntercomConversationResponse): string | undefined {
+  const segments: string[] = [];
+  appendBodySegment(segments, conversation.source?.body);
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    appendBodySegment(segments, part.body);
+  }
+  return segments.length > 0 ? segments.join('\n\n') : undefined;
+}
+
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
-  const sourceContext = {
+  const plainTextBody = buildIntercomPlainTextBody(conversation);
+  const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
-    plainTextBody: conversation.source?.body || undefined,
+    plainTextBody,
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -152,7 +188,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
       mapAttachments(part.attachments ?? [], {
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
-        plainTextBody: part.body || sourceContext.plainTextBody,
+        plainTextBody,
       })
     ),
   ];
@@ -259,6 +295,10 @@ export async function fetchConversationInvoiceData(
     debug('Resolved assignee email from custom_action_started', { conversationId, assigneeEmail });
   }
 
+  const conversationCreatedAt = conversation.created_at != null
+    ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
+    : undefined;
+
   return {
     attachments: invoiceAttachments.map((attachment) => ({
       ...attachment,
@@ -266,6 +306,7 @@ export async function fetchConversationInvoiceData(
     })),
     ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
     ...(assigneeEmail ? { assigneeEmail } : {}),
+    ...(conversationCreatedAt ? { conversationCreatedAt } : {}),
   };
 }
 

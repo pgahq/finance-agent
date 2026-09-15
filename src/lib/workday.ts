@@ -1,9 +1,9 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyRelatedLobWorktags, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   extractLineOfBusinessId,
@@ -493,6 +493,7 @@ interface buildSubmitInvoiceDataOptions {
   notes?: string;
   memo?: string;
   invoiceDate?: string;
+  invoiceReceivedDate?: string;
   paymentTermsWID?: string;
   applyFundFallback?: boolean;
   applyCostCenterFallback?: boolean;
@@ -509,13 +510,16 @@ interface buildSubmitInvoiceDataOptions {
   extractedTaxAmount?: string;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
+  applyAmountOnlyLineRetry?: boolean;
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
   assigneeWID?: string;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
-const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts'>;
+const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
   field: FallbackField;
@@ -595,7 +599,7 @@ function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions)
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
-  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob } = options;
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob, applyAmountOnlyLineRetry } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -637,6 +641,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (omitLobWorktag) {
     fallbacks.push({ field: 'worktag:lob', label: 'omitted Line of Business worktag' });
+  }
+
+  if (applyAmountOnlyLineRetry) {
+    fallbacks.push({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' });
   }
 
   return fallbacks;
@@ -735,7 +743,7 @@ async function ensureRelatedLobByCostCenter(
   }
 }
 
-function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): FallbackField[] {
+function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): ClassifierFallbackField[] {
   return FALLBACK_FIELDS.filter(field => getFallbackRetryBuildOptions(options, field));
 }
 
@@ -773,11 +781,38 @@ function getLineOfBusinessFillRetryBuildOptions(
   return getRelatedLobRetryBuildOptions(options) ?? getFallbackLobRetryBuildOptions(options);
 }
 
+function getAmountOnlyLineRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  if (options.applyAmountOnlyLineRetry) return undefined;
+  const lines = options.finalLines;
+  if (!lines?.length || !lines.some(lineHasQuantityOrUnitAndExtended)) return undefined;
+  return {
+    buildOptions: {
+      ...options,
+      finalLines: applyAmountOnlyLineRetry(lines),
+      applyAmountOnlyLineRetry: true,
+    },
+    fallbackLabel: 'quantity and unit cost set to zero',
+  };
+}
+
 async function getValidationFallbackField(
   error: unknown,
   validationError: string,
   options: buildSubmitInvoiceDataOptions
 ): Promise<FallbackField | undefined> {
+  const validationText = collectWorkdayValidationErrorText(error) || validationError;
+
+  if (isQuantityUnitExtendedMismatchError(validationText)) {
+    if (getAmountOnlyLineRetryBuildOptions(options)) {
+      debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
+      return 'invoiceLineAmounts';
+    }
+    debug('Validation is quantity * unit cost vs extended amount but no eligible lines; skipping amount-only retry');
+    return undefined;
+  }
+
   const retryableFallbackFields = getRetryableFallbackFields(options);
   if (retryableFallbackFields.length === 0) {
     debug('No unused fallback values are available for this validation fault; skipping fallback retry', {
@@ -786,7 +821,6 @@ async function getValidationFallbackField(
     return undefined;
   }
 
-  const validationText = collectWorkdayValidationErrorText(error) || validationError;
   const validation = parseWorkdayValidationDetails(error) ?? { message: validationError };
 
   if (isRequiredLineOfBusinessWorktagError(validationText)) {
@@ -917,11 +951,15 @@ function getFallbackRetryBuildOptions(
     }
   }
 
+  if (field === 'invoiceLineAmounts') {
+    return getAmountOnlyLineRetryBuildOptions(options);
+  }
+
   return undefined;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1041,14 +1079,16 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
     ], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = line.hasDiscount === true;
+    const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
+    const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
-      ...(isDiscountOverride
+      ...(isDiscountOverride || isExtendedAmountOnly
         ? {
             Quantity: 0,
             Unit_Cost: 0,
-            ...(line.extendedAmount != null && { Extended_Amount: line.extendedAmount }),
+            ...(extendedAmountForSoap != null && { Extended_Amount: extendedAmountForSoap }),
           }
         : {
             Quantity: line.quantity ?? 1,
@@ -1111,9 +1151,10 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       invoiceLines = [{
         Line_Order: 1,
         Item_Description: 'Invoice',
-        Quantity: 1,
-        Unit_Cost: remainder,
-        Extended_Amount: remainder,
+        ...(invoiceLineQuantityDisplayed === false
+          ? { Quantity: 0, Unit_Cost: 0, Extended_Amount: remainder }
+          : { Quantity: 1, Unit_Cost: remainder, Extended_Amount: remainder }
+        ),
         ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
         ...(fallbackSpendCategoryId && {
           Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId),
@@ -1131,7 +1172,15 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ? createReference('Currency_ID', currencyWID)
       : currentInvoice.Currency_Reference ?? createReference('Currency_ID', 'USD'),
     Invoice_Date: resolveInvoiceDate(currentInvoice, invoiceDate),
-    ...(currentInvoice.Invoice_Received_Date && { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }),
+    ...(() => {
+      const override = normalizeInvoiceDate(options.invoiceReceivedDate);
+      if (override) {
+        return { Invoice_Received_Date: override };
+      }
+      return currentInvoice.Invoice_Received_Date
+        ? { Invoice_Received_Date: currentInvoice.Invoice_Received_Date }
+        : {};
+    })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
     ...(assigneeWID && { Assignee_Reference: createReference('WID', assigneeWID) }),
@@ -1848,6 +1897,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
@@ -1867,6 +1917,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId
@@ -1923,6 +1974,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
@@ -1952,11 +2004,13 @@ export interface SubmitNewSupplierInvoiceParams {
   buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
   memo?: string;
   invoiceDate?: string;
+  invoiceReceivedDate?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
+  invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
@@ -1975,11 +2029,13 @@ export async function submitNewSupplierInvoice(
     buildNotes,
     memo,
     invoiceDate,
+    invoiceReceivedDate,
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
     finalLines,
+    invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId,
@@ -2021,11 +2077,13 @@ export async function submitNewSupplierInvoice(
       workQueueTags,
       memo,
       invoiceDate,
+      invoiceReceivedDate,
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,

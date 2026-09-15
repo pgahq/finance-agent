@@ -26,7 +26,9 @@ import { getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
   parseExtractedAmount,
+  resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
 } from './lib/invoice_lines.js';
 import {
@@ -117,6 +119,7 @@ export interface CreateInvoiceRequest {
   conversationId?: string;
   intercomAppId?: string;
   assigneeEmail?: string;
+  conversationCreatedAt?: string;
 }
 
 function slackInvoiceDetails(
@@ -143,7 +146,16 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId, assigneeEmail } = request;
+  const {
+    s3Key,
+    fileName,
+    contentType,
+    emailContext,
+    conversationId,
+    intercomAppId,
+    assigneeEmail,
+    conversationCreatedAt,
+  } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -245,6 +257,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
+    const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
+      result.invoiceLineQuantityDisplayed,
+      candidateLines
+    );
+
     const fallbackIds = {
       fundId: process.env.FALLBACK_FUND_ID,
       costCenterId: process.env.FALLBACK_COST_CENTER_ID,
@@ -269,7 +286,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailContext?.plainTextBody,
       fallbackIds,
       emailWorktags,
-      relatedLobLookup
+      relatedLobLookup,
+      invoiceLineQuantityDisplayed
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -291,8 +309,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
             // Keep memo on the invoice header. A freight-like memo would be
             // stripped again in the SOAP builder and drop this remainder line.
             description: 'Invoice',
-            quantity: 1,
-            unitCost: String(remainder),
+            quantity: invoiceLineQuantityDisplayed ? 1 : null,
+            unitCost: invoiceLineQuantityDisplayed ? String(remainder) : null,
             totalPrice: String(remainder),
             hasDiscount: null,
           }],
@@ -300,7 +318,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           emailContext?.plainTextBody,
           fallbackIds,
           emailWorktags,
-          relatedLobLookup
+          relatedLobLookup,
+          invoiceLineQuantityDisplayed
         );
         finalLines = synthetic.lines;
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -311,8 +330,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         const synthetic = await buildFinalInvoiceLines(
           [{
             description: 'Invoice',
-            quantity: 1,
-            unitCost: extractedAmountDue ?? null,
+            quantity: invoiceLineQuantityDisplayed ? 1 : null,
+            unitCost: invoiceLineQuantityDisplayed ? (extractedAmountDue ?? null) : null,
             totalPrice: extractedAmountDue ?? null,
             hasDiscount: null,
           }],
@@ -320,7 +339,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           emailContext?.plainTextBody,
           fallbackIds,
           emailWorktags,
-          relatedLobLookup
+          relatedLobLookup,
+          invoiceLineQuantityDisplayed
         );
         finalLines = synthetic.lines;
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -336,6 +356,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const appliedRecommended = selectedCompany.source === 'recommended';
@@ -347,7 +368,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 
@@ -367,11 +388,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       buildNotes,
       memo,
       invoiceDate: extractedInvoiceDate,
+      ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
       finalLines,
+      invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),

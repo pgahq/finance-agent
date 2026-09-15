@@ -25,7 +25,15 @@ import {
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
-import { buildFinalInvoiceLines, splitFreightLines, type EmailWorktags, type FinalInvoiceLine, type LineFallbacks } from './lib/invoice_lines.js';
+import {
+  buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
+  resolveInvoiceLineQuantityDisplayed,
+  splitFreightLines,
+  type EmailWorktags,
+  type FinalInvoiceLine,
+  type LineFallbacks,
+} from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -215,6 +223,11 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
+    const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
+      result.invoiceLineQuantityDisplayed,
+      candidateLines
+    );
+
     let finalLines: FinalInvoiceLine[] | undefined;
     let lineFallbacks: LineFallbacks | undefined;
     let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
@@ -231,7 +244,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           lineOfBusinessId: process.env.FALLBACK_LOB_ID,
         },
         emailWorktags,
-        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds)
+        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
+        invoiceLineQuantityDisplayed
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -251,10 +265,11 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
       baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
 
@@ -277,6 +292,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedFreightAmount,
         extractedTaxAmount,
         finalLines,
+        invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
         resolveCostCenterWorkdayIds: (costCenterIds) =>
           getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),

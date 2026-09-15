@@ -122,6 +122,7 @@ const baseEnrichmentResult = {
   extractedTaxAmount: null,
   extractedPurchaseOrderNumber: null,
   extractedPaymentTerms: null,
+  invoiceLineQuantityDisplayed: true,
   extractedInvoiceLines: [
     { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
   ],
@@ -298,6 +299,63 @@ describe('create_invoice', () => {
     ]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+  });
+
+  it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'Janitorial', quantity: null, unitCost: null, totalPrice: '1250.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Janitorial', quantity: null, unitCost: null, extendedAmount: 1250 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-no-qty/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][6]).toBe(false);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceLineQuantityDisplayed).toBe(false);
+    expect(submitArgs.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1250,
+    });
+  });
+
+  it('should submit amount-only lines when quantity times unit cost does not equal extended amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'Sintra Signs', quantity: 37, unitCost: '29.88', totalPrice: '1105.49', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-qty-mismatch/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceLineQuantityDisplayed).toBeUndefined();
+    expect(submitArgs.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1105.49,
+    });
   });
 
   it('should not synthesize a merchandise line that re-includes freight on a freight-only invoice', async () => {
@@ -479,6 +537,22 @@ describe('create_invoice', () => {
         ],
       })
     );
+  });
+
+  it('forwards conversationCreatedAt as invoiceReceivedDate to Workday submit', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-received/invoice.pdf'),
+        conversationId: '1234567890',
+        conversationCreatedAt: '2024-03-15',
+      }]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceReceivedDate).toBe('2024-03-15');
   });
 
   it('includes conversationId on Slack error details', async () => {

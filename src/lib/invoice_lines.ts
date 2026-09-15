@@ -364,16 +364,118 @@ export function applyFallbackLineOfBusiness(
   return { lines: next, applied };
 }
 
+export function resolveInvoiceLineQuantityDisplayed(
+  flag: boolean | undefined | null,
+  extractedLines: ExtractedInvoiceLine[]
+): boolean {
+  if (extractedLines.some(l => l.quantity != null)) {
+    return true;
+  }
+  if (flag === true) return true;
+  if (flag === false) return false;
+  if (
+    extractedLines.length > 0
+    && extractedLines.every(l => l.quantity == null)
+    && extractedLines.some(l => l.totalPrice || l.unitCost)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function finalLineExtendedAmount(line: FinalInvoiceLine): number | null {
+  if (line.extendedAmount != null) return line.extendedAmount;
+  if (line.unitCost != null) return line.unitCost;
+  return null;
+}
+
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
+  return {
+    ...line,
+    quantity: 0,
+    unitCost: 0,
+    extendedAmount,
+  };
+}
+
+export function applyMissingQuantityColumnLines(
+  lines: FinalInvoiceLine[],
+  invoiceLineQuantityDisplayed: boolean
+): FinalInvoiceLine[] {
+  if (invoiceLineQuantityDisplayed) return lines;
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    return asAmountOnlyLine(line, finalLineExtendedAmount(line));
+  });
+}
+
+export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    if (line.quantity === 0 && line.unitCost === 0) return line;
+
+    const extendedAmount = line.extendedAmount ?? null;
+    const unitCost = line.unitCost ?? null;
+    const soapQuantity = line.quantity ?? 1;
+
+    if (extendedAmount != null && unitCost == null) {
+      return asAmountOnlyLine(line, extendedAmount);
+    }
+
+    if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
+      return asAmountOnlyLine(line, extendedAmount);
+    }
+
+    return line;
+  });
+}
+
+export function normalizeSupplierInvoiceLineAmounts(
+  lines: FinalInvoiceLine[],
+  invoiceLineQuantityDisplayed: boolean
+): FinalInvoiceLine[] {
+  return alignSupplierInvoiceLineAmounts(
+    applyMissingQuantityColumnLines(lines, invoiceLineQuantityDisplayed)
+  );
+}
+
+function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {
+  return (line.quantity != null && line.quantity !== 0)
+    || (line.unitCost != null && line.unitCost !== 0);
+}
+
+export function lineHasQuantityOrUnitAndExtended(line: FinalInvoiceLine): boolean {
+  return hasNonZeroQuantityOrUnitCost(line) && line.extendedAmount != null;
+}
+
+export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    if (!lineHasQuantityOrUnitAndExtended(line)) return line;
+    return {
+      ...line,
+      quantity: 0,
+      unitCost: 0,
+    };
+  });
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
   emailBody: string | undefined,
   fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
-  relatedLobLookup?: RelatedLobLookup
+  relatedLobLookup?: RelatedLobLookup,
+  invoiceLineQuantityDisplayed?: boolean
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   const mergeInput = {
+    invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,

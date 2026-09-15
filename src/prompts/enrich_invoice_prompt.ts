@@ -88,10 +88,12 @@ export const InvoiceEnrichmentSchema = z.object({
     workdayId: z.string().nullable().describe('The Payment_Terms_ID from Workday after matching via the findPaymentTerms tool. Null if no match found.')
   }).nullable().describe('Payment terms extracted from the invoice and resolved to a Workday ID via findPaymentTerms. Null if no payment terms are visible on the document.'),
 
+  invoiceLineQuantityDisplayed: z.boolean().describe('True if the invoice line table shows a per-line quantity column or per-line quantity values (Qty, Quantity, etc.). False if the document has no quantity column or no per-line quantity values anywhere on the line items. When false, every extracted line must have quantity null — do not infer quantity from math.'),
+
   extractedInvoiceLines: z.array(z.object({
     description: z.string().describe('Line item description as it appears on the invoice'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
-    unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated.'),
+    unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.')
   })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
@@ -313,12 +315,16 @@ If no payment terms are visible on the document, omit \`extractedPaymentTerms\` 
 
 ## Part 9: Invoice Lines
 
+First, set \`invoiceLineQuantityDisplayed\` from the document layout (column headers and visible cells on the line table), not from guessing or math:
+- **true** when the invoice shows a quantity column or per-line quantity values (Qty, Quantity, etc.)
+- **false** when there is no quantity column and no per-line quantity values on the merchandise lines
+
 Extract the individual line items from the invoice document:
 
 1. For each line item, extract:
    - **Description**: The item description or service name as it appears on the invoice
-   - **Quantity**: The quantity ordered/delivered (if stated)
-   - **Unit Cost**: The price per unit (if stated)
+   - **Quantity**: The quantity ordered/delivered when \`invoiceLineQuantityDisplayed\` is true and a value is shown. When \`invoiceLineQuantityDisplayed\` is false, leave quantity **null** on every line — do not infer quantity from unit cost and total.
+   - **Unit Cost**: The price per unit only when a unit price is printed (a unit-price / rate column or per-unit value). When it is not stated, leave unitCost **null** — do not compute it from quantity and total.
    - **Total Price**: The total/extended price for the line (if stated)
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.

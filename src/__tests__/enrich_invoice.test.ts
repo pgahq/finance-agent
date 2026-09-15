@@ -822,6 +822,123 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'Janitorial', quantity: null, unitCost: null, totalPrice: '1250.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Janitorial', quantity: null, unitCost: null, extendedAmount: 1250 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][6]).toBe(false);
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.invoiceLineQuantityDisplayed).toBe(false);
+    expect(params.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1250,
+    });
+  });
+
+  it('should submit amount-only lines when quantity times unit cost does not equal extended amount', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'Sintra Signs', quantity: 37, unitCost: '29.88', totalPrice: '1105.49', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.invoiceLineQuantityDisplayed).toBeUndefined();
+    expect(params.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1105.49,
+    });
+  });
+
   it('should put extracted identifiers on the header and line memos', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
