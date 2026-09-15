@@ -4040,6 +4040,7 @@ describe('Workday utilities', () => {
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
         ],
         shipToAddressId: null,
+        splitLineData: [],
       });
     });
 
@@ -4166,23 +4167,29 @@ describe('Workday utilities', () => {
       const lines = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
+      expect(lines[0].splitLineData).toHaveLength(2);
     });
 
-    it('should return empty worktags when splits have differing worktags', () => {
+    it('should return merged worktags and split rows when splits have differing worktags', () => {
       const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const ccAlpha = makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha');
+      const ccBeta = makeWorktag('Cost_Center_Reference_ID', 'CC-Beta');
       const response = makePoResponse({
         Line_Number: 1,
         Description: 'Split line with differing worktags',
         Extended_Amount: 11000,
         Service_Purchase_Order_Line_Split_Data: [
-          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
-          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+          makeSplit([ccAlpha]),
+          makeSplit([ccBeta]),
         ],
       });
 
       const lines = parsePurchaseOrderLines(response);
 
-      expect(lines[0].worktagsReference).toEqual([]);
+      expect(lines[0].worktagsReference).toEqual([ccAlpha, ccBeta]);
+      expect(lines[0].splitLineData).toHaveLength(2);
+      expect(lines[0].splitLineData?.[0].worktagReference).toEqual([ccAlpha]);
+      expect(lines[0].splitLineData?.[1].worktagReference).toEqual([ccBeta]);
     });
 
     it('should use split worktags for goods lines when all splits share the same worktags', () => {
@@ -4209,8 +4216,10 @@ describe('Workday utilities', () => {
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
 
-    it('should return empty worktags for goods lines when splits differ', () => {
+    it('should return merged worktags and split rows for goods lines when splits differ', () => {
       const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const ccAlpha = makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha');
+      const ccBeta = makeWorktag('Cost_Center_Reference_ID', 'CC-Beta');
       const response = {
         Response_Data: {
           Purchase_Order: {
@@ -4221,8 +4230,8 @@ describe('Workday utilities', () => {
                 Item_Description: 'Goods with differing splits',
                 Extended_Amount: 5000,
                 Goods_Purchase_Order_Line_Split_Data: [
-                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
-                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+                  makeSplit([ccAlpha]),
+                  makeSplit([ccBeta]),
                 ],
               },
             },
@@ -4232,7 +4241,51 @@ describe('Workday utilities', () => {
 
       const lines = parsePurchaseOrderLines(response);
 
-      expect(lines[0].worktagsReference).toEqual([]);
+      expect(lines[0].worktagsReference).toEqual([ccAlpha, ccBeta]);
+      expect(lines[0].splitLineData).toHaveLength(2);
+    });
+
+    it('should merge Purchase_Order_Line_Worktags_Data with line Worktags_Reference', () => {
+      const programWorktag = makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-A');
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'Line with additional worktags',
+        Extended_Amount: 1000,
+        Worktags_Reference: [makeWorktag('Fund_ID', 'FUND-A')],
+        Purchase_Order_Line_Worktags_Data: [{ Worktag_Reference: [programWorktag] }],
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual([
+        makeWorktag('Fund_ID', 'FUND-A'),
+        programWorktag,
+      ]);
+    });
+
+    it('should parse Service_Line_Replacement_Data from Get_Purchase_Orders shape', () => {
+      const response = {
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Service_Line_Replacement_Data: {
+                Line_Number: 1,
+                Service_Order_Line_ID: 'POL-99',
+                Description: 'Replacement data line',
+                Extended_Amount: 2500,
+                Worktags_Reference: [makeWorktag('Cost_Center_Reference_ID', 'CC-100')],
+              },
+            },
+          },
+        },
+      };
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].purchaseOrderLineId).toBe('POL-99');
+      expect(lines[0].worktagsReference).toEqual([makeWorktag('Cost_Center_Reference_ID', 'CC-100')]);
     });
   });
 
