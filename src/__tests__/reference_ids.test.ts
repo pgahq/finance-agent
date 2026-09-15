@@ -521,6 +521,36 @@ describe('findCachedReferenceMatches', () => {
 
     await expect(findCachedReferenceMatches(db, '912')).rejects.toThrow('embedding down');
   });
+
+  it('deprioritizes zDNU cost centers on inexact lookup for Legal', async () => {
+    mockFindDocumentsByReferenceId.mockResolvedValue([]);
+    mockSearchDocumentsByTypes.mockResolvedValue([
+      {
+        workday_id: 'dnu-wid',
+        type: 'cost_center',
+        content: 'zDNU-CC6015 Legal Dept',
+        metadata: { code: 'zDNU-CC6015', name: 'zDNU-CC6015 Legal Dept' },
+        similarity: 1,
+      },
+      {
+        workday_id: 'active-wid',
+        type: 'cost_center',
+        content: 'CC-Legal Dept',
+        metadata: { code: 'CC-Legal Dept', name: 'CC-Legal Dept' },
+        similarity: 1,
+      },
+    ]);
+
+    const matches = await findCachedReferenceMatches(db, 'Legal');
+
+    expect(matches[0]).toEqual(expect.objectContaining({
+      type: 'cost_center',
+      workdayId: 'active-wid',
+      referenceId: 'CC-Legal Dept',
+      confidence: 1,
+    }));
+    expect(matches[1]?.confidence).toBe(0.88);
+  });
 });
 
 describe('resolveReferenceCodesFromText', () => {

@@ -9,6 +9,7 @@ import {
   type DatabaseConnection,
   type DocumentType,
 } from './database.js';
+import { adjustCostCenterSimilarity } from './cost_center_match.js';
 import { createEmbedding } from './rag.js';
 
 export const REFERENCE_CODE_DOCUMENT_TYPES = [
@@ -147,8 +148,15 @@ async function findSimilarReferenceMatches(
   const embedding = await createEmbedding(code);
   const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
   return rows
-    .map((row) => mapDocumentToReferenceMatch(row, code, Number(row.similarity) || 0))
-    .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE);
+    .map((row) => {
+      const rawConfidence = Number(row.similarity) || 0;
+      const confidence = row.type === 'cost_center'
+        ? adjustCostCenterSimilarity(rawConfidence, row.metadata, code)
+        : rawConfidence;
+      return mapDocumentToReferenceMatch(row, code, confidence);
+    })
+    .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE)
+    .sort((left, right) => right.confidence - left.confidence);
 }
 
 export async function resolveMatchesForCode(
