@@ -2751,6 +2751,19 @@ describe('Workday utilities', () => {
         expect(lines[0].Extended_Amount).toBe(1250);
       });
 
+      it('should keep Quantity and Unit_Cost at 0 on the quantity-displayed SOAP path', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          finalLines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 0, unitCost: 0, extendedAmount: 1105.49 }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(1105.49);
+      });
+
       it('should recover Extended_Amount from unit cost on amount-only lines when extended amount is null', async () => {
         const { getCapturedRequest } = setupMockClient();
 

@@ -389,6 +389,19 @@ function finalLineExtendedAmount(line: FinalInvoiceLine): number | null {
   return null;
 }
 
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
+  return {
+    ...line,
+    quantity: 0,
+    unitCost: 0,
+    extendedAmount,
+  };
+}
+
 export function applyMissingQuantityColumnLines(
   lines: FinalInvoiceLine[],
   invoiceLineQuantityDisplayed: boolean
@@ -396,14 +409,38 @@ export function applyMissingQuantityColumnLines(
   if (invoiceLineQuantityDisplayed) return lines;
   return lines.map(line => {
     if (line.hasDiscount === true) return line;
-    const extendedAmount = finalLineExtendedAmount(line);
-    return {
-      ...line,
-      quantity: 0,
-      unitCost: 0,
-      extendedAmount,
-    };
+    return asAmountOnlyLine(line, finalLineExtendedAmount(line));
   });
+}
+
+export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    if (line.quantity === 0 && line.unitCost === 0) return line;
+
+    const extendedAmount = line.extendedAmount ?? null;
+    const unitCost = line.unitCost ?? null;
+    const soapQuantity = line.quantity ?? 1;
+
+    if (extendedAmount != null && unitCost == null) {
+      return asAmountOnlyLine(line, extendedAmount);
+    }
+
+    if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
+      return asAmountOnlyLine(line, extendedAmount);
+    }
+
+    return line;
+  });
+}
+
+export function normalizeSupplierInvoiceLineAmounts(
+  lines: FinalInvoiceLine[],
+  invoiceLineQuantityDisplayed: boolean
+): FinalInvoiceLine[] {
+  return alignSupplierInvoiceLineAmounts(
+    applyMissingQuantityColumnLines(lines, invoiceLineQuantityDisplayed)
+  );
 }
 
 export async function buildFinalInvoiceLines(
