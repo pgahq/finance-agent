@@ -125,3 +125,37 @@ export function parseApAgentWorkerReport(payload: unknown): ApAgentWorkerRow[] {
   }
   return parsed;
 }
+
+export type ApAgentWorkerReportEntryDisposition = 'included' | 'excluded' | 'unparseable';
+
+/** Classifies report rows for cache sync: inactive/terminated are intentional exclusions, not fetch gaps. */
+export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerReportEntryDisposition {
+  if (parseApAgentWorkerReportRow(entry)) {
+    return 'included';
+  }
+  if (!entry || typeof entry !== 'object') {
+    return 'unparseable';
+  }
+  const record = entry as Record<string, unknown>;
+  const activeStatus = readField(record, 'Active Status', 'Active_Status', 'activeStatus');
+  if (activeStatus && !isTruthyYes(activeStatus)) {
+    return 'excluded';
+  }
+  const terminated = readField(record, 'Terminated', 'terminated');
+  if (isTerminated(terminated)) {
+    return 'excluded';
+  }
+  const workdayId = readField(record, 'Workday ID', 'Workday_ID', 'workdayId', 'worker');
+  const emailRaw = readField(
+    record,
+    'Primary Work - Email',
+    'Primary_Work_-_Email',
+    'Primary Work Email',
+    'email_PrimaryWork',
+    'PrimaryWorkEmail',
+  );
+  if (!workdayId && !emailRaw) {
+    return 'unparseable';
+  }
+  return 'unparseable';
+}

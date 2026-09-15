@@ -1,6 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import {
+  classifyApAgentWorkerReportEntry,
   extractApAgentWorkerReportEntries,
   parseApAgentWorkerReport,
 } from './lib/ap_agent_workers_report.js';
@@ -18,22 +19,25 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
 
   const payload = await executeWorkdayCustomReport(context.workdayConfig, reportPath);
   const reportEntries = extractApAgentWorkerReportEntries(payload);
-  const workers = parseApAgentWorkerReport(payload);
 
   if (reportEntries.length === 0) {
     debug('AP agent workers report returned no entries - skipping sync without prune');
     return;
   }
 
-  if (workers.length === 0) {
-    debug('AP agent workers report had entries but none parsed - skipping sync without prune', {
+  const dispositions = reportEntries.map(classifyApAgentWorkerReportEntry);
+  if (dispositions.includes('unparseable')) {
+    debug('AP agent workers report has unparseable rows - skipping sync without prune', {
       reportEntryCount: reportEntries.length,
     });
     return;
   }
 
+  const workers = parseApAgentWorkerReport(payload);
+
   debug(`Processing ${workers.length} AP agent workers from Workday report`, {
     reportEntryCount: reportEntries.length,
+    excludedEntryCount: dispositions.filter((d) => d === 'excluded').length,
   });
 
   const items = new Map(
@@ -48,7 +52,7 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     ])
   );
 
-  const sourceTotal = reportEntries.length;
+  const sourceTotal = workers.length;
   const sourceFetchedCount = workers.length;
 
   await syncDataSource({

@@ -3650,6 +3650,49 @@ describe('Workday utilities', () => {
       });
     });
 
+    it('retries without Assignee_Reference when Workday rejects the assignee', async () => {
+      const mockClient = mockSoapClient();
+      const assigneeFault = Object.assign(
+        new Error('The assignee is not valid for this supplier invoice.'),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'The assignee is not valid for this supplier invoice.',
+              },
+            },
+          },
+        },
+      );
+
+      const capturedRequests: unknown[] = [];
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((request: unknown, callback: (err: Error | null, result: unknown) => void) => {
+          capturedRequests.push(request);
+          callback(assigneeFault, null);
+        })
+        .mockImplementationOnce((request: unknown, callback: (err: Error | null, result: unknown) => void) => {
+          capturedRequests.push(request);
+          callback(null, {
+            Supplier_Invoice_Reference: {
+              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
+            },
+          });
+        });
+
+      const result = await submitNewSupplierInvoiceForTest({ assigneeWID: 'bad-assignee-wid' });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      const firstData = (capturedRequests[0] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      const secondData = (capturedRequests[1] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(firstData.Assignee_Reference).toBeDefined();
+      expect(secondData.Assignee_Reference).toBeUndefined();
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
+      );
+    });
+
     it('omits invoiceNumber when Get Invoice_Number fails after create', async () => {
       const mockClient = mockSoapClient();
       mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {

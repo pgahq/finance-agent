@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -520,10 +520,11 @@ interface buildSubmitInvoiceDataOptions {
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
   assigneeWID?: string;
+  omitAssigneeReference?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee'>;
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -650,6 +651,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (applyAmountOnlyLineRetry) {
     fallbacks.push({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' });
+  }
+
+  if (options.omitAssigneeReference) {
+    fallbacks.push({ field: 'assignee', label: 'omitted assignee' });
   }
 
   return fallbacks;
@@ -809,6 +814,11 @@ async function getValidationFallbackField(
 ): Promise<FallbackField | undefined> {
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
+  if (options.assigneeWID && isAssigneeValidationError(validationText)) {
+    debug('Validation references assignee; retrying without Assignee_Reference');
+    return 'assignee';
+  }
+
   if (isQuantityUnitExtendedMismatchError(validationText)) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
       debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
@@ -960,11 +970,18 @@ function getFallbackRetryBuildOptions(
     return getAmountOnlyLineRetryBuildOptions(options);
   }
 
+  if (field === 'assignee' && options.assigneeWID) {
+    return {
+      buildOptions: { ...options, assigneeWID: undefined, omitAssigneeReference: true },
+      fallbackLabel: 'omitted assignee',
+    };
+  }
+
   return undefined;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1188,7 +1205,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
-    ...(assigneeWID && { Assignee_Reference: createReference('WID', assigneeWID) }),
+    ...(assigneeWID && !omitAssigneeReference && { Assignee_Reference: createReference('WID', assigneeWID) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,

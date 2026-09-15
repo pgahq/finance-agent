@@ -1,4 +1,5 @@
 import {
+  classifyApAgentWorkerReportEntry,
   normalizeEmployeeEmail,
   parseApAgentWorkerReport,
   parseApAgentWorkerReportRow,
@@ -20,6 +21,17 @@ describe('ap_agent_workers_report', () => {
       name: 'Joseph A Carey Jr.',
       employeeId: 'PGA000001',
     });
+  });
+
+  it('classifies inactive rows as intentional exclusions', () => {
+    expect(classifyApAgentWorkerReportEntry({
+      'Workday ID': 'wid-inactive',
+      'Primary Work - Email': 'inactive@pgahq.com',
+      'Active Status': 'No',
+    })).toBe('excluded');
+    expect(classifyApAgentWorkerReportEntry({
+      'Active Status': 'Yes',
+    })).toBe('unparseable');
   });
 
   it('skips inactive and terminated rows', () => {
