@@ -1,6 +1,28 @@
-import { executeWorkdayCustomReport } from '../lib/workday.js';
+import {
+  executeWorkdayCustomReport,
+  getApAgentWorkersReportPath,
+  tryGetApAgentWorkersReportPath,
+} from '../lib/workday.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
+
+describe('AP agent workers report path env', () => {
+  it('returns undefined when WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is unset', () => {
+    expect(tryGetApAgentWorkersReportPath({})).toBeUndefined();
+    expect(tryGetApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: '  ' })).toBeUndefined();
+  });
+
+  it('getApAgentWorkersReportPath throws when unset', () => {
+    expect(() => getApAgentWorkersReportPath({})).toThrow('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is required');
+  });
+
+  it('trims and returns the configured path', () => {
+    expect(tryGetApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: ' owner/report ' }))
+      .toBe('owner/report');
+    expect(getApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: 'owner/report' }))
+      .toBe('owner/report');
+  });
+});
 
 describe('executeWorkdayCustomReport', () => {
   const config = {

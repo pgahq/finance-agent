@@ -7,12 +7,7 @@ import {
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { createEmployeeContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
-import { executeWorkdayCustomReport } from './lib/workday.js';
-
-function tryGetApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string | undefined {
-  const reportPath = env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH?.trim();
-  return reportPath || undefined;
-}
+import { executeWorkdayCustomReport, tryGetApAgentWorkersReportPath } from './lib/workday.js';
 
 async function syncEmployeesFromReport(context: ProcessingContext): Promise<void> {
   const reportPath = tryGetApAgentWorkersReportPath(process.env);
