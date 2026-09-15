@@ -128,11 +128,32 @@ export function buildIntercomConversationUrl(
   return `https://app.intercom.com/a/inbox/${encodeURIComponent(workspaceId)}/inbox/conversation/${encodeURIComponent(id)}`;
 }
 
+function appendBodySegment(segments: string[], body: string | null | undefined): void {
+  if (body == null) {
+    return;
+  }
+  const trimmed = body.trim();
+  if (trimmed.length > 0) {
+    segments.push(body);
+  }
+}
+
+/** Source email body plus non-empty conversation part bodies, in API order. */
+export function buildIntercomPlainTextBody(conversation: IntercomConversationResponse): string | undefined {
+  const segments: string[] = [];
+  appendBodySegment(segments, conversation.source?.body);
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    appendBodySegment(segments, part.body);
+  }
+  return segments.length > 0 ? segments.join('\n\n') : undefined;
+}
+
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
-  const sourceContext = {
+  const plainTextBody = buildIntercomPlainTextBody(conversation);
+  const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
-    plainTextBody: conversation.source?.body || undefined,
+    plainTextBody,
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -152,7 +173,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
       mapAttachments(part.attachments ?? [], {
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
-        plainTextBody: part.body || sourceContext.plainTextBody,
+        plainTextBody,
       })
     ),
   ];

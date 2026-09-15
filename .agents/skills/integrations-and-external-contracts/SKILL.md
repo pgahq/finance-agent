@@ -33,7 +33,7 @@ Flow:
 2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
-5. Async-invoke `CreateInvoiceProcessor` once per attachment with its owning message's `emailContext`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
+5. Async-invoke `CreateInvoiceProcessor` once per attachment with `emailContext` (`emailFrom` / `subject` from the attachment’s message when applicable; `plainTextBody` is the **source email body plus every non-empty `conversation_parts` body**, joined with blank lines in API order — including internal notes, not only the message that holds the PDF). Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
 6. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
 7. Workday `Invoice_Received_Date` on each new supplier invoice is set from the Intercom conversation `created_at` (mailbox receipt), formatted as `YYYY-MM-DD` like other SOAP dates
 
