@@ -39,6 +39,8 @@ Flow:
 
 `CreateInvoiceProcessor` looks for a purchase order number in the email/filename and fetches that PO **before** enrichment when one is present. If the PO is only on the PDF, enrichment extracts it and the processor fetches the PO afterward. If enrichment extracts a *different* PO number than the email/filename hit, submit uses that matched PO for company and lines — not the early PO. If that late load misses, submit drops the early PO and falls through to **Default OCR Company** (`Company_Reference_ID` `Default_OCR_Company`, or `WORKDAY_DEFAULT_COMPANY_WID` when set) and skips early PO lines.
 
+PO line parsing (`parsePurchaseOrderLines`) merges line `Worktags_Reference`, **Additional Worktags** (`Purchase_Order_Line_Worktags_Data`), and split `Worktag_Reference` rows into a deduped passthrough list. When the PO line has splits, matched invoice lines also submit `Supplier_Invoice_Split_Line_Data` copied from the PO split rows (amounts and worktags). Accepts both legacy `Service_Line_Data` / `Goods_Line_Data` and Get PO `*_Replacement_Data` field names.
+
 Company priority is:
 
 1. Email-coded company

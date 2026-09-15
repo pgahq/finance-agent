@@ -7,6 +7,7 @@ import {
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
+import type { PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -32,6 +33,8 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  poPassthroughWorktagsReference?: any[];
+  supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
 }
 
 export interface LineFallbacks {
@@ -179,6 +182,7 @@ interface ParsedPoLineWorktags {
   description: string | null;
   memo: string | null;
   shipToAddressId: string | null;
+  splitLineData: PurchaseOrderLineSplit[];
 }
 
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
@@ -195,6 +199,31 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       lineOfBusinessId: extractLineOfBusinessId(worktags),
       worktagsReference: worktags,
       shipToAddressId: line.shipToAddressId ?? null,
+      splitLineData: line.splitLineData ?? [],
+    };
+  });
+}
+
+export function overlayPoWorktagsFromPurchaseOrder(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  if (poLines.length === 0) return lines;
+
+  const byPurchaseOrderLineId = new Map(
+    poLines
+      .filter(line => line.purchaseOrderLineId)
+      .map(line => [line.purchaseOrderLineId as string, line])
+  );
+
+  return lines.map(line => {
+    if (!line.purchaseOrderLineId) return line;
+    const poLine = byPurchaseOrderLineId.get(line.purchaseOrderLineId);
+    if (!poLine) return line;
+    return {
+      ...line,
+      poPassthroughWorktagsReference: poLine.worktagsReference,
+      ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
     };
   });
 }
@@ -488,6 +517,7 @@ export async function buildFinalInvoiceLines(
       lineOfBusinessId: line.lineOfBusinessId,
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
+      splitLineData: line.splitLineData ?? [],
     })),
     emailBody: emailBody ?? null,
   };
@@ -525,7 +555,8 @@ async function finalizeInvoiceLines(
   fallbackIds: InvoiceLineFallbackIds
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
-  const withEmail = applyEmailWorktags(withPoLob, emailWorktags);
+  const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
+  const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
   const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
   const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
   return {
