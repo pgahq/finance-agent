@@ -1,22 +1,45 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
-import { parseApAgentWorkerReport } from './lib/ap_agent_workers_report.js';
+import {
+  extractApAgentWorkerReportEntries,
+  parseApAgentWorkerReport,
+} from './lib/ap_agent_workers_report.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { createEmployeeContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
-import { executeWorkdayCustomReport, getApAgentWorkersReportPath } from './lib/workday.js';
+import { executeWorkdayCustomReport } from './lib/workday.js';
+
+function tryGetApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string | undefined {
+  const reportPath = env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH?.trim();
+  return reportPath || undefined;
+}
 
 async function syncEmployeesFromReport(context: ProcessingContext): Promise<void> {
-  const reportPath = getApAgentWorkersReportPath(process.env);
-  const payload = await executeWorkdayCustomReport(context.workdayConfig, reportPath);
-  const workers = parseApAgentWorkerReport(payload);
-
-  if (workers.length === 0) {
-    debug('No AP agent worker rows parsed from report - skipping sync');
+  const reportPath = tryGetApAgentWorkersReportPath(process.env);
+  if (!reportPath) {
+    debug('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH unset - skipping employee cache sync');
     return;
   }
 
-  debug(`Processing ${workers.length} AP agent workers from Workday report`);
+  const payload = await executeWorkdayCustomReport(context.workdayConfig, reportPath);
+  const reportEntries = extractApAgentWorkerReportEntries(payload);
+  const workers = parseApAgentWorkerReport(payload);
+
+  if (reportEntries.length === 0) {
+    debug('AP agent workers report returned no entries - skipping sync without prune');
+    return;
+  }
+
+  if (workers.length === 0) {
+    debug('AP agent workers report had entries but none parsed - skipping sync without prune', {
+      reportEntryCount: reportEntries.length,
+    });
+    return;
+  }
+
+  debug(`Processing ${workers.length} AP agent workers from Workday report`, {
+    reportEntryCount: reportEntries.length,
+  });
 
   const items = new Map(
     workers.map((worker) => [
@@ -30,13 +53,14 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     ])
   );
 
+  const sourceTotal = reportEntries.length;
   const sourceFetchedCount = workers.length;
 
   await syncDataSource({
     dbConnection: context.dbConnection,
     type: 'employee',
     items,
-    totalCount: sourceFetchedCount,
+    totalCount: workers.length,
     createContent: createEmployeeContent,
     createMetadata: (employee) => ({
       email: employee.email,
@@ -44,7 +68,7 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
       ...(employee.employeeId ? { employeeId: employee.employeeId } : {}),
     }),
     pruneAbsent: true,
-    sourceTotal: sourceFetchedCount,
+    sourceTotal,
     sourceFetchedCount,
     notifyLabel: 'cache_employees',
     itemLabel: 'employees',

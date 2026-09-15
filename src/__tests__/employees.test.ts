@@ -20,6 +20,11 @@ describe('getEmployeeWidByEmail', () => {
     await expect(getEmployeeWidByEmail(db as any, 'missing@pgahq.com')).resolves.toBeUndefined();
   });
 
+  it('returns undefined when the database query fails', async () => {
+    const db = { query: jest.fn().mockRejectedValue(new Error('connection reset')) };
+    await expect(getEmployeeWidByEmail(db as any, 'jcarey@pgahq.com')).resolves.toBeUndefined();
+  });
+
   it('returns undefined when duplicate emails exist', async () => {
     const db = {
       query: jest.fn().mockResolvedValue([

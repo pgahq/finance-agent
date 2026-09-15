@@ -43,7 +43,7 @@ export async function getEmployeeWidByEmail(
       ...(match.metadata?.name ? { name: match.metadata.name } : {}),
     };
   } catch (error) {
-    debug('Error looking up employee by email:', error);
-    throw error;
+    debug('Error looking up employee by email; omitting assignee', error);
+    return undefined;
   }
 }
