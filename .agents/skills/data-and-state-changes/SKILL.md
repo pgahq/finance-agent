@@ -75,7 +75,7 @@ Do not dump all cached IDs into prompts. Extract candidate codes from the email,
 
 `cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG. Cost center codes match with spaces or underscores (`CC-Building Services-PBG` and `CC-Building_Services-PBG`). RAG content is name + code only; a relatedLob-only rewrite updates metadata and keeps the existing embedding so an OpenAI 500 cannot block the cache.
 
-Hybrid `findCostCenters` and inexact `resolveReferenceCode` cost-center hits apply `rankCostCenterSearchResults` / `adjustCostCenterSimilarity` in `cost_center_match.ts`: name or code starting with `zDNU` or `DNU` get a lower effective score unless the query is that explicit code or starts with `zDNU`/`DNU`.
+Hybrid `findCostCenters` reranks via `rankCostCenterSearchResults`; inexact `resolveReferenceCode` cost-center hits use `adjustCostCenterSimilarity` plus the same non-DNU tie-break when adjusted confidence ties (`cost_center_match.ts`). Name or code starting with `zDNU` or `DNU` get a lower effective score unless the query is that explicit code or starts with `zDNU`/`DNU`.
 
 `relatedLob` shape:
 

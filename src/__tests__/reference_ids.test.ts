@@ -551,6 +551,32 @@ describe('findCachedReferenceMatches', () => {
     }));
     expect(matches[1]?.confidence).toBe(0.88);
   });
+
+  it('prefers active cost center on confidence tie after DNU penalty', async () => {
+    mockFindDocumentsByReferenceId.mockResolvedValue([]);
+    mockSearchDocumentsByTypes.mockResolvedValue([
+      {
+        workday_id: 'dnu-wid',
+        type: 'cost_center',
+        content: 'zDNU-CC6015 Legal Dept',
+        metadata: { code: 'zDNU-CC6015', name: 'zDNU-CC6015 Legal Dept' },
+        similarity: 1,
+      },
+      {
+        workday_id: 'active-wid',
+        type: 'cost_center',
+        content: 'CC-Legal Dept',
+        metadata: { code: 'CC-Legal Dept', name: 'CC-Legal Dept' },
+        similarity: 0.88,
+      },
+    ]);
+
+    const matches = await findCachedReferenceMatches(db, 'Legal');
+
+    expect(matches[0]?.workdayId).toBe('active-wid');
+    expect(matches[0]?.confidence).toBe(0.88);
+    expect(matches[1]?.confidence).toBe(0.88);
+  });
 });
 
 describe('resolveReferenceCodesFromText', () => {

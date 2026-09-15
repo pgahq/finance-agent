@@ -37,6 +37,18 @@ export function adjustCostCenterSimilarity(
   return Math.max(0, similarity - COST_CENTER_DNU_MATCH_PENALTY);
 }
 
+export interface CostCenterReferenceFields {
+  referenceId?: string;
+  name?: string;
+}
+
+export function isDoNotUseCostCenterFields(fields: CostCenterReferenceFields): boolean {
+  return isDoNotUseCostCenter({
+    code: fields.referenceId,
+    name: fields.name,
+  });
+}
+
 export interface CostCenterRankableResult {
   similarity: number;
   metadata?: Record<string, unknown>;
