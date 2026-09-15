@@ -140,6 +140,8 @@ describe('intercom', () => {
         json: async () => conversation,
       }) as unknown as typeof fetch;
 
+      const mergedPlainTextBody = 'Please process this invoice\n\nUse cost center 72200';
+
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
         appId: 'sandbox-app',
         conversationCreatedAt: '2024-01-01',
@@ -151,7 +153,7 @@ describe('intercom', () => {
             emailContext: {
               emailFrom: 'ap@vendor.com',
               subject: 'Invoice',
-              plainTextBody: 'Please process this invoice',
+              plainTextBody: mergedPlainTextBody,
             },
           },
           {
@@ -161,7 +163,7 @@ describe('intercom', () => {
             emailContext: {
               emailFrom: 'approver@pgahq.com',
               subject: 'Invoice',
-              plainTextBody: 'Use cost center 72200',
+              plainTextBody: mergedPlainTextBody,
             },
           },
         ],
@@ -181,6 +183,127 @@ describe('intercom', () => {
       expect(debug).toHaveBeenCalledWith('Intercom conversation payload', {
         conversationId: '123',
         payload: conversation,
+      });
+    });
+
+    it('merges source body with conversation part notes for source-owned PDFs', async () => {
+      const sourceBody = 'Please process the attached invoice.\n\nCoding\n Company - 410 PGA Corporation';
+      const noteBody = 'jaliejrieorieurio';
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '215475761242077',
+          app_id: 'sandbox-app',
+          created_at: 1704067200,
+          source: {
+            subject: '<p>AP Agent</p>',
+            body: sourceBody,
+            author: { email: 'jonyejekwe@pgahq.com' },
+            attachments: [{
+              name: 'PGA Invoice.pdf',
+              url: 'https://downloads.intercomcdn.com/invoice.pdf',
+              content_type: 'application/pdf',
+            }],
+          },
+          conversation_parts: {
+            conversation_parts: [
+              { part_type: 'assignment', body: null, attachments: [] },
+              { part_type: 'custom_action_started', body: null, attachments: [] },
+              { part_type: 'note', body: noteBody, author: { email: 'jonyejekwe@pgahq.com' }, attachments: [] },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      const mergedPlainTextBody = `${sourceBody}\n\n${noteBody}`;
+
+      await expect(fetchConversationInvoiceData(config, '215475761242077')).resolves.toEqual({
+        appId: 'sandbox-app',
+        conversationCreatedAt: '2024-01-01',
+        attachments: [{
+          name: 'PGA Invoice.pdf',
+          url: 'https://downloads.intercomcdn.com/invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: {
+            emailFrom: 'jonyejekwe@pgahq.com',
+            subject: '<p>AP Agent</p>',
+            plainTextBody: mergedPlainTextBody,
+          },
+        }],
+      });
+    });
+
+    it('ignores conversation parts with null or whitespace-only bodies', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          source: {
+            subject: 'Invoice',
+            body: 'Please process',
+            author: { email: 'ap@vendor.com' },
+            attachments: [{
+              name: 'invoice.pdf',
+              url: 'https://downloads.intercomcdn.com/invoice.pdf',
+              content_type: 'application/pdf',
+            }],
+          },
+          conversation_parts: {
+            conversation_parts: [
+              { body: null, attachments: [] },
+              { body: '   ', attachments: [] },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
+        attachments: [{
+          emailContext: { plainTextBody: 'Please process' },
+        }],
+      });
+    });
+
+    it('ignores non-numeric created_at and still returns invoice attachments', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          app_id: 'sandbox-app',
+          created_at: 'not-a-timestamp',
+          source: {
+            subject: 'Invoice',
+            body: 'Please process',
+            author: { email: 'ap@vendor.com' },
+            attachments: [
+              {
+                name: 'invoice.pdf',
+                url: 'https://downloads.intercomcdn.com/invoice.pdf',
+                content_type: 'application/pdf',
+              },
+            ],
+          },
+          conversation_parts: { conversation_parts: [] },
+        }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+        appId: 'sandbox-app',
+        attachments: [
+          {
+            name: 'invoice.pdf',
+            url: 'https://downloads.intercomcdn.com/invoice.pdf',
+            contentType: 'application/pdf',
+            emailContext: {
+              emailFrom: 'ap@vendor.com',
+              subject: 'Invoice',
+              plainTextBody: 'Please process',
+            },
+          },
+        ],
       });
     });
 

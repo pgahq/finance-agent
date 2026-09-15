@@ -24,13 +24,12 @@ import {
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import {
   applyDefaultCompanyLineWorktags,
-  applyMissingQuantityColumnLines,
   buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
 } from './lib/invoice_lines.js';
-import { applyProcessorLabelOutcome, getGmailConfig } from './lib/gmail.js';
 import {
   findPurchaseOrderNumber,
   normalizePurchaseOrderNumber,
@@ -116,9 +115,6 @@ export interface CreateInvoiceRequest {
   fileName: string;
   contentType: string;
   emailContext?: InvoiceData['emailContext'];
-  gmailMessageId?: string;
-  userEmail?: string;
-  gmailAccessToken?: string;
   conversationId?: string;
   intercomAppId?: string;
   conversationCreatedAt?: string;
@@ -159,7 +155,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
-    await updateGmailProcessorLabel(request, 'failure');
     return;
   }
 
@@ -350,7 +345,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
-      finalLines = applyMissingQuantityColumnLines(finalLines, invoiceLineQuantityDisplayed);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const appliedRecommended = selectedCompany.source === 'recommended';
@@ -362,7 +357,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
       baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
 
@@ -394,7 +389,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     });
 
     const processingTime = Date.now() - startTime;
-    await updateGmailProcessorLabel(request, 'success');
 
     const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
       status: 'email_resolved',
@@ -460,29 +454,6 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       error
     );
-    await updateGmailProcessorLabel(request, 'failure');
     throw error;
-  }
-}
-
-async function updateGmailProcessorLabel(
-  request: CreateInvoiceRequest,
-  outcome: 'success' | 'failure',
-): Promise<void> {
-  const gmailMessageId = request.gmailMessageId?.trim();
-  const userEmail = request.userEmail?.trim();
-  if (!gmailMessageId || !userEmail) {
-    return;
-  }
-
-  try {
-    const gmailConfig = await getGmailConfig(process.env, userEmail, request.gmailAccessToken);
-    await applyProcessorLabelOutcome(gmailConfig, gmailMessageId, outcome);
-  } catch (error) {
-    debug('Failed to update Gmail supplier invoice label', {
-      gmailMessageId,
-      outcome,
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 }

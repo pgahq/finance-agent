@@ -83,14 +83,6 @@ jest.mock('../lib/invoice_lines.js', () => {
   };
 });
 
-const mockGetGmailConfig = jest.fn();
-const mockApplyProcessorLabelOutcome = jest.fn();
-
-jest.mock('../lib/gmail.js', () => ({
-  getGmailConfig: (...args: unknown[]) => mockGetGmailConfig(...args),
-  applyProcessorLabelOutcome: (...args: unknown[]) => mockApplyProcessorLabelOutcome(...args),
-}));
-
 const baseEnrichmentResult = {
   supplier: {
     status: 'found',
@@ -166,13 +158,6 @@ describe('create_invoice', () => {
     delete process.env.WORKDAY_DEFAULT_COMPANY_WID;
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
-    mockGetGmailConfig.mockResolvedValue({
-      accessToken: 'ya29.test',
-      userEmail: 'ap@pgahq.com',
-      environment: 'sandbox',
-      apiBaseUrl: 'https://gmail.googleapis.com',
-    });
-    mockApplyProcessorLabelOutcome.mockResolvedValue('success');
     delete process.env.INTERCOM_APP_ID;
   });
 
@@ -314,6 +299,34 @@ describe('create_invoice', () => {
       quantity: 0,
       unitCost: 0,
       extendedAmount: 1250,
+    });
+  });
+
+  it('should submit amount-only lines when quantity times unit cost does not equal extended amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'Sintra Signs', quantity: 37, unitCost: '29.88', totalPrice: '1105.49', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-qty-mismatch/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.invoiceLineQuantityDisplayed).toBeUndefined();
+    expect(submitArgs.finalLines[0]).toMatchObject({
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 1105.49,
     });
   });
 
@@ -1055,85 +1068,6 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('ocr-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
-  });
-
-  it('updates the Gmail success label when the payload includes Gmail ids', async () => {
-    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [{
-        ...attachmentRequest('new-invoices/req-8/invoice.pdf'),
-        gmailMessageId: 'msg-1',
-        userEmail: 'ap@pgahq.com',
-      }]
-    } as any);
-
-    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', undefined);
-    expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
-      expect.anything(),
-      'msg-1',
-      'success',
-    );
-  });
-
-  it('updates the Gmail failure label when enrichment fails for a Gmail payload', async () => {
-    const { processor, invoiceEnrichment } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
-      ...baseEnrichmentResult,
-      supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
-    });
-
-    await expect(processor({
-      data: [{
-        ...attachmentRequest('new-invoices/req-9/invoice.pdf'),
-        gmailMessageId: 'msg-1',
-        userEmail: 'ap@pgahq.com',
-      }]
-    } as any)).rejects.toThrow('Invoice enrichment returned error status');
-
-    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', undefined);
-    expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
-      expect.anything(),
-      'msg-1',
-      'failure',
-    );
-  });
-
-  it('passes the add-on user OAuth token when updating Gmail labels', async () => {
-    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [{
-        ...attachmentRequest('new-invoices/req-11/invoice.pdf'),
-        gmailMessageId: 'msg-1',
-        userEmail: 'ap@pgahq.com',
-        gmailAccessToken: 'ya29.user',
-      }]
-    } as any);
-
-    expect(mockGetGmailConfig).toHaveBeenCalledWith(expect.anything(), 'ap@pgahq.com', 'ya29.user');
-    expect(mockApplyProcessorLabelOutcome).toHaveBeenCalledWith(
-      expect.anything(),
-      'msg-1',
-      'success',
-    );
-  });
-
-  it('does not touch Gmail labels for Intercom payloads', async () => {
-    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [attachmentRequest('new-invoices/req-10/invoice.pdf')]
-    } as any);
-
-    expect(mockGetGmailConfig).not.toHaveBeenCalled();
-    expect(mockApplyProcessorLabelOutcome).not.toHaveBeenCalled();
   });
 
   it('should submit the email-coded company WID when emailWorktags.company.workdayId is set', async () => {

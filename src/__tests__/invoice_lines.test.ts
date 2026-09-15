@@ -1,4 +1,6 @@
 import {
+  alignSupplierInvoiceLineAmounts,
+  applyAmountOnlyLineRetry,
   applyDefaultCompanyLineWorktags,
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
@@ -668,9 +670,23 @@ describe('splitFreightLines', () => {
 });
 
 describe('resolveInvoiceLineQuantityDisplayed', () => {
-  it('returns explicit true or false from the model', () => {
+  it('returns explicit true or false from the model when lines lack quantity', () => {
     expect(resolveInvoiceLineQuantityDisplayed(true, [])).toBe(true);
-    expect(resolveInvoiceLineQuantityDisplayed(false, [{ description: 'A', quantity: 2, totalPrice: '10' }])).toBe(false);
+    expect(resolveInvoiceLineQuantityDisplayed(false, [{ description: 'A', quantity: null, totalPrice: '10' }])).toBe(false);
+  });
+
+  it('treats the document as quantity-displayed when any extracted line has quantity', () => {
+    const lines = [{ description: 'Widgets', quantity: 2, totalPrice: '100.00' }];
+    expect(resolveInvoiceLineQuantityDisplayed(false, lines)).toBe(true);
+    expect(resolveInvoiceLineQuantityDisplayed(undefined, lines)).toBe(true);
+  });
+
+  it('keeps explicit true when every line lacks quantity but has amounts', () => {
+    const lines = [
+      { description: 'Service A', quantity: null, totalPrice: '100.00' },
+      { description: 'Service B', quantity: null, unitCost: '50.00' },
+    ];
+    expect(resolveInvoiceLineQuantityDisplayed(true, lines)).toBe(true);
   });
 
   it('infers false when every line lacks quantity but has amounts', () => {
@@ -685,6 +701,7 @@ describe('resolveInvoiceLineQuantityDisplayed', () => {
     const lines = [{ description: 'Widgets', quantity: 2, totalPrice: '100.00' }];
     expect(resolveInvoiceLineQuantityDisplayed(undefined, lines)).toBe(true);
   });
+
 });
 
 describe('applyMissingQuantityColumnLines', () => {
@@ -704,5 +721,81 @@ describe('applyMissingQuantityColumnLines', () => {
     const lines = [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -25 }];
     const result = applyMissingQuantityColumnLines(lines, false);
     expect(result[0]).toMatchObject({ hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -25 });
+  });
+
+  it('copies unit cost onto extended amount when extended amount is missing', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: null, unitCost: 250, extendedAmount: null }];
+    const result = applyMissingQuantityColumnLines(lines, false);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 250 });
+  });
+});
+
+describe('alignSupplierInvoiceLineAmounts', () => {
+  it('keeps matching quantity, unit cost, and extended amount', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
+  });
+
+  it('does not invent extended amount when unit cost is present and extended is missing', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
+  });
+
+  it('submits amount-only when unit cost is missing and extended amount is present', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: null, extendedAmount: 1105.49 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1105.49 });
+  });
+
+  it('submits amount-only when quantity times unit cost does not equal extended amount', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1105.49 });
+  });
+
+  it('uses SOAP quantity 1 when quantity is null and product does not match extended amount', () => {
+    const lines = [{ lineOrder: 1, description: 'Service', quantity: null, unitCost: 50, extendedAmount: 250 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 250 });
+  });
+
+  it('leaves discount lines unchanged', () => {
+    const lines = [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -25 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
+  });
+
+  it('leaves already amount-only lines unchanged', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 0, extendedAmount: 1250 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
+  });
+});
+
+describe('applyAmountOnlyLineRetry', () => {
+  it('zeros quantity and unit cost when both are present with extended amount', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49 }];
+    const result = applyAmountOnlyLineRetry(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1105.49 });
+  });
+
+  it('zeros quantity when unit cost is missing and extended amount is present', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: null, extendedAmount: 1105.49 }];
+    const result = applyAmountOnlyLineRetry(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1105.49 });
+  });
+
+  it('zeros unit cost when quantity is missing and extended amount is present', () => {
+    const lines = [{ lineOrder: 1, description: 'Service', quantity: null, unitCost: 50, extendedAmount: 250 }];
+    const result = applyAmountOnlyLineRetry(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 250 });
+  });
+
+  it('leaves lines without extended amount unchanged', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: null }];
+    expect(applyAmountOnlyLineRetry(lines)).toEqual(lines);
+  });
+
+  it('leaves discount lines unchanged', () => {
+    const lines = [{ lineOrder: 1, description: 'Discount', hasDiscount: true, quantity: 1, unitCost: 10, extendedAmount: -5 }];
+    expect(applyAmountOnlyLineRetry(lines)).toEqual(lines);
   });
 });
