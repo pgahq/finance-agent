@@ -9,6 +9,11 @@ import {
   type DatabaseConnection,
   type DocumentType,
 } from './database.js';
+import {
+  adjustCostCenterSimilarity,
+  isDoNotUseCostCenterFields,
+  shouldSkipDoNotUseTieBreak,
+} from './cost_center_match.js';
 import { createEmbedding } from './rag.js';
 
 export const REFERENCE_CODE_DOCUMENT_TYPES = [
@@ -135,7 +140,14 @@ export function pickTopReferenceMatch(
     if (top.confidence === 1) return match.confidence === 1;
     return top.confidence - match.confidence < MIN_TOP_MATCH_MARGIN;
   });
-  if (new Set(tiedSameType.map((match) => match.workdayId)).size > 1) return undefined;
+  if (new Set(tiedSameType.map((match) => match.workdayId)).size > 1) {
+    const costCenterTie = tiedSameType.every((match) => match.type === 'cost_center');
+    if (costCenterTie) {
+      const nonDnu = tiedSameType.filter((match) => !isDoNotUseCostCenterFields(match));
+      if (nonDnu.length === 1) return nonDnu[0];
+    }
+    return undefined;
+  }
 
   return top;
 }
@@ -146,9 +158,34 @@ async function findSimilarReferenceMatches(
 ): Promise<CachedReferenceMatch[]> {
   const embedding = await createEmbedding(code);
   const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
-  return rows
-    .map((row) => mapDocumentToReferenceMatch(row, code, Number(row.similarity) || 0))
+  const matches = rows
+    .map((row) => {
+      const rawConfidence = Number(row.similarity) || 0;
+      const confidence = row.type === 'cost_center'
+        ? adjustCostCenterSimilarity(rawConfidence, row.metadata, code)
+        : rawConfidence;
+      return mapDocumentToReferenceMatch(row, code, confidence);
+    })
     .filter((match) => match.confidence >= MIN_REFERENCE_MATCH_CONFIDENCE);
+
+  return [...matches]
+    .map((match, index) => ({ match, index }))
+    .sort((left, right) => {
+      if (right.match.confidence !== left.match.confidence) {
+        return right.match.confidence - left.match.confidence;
+      }
+      if (
+        !shouldSkipDoNotUseTieBreak(code)
+        && left.match.type === 'cost_center'
+        && right.match.type === 'cost_center'
+      ) {
+        const leftDnu = isDoNotUseCostCenterFields(left.match) ? 1 : 0;
+        const rightDnu = isDoNotUseCostCenterFields(right.match) ? 1 : 0;
+        if (leftDnu !== rightDnu) return leftDnu - rightDnu;
+      }
+      return left.index - right.index;
+    })
+    .map(({ match }) => match);
 }
 
 export async function resolveMatchesForCode(
