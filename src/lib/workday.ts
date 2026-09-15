@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -192,6 +192,58 @@ export async function executeWorkdayQuery(
     total: reportedTotal,
     data
   };
+}
+
+export function tryGetApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string | undefined {
+  const reportPath = env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH?.trim();
+  return reportPath || undefined;
+}
+
+export function getApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string {
+  const reportPath = tryGetApAgentWorkersReportPath(env);
+  if (!reportPath) {
+    throw new Error('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is required');
+  }
+  return reportPath;
+}
+
+export async function executeWorkdayCustomReport(
+  config: WorkdayConfig,
+  reportPath: string,
+): Promise<unknown> {
+  const trimmedPath = reportPath.trim();
+  if (!trimmedPath) {
+    throw new Error('Workday custom report path is required');
+  }
+
+  const accessToken = await getAccessToken(config);
+  const encodedPath = trimmedPath
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  const url = `https://${config.domain}/ccx/service/customreport2/${config.tenant}/${encodedPath}?format=json`;
+
+  debug('Fetching Workday custom report', { reportPath: trimmedPath });
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Workday custom report error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new Error('Workday custom report returned invalid JSON');
+  }
 }
 
 async function buildFinancialManagementClient(
@@ -467,10 +519,12 @@ interface buildSubmitInvoiceDataOptions {
   applyAmountOnlyLineRetry?: boolean;
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
+  assigneeWID?: string;
+  omitAssigneeReference?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee'>;
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -597,6 +651,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (applyAmountOnlyLineRetry) {
     fallbacks.push({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' });
+  }
+
+  if (options.omitAssigneeReference) {
+    fallbacks.push({ field: 'assignee', label: 'omitted assignee' });
   }
 
   return fallbacks;
@@ -756,6 +814,11 @@ async function getValidationFallbackField(
 ): Promise<FallbackField | undefined> {
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
+  if (options.assigneeWID && isAssigneeValidationError(validationText)) {
+    debug('Validation references assignee; retrying without Assignee_Reference');
+    return 'assignee';
+  }
+
   if (isQuantityUnitExtendedMismatchError(validationText)) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
       debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
@@ -907,11 +970,18 @@ function getFallbackRetryBuildOptions(
     return getAmountOnlyLineRetryBuildOptions(options);
   }
 
+  if (field === 'assignee' && options.assigneeWID) {
+    return {
+      buildOptions: { ...options, assigneeWID: undefined, omitAssigneeReference: true },
+      fallbackLabel: 'omitted assignee',
+    };
+  }
+
   return undefined;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1135,6 +1205,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
+    ...(assigneeWID && !omitAssigneeReference && { Assignee_Reference: createReference('WID', assigneeWID) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
@@ -1966,6 +2037,7 @@ export interface SubmitNewSupplierInvoiceParams {
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
   attachment: { fileName: string; contentType: string; base64Content: string };
+  assigneeWID?: string;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -1989,7 +2061,8 @@ export async function submitNewSupplierInvoice(
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
     paymentTermsId,
-    attachment
+    attachment,
+    assigneeWID,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -2036,7 +2109,8 @@ export async function submitNewSupplierInvoice(
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
-      attachment
+      attachment,
+      assigneeWID,
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',

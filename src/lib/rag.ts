@@ -47,6 +47,18 @@ export function createSupplierContent(supplier: any): string {
   return content;
 }
 
+export function createEmployeeContent(employee: {
+  name?: string;
+  email: string;
+  employeeId?: string;
+}): string {
+  return [
+    employee.name ? `Name: ${employee.name}` : null,
+    `Email: ${employee.email}`,
+    employee.employeeId ? `Employee ID: ${employee.employeeId}` : null,
+  ].filter(Boolean).join('\n');
+}
+
 export function createCompanyContent(company: any): string {
   const addressPrimary = textFromWqlValue(company.addressPrimary);
   const publicAddresses = Array.isArray(company.publicAddresses)

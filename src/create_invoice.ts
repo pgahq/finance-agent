@@ -22,6 +22,7 @@ import {
   sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
@@ -117,6 +118,7 @@ export interface CreateInvoiceRequest {
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
+  assigneeEmail?: string;
   conversationCreatedAt?: string;
 }
 
@@ -144,7 +146,16 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId, conversationCreatedAt } = request;
+  const {
+    s3Key,
+    fileName,
+    contentType,
+    emailContext,
+    conversationId,
+    intercomAppId,
+    assigneeEmail,
+    conversationCreatedAt,
+  } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -363,6 +374,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
+    const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+    if (assigneeEmail && !assigneeMatch) {
+      debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
+        assigneeEmail,
+      });
+    }
+
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
@@ -386,6 +404,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         contentType,
         base64Content: buffer.toString('base64'),
       },
+      ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
     });
 
     const processingTime = Date.now() - startTime;
@@ -441,6 +460,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
+      ...(assigneeEmail ? { assigneeEmail } : {}),
+      ...(assigneeMatch ? { assigneeWorkdayId: assigneeMatch.workdayId, assigneeName: assigneeMatch.name } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
     }, conversationId, intercomAppId));
