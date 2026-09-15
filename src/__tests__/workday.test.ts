@@ -810,6 +810,97 @@ describe('Workday utilities', () => {
       jest.useRealTimers();
     });
 
+    it('should retry quantity times unit cost faults by zeroing quantity and unit cost', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      const mockGetResponse = {
+        Response_Data: {
+          Supplier_Invoice: {
+            Supplier_Invoice_Data: {
+              Invoice_Number: '12345',
+              Company_Reference: { ID: 'company-wid' },
+              Currency_Reference: { ID: 'USD' },
+              Invoice_Date: '2024-01-01',
+              Control_Amount_Total: '1105.49'
+            }
+          }
+        }
+      };
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, mockGetResponse);
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.',
+                Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Extended_Amount'
+              }
+            }
+          }, null);
+          return;
+        }
+
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        finalLines: [{
+          lineOrder: 1,
+          description: 'Sintra Signs',
+          quantity: 37,
+          unitCost: 29.88,
+          extendedAmount: 1105.49,
+        }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([
+        {
+          attempt: 1,
+          message: 'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.',
+        },
+      ]);
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'invoiceLineAmounts',
+            label: 'quantity and unit cost set to zero',
+          }),
+        ])
+      );
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 37,
+        Unit_Cost: 29.88,
+        Extended_Amount: 1105.49,
+      });
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 1105.49,
+      });
+
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
 

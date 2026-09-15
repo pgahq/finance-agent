@@ -4,6 +4,7 @@ import {
   humanWorkdayValidationMessage,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
+  isQuantityUnitExtendedMismatchError,
   isRequiredLineOfBusinessWorktagError,
   isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
@@ -23,6 +24,13 @@ describe('invoice_validation_failures', () => {
     expect(isLineOfBusinessRelatedWorktagError(
       'The Cost Center "CC-Enterprise Technology" does not allow worktag values: "Line of Business: Default Line Of Business"'
     )).toBe(true);
+  });
+
+  it('detects quantity times unit cost vs extended amount faults', () => {
+    expect(isQuantityUnitExtendedMismatchError(
+      'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.'
+    )).toBe(true);
+    expect(isQuantityUnitExtendedMismatchError('Spend Category is required')).toBe(false);
   });
 
   it('detects a required Line of Business rule in a multi-error SOAP fault', () => {

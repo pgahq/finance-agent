@@ -122,6 +122,8 @@ When the invoice document does not display a per-line quantity column (`invoiceL
 
 Do not invent unit cost from quantity and line total. Enrichment and merge must leave `unitCost` null when no unit price is printed. After merge, `alignSupplierInvoiceLineAmounts` submits `Quantity: 0`, `Unit_Cost: 0`, and `Extended_Amount` from the printed line total when unit cost is missing or `quantity * unitCost` (SOAP uses quantity `1` when quantity is null) does not equal extended amount to the cent. Matching qty / unit / extended triples are left unchanged. `normalizeSupplierInvoiceLineAmounts` runs the missing-quantity-column shape first, then this alignment, in both create and enrich.
 
+If Workday still rejects submit with `Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost`, the submit retry loop zeros `Quantity` and `Unit_Cost` on every merchandise line that has (a non-zero quantity or unit cost) and an extended amount, then resubmits. That retry is matched from the validation message (not the field classifier). Discount lines are left unchanged. Lines that already have Quantity 0 and Unit Cost 0, or that have no extended amount, are not rewritten.
+
 Create vs update when no merchandise lines remain:
 
 - **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping. Create has no OCR lines, so do not send `[]`.

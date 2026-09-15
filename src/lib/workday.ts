@@ -1,9 +1,9 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyRelatedLobWorktags, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   extractLineOfBusinessId,
@@ -464,12 +464,14 @@ interface buildSubmitInvoiceDataOptions {
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
+  applyAmountOnlyLineRetry?: boolean;
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob';
-const FALLBACK_FIELDS: FallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts'>;
+const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
   field: FallbackField;
@@ -549,7 +551,7 @@ function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions)
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
-  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob } = options;
+  const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob, applyAmountOnlyLineRetry } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -591,6 +593,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (omitLobWorktag) {
     fallbacks.push({ field: 'worktag:lob', label: 'omitted Line of Business worktag' });
+  }
+
+  if (applyAmountOnlyLineRetry) {
+    fallbacks.push({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' });
   }
 
   return fallbacks;
@@ -689,7 +695,7 @@ async function ensureRelatedLobByCostCenter(
   }
 }
 
-function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): FallbackField[] {
+function getRetryableFallbackFields(options: buildSubmitInvoiceDataOptions): ClassifierFallbackField[] {
   return FALLBACK_FIELDS.filter(field => getFallbackRetryBuildOptions(options, field));
 }
 
@@ -727,11 +733,38 @@ function getLineOfBusinessFillRetryBuildOptions(
   return getRelatedLobRetryBuildOptions(options) ?? getFallbackLobRetryBuildOptions(options);
 }
 
+function getAmountOnlyLineRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  if (options.applyAmountOnlyLineRetry) return undefined;
+  const lines = options.finalLines;
+  if (!lines?.length || !lines.some(lineHasQuantityOrUnitAndExtended)) return undefined;
+  return {
+    buildOptions: {
+      ...options,
+      finalLines: applyAmountOnlyLineRetry(lines),
+      applyAmountOnlyLineRetry: true,
+    },
+    fallbackLabel: 'quantity and unit cost set to zero',
+  };
+}
+
 async function getValidationFallbackField(
   error: unknown,
   validationError: string,
   options: buildSubmitInvoiceDataOptions
 ): Promise<FallbackField | undefined> {
+  const validationText = collectWorkdayValidationErrorText(error) || validationError;
+
+  if (isQuantityUnitExtendedMismatchError(validationText)) {
+    if (getAmountOnlyLineRetryBuildOptions(options)) {
+      debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
+      return 'invoiceLineAmounts';
+    }
+    debug('Validation is quantity * unit cost vs extended amount but no eligible lines; skipping amount-only retry');
+    return undefined;
+  }
+
   const retryableFallbackFields = getRetryableFallbackFields(options);
   if (retryableFallbackFields.length === 0) {
     debug('No unused fallback values are available for this validation fault; skipping fallback retry', {
@@ -740,7 +773,6 @@ async function getValidationFallbackField(
     return undefined;
   }
 
-  const validationText = collectWorkdayValidationErrorText(error) || validationError;
   const validation = parseWorkdayValidationDetails(error) ?? { message: validationError };
 
   if (isRequiredLineOfBusinessWorktagError(validationText)) {
@@ -869,6 +901,10 @@ function getFallbackRetryBuildOptions(
         fallbackLabel: 'omitted Line of Business worktag',
       };
     }
+  }
+
+  if (field === 'invoiceLineAmounts') {
+    return getAmountOnlyLineRetryBuildOptions(options);
   }
 
   return undefined;

@@ -443,6 +443,27 @@ export function normalizeSupplierInvoiceLineAmounts(
   );
 }
 
+function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {
+  return (line.quantity != null && line.quantity !== 0)
+    || (line.unitCost != null && line.unitCost !== 0);
+}
+
+export function lineHasQuantityOrUnitAndExtended(line: FinalInvoiceLine): boolean {
+  return hasNonZeroQuantityOrUnitCost(line) && line.extendedAmount != null;
+}
+
+export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (line.hasDiscount === true) return line;
+    if (!lineHasQuantityOrUnitAndExtended(line)) return line;
+    return {
+      ...line,
+      quantity: 0,
+      unitCost: 0,
+    };
+  });
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
