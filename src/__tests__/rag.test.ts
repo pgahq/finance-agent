@@ -341,6 +341,45 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(result[0].workday_id).toBe('supplier-1');
     });
 
+    it('ranks non-DNU cost centers above zDNU when both match Legal', async () => {
+      const mockSearchResults = [
+        {
+          workday_id: 'dnu-wid',
+          type: 'cost_center',
+          content: 'Cost Center Name: zDNU-CC6015 Legal Dept',
+          metadata: { code: 'zDNU-CC6015', name: 'zDNU-CC6015 Legal Dept' },
+          similarity: '1'
+        },
+        {
+          workday_id: 'active-wid',
+          type: 'cost_center',
+          content: 'Cost Center Name: CC-Legal Dept',
+          metadata: { code: 'CC-Legal Dept', name: 'CC-Legal Dept' },
+          similarity: '1'
+        }
+      ];
+
+      mockSearchDocuments.mockResolvedValue(mockSearchResults);
+
+      const mockResponse = {
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          data: [{ embedding: [0.1, 0.2, 0.3] }]
+        })
+      };
+      mockFetch.mockResolvedValue(mockResponse as any);
+
+      const result = await queryDocuments({
+        query: 'Legal',
+        documentType: 'cost_center',
+        similarityThreshold: 0.3
+      });
+
+      expect(result[0]?.workday_id).toBe('active-wid');
+      expect(result[0]?.similarity).toBe(1);
+      expect(result[1]?.similarity).toBe(0.88);
+    });
+
     it('should handle empty query', async () => {
       await expect(queryDocuments({
         query: ''
