@@ -51,11 +51,13 @@ export function createEmployeeContent(employee: {
   name?: string;
   email: string;
   employeeId?: string;
+  active: boolean;
 }): string {
   return [
     employee.name ? `Name: ${employee.name}` : null,
     `Email: ${employee.email}`,
     employee.employeeId ? `Employee ID: ${employee.employeeId}` : null,
+    `Active: ${employee.active ? 'Yes' : 'No'}`,
   ].filter(Boolean).join('\n');
 }
 

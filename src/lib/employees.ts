@@ -22,6 +22,7 @@ export async function getEmployeeWidByEmail(
       FROM documents
       WHERE type = 'employee'
         AND LOWER(COALESCE(metadata->>'email', '')) = $1
+        AND COALESCE((metadata->>'active')::boolean, true) = true
       LIMIT 2
     `, [normalized]) as Array<{ workday_id: string; metadata?: { name?: string } }>;
 

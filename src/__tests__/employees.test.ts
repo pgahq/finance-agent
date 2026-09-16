@@ -13,6 +13,10 @@ describe('getEmployeeWidByEmail', () => {
       workdayId: 'wid-123',
       name: 'Joe Carey',
     });
+    expect(db.query).toHaveBeenCalledWith(
+      expect.stringContaining("metadata->>'active'"),
+      ['jcarey@pgahq.com'],
+    );
   });
 
   it('returns undefined when no rows match', async () => {
