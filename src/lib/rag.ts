@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { includeCompaniesMatchingBillToAddress } from './company_address_match.js';
+import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
@@ -333,7 +333,7 @@ export const findCompaniesTool = tool({
       }),
       billToAddress
         ? getDatabaseConnection(process.env).then((db) => getDocumentsByType(db, 'company')).catch((error) => {
-            debug('Find Companies Tool: company cache list failed; omitting billed-street tags', error);
+            debug('Find Companies Tool: company cache list failed; tagging name hits only', error);
             companyCacheFailed = true;
             return [];
           })
@@ -341,10 +341,7 @@ export const findCompaniesTool = tool({
     ]);
 
     const tagged = companyCacheFailed
-      ? {
-          addressMatch: 'none' as const,
-          results: results.map((result) => ({ ...result, addressMatch: 'none' as const })),
-        }
+      ? tagCompaniesByAddress(results, billToAddress)
       : includeCompaniesMatchingBillToAddress(
           results,
           cachedCompanies.map((document) => ({
@@ -353,8 +350,7 @@ export const findCompaniesTool = tool({
             content: document.content ?? '',
             metadata: document.metadata,
           })),
-          billToAddress,
-          resultLimit
+          billToAddress
         );
     debug(`Find Companies Tool: Found ${tagged.results.length} companies (addressMatch=${tagged.addressMatch})`);
 
@@ -362,7 +358,7 @@ export const findCompaniesTool = tool({
       success: true,
       addressMatch: tagged.addressMatch,
       ...(companyCacheFailed
-        ? { message: 'Company cache list failed; billed-street tags omitted. Name search results only.' }
+        ? { message: 'Company cache list failed; cache-only street extras omitted. Name hits tagged from in-list addresses.' }
         : {}),
       results: tagged.results.map(result => {
         const similarity = 'similarity' in result ? result.similarity : undefined;

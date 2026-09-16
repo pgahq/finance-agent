@@ -107,8 +107,7 @@ export function includeCompaniesMatchingBillToAddress<
 >(
   nameResults: T[],
   cachedCompanies: C[] | undefined,
-  billToAddress: string | undefined,
-  limit?: number
+  billToAddress: string | undefined
 ): { results: Array<(T | C) & { addressMatch: CompanyAddressMatch }>; addressMatch: CompanyAddressMatch } {
   if (!billToAddress?.trim() || !cachedCompanies?.length) {
     return tagCompaniesByAddress(nameResults, billToAddress);
@@ -128,20 +127,9 @@ export function includeCompaniesMatchingBillToAddress<
     addressMatch: hitIds.has(row.workday_id) ? fromCache.addressMatch : 'none' as const,
   }));
   const extras = fromCache.results.filter((row) => row.addressMatch !== 'none' && !nameIds.has(row.workday_id));
-  if (typeof limit !== 'number') {
-    return {
-      addressMatch: fromCache.addressMatch,
-      results: [...taggedName, ...extras],
-    };
-  }
-
-  const extraCount = Math.min(extras.length, limit);
-  const nameCount = Math.max(0, limit - extraCount);
 
   return {
-    addressMatch: extraCount > 0 || taggedName.slice(0, nameCount).some((row) => row.addressMatch !== 'none')
-      ? fromCache.addressMatch
-      : 'none',
-    results: [...taggedName.slice(0, nameCount), ...extras.slice(0, extraCount)],
+    addressMatch: fromCache.addressMatch,
+    results: [...taggedName, ...extras],
   };
 }
