@@ -9,6 +9,15 @@
 export const AP_AGENT_WORKERS_CUSTOM_REPORT_PATH =
   'wdw-7212/Worker_Assignment_For_AP_Agent';
 
+/** Column names returned by customreport2 for Worker_Assignment_For_AP_Agent (sandbox). */
+export const AP_AGENT_WORKERS_REPORT_COLUMNS = {
+  activeStatus: 'Active_Status',
+  employeeId: 'Employee_ID',
+  fullLegalName: 'Full_Legal_Name',
+  primaryWorkEmail: 'Primary_Work_-_Email',
+  workdayId: 'Workday_ID',
+} as const;
+
 export interface ApAgentWorkerRow {
   workdayId: string;
   email: string;
@@ -25,6 +34,13 @@ function normalizeHeaderKey(key: string): string {
 
 function cellValue(value: unknown): string | undefined {
   if (value == null) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const parsed = cellValue(item);
+      if (parsed) return parsed;
+    }
+    return undefined;
+  }
   if (typeof value === 'boolean') {
     return value ? 'true' : 'false';
   }
@@ -188,23 +204,44 @@ export function normalizeEmployeeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+function readKnownReportField(
+  record: Record<string, unknown>,
+  column: keyof typeof AP_AGENT_WORKERS_REPORT_COLUMNS,
+): string | undefined {
+  const key = AP_AGENT_WORKERS_REPORT_COLUMNS[column];
+  return cellValue(record[key]);
+}
+
+/** Distinct Active_Status values (cap 20) for CloudWatch when tuning filters. */
+export function sampleApAgentWorkerActiveStatusValues(entries: unknown[], limit = 20): string[] {
+  const values = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const status = readKnownReportField(entry as Record<string, unknown>, 'activeStatus');
+    if (status) values.add(status);
+    if (values.size >= limit) break;
+  }
+  return [...values].sort((left, right) => left.localeCompare(right));
+}
+
 export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | undefined {
   if (!row || typeof row !== 'object') return undefined;
   const record = row as Record<string, unknown>;
 
-  const workdayId = readWorkdayIdFromRecord(record);
-  const emailRaw = readEmailFromRecord(record);
+  const workdayId = readKnownReportField(record, 'workdayId') ?? readWorkdayIdFromRecord(record);
+  const emailRaw = readKnownReportField(record, 'primaryWorkEmail') ?? readEmailFromRecord(record);
   if (!workdayId || !emailRaw) return undefined;
 
-  const activeStatus = readField(
-    record,
-    'Active Status',
-    'Active_Status',
-    'activeStatus',
-    'Active',
-    'Is_Active',
-    'Employee_Status',
-  );
+  const activeStatus = readKnownReportField(record, 'activeStatus')
+    ?? readField(
+      record,
+      'Active Status',
+      'Active_Status',
+      'activeStatus',
+      'Active',
+      'Is_Active',
+      'Employee_Status',
+    );
   if (activeStatus && isExplicitlyInactive(activeStatus)) {
     return undefined;
   }
@@ -215,8 +252,10 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
   const email = normalizeEmployeeEmail(emailRaw);
   if (!email.includes('@')) return undefined;
 
-  const name = readField(record, 'Full Legal Name', 'Full_Legal_Name', 'fullLegalName');
-  const employeeId = readField(record, 'Employee ID', 'Employee_ID', 'employeeId');
+  const name = readKnownReportField(record, 'fullLegalName')
+    ?? readField(record, 'Full Legal Name', 'Full_Legal_Name', 'fullLegalName');
+  const employeeId = readKnownReportField(record, 'employeeId')
+    ?? readField(record, 'Employee ID', 'Employee_ID', 'employeeId');
 
   return {
     workdayId,
@@ -275,15 +314,16 @@ export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerR
     return 'unparseable';
   }
   const record = entry as Record<string, unknown>;
-  const activeStatus = readField(
-    record,
-    'Active Status',
-    'Active_Status',
-    'activeStatus',
-    'Active',
-    'Is_Active',
-    'Employee_Status',
-  );
+  const activeStatus = readKnownReportField(record, 'activeStatus')
+    ?? readField(
+      record,
+      'Active Status',
+      'Active_Status',
+      'activeStatus',
+      'Active',
+      'Is_Active',
+      'Employee_Status',
+    );
   if (activeStatus && isExplicitlyInactive(activeStatus)) {
     return 'excluded';
   }
@@ -291,8 +331,8 @@ export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerR
   if (isTerminated(terminated)) {
     return 'excluded';
   }
-  const workdayId = readWorkdayIdFromRecord(record);
-  const emailRaw = readEmailFromRecord(record);
+  const workdayId = readKnownReportField(record, 'workdayId') ?? readWorkdayIdFromRecord(record);
+  const emailRaw = readKnownReportField(record, 'primaryWorkEmail') ?? readEmailFromRecord(record);
   if (!workdayId && !emailRaw) {
     return 'unparseable';
   }
