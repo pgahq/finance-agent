@@ -198,10 +198,11 @@ describe('includeCompaniesMatchingBillToAddress', () => {
     expect(included.results.map((result) => result.addressMatch)).toEqual(['none', 'unique']);
   });
 
-  it('keeps tagged name rows and drops extras past the requested limit', () => {
+  it('reserves limit slots for unique cache street extras', () => {
     const included = includeCompaniesMatchingBillToAddress([georgia], [georgia, national], frisco, 1);
     expect(included.addressMatch).toBe('unique');
-    expect(included.results.map((result) => result.workday_id)).toEqual(['georgia-wid']);
+    expect(included.results.map((result) => result.workday_id)).toEqual(['pga-wid']);
+    expect(included.results.map((result) => result.addressMatch)).toEqual(['unique']);
   });
 
   it('keeps name order and appends a shared-street company name search missed', () => {

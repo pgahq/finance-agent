@@ -128,10 +128,20 @@ export function includeCompaniesMatchingBillToAddress<
     addressMatch: hitIds.has(row.workday_id) ? fromCache.addressMatch : 'none' as const,
   }));
   const extras = fromCache.results.filter((row) => row.addressMatch !== 'none' && !nameIds.has(row.workday_id));
-  const remaining = typeof limit === 'number' ? Math.max(0, limit - taggedName.length) : extras.length;
+  if (typeof limit !== 'number') {
+    return {
+      addressMatch: fromCache.addressMatch,
+      results: [...taggedName, ...extras],
+    };
+  }
+
+  const extraCount = Math.min(extras.length, limit);
+  const nameCount = Math.max(0, limit - extraCount);
 
   return {
-    addressMatch: fromCache.addressMatch,
-    results: [...taggedName, ...extras.slice(0, remaining)],
+    addressMatch: extraCount > 0 || taggedName.slice(0, nameCount).some((row) => row.addressMatch !== 'none')
+      ? fromCache.addressMatch
+      : 'none',
+    results: [...taggedName.slice(0, nameCount), ...extras.slice(0, extraCount)],
   };
 }
