@@ -6,7 +6,7 @@ jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 describe('AP agent workers custom report path', () => {
   it('uses the Worker Assignment For AP Agent integration IDs', () => {
     expect(AP_AGENT_WORKERS_CUSTOM_REPORT_PATH).toBe(
-      'wdw-7212/Worker Assignment For AP Agent',
+      'wdw-7212/Worker_Assignment_For_AP_Agent',
     );
   });
 });
@@ -37,7 +37,7 @@ describe('executeWorkdayCustomReport', () => {
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'https://test.workday.com/ccx/service/customreport2/pgahq/wdw-7212/Worker%20Assignment%20For%20AP%20Agent?format=json',
+      'https://test.workday.com/ccx/service/customreport2/pgahq/wdw-7212/Worker_Assignment_For_AP_Agent?format=json',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
