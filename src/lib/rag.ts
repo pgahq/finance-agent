@@ -1,10 +1,10 @@
 import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
-import { rankCompaniesByAddress } from './company_address_match.js';
+import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
-import { getDatabaseConnection, searchDocuments } from './database.js';
+import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
 export type { DocumentType } from './database.js';
 
@@ -296,12 +296,12 @@ export const findCompaniesTool = tool({
   - Company Reference IDs (e.g., "912")
   - Company Workday IDs (WIDs)
 
-  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Address reranks name candidates: unique street or PO Box is a strong match; shared street matches are listed before name-only misses, but address must not pick among those shared companies.
+  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Name search uses embedding similarity (plus exact companyName / Company_Reference_ID). Street is compared independently against the full company cache and tagged unique, shared, or none — it does not reorder name results. Cache companies on that street that name search missed are appended so both signals are visible. Do not prefer address over name or name over address.
 
-  Examples: query "PGA of America" with address "100 Avenue of the Champions, Palm Beach Gardens, FL 33418"`,
+  Examples: query "PGA of America" with address "1916 PGA Parkway, Frisco, TX 75033"`,
   inputSchema: z.object({
     query: z.string().describe('Billed company name or ID only (omit street, city, state, and ZIP)'),
-    address: z.string().optional().describe('Bill-to street address from the invoice. Used to rerank name candidates; not embedded.'),
+    address: z.string().optional().describe('Bill-to street address from the invoice. Tagged independently of name rank; not embedded.'),
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
@@ -322,27 +322,55 @@ export const findCompaniesTool = tool({
       debug(`Find Companies Tool: searching "${nameQuery}" (address omitted from "${query}")`);
     }
 
-    const results = await queryDocuments({
-      query: nameQuery,
-      documentType: 'company',
-      limit,
-      similarityThreshold
-    });
+    const resultLimit = limit ?? DEFAULT_RAG_LIMIT;
+    let companyCacheFailed = false;
+    const [results, cachedCompanies] = await Promise.all([
+      queryDocuments({
+        query: nameQuery,
+        documentType: 'company',
+        limit: resultLimit,
+        similarityThreshold
+      }),
+      billToAddress
+        ? getDatabaseConnection(process.env).then((db) => getDocumentsByType(db, 'company')).catch((error) => {
+            debug('Find Companies Tool: company cache list failed; tagging name hits only', error);
+            companyCacheFailed = true;
+            return [];
+          })
+        : Promise.resolve([]),
+    ]);
 
-    const ranked = rankCompaniesByAddress(results, billToAddress);
-    debug(`Find Companies Tool: Found ${ranked.results.length} companies (addressMatch=${ranked.addressMatch})`);
+    const tagged = companyCacheFailed
+      ? tagCompaniesByAddress(results, billToAddress)
+      : includeCompaniesMatchingBillToAddress(
+          results,
+          cachedCompanies.map((document) => ({
+            workday_id: document.workday_id,
+            type: 'company' as const,
+            content: document.content ?? '',
+            metadata: document.metadata,
+          })),
+          billToAddress
+        );
+    debug(`Find Companies Tool: Found ${tagged.results.length} companies (addressMatch=${tagged.addressMatch})`);
 
     return {
       success: true,
-      addressMatch: ranked.addressMatch,
-      results: ranked.results.map(result => ({
-        workdayId: result.workday_id,
-        type: result.type,
-        content: result.content,
-        metadata: result.metadata,
-        similarity: result.similarity,
-        addressMatch: result.addressMatch
-      }))
+      addressMatch: tagged.addressMatch,
+      ...(companyCacheFailed
+        ? { message: 'Company cache list failed; cache-only street extras omitted. Name hits tagged from in-list addresses.' }
+        : {}),
+      results: tagged.results.map(result => {
+        const similarity = 'similarity' in result ? result.similarity : undefined;
+        return {
+          workdayId: result.workday_id,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          ...(typeof similarity === 'number' ? { similarity } : {}),
+          addressMatch: result.addressMatch
+        };
+      })
     };
   }
 });

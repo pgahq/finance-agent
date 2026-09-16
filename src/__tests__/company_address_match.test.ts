@@ -1,7 +1,8 @@
 import {
   addressesShareStreet,
-  rankCompaniesByAddress,
+  includeCompaniesMatchingBillToAddress,
   streetFingerprint,
+  tagCompaniesByAddress,
 } from '../lib/company_address_match.js';
 
 const BILL_TO = '100 Avenue of the Champions, Palm Beach Gardens, FL 33418-3653';
@@ -37,7 +38,7 @@ describe('streetFingerprint', () => {
   });
 });
 
-describe('rankCompaniesByAddress', () => {
+describe('tagCompaniesByAddress', () => {
   const wisconsin = {
     workday_id: 'wisconsin-wid',
     metadata: {
@@ -53,15 +54,14 @@ describe('rankCompaniesByAddress', () => {
     },
   };
 
-  it('moves PGA of America ahead of a section whose name contains that phrase', () => {
-    const ranked = rankCompaniesByAddress([wisconsin, national], BILL_TO);
-    expect(ranked.addressMatch).toBe('unique');
-    expect(ranked.results.map((result) => result.workday_id)).toEqual(['pga-wid', 'wisconsin-wid']);
-    expect(ranked.results[0].addressMatch).toBe('unique');
-    expect(ranked.results[1].addressMatch).toBe('none');
+  it('tags a unique street without reordering name results', () => {
+    const tagged = tagCompaniesByAddress([wisconsin, national], BILL_TO);
+    expect(tagged.addressMatch).toBe('unique');
+    expect(tagged.results.map((result) => result.workday_id)).toEqual(['wisconsin-wid', 'pga-wid']);
+    expect(tagged.results.map((result) => result.addressMatch)).toEqual(['none', 'unique']);
   });
 
-  it('lists shared headquarters ahead of a section at a different street', () => {
+  it('tags shared headquarters without moving them ahead of other name hits', () => {
     const juniorLeague = {
       workday_id: 'jr-wid',
       metadata: {
@@ -69,18 +69,17 @@ describe('rankCompaniesByAddress', () => {
         addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
       },
     };
-    const ranked = rankCompaniesByAddress([wisconsin, juniorLeague, national], BILL_TO);
-    expect(ranked.addressMatch).toBe('shared');
-    expect(ranked.results.map((result) => result.workday_id)).toEqual([
+    const tagged = tagCompaniesByAddress([wisconsin, juniorLeague, national], BILL_TO);
+    expect(tagged.addressMatch).toBe('shared');
+    expect(tagged.results.map((result) => result.workday_id)).toEqual([
+      'wisconsin-wid',
       'jr-wid',
       'pga-wid',
-      'wisconsin-wid',
     ]);
-    expect(ranked.results.map((result) => result.addressMatch)).toEqual(['shared', 'shared', 'none']);
+    expect(tagged.results.map((result) => result.addressMatch)).toEqual(['none', 'shared', 'shared']);
   });
-
-  it('promotes a unique PO Box match', () => {
-    const ranked = rankCompaniesByAddress(
+  it('tags a unique PO Box without reordering', () => {
+    const tagged = tagCompaniesByAddress(
       [
         wisconsin,
         {
@@ -93,12 +92,13 @@ describe('rankCompaniesByAddress', () => {
       ],
       'PO Box 109601, Palm Beach Gardens, FL 33410-9601'
     );
-    expect(ranked.addressMatch).toBe('unique');
-    expect(ranked.results[0].workday_id).toBe('pga-wid');
+    expect(tagged.addressMatch).toBe('unique');
+    expect(tagged.results.map((result) => result.workday_id)).toEqual(['wisconsin-wid', 'pga-wid']);
+    expect(tagged.results[1].addressMatch).toBe('unique');
   });
 
-  it('lists shared PO Box matches ahead of a different street', () => {
-    const ranked = rankCompaniesByAddress(
+  it('tags shared PO Box matches without moving them ahead of other name hits', () => {
+    const tagged = tagCompaniesByAddress(
       [
         wisconsin,
         {
@@ -118,16 +118,16 @@ describe('rankCompaniesByAddress', () => {
       ],
       'PO Box 109601, Palm Beach Gardens, FL 33410'
     );
-    expect(ranked.addressMatch).toBe('shared');
-    expect(ranked.results.map((result) => result.workday_id)).toEqual([
+    expect(tagged.addressMatch).toBe('shared');
+    expect(tagged.results.map((result) => result.workday_id)).toEqual([
+      'wisconsin-wid',
       'jr-wid',
       'pga-wid',
-      'wisconsin-wid',
     ]);
   });
 
   it('does not treat different PO Box numbers as a match', () => {
-    const ranked = rankCompaniesByAddress(
+    const tagged = tagCompaniesByAddress(
       [
         {
           ...national,
@@ -139,11 +139,11 @@ describe('rankCompaniesByAddress', () => {
       ],
       'PO Box 12, Palm Beach Gardens, FL 33410'
     );
-    expect(ranked.addressMatch).toBe('none');
+    expect(tagged.addressMatch).toBe('none');
   });
 
-  it('matches a unique bill-to on publicAddresses when primary is a different street', () => {
-    const ranked = rankCompaniesByAddress(
+  it('tags a unique bill-to on publicAddresses when primary is a different street', () => {
+    const tagged = tagCompaniesByAddress(
       [
         wisconsin,
         {
@@ -157,16 +157,77 @@ describe('rankCompaniesByAddress', () => {
       ],
       BILL_TO
     );
-    expect(ranked.addressMatch).toBe('unique');
-    expect(ranked.results[0].workday_id).toBe('pga-wid');
+    expect(tagged.addressMatch).toBe('unique');
+    expect(tagged.results.map((result) => result.workday_id)).toEqual(['wisconsin-wid', 'pga-wid']);
+    expect(tagged.results[1].addressMatch).toBe('unique');
   });
 
   it('does not treat matching ZIP alone as a unique street', () => {
-    const ranked = rankCompaniesByAddress(
+    const tagged = tagCompaniesByAddress(
       [wisconsin, national],
       'Palm Beach Gardens, FL 33418'
     );
-    expect(ranked.addressMatch).toBe('none');
-    expect(ranked.results[0].workday_id).toBe('wisconsin-wid');
+    expect(tagged.addressMatch).toBe('none');
+    expect(tagged.results[0].workday_id).toBe('wisconsin-wid');
+  });
+});
+
+describe('includeCompaniesMatchingBillToAddress', () => {
+  const frisco = '1916 PGA Parkway, Frisco, TX 75033';
+  const georgia = {
+    workday_id: 'georgia-wid',
+    metadata: {
+      companyName: 'Georgia Section PGA of America, Inc.',
+      addressPrimary: '123 Main Street, Atlanta, GA 30301',
+    },
+    similarity: 1,
+  };
+  const national = {
+    workday_id: 'pga-wid',
+    metadata: {
+      companyName: 'The Professional Golfers Association of America',
+      addressPrimary: frisco,
+    },
+    similarity: 0.65,
+  };
+
+  it('appends a unique cache street match that name search missed', () => {
+    const included = includeCompaniesMatchingBillToAddress([georgia], [georgia, national], frisco);
+    expect(included.addressMatch).toBe('unique');
+    expect(included.results.map((result) => result.workday_id)).toEqual(['georgia-wid', 'pga-wid']);
+    expect(included.results.map((result) => result.addressMatch)).toEqual(['none', 'unique']);
+  });
+
+  it('keeps name order and appends a shared-street company name search missed', () => {
+    const juniorLeague = {
+      workday_id: 'jr-wid',
+      metadata: {
+        companyName: 'PGA JR. LEAGUE',
+        addressPrimary: frisco,
+      },
+      similarity: 0.9,
+    };
+    const included = includeCompaniesMatchingBillToAddress(
+      [georgia, juniorLeague],
+      [georgia, national, juniorLeague],
+      frisco
+    );
+    expect(included.addressMatch).toBe('shared');
+    expect(included.results.map((result) => result.workday_id)).toEqual([
+      'georgia-wid',
+      'jr-wid',
+      'pga-wid',
+    ]);
+    expect(included.results.map((result) => result.addressMatch)).toEqual(['none', 'shared', 'shared']);
+  });
+
+  it('leaves name order unchanged when the cache has no street match', () => {
+    const included = includeCompaniesMatchingBillToAddress(
+      [georgia, national],
+      [georgia, national],
+      '100 Avenue of the Champions, Palm Beach Gardens, FL 33418'
+    );
+    expect(included.addressMatch).toBe('none');
+    expect(included.results.map((result) => result.workday_id)).toEqual(['georgia-wid', 'pga-wid']);
   });
 });
