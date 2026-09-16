@@ -226,6 +226,18 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
   };
 }
 
+/** Sorted unique JSON field names across all report rows (for CloudWatch column mapping). */
+export function listApAgentWorkerReportColumnNames(entries: unknown[]): string[] {
+  const names = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    for (const key of Object.keys(entry as object)) {
+      names.add(key);
+    }
+  }
+  return [...names].sort((left, right) => left.localeCompare(right));
+}
+
 export function extractApAgentWorkerReportEntries(payload: unknown): unknown[] {
   if (!payload || typeof payload !== 'object') return [];
   const record = payload as Record<string, unknown>;
