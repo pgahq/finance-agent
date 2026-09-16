@@ -218,6 +218,37 @@ export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string
   return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
 }
 
+export function formatWorkQueueAssigneeNotes(
+  appliedFallbacks: Array<{ label?: string }>,
+  options: {
+    assigneeEmail?: string;
+    assigneeName?: string;
+    assigneeSetInWorkday: boolean;
+  },
+): string {
+  const email = options.assigneeEmail?.trim();
+  if (!email && !options.assigneeSetInWorkday) {
+    return '';
+  }
+
+  const displayName = options.assigneeName?.trim();
+  const person = displayName && email
+    ? `${displayName} (${email})`
+    : (displayName ?? email ?? 'Unknown');
+  const assigneeOmitted = appliedFallbacks.some((fallback) => fallback.label === 'omitted assignee');
+
+  if (assigneeOmitted && email) {
+    return `\n\nWork queue assignee: ${person} (not applied in Workday)`;
+  }
+  if (options.assigneeSetInWorkday) {
+    return `\n\nWork queue assignee: ${person}`;
+  }
+  if (email) {
+    return `\n\nWork queue assignee: not set (${email}; no active worker match in cache)`;
+  }
+  return '';
+}
+
 export function formatInvoiceLinesNotes(
   result: InvoiceEnrichmentResult,
   resolvedInvoiceLineQuantityDisplayed?: boolean

@@ -126,6 +126,26 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
   if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
 
+  const assigneeName = typeof details.assigneeName === 'string' ? details.assigneeName : undefined;
+  const assigneeEmail = typeof details.assigneeEmail === 'string' ? details.assigneeEmail : undefined;
+  const assigneeWorkdayId = typeof details.assigneeWorkdayId === 'string' ? details.assigneeWorkdayId : undefined;
+  if (assigneeName || assigneeEmail) {
+    const person = assigneeName && assigneeEmail
+      ? `${assigneeName} (${assigneeEmail})`
+      : (assigneeName ?? assigneeEmail);
+    const appliedFallbacksPreview = Array.isArray(details.appliedFallbacks)
+      ? details.appliedFallbacks.filter((label): label is string => typeof label === 'string')
+      : [];
+    const assigneeOmitted = appliedFallbacksPreview.includes('omitted assignee');
+    if (assigneeOmitted) {
+      changeLines.push(`*Assignee* → not applied in Workday (${person})`);
+    } else if (assigneeWorkdayId) {
+      changeLines.push(`*Assignee* → ${person}`);
+    } else if (assigneeEmail) {
+      changeLines.push(`*Assignee* → not set (${person}; no cache match)`);
+    }
+  }
+
   const appliedFallbacks = Array.isArray(details.appliedFallbacks)
     ? details.appliedFallbacks.filter((label): label is string => typeof label === 'string')
     : [];
