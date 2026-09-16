@@ -322,15 +322,19 @@ export const findCompaniesTool = tool({
       debug(`Find Companies Tool: searching "${nameQuery}" (address omitted from "${query}")`);
     }
 
+    const resultLimit = limit ?? DEFAULT_RAG_LIMIT;
     const [results, cachedCompanies] = await Promise.all([
       queryDocuments({
         query: nameQuery,
         documentType: 'company',
-        limit,
+        limit: resultLimit,
         similarityThreshold
       }),
       billToAddress
-        ? getDatabaseConnection(process.env).then((db) => getDocumentsByType(db, 'company'))
+        ? getDatabaseConnection(process.env).then((db) => getDocumentsByType(db, 'company')).catch((error) => {
+            debug('Find Companies Tool: company cache list failed; tagging name hits only', error);
+            return [];
+          })
         : Promise.resolve([]),
     ]);
 
@@ -341,23 +345,26 @@ export const findCompaniesTool = tool({
         type: 'company' as const,
         content: document.content ?? '',
         metadata: document.metadata,
-        similarity: 0,
       })),
-      billToAddress
+      billToAddress,
+      resultLimit
     );
     debug(`Find Companies Tool: Found ${tagged.results.length} companies (addressMatch=${tagged.addressMatch})`);
 
     return {
       success: true,
       addressMatch: tagged.addressMatch,
-      results: tagged.results.map(result => ({
-        workdayId: result.workday_id,
-        type: result.type,
-        content: result.content,
-        metadata: result.metadata,
-        similarity: result.similarity,
-        addressMatch: result.addressMatch
-      }))
+      results: tagged.results.map(result => {
+        const similarity = 'similarity' in result ? result.similarity : undefined;
+        return {
+          workdayId: result.workday_id,
+          type: result.type,
+          content: result.content,
+          metadata: result.metadata,
+          ...(typeof similarity === 'number' ? { similarity } : {}),
+          addressMatch: result.addressMatch
+        };
+      })
     };
   }
 });

@@ -638,9 +638,39 @@ Primary Address: 100 PGA Tour Blvd`);
       ]);
       expect(result.results[0].addressMatch).toBe('none');
       expect(result.results[1].addressMatch).toBe('unique');
+      expect(result.results[1].similarity).toBeUndefined();
     });
 
-    it('recovers a concatenated bill-to remainder for rerank', async () => {
+    it('still returns name hits when the company cache list fails', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      mockGetDocumentsByType.mockRejectedValueOnce(new Error('cache list failed'));
+      mockSearchDocuments.mockResolvedValue([
+        {
+          workday_id: 'georgia-wid',
+          type: 'company',
+          content: 'Company Name: Georgia Section PGA of America, Inc.',
+          metadata: {
+            companyName: 'Georgia Section PGA of America, Inc.',
+            addressPrimary: '123 Main Street, Atlanta, GA 30301',
+          },
+          similarity: 1,
+        },
+      ]);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
+      } as any);
+
+      const result = await findCompaniesTool.execute({
+        query: 'PGA of America',
+        address: '1916 PGA Parkway, Frisco, TX 75033',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual(['georgia-wid']);
+    });
+
+    it('recovers a concatenated bill-to remainder for tagging', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([
         {

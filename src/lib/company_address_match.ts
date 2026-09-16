@@ -101,14 +101,15 @@ export function tagCompaniesByAddress<T extends { metadata?: Record<string, unkn
   };
 }
 
-export function includeCompaniesMatchingBillToAddress<T extends {
-  workday_id: string;
-  metadata?: Record<string, unknown> | null;
-}>(
+export function includeCompaniesMatchingBillToAddress<
+  T extends { workday_id: string; metadata?: Record<string, unknown> | null },
+  C extends { workday_id: string; metadata?: Record<string, unknown> | null }
+>(
   nameResults: T[],
-  cachedCompanies: T[] | undefined,
-  billToAddress: string | undefined
-): { results: Array<T & { addressMatch: CompanyAddressMatch }>; addressMatch: CompanyAddressMatch } {
+  cachedCompanies: C[] | undefined,
+  billToAddress: string | undefined,
+  limit?: number
+): { results: Array<(T | C) & { addressMatch: CompanyAddressMatch }>; addressMatch: CompanyAddressMatch } {
   if (!billToAddress?.trim() || !cachedCompanies?.length) {
     return tagCompaniesByAddress(nameResults, billToAddress);
   }
@@ -127,9 +128,10 @@ export function includeCompaniesMatchingBillToAddress<T extends {
     addressMatch: hitIds.has(row.workday_id) ? fromCache.addressMatch : 'none' as const,
   }));
   const extras = fromCache.results.filter((row) => row.addressMatch !== 'none' && !nameIds.has(row.workday_id));
+  const remaining = typeof limit === 'number' ? Math.max(0, limit - taggedName.length) : extras.length;
 
   return {
     addressMatch: fromCache.addressMatch,
-    results: [...taggedName, ...extras],
+    results: [...taggedName, ...extras.slice(0, remaining)],
   };
 }

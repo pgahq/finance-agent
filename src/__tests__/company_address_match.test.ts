@@ -198,6 +198,12 @@ describe('includeCompaniesMatchingBillToAddress', () => {
     expect(included.results.map((result) => result.addressMatch)).toEqual(['none', 'unique']);
   });
 
+  it('keeps tagged name rows and drops extras past the requested limit', () => {
+    const included = includeCompaniesMatchingBillToAddress([georgia], [georgia, national], frisco, 1);
+    expect(included.addressMatch).toBe('unique');
+    expect(included.results.map((result) => result.workday_id)).toEqual(['georgia-wid']);
+  });
+
   it('keeps name order and appends a shared-street company name search missed', () => {
     const juniorLeague = {
       workday_id: 'jr-wid',

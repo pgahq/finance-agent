@@ -658,8 +658,8 @@ export async function searchDocuments(
         metadata,
         CASE
           WHEN $1 = 'company' AND (
-            LOWER(COALESCE(metadata->>'companyName', '')) = LOWER($4)
-            OR LOWER(COALESCE(metadata->>'companyReferenceId', '')) = LOWER($4)
+            TRIM(LOWER(COALESCE(metadata->>'companyName', ''))) = LOWER(TRIM($4))
+            OR TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))
           ) THEN 1.0
           WHEN $1 <> 'company' AND LOWER(content) LIKE LOWER($3) THEN 1.0
           ELSE 1 - (embedding <=> '${vectorString}'::vector)

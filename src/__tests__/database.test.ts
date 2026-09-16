@@ -331,6 +331,8 @@ describe('Database Library', () => {
       );
       const sql = mockQuery.mock.calls[0][0] as string;
       expect(sql).toContain("$1 <> 'company' AND LOWER(content) LIKE LOWER($3)");
+      expect(sql).toContain("TRIM(LOWER(COALESCE(metadata->>'companyName', ''))) = LOWER(TRIM($4))");
+      expect(sql).toContain("TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))");
     });
 
     it('should handle search errors', async () => {
