@@ -198,6 +198,7 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.assigneeWID).toBe('wid-jcarey');
     expect(employees.getEmployeeWidByEmail).toHaveBeenCalledWith(expect.anything(), 'jcarey@pgahq.com');
+    expect(submitArgs.buildNotes([])).toContain('Work queue assignee: Joe Carey (jcarey@pgahq.com)');
   });
 
   it('should create a new supplier invoice from an uploaded attachment', async () => {

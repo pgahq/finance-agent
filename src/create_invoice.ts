@@ -14,6 +14,7 @@ import {
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
+  formatWorkQueueAssigneeNotes,
 } from './lib/invoice_enrichment.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
@@ -368,18 +369,26 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
-    const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
-      baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
-
-    const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
-
     const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
     if (assigneeEmail && !assigneeMatch) {
       debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
         assigneeEmail,
       });
     }
+
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
+      const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
+      return baseNotes
+        + formatWorkQueueAssigneeNotes(appliedFallbacks, {
+          assigneeEmail,
+          assigneeName: assigneeMatch?.name,
+          assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
+        })
+        + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+    };
+
+    const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
