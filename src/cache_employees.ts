@@ -33,10 +33,22 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
 
   const workers = parseApAgentWorkerReport(payload);
 
+  const excludedEntryCount = dispositions.filter((d) => d === 'excluded').length;
+  const unparseableEntryCount = dispositions.filter((d) => d === 'unparseable').length;
+
   debug(`Processing ${workers.length} AP agent workers from Workday report`, {
     reportEntryCount: reportEntries.length,
-    excludedEntryCount: dispositions.filter((d) => d === 'excluded').length,
+    excludedEntryCount,
+    unparseableEntryCount,
   });
+
+  if (workers.length === 0 && reportEntries.length > 0 && excludedEntryCount === reportEntries.length) {
+    const sample = reportEntries[0];
+    debug('All AP agent worker report rows classified inactive; sample row keys for column mapping', {
+      sampleKeys: sample && typeof sample === 'object' ? Object.keys(sample as object) : [],
+      sampleRow: sample,
+    });
+  }
 
   const items = new Map(
     workers.map((worker) => [

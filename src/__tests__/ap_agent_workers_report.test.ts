@@ -49,6 +49,37 @@ describe('ap_agent_workers_report', () => {
     })).toBeUndefined();
   });
 
+  it('parses numeric and boolean active status values', () => {
+    expect(parseApAgentWorkerReportRow({
+      Workday_ID: 'wid-1',
+      Primary_Work_Email: 'one@pgahq.com',
+      Active_Status: 1,
+    })).toEqual({
+      workdayId: 'wid-1',
+      email: 'one@pgahq.com',
+    });
+
+    expect(parseApAgentWorkerReportRow({
+      Workday_ID: 'wid-2',
+      Primary_Work_Email: 'two@pgahq.com',
+      Active: true,
+    })).toEqual({
+      workdayId: 'wid-2',
+      email: 'two@pgahq.com',
+    });
+  });
+
+  it('includes rows when active status is absent or not a known inactive value', () => {
+    expect(parseApAgentWorkerReportRow({
+      Workday_ID: 'wid-leave',
+      Primary_Work_Email: 'leave@pgahq.com',
+      Active_Status: 'On Leave',
+    })).toEqual({
+      workdayId: 'wid-leave',
+      email: 'leave@pgahq.com',
+    });
+  });
+
   it('parses Report_Entry payloads', () => {
     const rows = parseApAgentWorkerReport({
       Report_Entry: [

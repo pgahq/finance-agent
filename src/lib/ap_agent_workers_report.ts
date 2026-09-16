@@ -25,6 +25,9 @@ function normalizeHeaderKey(key: string): string {
 
 function cellValue(value: unknown): string | undefined {
   if (value == null) return undefined;
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
   if (typeof value === 'string') {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : undefined;
@@ -38,7 +41,11 @@ function cellValue(value: unknown): string | undefined {
     if (typeof descriptor === 'string' && descriptor.trim()) {
       return descriptor.trim();
     }
-    const id = record.id ?? record.$value;
+    const text = record['#text'] ?? record._value ?? record.value;
+    if (typeof text === 'string' && text.trim()) {
+      return text.trim();
+    }
+    const id = record.id ?? record.$value ?? record.WID ?? record.wid;
     if (typeof id === 'string' && id.trim()) {
       return id.trim();
     }
@@ -59,13 +66,45 @@ function readField(row: Record<string, unknown>, ...headerHints: string[]): stri
 function isTruthyYes(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
-  return normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'active';
+  if (
+    normalized === 'yes'
+    || normalized === 'y'
+    || normalized === 'true'
+    || normalized === '1'
+    || normalized === 'active'
+    || normalized.startsWith('active ')
+    || normalized.startsWith('active-')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isExplicitlyInactive(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === 'no'
+    || normalized === 'n'
+    || normalized === 'false'
+    || normalized === '0'
+    || normalized === 'inactive'
+    || normalized.startsWith('inactive ')
+    || normalized.startsWith('terminated')
+  );
 }
 
 function isTerminated(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
-  return normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'terminated';
+  if (normalized === 'yes' || normalized === 'y' || normalized === 'true' || normalized === 'terminated') {
+    return true;
+  }
+  // Termination dates and free-text statuses are not boolean terminated flags.
+  if (/^\d{4}-\d{2}-\d{2}/.test(normalized)) {
+    return false;
+  }
+  return normalized.startsWith('terminated');
 }
 
 export function normalizeEmployeeEmail(email: string): string {
@@ -76,19 +115,42 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
   if (!row || typeof row !== 'object') return undefined;
   const record = row as Record<string, unknown>;
 
-  const workdayId = readField(record, 'Workday ID', 'Workday_ID', 'workdayId', 'worker');
+  const workdayId = readField(
+    record,
+    'Workday ID',
+    'Workday_ID',
+    'WorkdayID',
+    'workdayId',
+    'Worker_WID',
+    'Employee_WID',
+    'worker',
+    'Worker',
+  );
   const emailRaw = readField(
     record,
     'Primary Work - Email',
     'Primary_Work_-_Email',
+    'Primary_Work_Email',
     'Primary Work Email',
     'email_PrimaryWork',
     'PrimaryWorkEmail',
+    'PrimaryEmail',
+    'Email',
   );
   if (!workdayId || !emailRaw) return undefined;
 
-  const activeStatus = readField(record, 'Active Status', 'Active_Status', 'activeStatus');
-  if (activeStatus && !isTruthyYes(activeStatus)) return undefined;
+  const activeStatus = readField(
+    record,
+    'Active Status',
+    'Active_Status',
+    'activeStatus',
+    'Active',
+    'Is_Active',
+    'Employee_Status',
+  );
+  if (activeStatus && isExplicitlyInactive(activeStatus)) {
+    return undefined;
+  }
 
   const terminated = readField(record, 'Terminated', 'terminated');
   if (isTerminated(terminated)) return undefined;
@@ -144,22 +206,43 @@ export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerR
     return 'unparseable';
   }
   const record = entry as Record<string, unknown>;
-  const activeStatus = readField(record, 'Active Status', 'Active_Status', 'activeStatus');
-  if (activeStatus && !isTruthyYes(activeStatus)) {
+  const activeStatus = readField(
+    record,
+    'Active Status',
+    'Active_Status',
+    'activeStatus',
+    'Active',
+    'Is_Active',
+    'Employee_Status',
+  );
+  if (activeStatus && isExplicitlyInactive(activeStatus)) {
     return 'excluded';
   }
   const terminated = readField(record, 'Terminated', 'terminated');
   if (isTerminated(terminated)) {
     return 'excluded';
   }
-  const workdayId = readField(record, 'Workday ID', 'Workday_ID', 'workdayId', 'worker');
+  const workdayId = readField(
+    record,
+    'Workday ID',
+    'Workday_ID',
+    'WorkdayID',
+    'workdayId',
+    'Worker_WID',
+    'Employee_WID',
+    'worker',
+    'Worker',
+  );
   const emailRaw = readField(
     record,
     'Primary Work - Email',
     'Primary_Work_-_Email',
+    'Primary_Work_Email',
     'Primary Work Email',
     'email_PrimaryWork',
     'PrimaryWorkEmail',
+    'PrimaryEmail',
+    'Email',
   );
   if (!workdayId && !emailRaw) {
     return 'unparseable';
