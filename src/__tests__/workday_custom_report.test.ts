@@ -1,26 +1,13 @@
-import {
-  executeWorkdayCustomReport,
-  getApAgentWorkersReportPath,
-  tryGetApAgentWorkersReportPath,
-} from '../lib/workday.js';
+import { AP_AGENT_WORKERS_CUSTOM_REPORT_PATH } from '../lib/ap_agent_workers_report.js';
+import { executeWorkdayCustomReport } from '../lib/workday.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 
-describe('AP agent workers report path env', () => {
-  it('returns undefined when WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is unset', () => {
-    expect(tryGetApAgentWorkersReportPath({})).toBeUndefined();
-    expect(tryGetApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: '  ' })).toBeUndefined();
-  });
-
-  it('getApAgentWorkersReportPath throws when unset', () => {
-    expect(() => getApAgentWorkersReportPath({})).toThrow('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is required');
-  });
-
-  it('trims and returns the configured path', () => {
-    expect(tryGetApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: ' owner/report ' }))
-      .toBe('owner/report');
-    expect(getApAgentWorkersReportPath({ WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: 'owner/report' }))
-      .toBe('owner/report');
+describe('AP agent workers custom report path', () => {
+  it('uses the Worker Assignment For AP Agent integration IDs', () => {
+    expect(AP_AGENT_WORKERS_CUSTOM_REPORT_PATH).toBe(
+      'wdw-7212/Worker Assignment For AP Agent',
+    );
   });
 });
 
@@ -46,11 +33,11 @@ describe('executeWorkdayCustomReport', () => {
   });
 
   it('requests the custom report JSON endpoint with an encoded path', async () => {
-    await executeWorkdayCustomReport(config, 'owner/Worker_Assignment_For_AP_Agent');
+    await executeWorkdayCustomReport(config, AP_AGENT_WORKERS_CUSTOM_REPORT_PATH);
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       2,
-      'https://test.workday.com/ccx/service/customreport2/pgahq/owner/Worker_Assignment_For_AP_Agent?format=json',
+      'https://test.workday.com/ccx/service/customreport2/pgahq/wdw-7212/Worker%20Assignment%20For%20AP%20Agent?format=json',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({

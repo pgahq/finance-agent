@@ -53,11 +53,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Workspace add-on system service account email used to verify the Authorization header ID token
-  WorkdayApAgentWorkersReportPath:
-    Type: String
-    Description: Workday custom report path (Owner/Report_Web_Service_Name) for Worker Assignment For AP Agent
-    Default: ""
-
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -88,7 +83,6 @@ Globals:
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         INTERCOM_APP_ID: !Ref IntercomAppId
-        WORKDAY_AP_AGENT_WORKERS_REPORT_PATH: !Ref WorkdayApAgentWorkersReportPath
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
         AWS_STACK_NAME: !Ref AWS::StackName
         DATABASE_SECRET_ARN: !Ref DatabaseSecret

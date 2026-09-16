@@ -194,19 +194,6 @@ export async function executeWorkdayQuery(
   };
 }
 
-export function tryGetApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string | undefined {
-  const reportPath = env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH?.trim();
-  return reportPath || undefined;
-}
-
-export function getApAgentWorkersReportPath(env: NodeJS.ProcessEnv): string {
-  const reportPath = tryGetApAgentWorkersReportPath(env);
-  if (!reportPath) {
-    throw new Error('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is required');
-  }
-  return reportPath;
-}
-
 export async function executeWorkdayCustomReport(
   config: WorkdayConfig,
   reportPath: string,
