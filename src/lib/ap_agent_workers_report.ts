@@ -63,6 +63,100 @@ function readField(row: Record<string, unknown>, ...headerHints: string[]): stri
   return undefined;
 }
 
+function looksLikeWorkdayWid(value: string): boolean {
+  const trimmed = value.trim();
+  return /^[a-f0-9]{32}$/i.test(trimmed) || (trimmed.length >= 20 && /^[a-f0-9]+$/i.test(trimmed));
+}
+
+function readWorkdayIdFromRecord(record: Record<string, unknown>): string | undefined {
+  const direct = readField(
+    record,
+    'Workday ID',
+    'Workday_ID',
+    'WorkdayID',
+    'workdayId',
+    'Worker_WID',
+    'Employee_WID',
+    'worker',
+    'Worker',
+  );
+  if (direct && looksLikeWorkdayWid(direct)) {
+    return direct;
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = normalizeHeaderKey(key);
+    if (
+      normalizedKey === 'wid'
+      || normalizedKey.endsWith('workdayid')
+      || (normalizedKey.includes('workday') && normalizedKey.includes('id'))
+      || (normalizedKey.includes('worker') && normalizedKey.includes('wid'))
+      || normalizedKey === 'worker'
+      || normalizedKey === 'employee'
+    ) {
+      const candidate = cellValue(value);
+      if (candidate && looksLikeWorkdayWid(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    const candidate = cellValue(value);
+    if (candidate && looksLikeWorkdayWid(candidate)) {
+      return candidate;
+    }
+  }
+
+  return direct;
+}
+
+function readEmailFromRecord(record: Record<string, unknown>): string | undefined {
+  const direct = readField(
+    record,
+    'Primary Work - Email',
+    'Primary_Work_-_Email',
+    'Primary_Work_Email',
+    'Primary Work Email',
+    'email_PrimaryWork',
+    'PrimaryWorkEmail',
+    'PrimaryEmail',
+    'Email',
+  );
+  if (direct && direct.includes('@')) {
+    return direct;
+  }
+
+  let fallbackEmail: string | undefined;
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = normalizeHeaderKey(key);
+    if (!normalizedKey.includes('email')) {
+      continue;
+    }
+    const candidate = cellValue(value);
+    if (!candidate || !candidate.includes('@')) {
+      continue;
+    }
+    if (normalizedKey.includes('primary') || normalizedKey.includes('work')) {
+      return candidate;
+    }
+    fallbackEmail = fallbackEmail ?? candidate;
+  }
+
+  if (fallbackEmail) {
+    return fallbackEmail;
+  }
+
+  for (const value of Object.values(record)) {
+    const candidate = cellValue(value);
+    if (candidate && candidate.includes('@')) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
 function isExplicitlyInactive(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
@@ -98,28 +192,8 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
   if (!row || typeof row !== 'object') return undefined;
   const record = row as Record<string, unknown>;
 
-  const workdayId = readField(
-    record,
-    'Workday ID',
-    'Workday_ID',
-    'WorkdayID',
-    'workdayId',
-    'Worker_WID',
-    'Employee_WID',
-    'worker',
-    'Worker',
-  );
-  const emailRaw = readField(
-    record,
-    'Primary Work - Email',
-    'Primary_Work_-_Email',
-    'Primary_Work_Email',
-    'Primary Work Email',
-    'email_PrimaryWork',
-    'PrimaryWorkEmail',
-    'PrimaryEmail',
-    'Email',
-  );
+  const workdayId = readWorkdayIdFromRecord(record);
+  const emailRaw = readEmailFromRecord(record);
   if (!workdayId || !emailRaw) return undefined;
 
   const activeStatus = readField(
@@ -205,30 +279,16 @@ export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerR
   if (isTerminated(terminated)) {
     return 'excluded';
   }
-  const workdayId = readField(
-    record,
-    'Workday ID',
-    'Workday_ID',
-    'WorkdayID',
-    'workdayId',
-    'Worker_WID',
-    'Employee_WID',
-    'worker',
-    'Worker',
-  );
-  const emailRaw = readField(
-    record,
-    'Primary Work - Email',
-    'Primary_Work_-_Email',
-    'Primary_Work_Email',
-    'Primary Work Email',
-    'email_PrimaryWork',
-    'PrimaryWorkEmail',
-    'PrimaryEmail',
-    'Email',
-  );
+  const workdayId = readWorkdayIdFromRecord(record);
+  const emailRaw = readEmailFromRecord(record);
   if (!workdayId && !emailRaw) {
     return 'unparseable';
   }
   return 'unparseable';
+}
+
+/** First report row for debug logging when column mapping fails in production. */
+export function sampleApAgentWorkerReportRow(payload: unknown): unknown {
+  const entries = extractApAgentWorkerReportEntries(payload);
+  return entries[0];
 }
