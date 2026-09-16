@@ -80,6 +80,16 @@ describe('ap_agent_workers_report', () => {
     });
   });
 
+  it('parses work email and WID from nonstandard column names', () => {
+    expect(parseApAgentWorkerReportRow({
+      CF_LRV_Worker_WID: 'cab0b1d2505a01c2514ea9134d2886ce',
+      businessEmail: 'ap@pgahq.com',
+    })).toEqual({
+      workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
+      email: 'ap@pgahq.com',
+    });
+  });
+
   it('parses Report_Entry payloads', () => {
     const rows = parseApAgentWorkerReport({
       Report_Entry: [

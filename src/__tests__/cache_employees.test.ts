@@ -89,24 +89,17 @@ describe('cache_employees processor', () => {
     expect(mockSyncDataSource).not.toHaveBeenCalled();
   });
 
-  it('syncs with prune when inactive rows are intentional exclusions', async () => {
+  it('skips sync without prune when every row is inactive', async () => {
     mockExecuteWorkdayCustomReport.mockResolvedValue({
       Report_Entry: [{ 'Workday ID': 'wid-x', 'Active Status': 'No' }],
     });
 
     await processor({});
 
-    expect(mockSyncDataSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'employee',
-        pruneAbsent: true,
-        sourceTotal: 0,
-        sourceFetchedCount: 0,
-      }),
-    );
+    expect(mockSyncDataSource).not.toHaveBeenCalled();
   });
 
-  it('skips sync when a report row is unparseable', async () => {
+  it('skips sync when every report row is unparseable', async () => {
     mockExecuteWorkdayCustomReport.mockResolvedValue({
       Report_Entry: [{ 'Active Status': 'Yes' }],
     });
@@ -114,6 +107,22 @@ describe('cache_employees processor', () => {
     await processor({});
 
     expect(mockSyncDataSource).not.toHaveBeenCalled();
+  });
+
+  it('syncs parseable rows when the report also has unparseable rows', async () => {
+    mockExecuteWorkdayCustomReport.mockResolvedValue({
+      Report_Entry: [
+        activeWorkerRow,
+        { 'Active Status': 'Yes' },
+      ],
+    });
+
+    await processor({});
+
+    expect(mockSyncDataSource).toHaveBeenCalledTimes(1);
+    expect(mockSyncDataSource).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceTotal: 1, sourceFetchedCount: 1 }),
+    );
   });
 
   it('syncs employees with pruneAbsent when the report parses', async () => {

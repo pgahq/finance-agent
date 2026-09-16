@@ -23,32 +23,32 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     return;
   }
 
+  const workers = parseApAgentWorkerReport(payload);
   const dispositions = reportEntries.map(classifyApAgentWorkerReportEntry);
-  if (dispositions.includes('unparseable')) {
-    debug('AP agent workers report has unparseable rows - skipping sync without prune', {
+  const excludedEntryCount = dispositions.filter((d) => d === 'excluded').length;
+  const unparseableEntryCount = dispositions.filter((d) => d === 'unparseable').length;
+
+  if (workers.length === 0) {
+    const sample = reportEntries[0];
+    debug('AP agent workers report produced no parseable workers - skipping sync without prune', {
       reportEntryCount: reportEntries.length,
+      excludedEntryCount,
+      unparseableEntryCount,
+      sampleKeys: sample && typeof sample === 'object' ? Object.keys(sample as object) : [],
+      sampleRow: sample,
     });
     return;
   }
 
-  const workers = parseApAgentWorkerReport(payload);
-
-  const excludedEntryCount = dispositions.filter((d) => d === 'excluded').length;
-  const unparseableEntryCount = dispositions.filter((d) => d === 'unparseable').length;
+  if (unparseableEntryCount > 0) {
+    debug('Ignoring unparseable AP agent worker report rows', { unparseableEntryCount });
+  }
 
   debug(`Processing ${workers.length} AP agent workers from Workday report`, {
     reportEntryCount: reportEntries.length,
     excludedEntryCount,
     unparseableEntryCount,
   });
-
-  if (workers.length === 0 && reportEntries.length > 0 && excludedEntryCount === reportEntries.length) {
-    const sample = reportEntries[0];
-    debug('All AP agent worker report rows classified inactive; sample row keys for column mapping', {
-      sampleKeys: sample && typeof sample === 'object' ? Object.keys(sample as object) : [],
-      sampleRow: sample,
-    });
-  }
 
   const items = new Map(
     workers.map((worker) => [
