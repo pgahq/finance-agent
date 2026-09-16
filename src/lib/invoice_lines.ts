@@ -178,6 +178,7 @@ interface ParsedPoLineWorktags {
   fundId: string | null;
   spendCategoryId: string | null;
   worktagsReference: any[];
+  lineLevelWorktagsReference?: any[];
   lineOrder: number;
   description: string | null;
   memo: string | null;
@@ -188,16 +189,21 @@ interface ParsedPoLineWorktags {
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
   return (poLines ?? []).map(line => {
     const worktags = ([] as any[]).concat(line.worktagsReference ?? []);
+    const lineLevelWorktagsReference = ([] as any[]).concat(
+      line.lineLevelWorktagsReference ?? line.worktagsReference ?? []
+    );
+    const scalarWorktags = (line.splitLineData?.length ?? 0) > 0 ? lineLevelWorktagsReference : worktags;
     return {
       lineOrder: line.lineOrder,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
       description: line.description ?? null,
       memo: line.memo ?? null,
-      costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
-      fundId: extractWorktagId(worktags, 'Fund_ID'),
+      costCenterId: extractWorktagId(scalarWorktags, 'Cost_Center_Reference_ID'),
+      fundId: extractWorktagId(scalarWorktags, 'Fund_ID'),
       spendCategoryId: extractSpendCategoryId(line.spendCategoryReference),
-      lineOfBusinessId: extractLineOfBusinessId(worktags),
+      lineOfBusinessId: extractLineOfBusinessId(scalarWorktags),
       worktagsReference: worktags,
+      lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
     };
@@ -222,7 +228,9 @@ export function overlayPoWorktagsFromPurchaseOrder(
     if (!poLine) return line;
     return {
       ...line,
-      poPassthroughWorktagsReference: poLine.worktagsReference,
+      poPassthroughWorktagsReference: poLine.lineLevelWorktagsReference?.length
+        ? poLine.lineLevelWorktagsReference
+        : poLine.worktagsReference,
       ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
     };
   });

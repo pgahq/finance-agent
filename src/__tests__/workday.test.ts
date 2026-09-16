@@ -3842,6 +3842,58 @@ describe('Workday utilities', () => {
       expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
 
+    it('includes PO passthrough worktags and split line data on create submit', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      const makeWorktag = (type: string, value: string) => ({
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+          { $attributes: { type }, $value: value },
+        ],
+      });
+      const fundPassthrough = makeWorktag('Fund_ID', 'FUND-PO');
+      const ccSplit = makeWorktag('Cost_Center_Reference_ID', 'CC-SPLIT');
+      const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+
+      await submitNewSupplierInvoiceForTest({
+        finalLines: [{
+          lineOrder: 1,
+          description: 'PO matched line',
+          quantity: 1,
+          unitCost: 100,
+          extendedAmount: 100,
+          fundId: 'FUND-INV',
+          costCenterId: 'CC-INV',
+          poPassthroughWorktagsReference: [fundPassthrough, ccSplit, venue],
+          supplierInvoiceSplitLineData: [
+            { extendedAmount: 60, worktagReference: [ccSplit] },
+            { extendedAmount: 40, worktagReference: [ccSplit] },
+          ],
+        }],
+      });
+
+      const line = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+      expect(line.Supplier_Invoice_Split_Line_Data[0].Extended_Amount).toBe(60);
+      expect(line.Supplier_Invoice_Split_Line_Data[1].Extended_Amount).toBe(40);
+      const worktagValues = (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+        ([] as any[]).concat(tag.ID ?? [])
+          .filter((id: any) => id.$attributes?.type !== 'WID')
+          .map((id: any) => `${id.$attributes.type}:${id.$value}`)
+      );
+      expect(worktagValues).toContain('Fund_ID:FUND-INV');
+      expect(worktagValues).toContain('Cost_Center_Reference_ID:CC-INV');
+      expect(worktagValues).toContain('Custom_Worktag_01_ID:VENUE-A');
+      expect(worktagValues).not.toContain('Fund_ID:FUND-PO');
+      expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-SPLIT');
+    });
+
     it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
       const soapError = Object.assign(new Error('Create failed'), {
@@ -4036,6 +4088,10 @@ describe('Workday utilities', () => {
         spendCategoryReference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Design_Mapping' }] },
         extendedAmount: 653000,
         worktagsReference: [
+          makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
+          makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
+        ],
+        lineLevelWorktagsReference: [
           makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
         ],

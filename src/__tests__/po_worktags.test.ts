@@ -1,8 +1,10 @@
 import {
   dedupeWorktagReferences,
+  firstNonEmptyPoLineArray,
   mapPoSplitsToSupplierInvoiceSplitLineData,
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
+  passthroughWorktagsForSplitInvoiceLine,
 } from '../lib/po_worktags.js';
 
 const makeWorktag = (type: string, value: string) => ({
@@ -46,11 +48,40 @@ describe('po_worktags', () => {
     expect(merged).toEqual([fund, program]);
   });
 
-  it('mapPoSplitsToSupplierInvoiceSplitLineData maps split rows for submit', () => {
+  it('mapPoSplitsToSupplierInvoiceSplitLineData includes amounts when split sum matches invoice line', () => {
     const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
-    const mapped = mapPoSplitsToSupplierInvoiceSplitLineData([
-      { extendedAmount: 100, worktagReference: [cc] },
+    const mapped = mapPoSplitsToSupplierInvoiceSplitLineData(
+      [{ extendedAmount: 60, worktagReference: [cc] }, { extendedAmount: 40, worktagReference: [cc] }],
+      100
+    );
+    expect(mapped).toEqual([
+      { Extended_Amount: 60, Worktag_Reference: [cc] },
+      { Extended_Amount: 40, Worktag_Reference: [cc] },
     ]);
-    expect(mapped).toEqual([{ Extended_Amount: 100, Worktag_Reference: [cc] }]);
+  });
+
+  it('mapPoSplitsToSupplierInvoiceSplitLineData omits amounts when split sum mismatches invoice line', () => {
+    const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+    const mapped = mapPoSplitsToSupplierInvoiceSplitLineData(
+      [{ extendedAmount: 60, worktagReference: [cc] }, { extendedAmount: 40, worktagReference: [cc] }],
+      99
+    );
+    expect(mapped).toEqual([
+      { Worktag_Reference: [cc] },
+      { Worktag_Reference: [cc] },
+    ]);
+  });
+
+  it('passthroughWorktagsForSplitInvoiceLine drops fund and cost center on split lines', () => {
+    const fund = makeWorktag('Fund_ID', 'FUND-A');
+    const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+    const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+    const filtered = passthroughWorktagsForSplitInvoiceLine([fund, cc, venue], true);
+    expect(filtered).toEqual([venue]);
+  });
+
+  it('firstNonEmptyPoLineArray prefers first non-empty source', () => {
+    expect(firstNonEmptyPoLineArray([], [{ id: 1 }], [{ id: 2 }])).toEqual([{ id: 1 }]);
+    expect(firstNonEmptyPoLineArray(undefined, [], [{ id: 2 }])).toEqual([{ id: 2 }]);
   });
 });
