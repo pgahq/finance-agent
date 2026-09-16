@@ -11,10 +11,50 @@ import type { PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
+  descriptionCells?: string[] | null;
   quantity?: number | null;
   unitCost?: string | null;
   totalPrice?: string | null;
   hasDiscount?: boolean | null;
+}
+
+export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
+
+function isNumericOrAmountCell(value: string): boolean {
+  return /^\$?-?[\d,]+(?:\.\d+)?$/.test(value.replace(/\s/g, ''));
+}
+
+export function composeInvoiceLineDescription(
+  cells?: Array<string | null | undefined> | null,
+  description?: string | null
+): string | undefined {
+  const cleaned: string[] = [];
+  for (const raw of [...(cells ?? []), description]) {
+    const cell = raw?.replace(/\s+/g, ' ').trim();
+    if (!cell || isNumericOrAmountCell(cell)) continue;
+    const lower = cell.toLowerCase();
+    if (cleaned.some(existing => existing.toLowerCase() === lower)) continue;
+    cleaned.push(cell);
+  }
+
+  const survivors = cleaned.filter((cell, index) => {
+    const lower = cell.toLowerCase();
+    return !cleaned.some((other, otherIndex) => (
+      otherIndex !== index
+      && other.length > cell.length
+      && other.toLowerCase().includes(lower)
+    ));
+  });
+
+  return survivors.length ? survivors.join(INVOICE_LINE_DESCRIPTION_SEPARATOR) : undefined;
+}
+
+export function withComposedLineDescriptions<T extends ExtractedInvoiceLine>(lines: T[]): T[] {
+  return lines.map(line => {
+    const composed = composeInvoiceLineDescription(line.descriptionCells, line.description);
+    if (!composed || composed === line.description) return line;
+    return { ...line, description: composed };
+  });
 }
 
 export interface FinalInvoiceLine {

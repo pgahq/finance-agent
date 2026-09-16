@@ -91,7 +91,8 @@ export const InvoiceEnrichmentSchema = z.object({
   invoiceLineQuantityDisplayed: z.boolean().describe('True if the invoice line table shows a per-line quantity column or per-line quantity values (Qty, Quantity, etc.). False if the document has no quantity column or no per-line quantity values anywhere on the line items. When false, every extracted line must have quantity null — do not infer quantity from math.'),
 
   extractedInvoiceLines: z.array(z.object({
-    description: z.string().describe('Line item description as it appears on the invoice'),
+    description: z.string().describe('Concatenated meaningful text from this invoice row (all identifying columns, left-to-right, joined with " - "). Not a terse summary. Not qty/rate/amount. Not header PO, account, job, customer ID, or service-period identifiers.'),
+    descriptionCells: z.array(z.string()).nullable().describe('Every meaningful text cell on this row in left-to-right order (Activity, Resource, Consultant, Employee, SKU, Item, Description, Project, Notes, and similar). Exclude empty cells, quantity, rate, amount, and header PO/account/service-period values. Code concatenates these into description. Null if the row has only the value already in description.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
@@ -322,7 +323,8 @@ First, set \`invoiceLineQuantityDisplayed\` from the document layout (column hea
 Extract the individual line items from the invoice document:
 
 1. For each line item, extract:
-   - **Description**: The item description or service name as it appears on the invoice
+   - **Description cells**: Every meaningful text cell on **that invoice row**, in left-to-right document order. Do not use only the column labeled Description / Item / Service. Include Activity, Resource, Consultant, Employee, Staff, Person, Role, SKU, Item #, Part #, Product, Service, Description, Project, Location, Notes, Comments, and any other identifying text on the row. Skip empty cells. Populate \`descriptionCells\` with those values.
+   - **Description**: Concatenate those cells with \` - \`. Do not summarize, paraphrase, or drop a name, SKU, or activity in favor of a shorter category. The terse 1-sentence summary belongs in memo later, not here. Do not include quantity, rate/unit price, amount/extended, tax, or freight. Do not include PO, account, job, customer ID, or header billing/service-period values — those are extracted separately. A date **on the row** that identifies the work may be included; header service dates must not be copied onto every line. Example: Activity \`Ryan Poland\` + Description \`Project Management\` → descriptionCells \`["Ryan Poland", "Project Management"]\` and description \`Ryan Poland - Project Management\`.
    - **Quantity**: The quantity ordered/delivered when \`invoiceLineQuantityDisplayed\` is true and a value is shown. When \`invoiceLineQuantityDisplayed\` is false, leave quantity **null** on every line — do not infer quantity from unit cost and total.
    - **Unit Cost**: The price per unit only when a unit price is printed (a unit-price / rate column or per-unit value). When it is not stated, leave unitCost **null** — do not compute it from quantity and total.
    - **Total Price**: The total/extended price for the line (if stated)

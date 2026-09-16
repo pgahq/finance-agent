@@ -31,6 +31,7 @@ import {
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
+  withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import {
   findPurchaseOrderNumber,
@@ -252,7 +253,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
     const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
-      (result.extractedInvoiceLines ?? [])
+      withComposedLineDescriptions(result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const extractedFreightAmount = result.extractedFreightAmount
