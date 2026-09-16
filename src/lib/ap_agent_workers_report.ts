@@ -21,6 +21,8 @@ export const AP_AGENT_WORKERS_REPORT_COLUMNS = {
 export interface ApAgentWorkerRow {
   workdayId: string;
   email: string;
+  /** From Workday `Active_Status` (and termination flags when present). */
+  active: boolean;
   name?: string;
   employeeId?: string;
 }
@@ -204,6 +206,34 @@ export function normalizeEmployeeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/** Maps Workday `Active_Status` (and optional terminated flag) to `metadata.active`. */
+export function parseEmployeeActiveFromReportFields(
+  activeStatus: string | undefined,
+  terminated?: string | undefined,
+): boolean {
+  if (terminated && isTerminated(terminated)) {
+    return false;
+  }
+  if (!activeStatus) {
+    return true;
+  }
+  if (isExplicitlyInactive(activeStatus)) {
+    return false;
+  }
+  const normalized = activeStatus.trim().toLowerCase();
+  if (
+    normalized === 'yes'
+    || normalized === 'y'
+    || normalized === 'true'
+    || normalized === '1'
+    || normalized === 'active'
+    || normalized.startsWith('active ')
+  ) {
+    return true;
+  }
+  return true;
+}
+
 function readKnownReportField(
   record: Record<string, unknown>,
   column: keyof typeof AP_AGENT_WORKERS_REPORT_COLUMNS,
@@ -242,12 +272,8 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
       'Is_Active',
       'Employee_Status',
     );
-  if (activeStatus && isExplicitlyInactive(activeStatus)) {
-    return undefined;
-  }
-
   const terminated = readField(record, 'Terminated', 'terminated');
-  if (isTerminated(terminated)) return undefined;
+  const active = parseEmployeeActiveFromReportFields(activeStatus, terminated);
 
   const email = normalizeEmployeeEmail(emailRaw);
   if (!email.includes('@')) return undefined;
@@ -260,6 +286,7 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
   return {
     workdayId,
     email,
+    active,
     ...(name ? { name } : {}),
     ...(employeeId ? { employeeId } : {}),
   };
@@ -305,7 +332,7 @@ export function parseApAgentWorkerReport(payload: unknown): ApAgentWorkerRow[] {
 
 export type ApAgentWorkerReportEntryDisposition = 'included' | 'excluded' | 'unparseable';
 
-/** Classifies report rows for cache sync: inactive/terminated are intentional exclusions, not fetch gaps. */
+/** Classifies report rows for cache sync (inactive rows are included with `active: false`). */
 export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerReportEntryDisposition {
   if (parseApAgentWorkerReportRow(entry)) {
     return 'included';
@@ -314,23 +341,6 @@ export function classifyApAgentWorkerReportEntry(entry: unknown): ApAgentWorkerR
     return 'unparseable';
   }
   const record = entry as Record<string, unknown>;
-  const activeStatus = readKnownReportField(record, 'activeStatus')
-    ?? readField(
-      record,
-      'Active Status',
-      'Active_Status',
-      'activeStatus',
-      'Active',
-      'Is_Active',
-      'Employee_Status',
-    );
-  if (activeStatus && isExplicitlyInactive(activeStatus)) {
-    return 'excluded';
-  }
-  const terminated = readField(record, 'Terminated', 'terminated');
-  if (isTerminated(terminated)) {
-    return 'excluded';
-  }
   const workdayId = readKnownReportField(record, 'workdayId') ?? readWorkdayIdFromRecord(record);
   const emailRaw = readKnownReportField(record, 'primaryWorkEmail') ?? readEmailFromRecord(record);
   if (!workdayId && !emailRaw) {

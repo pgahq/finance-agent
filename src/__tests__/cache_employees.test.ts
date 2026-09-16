@@ -89,7 +89,7 @@ describe('cache_employees processor', () => {
     expect(mockSyncDataSource).not.toHaveBeenCalled();
   });
 
-  it('skips sync without prune when every row is inactive', async () => {
+  it('skips sync without prune when every row is unparseable (inactive without email)', async () => {
     mockExecuteWorkdayCustomReport.mockResolvedValue({
       Report_Entry: [{ 'Workday ID': 'wid-x', 'Active Status': 'No' }],
     });
@@ -97,6 +97,26 @@ describe('cache_employees processor', () => {
     await processor({});
 
     expect(mockSyncDataSource).not.toHaveBeenCalled();
+  });
+
+  it('syncs inactive workers with active false in metadata', async () => {
+    mockExecuteWorkdayCustomReport.mockResolvedValue({
+      Report_Entry: [{
+        'Workday ID': 'wid-x',
+        'Primary Work - Email': 'inactive@pgahq.com',
+        'Active Status': 'No',
+      }],
+    });
+
+    await processor({});
+
+    expect(mockSyncDataSource).toHaveBeenCalledTimes(1);
+    const call = mockSyncDataSource.mock.calls[0][0];
+    expect(call.items.get('wid-x')).toMatchObject({
+      workdayId: 'wid-x',
+      email: 'inactive@pgahq.com',
+      active: false,
+    });
   });
 
   it('skips sync when every report row is unparseable', async () => {
@@ -127,7 +147,14 @@ describe('cache_employees processor', () => {
 
   it('syncs employees with pruneAbsent when the report parses', async () => {
     mockExecuteWorkdayCustomReport.mockResolvedValue({
-      Report_Entry: [activeWorkerRow, { 'Workday ID': 'wid-b', 'Active Status': 'No' }],
+      Report_Entry: [
+        activeWorkerRow,
+        {
+          'Workday ID': 'wid-b',
+          'Primary Work - Email': 'b@pgahq.com',
+          'Active Status': 'No',
+        },
+      ],
     });
 
     await processor({});
@@ -137,8 +164,8 @@ describe('cache_employees processor', () => {
       expect.objectContaining({
         type: 'employee',
         pruneAbsent: true,
-        sourceTotal: 1,
-        sourceFetchedCount: 1,
+        sourceTotal: 2,
+        sourceFetchedCount: 2,
         notifyLabel: 'cache_employees',
         itemLabel: 'employees',
         items: expect.any(Map),
@@ -148,6 +175,12 @@ describe('cache_employees processor', () => {
     expect(call.items.get('wid-a')).toMatchObject({
       workdayId: 'wid-a',
       email: 'a@pgahq.com',
+      active: true,
+    });
+    expect(call.items.get('wid-b')).toMatchObject({
+      workdayId: 'wid-b',
+      email: 'b@pgahq.com',
+      active: false,
     });
   });
 });

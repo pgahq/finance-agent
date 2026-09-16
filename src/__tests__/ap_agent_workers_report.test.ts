@@ -4,6 +4,7 @@ import {
   normalizeEmployeeEmail,
   parseApAgentWorkerReport,
   parseApAgentWorkerReportRow,
+  parseEmployeeActiveFromReportFields,
 } from '../lib/ap_agent_workers_report.js';
 import { resolveCustomActionStarterEmail } from '../lib/intercom.js';
 
@@ -21,33 +22,42 @@ describe('ap_agent_workers_report', () => {
       email: 'jcarey@pgahq.com',
       name: 'Joseph A Carey Jr.',
       employeeId: 'PGA000001',
+      active: true,
     });
   });
 
-  it('classifies inactive rows as intentional exclusions', () => {
+  it('classifies parseable rows as included', () => {
     expect(classifyApAgentWorkerReportEntry({
       'Workday ID': 'wid-inactive',
       'Primary Work - Email': 'inactive@pgahq.com',
       'Active Status': 'No',
-    })).toBe('excluded');
+    })).toBe('included');
     expect(classifyApAgentWorkerReportEntry({
       'Active Status': 'Yes',
     })).toBe('unparseable');
   });
 
-  it('skips inactive and terminated rows', () => {
+  it('parses inactive and terminated rows with active false', () => {
     expect(parseApAgentWorkerReportRow({
       'Workday ID': 'wid-inactive',
       'Primary Work - Email': 'inactive@pgahq.com',
       'Active Status': 'No',
-    })).toBeUndefined();
+    })).toEqual({
+      workdayId: 'wid-inactive',
+      email: 'inactive@pgahq.com',
+      active: false,
+    });
 
     expect(parseApAgentWorkerReportRow({
       'Workday ID': 'wid-terminated',
       'Primary Work - Email': 'terminated@pgahq.com',
       'Active Status': 'Yes',
       Terminated: 'Yes',
-    })).toBeUndefined();
+    })).toEqual({
+      workdayId: 'wid-terminated',
+      email: 'terminated@pgahq.com',
+      active: false,
+    });
   });
 
   it('parses numeric and boolean active status values', () => {
@@ -58,6 +68,7 @@ describe('ap_agent_workers_report', () => {
     })).toEqual({
       workdayId: 'wid-1',
       email: 'one@pgahq.com',
+      active: true,
     });
 
     expect(parseApAgentWorkerReportRow({
@@ -67,6 +78,7 @@ describe('ap_agent_workers_report', () => {
     })).toEqual({
       workdayId: 'wid-2',
       email: 'two@pgahq.com',
+      active: true,
     });
   });
 
@@ -78,7 +90,15 @@ describe('ap_agent_workers_report', () => {
     })).toEqual({
       workdayId: 'wid-leave',
       email: 'leave@pgahq.com',
+      active: true,
     });
+  });
+
+  it('maps Active_Status to metadata.active boolean', () => {
+    expect(parseEmployeeActiveFromReportFields('No')).toBe(false);
+    expect(parseEmployeeActiveFromReportFields('Yes')).toBe(true);
+    expect(parseEmployeeActiveFromReportFields(undefined)).toBe(true);
+    expect(parseEmployeeActiveFromReportFields('Yes', 'Yes')).toBe(false);
   });
 
   it('lists unique column names across report rows', () => {
@@ -100,6 +120,7 @@ describe('ap_agent_workers_report', () => {
     })).toEqual({
       workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
       email: 'ap@pgahq.com',
+      active: true,
     });
   });
 
@@ -120,6 +141,7 @@ describe('ap_agent_workers_report', () => {
       email: 'ap@pgahq.com',
       name: 'AP Agent',
       employeeId: 'PGA000001',
+      active: true,
     }]);
   });
 
@@ -131,6 +153,7 @@ describe('ap_agent_workers_report', () => {
     })).toMatchObject({
       workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
       email: 'jcarey@pgahq.com',
+      active: true,
     });
   });
 
