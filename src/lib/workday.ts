@@ -1192,7 +1192,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     })(),
 
     ...(supplierRef && { Supplier_Reference: supplierRef }),
-    ...(assigneeWID && !omitAssigneeReference && { Assignee_Reference: createReference('WID', assigneeWID) }),
     Invoice_Number: currentInvoice.Invoice_Number,
     ...(suppliersInvoiceNumber && { Suppliers_Invoice_Number: suppliersInvoiceNumber }),
     Control_Amount_Total: controlAmountTotal,
@@ -1228,8 +1227,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
     ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
 
-    ...((workQueueTags || notes) && {
+    ...((assigneeWID && !omitAssigneeReference) || workQueueTags || notes) && {
       Work_Queue_Information_Data: {
+        ...(assigneeWID && !omitAssigneeReference && {
+          Assignee_Reference: createReference('WID', assigneeWID),
+        }),
         ...(workQueueTags && (() => {
           const existingTags: WorkQueueTag[] = currentInvoice.Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? [];
           const existingWids = new Set(existingTags.flatMap(t => t.ID.map(id => id.$value)));
@@ -1241,9 +1243,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
           const cleanedNotes = stripRichText(notes);
           const newNotes = existingNotes ? `${existingNotes}\n\nFINANCE AGENT:\n${cleanedNotes}` : `FINANCE AGENT:\n${cleanedNotes}`;
           return { Work_Queue_Notes: newNotes };
-        })())
-      }
-    })
+        })()),
+      },
+    },
   };
 }
 

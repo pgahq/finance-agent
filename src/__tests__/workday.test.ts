@@ -3625,7 +3625,7 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
       });
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Assignee_Reference).toBeUndefined();
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data?.Assignee_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
       });
@@ -3645,7 +3645,7 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest({ assigneeWID: 'assignee-worker-wid' });
 
-      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Assignee_Reference).toEqual({
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data.Assignee_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: 'assignee-worker-wid' }],
       });
     });
@@ -3686,8 +3686,8 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       const firstData = (capturedRequests[0] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
       const secondData = (capturedRequests[1] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(firstData.Assignee_Reference).toBeDefined();
-      expect(secondData.Assignee_Reference).toBeUndefined();
+      expect(firstData.Work_Queue_Information_Data.Assignee_Reference).toBeDefined();
+      expect(secondData.Work_Queue_Information_Data?.Assignee_Reference).toBeUndefined();
       expect(result.appliedFallbacks).toEqual(
         expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
       );
