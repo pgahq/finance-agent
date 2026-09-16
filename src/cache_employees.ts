@@ -1,6 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import {
+  AP_AGENT_WORKERS_CUSTOM_REPORT_PATH,
   classifyApAgentWorkerReportEntry,
   extractApAgentWorkerReportEntries,
   parseApAgentWorkerReport,
@@ -8,16 +9,13 @@ import {
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { createEmployeeContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
-import { executeWorkdayCustomReport, tryGetApAgentWorkersReportPath } from './lib/workday.js';
+import { executeWorkdayCustomReport } from './lib/workday.js';
 
 async function syncEmployeesFromReport(context: ProcessingContext): Promise<void> {
-  const reportPath = tryGetApAgentWorkersReportPath(process.env);
-  if (!reportPath) {
-    debug('WORKDAY_AP_AGENT_WORKERS_REPORT_PATH unset - skipping employee cache sync');
-    return;
-  }
-
-  const payload = await executeWorkdayCustomReport(context.workdayConfig, reportPath);
+  const payload = await executeWorkdayCustomReport(
+    context.workdayConfig,
+    AP_AGENT_WORKERS_CUSTOM_REPORT_PATH,
+  );
   const reportEntries = extractApAgentWorkerReportEntries(payload);
 
   if (reportEntries.length === 0) {

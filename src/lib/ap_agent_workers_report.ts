@@ -2,6 +2,10 @@
  * Parses rows from the Workday custom report "Worker Assignment For AP Agent".
  */
 
+/** Workday customreport2 path: System_User_ID / Custom_Report_ID (Integration IDs). */
+export const AP_AGENT_WORKERS_CUSTOM_REPORT_PATH =
+  'wdw-7212/Worker Assignment For AP Agent';
+
 export interface ApAgentWorkerRow {
   workdayId: string;
   email: string;

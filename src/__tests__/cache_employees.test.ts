@@ -1,4 +1,5 @@
 import { processor } from '../cache_employees.js';
+import { AP_AGENT_WORKERS_CUSTOM_REPORT_PATH } from '../lib/ap_agent_workers_report.js';
 import { syncDataSource } from '../lib/sync.js';
 import { executeWorkdayCustomReport } from '../lib/workday.js';
 
@@ -42,7 +43,6 @@ jest.mock('../lib/workday.js', () => ({
     refreshToken: 'test-refresh-token',
   }),
   executeWorkdayCustomReport: jest.fn(),
-  tryGetApAgentWorkersReportPath: jest.requireActual('../lib/workday.js').tryGetApAgentWorkersReportPath,
 }));
 
 jest.mock('../lib/slack.js', () => ({
@@ -72,29 +72,9 @@ const activeWorkerRow = {
 };
 
 describe('cache_employees processor', () => {
-  const originalReportPath = process.env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH;
-
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH = 'owner/Worker_Assignment_For_AP_Agent';
     process.env.AWS_STACK_NAME = 'finance-agent';
-  });
-
-  afterAll(() => {
-    if (originalReportPath === undefined) {
-      delete process.env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH;
-    } else {
-      process.env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH = originalReportPath;
-    }
-  });
-
-  it('skips sync when WORKDAY_AP_AGENT_WORKERS_REPORT_PATH is unset', async () => {
-    delete process.env.WORKDAY_AP_AGENT_WORKERS_REPORT_PATH;
-
-    await processor({});
-
-    expect(mockExecuteWorkdayCustomReport).not.toHaveBeenCalled();
-    expect(mockSyncDataSource).not.toHaveBeenCalled();
   });
 
   it('skips sync when the report has no entries', async () => {
@@ -104,7 +84,7 @@ describe('cache_employees processor', () => {
 
     expect(mockExecuteWorkdayCustomReport).toHaveBeenCalledWith(
       expect.objectContaining({ domain: 'test.workday.com' }),
-      'owner/Worker_Assignment_For_AP_Agent',
+      AP_AGENT_WORKERS_CUSTOM_REPORT_PATH,
     );
     expect(mockSyncDataSource).not.toHaveBeenCalled();
   });
