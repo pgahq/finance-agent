@@ -108,7 +108,7 @@ describe('ap_agent_workers_report', () => {
       Report_Entry: [
         {
           Workday_ID: 'abc123def456abc123def456abc123de',
-          Primary_Work_-_Email: 'ap@pgahq.com',
+          'Primary_Work_-_Email': 'ap@pgahq.com',
           Active_Status: 'Yes',
           Full_Legal_Name: 'AP Agent',
           Employee_ID: 'PGA000001',
@@ -126,7 +126,7 @@ describe('ap_agent_workers_report', () => {
   it('parses array-wrapped Workday custom report field values', () => {
     expect(parseApAgentWorkerReportRow({
       Workday_ID: ['cab0b1d2505a01c2514ea9134d2886ce'],
-      Primary_Work_-_Email: ['jcarey@pgahq.com'],
+      'Primary_Work_-_Email': ['jcarey@pgahq.com'],
       Active_Status: ['Yes'],
     })).toMatchObject({
       workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
