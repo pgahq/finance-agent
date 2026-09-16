@@ -7,6 +7,7 @@ import {
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
+import type { PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -32,6 +33,8 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  poPassthroughWorktagsReference?: any[];
+  supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
 }
 
 export interface LineFallbacks {
@@ -160,6 +163,48 @@ function extractWorktagId(worktags: any[], type: string): string | null {
   return null;
 }
 
+function uniformSplitWorktagId(splits: PurchaseOrderLineSplit[], type: string): string | null {
+  const values = new Set<string>();
+  for (const split of splits) {
+    const id = extractWorktagId(split.worktagReference, type);
+    if (id) values.add(id);
+  }
+  return values.size === 1 ? [...values][0] : null;
+}
+
+function uniformSplitLineOfBusinessId(splits: PurchaseOrderLineSplit[]): string | null {
+  const values = splits
+    .map(split => extractLineOfBusinessId(split.worktagReference))
+    .filter((id): id is string => Boolean(id));
+  if (values.length === 0) return null;
+  const first = values[0];
+  return values.every(id => id === first) ? first : null;
+}
+
+function scalarWorktagIdsFromPoLine(
+  line: PurchaseOrderLine,
+  lineLevelWorktagsReference: any[]
+): { costCenterId: string | null; fundId: string | null; lineOfBusinessId: string | null } {
+  const splits = line.splitLineData ?? [];
+  if (splits.length === 0) {
+    const worktags = ([] as any[]).concat(line.worktagsReference ?? []);
+    return {
+      costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
+      fundId: extractWorktagId(worktags, 'Fund_ID'),
+      lineOfBusinessId: extractLineOfBusinessId(worktags),
+    };
+  }
+
+  return {
+    costCenterId: uniformSplitWorktagId(splits, 'Cost_Center_Reference_ID')
+      ?? extractWorktagId(lineLevelWorktagsReference, 'Cost_Center_Reference_ID'),
+    fundId: uniformSplitWorktagId(splits, 'Fund_ID')
+      ?? extractWorktagId(lineLevelWorktagsReference, 'Fund_ID'),
+    lineOfBusinessId: uniformSplitLineOfBusinessId(splits)
+      ?? extractLineOfBusinessId(lineLevelWorktagsReference),
+  };
+}
+
 
 function extractSpendCategoryId(spendCategoryReference: any): string | null {
   if (!spendCategoryReference) return null;
@@ -175,26 +220,60 @@ interface ParsedPoLineWorktags {
   fundId: string | null;
   spendCategoryId: string | null;
   worktagsReference: any[];
+  lineLevelWorktagsReference?: any[];
   lineOrder: number;
   description: string | null;
   memo: string | null;
   shipToAddressId: string | null;
+  splitLineData: PurchaseOrderLineSplit[];
 }
 
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
   return (poLines ?? []).map(line => {
     const worktags = ([] as any[]).concat(line.worktagsReference ?? []);
+    const lineLevelWorktagsReference = ([] as any[]).concat(
+      line.lineLevelWorktagsReference ?? line.worktagsReference ?? []
+    );
+    const scalarIds = scalarWorktagIdsFromPoLine(line, lineLevelWorktagsReference);
     return {
       lineOrder: line.lineOrder,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
       description: line.description ?? null,
       memo: line.memo ?? null,
-      costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
-      fundId: extractWorktagId(worktags, 'Fund_ID'),
+      costCenterId: scalarIds.costCenterId,
+      fundId: scalarIds.fundId,
       spendCategoryId: extractSpendCategoryId(line.spendCategoryReference),
-      lineOfBusinessId: extractLineOfBusinessId(worktags),
+      lineOfBusinessId: scalarIds.lineOfBusinessId,
       worktagsReference: worktags,
+      lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
+      splitLineData: line.splitLineData ?? [],
+    };
+  });
+}
+
+export function overlayPoWorktagsFromPurchaseOrder(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  if (poLines.length === 0) return lines;
+
+  const byPurchaseOrderLineId = new Map(
+    poLines
+      .filter(line => line.purchaseOrderLineId)
+      .map(line => [line.purchaseOrderLineId as string, line])
+  );
+
+  return lines.map(line => {
+    if (!line.purchaseOrderLineId) return line;
+    const poLine = byPurchaseOrderLineId.get(line.purchaseOrderLineId);
+    if (!poLine) return line;
+    return {
+      ...line,
+      poPassthroughWorktagsReference: poLine.lineLevelWorktagsReference?.length
+        ? poLine.lineLevelWorktagsReference
+        : poLine.worktagsReference,
+      ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
     };
   });
 }
@@ -488,6 +567,7 @@ export async function buildFinalInvoiceLines(
       lineOfBusinessId: line.lineOfBusinessId,
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
+      splitLineData: line.splitLineData ?? [],
     })),
     emailBody: emailBody ?? null,
   };
@@ -525,7 +605,8 @@ async function finalizeInvoiceLines(
   fallbackIds: InvoiceLineFallbackIds
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
-  const withEmail = applyEmailWorktags(withPoLob, emailWorktags);
+  const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
+  const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
   const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
   const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
   return {

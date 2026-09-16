@@ -3905,6 +3905,59 @@ describe('Workday utilities', () => {
       expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
 
+    it('includes PO passthrough worktags and split line data on create submit', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      const makeWorktag = (type: string, value: string) => ({
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+          { $attributes: { type }, $value: value },
+        ],
+      });
+      const fundPassthrough = makeWorktag('Fund_ID', 'FUND-PO');
+      const ccSplit = makeWorktag('Cost_Center_Reference_ID', 'CC-SPLIT');
+      const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+
+      await submitNewSupplierInvoiceForTest({
+        finalLines: [{
+          lineOrder: 1,
+          description: 'PO matched line',
+          quantity: 1,
+          unitCost: 100,
+          extendedAmount: 100,
+          fundId: 'FUND-INV',
+          costCenterId: 'CC-INV',
+          poPassthroughWorktagsReference: [fundPassthrough, ccSplit, venue],
+          supplierInvoiceSplitLineData: [
+            { extendedAmount: 60, worktagReference: [ccSplit] },
+            { extendedAmount: 40, worktagReference: [ccSplit] },
+          ],
+        }],
+      });
+
+      const line = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+      expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+      expect(line.Supplier_Invoice_Split_Line_Data[0].Extended_Amount).toBe(60);
+      expect(line.Supplier_Invoice_Split_Line_Data[1].Extended_Amount).toBe(40);
+      expect(line.Supplier_Invoice_Split_Line_Data[0].Quantity).toBeUndefined();
+      const worktagValues = (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+        ([] as any[]).concat(tag.ID ?? [])
+          .filter((id: any) => id.$attributes?.type !== 'WID')
+          .map((id: any) => `${id.$attributes.type}:${id.$value}`)
+      );
+      expect(worktagValues).toContain('Custom_Worktag_01_ID:VENUE-A');
+      expect(worktagValues).not.toContain('Fund_ID:FUND-INV');
+      expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-INV');
+      expect(worktagValues).not.toContain('Fund_ID:FUND-PO');
+      expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-SPLIT');
+    });
+
     it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
       const soapError = Object.assign(new Error('Create failed'), {
@@ -4102,7 +4155,12 @@ describe('Workday utilities', () => {
           makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
           makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
         ],
+        lineLevelWorktagsReference: [
+          makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted'),
+          makeWorktag('Cost_Center_Reference_ID', 'CC-2025_PGA_Championship')
+        ],
         shipToAddressId: null,
+        splitLineData: [],
       });
     });
 
@@ -4229,23 +4287,29 @@ describe('Workday utilities', () => {
       const lines = parsePurchaseOrderLines(response);
 
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
+      expect(lines[0].splitLineData).toHaveLength(2);
     });
 
-    it('should return empty worktags when splits have differing worktags', () => {
+    it('should return merged worktags and split rows when splits have differing worktags', () => {
       const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const ccAlpha = makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha');
+      const ccBeta = makeWorktag('Cost_Center_Reference_ID', 'CC-Beta');
       const response = makePoResponse({
         Line_Number: 1,
         Description: 'Split line with differing worktags',
         Extended_Amount: 11000,
         Service_Purchase_Order_Line_Split_Data: [
-          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
-          makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+          makeSplit([ccAlpha]),
+          makeSplit([ccBeta]),
         ],
       });
 
       const lines = parsePurchaseOrderLines(response);
 
-      expect(lines[0].worktagsReference).toEqual([]);
+      expect(lines[0].worktagsReference).toEqual([ccAlpha, ccBeta]);
+      expect(lines[0].splitLineData).toHaveLength(2);
+      expect(lines[0].splitLineData?.[0].worktagReference).toEqual([ccAlpha]);
+      expect(lines[0].splitLineData?.[1].worktagReference).toEqual([ccBeta]);
     });
 
     it('should use split worktags for goods lines when all splits share the same worktags', () => {
@@ -4272,8 +4336,10 @@ describe('Workday utilities', () => {
       expect(lines[0].worktagsReference).toEqual(sharedWorktags);
     });
 
-    it('should return empty worktags for goods lines when splits differ', () => {
+    it('should return merged worktags and split rows for goods lines when splits differ', () => {
       const makeSplit = (worktags: any[]) => ({ Worktag_Reference: worktags });
+      const ccAlpha = makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha');
+      const ccBeta = makeWorktag('Cost_Center_Reference_ID', 'CC-Beta');
       const response = {
         Response_Data: {
           Purchase_Order: {
@@ -4284,8 +4350,8 @@ describe('Workday utilities', () => {
                 Item_Description: 'Goods with differing splits',
                 Extended_Amount: 5000,
                 Goods_Purchase_Order_Line_Split_Data: [
-                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Alpha')]),
-                  makeSplit([makeWorktag('Cost_Center_Reference_ID', 'CC-Beta')]),
+                  makeSplit([ccAlpha]),
+                  makeSplit([ccBeta]),
                 ],
               },
             },
@@ -4295,7 +4361,51 @@ describe('Workday utilities', () => {
 
       const lines = parsePurchaseOrderLines(response);
 
-      expect(lines[0].worktagsReference).toEqual([]);
+      expect(lines[0].worktagsReference).toEqual([ccAlpha, ccBeta]);
+      expect(lines[0].splitLineData).toHaveLength(2);
+    });
+
+    it('should merge Purchase_Order_Line_Worktags_Data with line Worktags_Reference', () => {
+      const programWorktag = makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-A');
+      const response = makePoResponse({
+        Line_Number: 1,
+        Description: 'Line with additional worktags',
+        Extended_Amount: 1000,
+        Worktags_Reference: [makeWorktag('Fund_ID', 'FUND-A')],
+        Purchase_Order_Line_Worktags_Data: [{ Worktag_Reference: [programWorktag] }],
+      });
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines[0].worktagsReference).toEqual([
+        makeWorktag('Fund_ID', 'FUND-A'),
+        programWorktag,
+      ]);
+    });
+
+    it('should parse Service_Line_Replacement_Data from Get_Purchase_Orders shape', () => {
+      const response = {
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Service_Line_Replacement_Data: {
+                Line_Number: 1,
+                Service_Order_Line_ID: 'POL-99',
+                Description: 'Replacement data line',
+                Extended_Amount: 2500,
+                Worktags_Reference: [makeWorktag('Cost_Center_Reference_ID', 'CC-100')],
+              },
+            },
+          },
+        },
+      };
+
+      const lines = parsePurchaseOrderLines(response);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0].purchaseOrderLineId).toBe('POL-99');
+      expect(lines[0].worktagsReference).toEqual([makeWorktag('Cost_Center_Reference_ID', 'CC-100')]);
     });
   });
 

@@ -15,6 +15,14 @@ import {
   worktagsIncludeLineOfBusiness,
   type RelatedLob,
 } from './related_worktags.js';
+import {
+  firstNonEmptyPoLineArray,
+  mapPoSplitsToSupplierInvoiceSplitLineData,
+  mergePassthroughWorktagReferences,
+  mergePurchaseOrderLineWorktags,
+  passthroughWorktagsForSplitInvoiceLine,
+  type PurchaseOrderLineSplit,
+} from './po_worktags.js';
 
 import type {
   DownloadedAttachment,
@@ -461,6 +469,8 @@ export interface PurchaseOrderLine {
   quantity?: number;
   unitCost?: number;
   worktagsReference?: any[];
+  lineLevelWorktagsReference?: any[];
+  splitLineData?: PurchaseOrderLineSplit[];
   shipToAddressId?: string | null;
 }
 
@@ -1075,21 +1085,38 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   };
 
   const mappedMerchandiseFinalLines = merchandiseFinalLines.map(line => {
-    const worktags = withFallbackWorktags([
-      ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
-      ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-      ...(!omitLobWorktag && line.lineOfBusinessId ? (() => {
-        const lobRef = relatedLobSoapReference(
-          relatedLobByCostCenter?.get(line.costCenterId ?? ''),
-          line.lineOfBusinessId
-        );
-        return [createReference(lobRef.type, lobRef.value)];
-      })() : []),
-      ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
-    ], line.costCenterId, line.lineOfBusinessId);
+    const hasSplitRows = Boolean(line.supplierInvoiceSplitLineData?.length);
+    const eventWorktags = !omitEventWorktag
+      ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : [])
+      : [];
+    const allocationWorktags = hasSplitRows
+      ? []
+      : [
+          ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
+          ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
+          ...(!omitLobWorktag && line.lineOfBusinessId ? (() => {
+            const lobRef = relatedLobSoapReference(
+              relatedLobByCostCenter?.get(line.costCenterId ?? ''),
+              line.lineOfBusinessId
+            );
+            return [createReference(lobRef.type, lobRef.value)];
+          })() : []),
+        ];
+    const scalarWorktags = hasSplitRows
+      ? eventWorktags
+      : withFallbackWorktags([...allocationWorktags, ...eventWorktags], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = line.hasDiscount === true;
     const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
     const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
+    const passthrough = passthroughWorktagsForSplitInvoiceLine(
+      line.poPassthroughWorktagsReference,
+      Boolean(line.supplierInvoiceSplitLineData?.length)
+    );
+    const worktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough);
+    const supplierInvoiceSplitLineData = mapPoSplitsToSupplierInvoiceSplitLineData(
+      line.supplierInvoiceSplitLineData,
+      extendedAmountForSoap ?? line.extendedAmount
+    );
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
@@ -1106,6 +1133,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
           }
       ),
       ...(worktags.length && { Worktags_Reference: worktags }),
+      ...(supplierInvoiceSplitLineData?.length && { Supplier_Invoice_Split_Line_Data: supplierInvoiceSplitLineData }),
       ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
         Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
       }),
@@ -2244,8 +2272,14 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
 
   if (!poData) return [];
 
-  const serviceLines = ([] as any[]).concat(poData.Service_Line_Data ?? []);
-  const goodsLines = ([] as any[]).concat(poData.Goods_Line_Data ?? []);
+  const serviceLines = firstNonEmptyPoLineArray(
+    poData.Service_Line_Data,
+    poData.Service_Line_Replacement_Data
+  );
+  const goodsLines = firstNonEmptyPoLineArray(
+    poData.Goods_Line_Data,
+    poData.Goods_Line_Replacement_Data
+  );
 
   const purchaseOrderDocumentNumber = poData.Document_Number;
 
@@ -2258,51 +2292,47 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
     return wid?.$value ?? null;
   };
 
-  const worktagKey = (worktags: any[]): string =>
-    worktags
-      .flatMap(wt => ([] as any[]).concat(wt.ID ?? []))
-      .filter(id => id.$attributes?.type !== 'WID')
-      .map(id => `${id.$attributes?.type}:${id.$value}`)
-      .sort()
-      .join('|');
+  const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => {
+    const { worktagsReference, lineLevelWorktagsReference, splitLineData } = mergePurchaseOrderLineWorktags(
+      line,
+      'Service_Purchase_Order_Line_Split_Data'
+    );
+    return {
+      lineOrder: line.Line_Number,
+      purchaseOrderLineId: line.Service_Order_Line_ID,
+      purchaseOrderDocumentNumber,
+      description: line.Description,
+      memo: line.Memo,
+      spendCategoryReference: line.Resource_Category_Reference,
+      extendedAmount: line.Extended_Amount,
+      worktagsReference,
+      lineLevelWorktagsReference,
+      splitLineData,
+      shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+    };
+  });
 
-  const resolveLineWorktags = (line: any, splitField: string): any[] => {
-    const splits = ([] as any[]).concat(line[splitField] ?? []);
-    if (!splits.length) return ([] as any[]).concat(line.Worktags_Reference ?? []);
-    const firstWorktags = ([] as any[]).concat(splits[0].Worktag_Reference ?? []);
-    const firstKey = worktagKey(firstWorktags);
-    for (let i = 1; i < splits.length; i++) {
-      const splitWorktags = ([] as any[]).concat(splits[i].Worktag_Reference ?? []);
-      if (worktagKey(splitWorktags) !== firstKey) return [];
-    }
-    return firstWorktags;
-  };
-
-  const parsedServiceLines: PurchaseOrderLine[] = serviceLines.map((line: any) => ({
-    lineOrder: line.Line_Number,
-    purchaseOrderLineId: line.Service_Order_Line_ID,
-    purchaseOrderDocumentNumber,
-    description: line.Description,
-    memo: line.Memo,
-    spendCategoryReference: line.Resource_Category_Reference,
-    extendedAmount: line.Extended_Amount,
-    worktagsReference: resolveLineWorktags(line, 'Service_Purchase_Order_Line_Split_Data'),
-    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
-  }));
-
-  const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => ({
-    lineOrder: line.Line_Number,
-    purchaseOrderLineId: line.Goods_Purchase_Order_Line_ID,
-    purchaseOrderDocumentNumber,
-    description: line.Item_Description,
-    memo: line.Memo,
-    spendCategoryReference: line.Resource_Category_Reference,
-    quantity: line.Quantity !== undefined ? Number(line.Quantity) : undefined,
-    unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
-    extendedAmount: line.Extended_Amount,
-    worktagsReference: resolveLineWorktags(line, 'Goods_Purchase_Order_Line_Split_Data'),
-    shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
-  }));
+  const parsedGoodsLines: PurchaseOrderLine[] = goodsLines.map((line: any) => {
+    const { worktagsReference, lineLevelWorktagsReference, splitLineData } = mergePurchaseOrderLineWorktags(
+      line,
+      'Goods_Purchase_Order_Line_Split_Data'
+    );
+    return {
+      lineOrder: line.Line_Number,
+      purchaseOrderLineId: line.Goods_Purchase_Order_Line_ID,
+      purchaseOrderDocumentNumber,
+      description: line.Item_Description,
+      memo: line.Memo,
+      spendCategoryReference: line.Resource_Category_Reference,
+      quantity: line.Quantity !== undefined ? Number(line.Quantity) : undefined,
+      unitCost: line.Unit_Cost !== undefined ? Number(line.Unit_Cost) : undefined,
+      extendedAmount: line.Extended_Amount,
+      worktagsReference,
+      lineLevelWorktagsReference,
+      splitLineData,
+      shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+    };
+  });
 
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
 }

@@ -7,6 +7,7 @@ import {
   buildFinalInvoiceLines,
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
+  overlayPoWorktagsFromPurchaseOrder,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   type FinalInvoiceLine,
@@ -140,6 +141,7 @@ describe('overlayPoLineOfBusiness', () => {
         description: 'Service',
         memo: null,
         shipToAddressId: null,
+        splitLineData: [],
       }]
     );
 
@@ -160,10 +162,36 @@ describe('overlayPoLineOfBusiness', () => {
         description: null,
         memo: null,
         shipToAddressId: null,
+        splitLineData: [],
       }]
     );
 
     expect(lines[0].lineOfBusinessId).toBe('LOB-From-Email');
+  });
+});
+
+describe('overlayPoWorktagsFromPurchaseOrder', () => {
+  it('copies passthrough worktags and split rows from the matched PO line', () => {
+    const program = makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-A');
+    const lines = overlayPoWorktagsFromPurchaseOrder(
+      [{ lineOrder: 1, description: 'Service', purchaseOrderLineId: 'POL-001' }],
+      [{
+        lineOrder: 1,
+        purchaseOrderLineId: 'POL-001',
+        lineOfBusinessId: null,
+        costCenterId: 'CC-100',
+        fundId: null,
+        spendCategoryId: null,
+        worktagsReference: [program],
+        description: null,
+        memo: null,
+        shipToAddressId: null,
+        splitLineData: [{ extendedAmount: 50, worktagReference: [program] }],
+      }]
+    );
+
+    expect(lines[0].poPassthroughWorktagsReference).toEqual([program]);
+    expect(lines[0].supplierInvoiceSplitLineData).toHaveLength(1);
   });
 });
 
