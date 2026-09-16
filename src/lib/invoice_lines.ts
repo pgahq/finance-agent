@@ -163,6 +163,48 @@ function extractWorktagId(worktags: any[], type: string): string | null {
   return null;
 }
 
+function uniformSplitWorktagId(splits: PurchaseOrderLineSplit[], type: string): string | null {
+  const values = new Set<string>();
+  for (const split of splits) {
+    const id = extractWorktagId(split.worktagReference, type);
+    if (id) values.add(id);
+  }
+  return values.size === 1 ? [...values][0] : null;
+}
+
+function uniformSplitLineOfBusinessId(splits: PurchaseOrderLineSplit[]): string | null {
+  const values = splits
+    .map(split => extractLineOfBusinessId(split.worktagReference))
+    .filter((id): id is string => Boolean(id));
+  if (values.length === 0) return null;
+  const first = values[0];
+  return values.every(id => id === first) ? first : null;
+}
+
+function scalarWorktagIdsFromPoLine(
+  line: PurchaseOrderLine,
+  lineLevelWorktagsReference: any[]
+): { costCenterId: string | null; fundId: string | null; lineOfBusinessId: string | null } {
+  const splits = line.splitLineData ?? [];
+  if (splits.length === 0) {
+    const worktags = ([] as any[]).concat(line.worktagsReference ?? []);
+    return {
+      costCenterId: extractWorktagId(worktags, 'Cost_Center_Reference_ID'),
+      fundId: extractWorktagId(worktags, 'Fund_ID'),
+      lineOfBusinessId: extractLineOfBusinessId(worktags),
+    };
+  }
+
+  return {
+    costCenterId: uniformSplitWorktagId(splits, 'Cost_Center_Reference_ID')
+      ?? extractWorktagId(lineLevelWorktagsReference, 'Cost_Center_Reference_ID'),
+    fundId: uniformSplitWorktagId(splits, 'Fund_ID')
+      ?? extractWorktagId(lineLevelWorktagsReference, 'Fund_ID'),
+    lineOfBusinessId: uniformSplitLineOfBusinessId(splits)
+      ?? extractLineOfBusinessId(lineLevelWorktagsReference),
+  };
+}
+
 
 function extractSpendCategoryId(spendCategoryReference: any): string | null {
   if (!spendCategoryReference) return null;
@@ -192,16 +234,16 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
     const lineLevelWorktagsReference = ([] as any[]).concat(
       line.lineLevelWorktagsReference ?? line.worktagsReference ?? []
     );
-    const scalarWorktags = (line.splitLineData?.length ?? 0) > 0 ? lineLevelWorktagsReference : worktags;
+    const scalarIds = scalarWorktagIdsFromPoLine(line, lineLevelWorktagsReference);
     return {
       lineOrder: line.lineOrder,
       purchaseOrderLineId: line.purchaseOrderLineId ?? null,
       description: line.description ?? null,
       memo: line.memo ?? null,
-      costCenterId: extractWorktagId(scalarWorktags, 'Cost_Center_Reference_ID'),
-      fundId: extractWorktagId(scalarWorktags, 'Fund_ID'),
+      costCenterId: scalarIds.costCenterId,
+      fundId: scalarIds.fundId,
       spendCategoryId: extractSpendCategoryId(line.spendCategoryReference),
-      lineOfBusinessId: extractLineOfBusinessId(scalarWorktags),
+      lineOfBusinessId: scalarIds.lineOfBusinessId,
       worktagsReference: worktags,
       lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,

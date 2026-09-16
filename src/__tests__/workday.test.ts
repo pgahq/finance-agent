@@ -3882,14 +3882,15 @@ describe('Workday utilities', () => {
       expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
       expect(line.Supplier_Invoice_Split_Line_Data[0].Extended_Amount).toBe(60);
       expect(line.Supplier_Invoice_Split_Line_Data[1].Extended_Amount).toBe(40);
+      expect(line.Supplier_Invoice_Split_Line_Data[0].Quantity).toBeUndefined();
       const worktagValues = (line.Worktags_Reference ?? []).flatMap((tag: any) =>
         ([] as any[]).concat(tag.ID ?? [])
           .filter((id: any) => id.$attributes?.type !== 'WID')
           .map((id: any) => `${id.$attributes.type}:${id.$value}`)
       );
-      expect(worktagValues).toContain('Fund_ID:FUND-INV');
-      expect(worktagValues).toContain('Cost_Center_Reference_ID:CC-INV');
       expect(worktagValues).toContain('Custom_Worktag_01_ID:VENUE-A');
+      expect(worktagValues).not.toContain('Fund_ID:FUND-INV');
+      expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-INV');
       expect(worktagValues).not.toContain('Fund_ID:FUND-PO');
       expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-SPLIT');
     });

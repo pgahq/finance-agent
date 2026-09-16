@@ -48,6 +48,13 @@ describe('po_worktags', () => {
     expect(merged).toEqual([fund, program]);
   });
 
+  it('mergePassthroughWorktagReferences skips passthrough when scalar already has that worktag type', () => {
+    const emailFund = makeWorktag('Fund_ID', 'FUND-EMAIL');
+    const poFund = makeWorktag('Fund_ID', 'FUND-PO');
+    const merged = mergePassthroughWorktagReferences([emailFund], [poFund]);
+    expect(merged).toEqual([emailFund]);
+  });
+
   it('mapPoSplitsToSupplierInvoiceSplitLineData includes amounts when split sum matches invoice line', () => {
     const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
     const mapped = mapPoSplitsToSupplierInvoiceSplitLineData(
@@ -60,15 +67,15 @@ describe('po_worktags', () => {
     ]);
   });
 
-  it('mapPoSplitsToSupplierInvoiceSplitLineData omits amounts when split sum mismatches invoice line', () => {
+  it('mapPoSplitsToSupplierInvoiceSplitLineData scales amounts when split sum mismatches invoice line', () => {
     const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
     const mapped = mapPoSplitsToSupplierInvoiceSplitLineData(
       [{ extendedAmount: 60, worktagReference: [cc] }, { extendedAmount: 40, worktagReference: [cc] }],
-      99
+      50
     );
     expect(mapped).toEqual([
-      { Worktag_Reference: [cc] },
-      { Worktag_Reference: [cc] },
+      { Extended_Amount: 30, Worktag_Reference: [cc] },
+      { Extended_Amount: 20, Worktag_Reference: [cc] },
     ]);
   });
 

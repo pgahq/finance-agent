@@ -1028,18 +1028,26 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   };
 
   const mappedMerchandiseFinalLines = merchandiseFinalLines.map(line => {
-    const scalarWorktags = withFallbackWorktags([
-      ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
-      ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
-      ...(!omitLobWorktag && line.lineOfBusinessId ? (() => {
-        const lobRef = relatedLobSoapReference(
-          relatedLobByCostCenter?.get(line.costCenterId ?? ''),
-          line.lineOfBusinessId
-        );
-        return [createReference(lobRef.type, lobRef.value)];
-      })() : []),
-      ...(!omitEventWorktag ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : []) : []),
-    ], line.costCenterId, line.lineOfBusinessId);
+    const hasSplitRows = Boolean(line.supplierInvoiceSplitLineData?.length);
+    const eventWorktags = !omitEventWorktag
+      ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : [])
+      : [];
+    const allocationWorktags = hasSplitRows
+      ? []
+      : [
+          ...(line.fundId ? [createReference('Fund_ID', line.fundId)] : []),
+          ...(line.costCenterId ? [createReference('Cost_Center_Reference_ID', line.costCenterId)] : []),
+          ...(!omitLobWorktag && line.lineOfBusinessId ? (() => {
+            const lobRef = relatedLobSoapReference(
+              relatedLobByCostCenter?.get(line.costCenterId ?? ''),
+              line.lineOfBusinessId
+            );
+            return [createReference(lobRef.type, lobRef.value)];
+          })() : []),
+        ];
+    const scalarWorktags = hasSplitRows
+      ? eventWorktags
+      : withFallbackWorktags([...allocationWorktags, ...eventWorktags], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = line.hasDiscount === true;
     const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
     const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;

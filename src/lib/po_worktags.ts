@@ -5,7 +5,12 @@ export interface PurchaseOrderLineSplit {
   worktagReference: any[];
 }
 
-const SPLIT_LINE_PASSTHROUGH_OMIT_TYPES = new Set(['Cost_Center_Reference_ID', 'Fund_ID']);
+const SPLIT_LINE_PASSTHROUGH_OMIT_TYPES = new Set([
+  'Cost_Center_Reference_ID',
+  'Fund_ID',
+  'Organization_Reference_ID',
+  'Custom_Organization_Reference_ID',
+]);
 
 function worktagIdentity(tag: any): string | null {
   const ids = ([] as any[]).concat(tag?.ID ?? []);
@@ -85,12 +90,22 @@ export function passthroughWorktagsForSplitInvoiceLine(
 
 export function mergePassthroughWorktagReferences(base: any[], passthrough: any[] | undefined): any[] {
   if (!passthrough?.length) return base;
-  const seen = new Set(base.map(worktagIdentity).filter((id): id is string => Boolean(id)));
+  const seenTypes = new Set(
+    base.map(primaryWorktagType).filter((type): type is string => Boolean(type))
+  );
   const additions = passthrough.filter(tag => {
-    const identity = worktagIdentity(tag);
-    return identity && !seen.has(identity);
+    const type = primaryWorktagType(tag);
+    if (!type) {
+      const identity = worktagIdentity(tag);
+      return identity && !base.some(existing => worktagIdentity(existing) === identity);
+    }
+    return !seenTypes.has(type);
   });
   return additions.length ? [...base, ...additions] : base;
+}
+
+function roundMoney(amount: number): number {
+  return Math.round(amount * 100) / 100;
 }
 
 export function mapPoSplitsToSupplierInvoiceSplitLineData(
@@ -99,13 +114,34 @@ export function mapPoSplitsToSupplierInvoiceSplitLineData(
 ): any[] | undefined {
   if (!splits?.length) return undefined;
   const splitAmountSum = splits.reduce((sum, split) => sum + (split.extendedAmount ?? 0), 0);
-  const includeSplitAmounts = invoiceLineExtendedAmount != null
-    && splitAmountSum > 0
-    && Math.abs(splitAmountSum - invoiceLineExtendedAmount) < 0.01;
+  const targetAmount = invoiceLineExtendedAmount ?? (splitAmountSum > 0 ? splitAmountSum : null);
+  if (targetAmount == null) {
+    return splits.map(split => ({
+      ...(split.memo && { Memo: split.memo }),
+      ...(split.worktagReference.length > 0 && { Worktag_Reference: split.worktagReference }),
+    }));
+  }
 
-  return splits.map(split => ({
-    ...(includeSplitAmounts && split.quantity != null && { Quantity: split.quantity }),
-    ...(includeSplitAmounts && split.extendedAmount != null && { Extended_Amount: split.extendedAmount }),
+  const scale = splitAmountSum > 0 && Math.abs(splitAmountSum - targetAmount) >= 0.01
+    ? targetAmount / splitAmountSum
+    : 1;
+
+  const extendedAmounts = splits.map(split => {
+    if (splitAmountSum <= 0) {
+      return roundMoney(targetAmount / splits.length);
+    }
+    const raw = split.extendedAmount ?? 0;
+    return roundMoney(raw * scale);
+  });
+
+  const amountSum = roundMoney(extendedAmounts.reduce((sum, amount) => sum + amount, 0));
+  const drift = roundMoney(targetAmount - amountSum);
+  if (Math.abs(drift) >= 0.01) {
+    extendedAmounts[extendedAmounts.length - 1] = roundMoney(extendedAmounts[extendedAmounts.length - 1] + drift);
+  }
+
+  return splits.map((split, index) => ({
+    Extended_Amount: extendedAmounts[index],
     ...(split.memo && { Memo: split.memo }),
     ...(split.worktagReference.length > 0 && { Worktag_Reference: split.worktagReference }),
   }));
