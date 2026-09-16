@@ -73,8 +73,8 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     ])
   );
 
-  const sourceTotal = workers.length;
   const sourceFetchedCount = workers.length;
+  const sourceTotal = unparseableEntryCount > 0 ? reportEntries.length : workers.length;
 
   await syncDataSource({
     dbConnection: context.dbConnection,
