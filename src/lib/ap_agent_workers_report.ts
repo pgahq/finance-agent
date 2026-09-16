@@ -63,23 +63,6 @@ function readField(row: Record<string, unknown>, ...headerHints: string[]): stri
   return undefined;
 }
 
-function isTruthyYes(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  if (
-    normalized === 'yes'
-    || normalized === 'y'
-    || normalized === 'true'
-    || normalized === '1'
-    || normalized === 'active'
-    || normalized.startsWith('active ')
-    || normalized.startsWith('active-')
-  ) {
-    return true;
-  }
-  return false;
-}
-
 function isExplicitlyInactive(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
