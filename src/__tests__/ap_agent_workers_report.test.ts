@@ -103,20 +103,35 @@ describe('ap_agent_workers_report', () => {
     });
   });
 
-  it('parses Report_Entry payloads', () => {
+  it('parses Report_Entry payloads with sandbox column names', () => {
     const rows = parseApAgentWorkerReport({
       Report_Entry: [
         {
-          Workday_ID: 'abc123',
-          'Primary_Work_-_Email': 'ap@pgahq.com',
+          Workday_ID: 'abc123def456abc123def456abc123de',
+          Primary_Work_-_Email: 'ap@pgahq.com',
           Active_Status: 'Yes',
+          Full_Legal_Name: 'AP Agent',
+          Employee_ID: 'PGA000001',
         },
       ],
     });
     expect(rows).toEqual([{
-      workdayId: 'abc123',
+      workdayId: 'abc123def456abc123def456abc123de',
       email: 'ap@pgahq.com',
+      name: 'AP Agent',
+      employeeId: 'PGA000001',
     }]);
+  });
+
+  it('parses array-wrapped Workday custom report field values', () => {
+    expect(parseApAgentWorkerReportRow({
+      Workday_ID: ['cab0b1d2505a01c2514ea9134d2886ce'],
+      Primary_Work_-_Email: ['jcarey@pgahq.com'],
+      Active_Status: ['Yes'],
+    })).toMatchObject({
+      workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
+      email: 'jcarey@pgahq.com',
+    });
   });
 
   it('normalizes email for lookup', () => {

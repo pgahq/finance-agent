@@ -6,6 +6,7 @@ import {
   extractApAgentWorkerReportEntries,
   listApAgentWorkerReportColumnNames,
   parseApAgentWorkerReport,
+  sampleApAgentWorkerActiveStatusValues,
 } from './lib/ap_agent_workers_report.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { createEmployeeContent } from './lib/rag.js';
@@ -24,6 +25,7 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     reportEntryCount: reportEntries.length,
     columnCount: reportColumns.length,
     columns: reportColumns,
+    activeStatusSample: sampleApAgentWorkerActiveStatusValues(reportEntries),
   });
 
   if (reportEntries.length === 0) {
