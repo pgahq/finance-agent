@@ -17,4 +17,5 @@ describe('SAM template', () => {
     expect(circleci).toMatch(/INTERCOM_APP_ID:\s*c722leqk/);
     expect(circleci).toMatch(/INTERCOM_APP_ID:\s*jyi16dpc/);
   });
+
 });

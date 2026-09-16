@@ -93,7 +93,7 @@ export const InvoiceEnrichmentSchema = z.object({
   extractedInvoiceLines: z.array(z.object({
     description: z.string().describe('Line item description as it appears on the invoice'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
-    unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated.'),
+    unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.')
   })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
@@ -324,7 +324,7 @@ Extract the individual line items from the invoice document:
 1. For each line item, extract:
    - **Description**: The item description or service name as it appears on the invoice
    - **Quantity**: The quantity ordered/delivered when \`invoiceLineQuantityDisplayed\` is true and a value is shown. When \`invoiceLineQuantityDisplayed\` is false, leave quantity **null** on every line — do not infer quantity from unit cost and total.
-   - **Unit Cost**: The price per unit (if stated)
+   - **Unit Cost**: The price per unit only when a unit price is printed (a unit-price / rate column or per-unit value). When it is not stated, leave unitCost **null** — do not compute it from quantity and total.
    - **Total Price**: The total/extended price for the line (if stated)
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.

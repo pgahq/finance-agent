@@ -26,8 +26,8 @@ import {
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import {
-  applyMissingQuantityColumnLines,
   buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   type EmailWorktags,
@@ -265,7 +265,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
-      finalLines = applyMissingQuantityColumnLines(finalLines, invoiceLineQuantityDisplayed);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);

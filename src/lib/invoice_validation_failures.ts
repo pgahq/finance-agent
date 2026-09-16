@@ -434,6 +434,22 @@ export function isLineOfBusinessRelatedWorktagError(text: unknown): boolean {
   return isRequiredLineOfBusinessWorktagError(text) || isDisallowedLineOfBusinessWorktagError(text);
 }
 
+export function isQuantityUnitExtendedMismatchError(text: unknown): boolean {
+  return /Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity \* Unit Cost/i.test(
+    asValidationText(text)
+  );
+}
+
+export function isAssigneeValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return (
+    /Invalid Subelement Assignee_Reference/i.test(validationText)
+    || /Work_Queue_Information_Data.*Assignee_Reference/i.test(validationText)
+    || /Assignee_Reference.*WorkerObjectType/i.test(validationText)
+    || /(?:work[- ]queue )?assignee.*(?:not valid|invalid|is not a valid)/i.test(validationText)
+  );
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

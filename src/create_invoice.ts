@@ -14,6 +14,7 @@ import {
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
+  formatWorkQueueAssigneeNotes,
 } from './lib/invoice_enrichment.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
@@ -22,10 +23,11 @@ import {
   sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
-  applyMissingQuantityColumnLines,
   buildFinalInvoiceLines,
+  normalizeSupplierInvoiceLineAmounts,
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -117,6 +119,7 @@ export interface CreateInvoiceRequest {
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
+  assigneeEmail?: string;
   conversationCreatedAt?: string;
 }
 
@@ -144,7 +147,16 @@ export const processor = withProcessorHandler(async (context, requests) => {
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
-  const { s3Key, fileName, contentType, emailContext, conversationId, intercomAppId, conversationCreatedAt } = request;
+  const {
+    s3Key,
+    fileName,
+    contentType,
+    emailContext,
+    conversationId,
+    intercomAppId,
+    assigneeEmail,
+    conversationCreatedAt,
+  } = request;
 
   if (!INVOICE_MOD_ENABLED) {
     debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
@@ -345,7 +357,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
-      finalLines = applyMissingQuantityColumnLines(finalLines, invoiceLineQuantityDisplayed);
+      finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
 
     const appliedRecommended = selectedCompany.source === 'recommended';
@@ -357,9 +369,24 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
+    const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+    if (assigneeEmail && !assigneeMatch) {
+      debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
+        assigneeEmail,
+      });
+    }
+
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
-    const buildNotes = (appliedFallbacks: AppliedFallback[]) =>
-      baseNotes + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+    const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
+      const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
+      return baseNotes
+        + formatWorkQueueAssigneeNotes(appliedFallbacks, {
+          assigneeEmail,
+          assigneeName: assigneeMatch?.name,
+          assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
+        })
+        + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+    };
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
@@ -386,6 +413,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         contentType,
         base64Content: buffer.toString('base64'),
       },
+      ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
     });
 
     const processingTime = Date.now() - startTime;
@@ -441,6 +469,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
+      ...(assigneeEmail ? { assigneeEmail } : {}),
+      ...(assigneeMatch ? { assigneeWorkdayId: assigneeMatch.workdayId, assigneeName: assigneeMatch.name } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
     }, conversationId, intercomAppId));

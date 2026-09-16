@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { includeCompaniesMatchingBillToAddress } from './company_address_match.js';
+import { rankCostCenterSearchResults } from './cost_center_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
@@ -44,6 +45,20 @@ export function createSupplierContent(supplier: any): string {
   ].filter(Boolean).join('\n');
 
   return content;
+}
+
+export function createEmployeeContent(employee: {
+  name?: string;
+  email: string;
+  employeeId?: string;
+  active: boolean;
+}): string {
+  return [
+    employee.name ? `Name: ${employee.name}` : null,
+    `Email: ${employee.email}`,
+    employee.employeeId ? `Employee ID: ${employee.employeeId}` : null,
+    `Active: ${employee.active ? 'Yes' : 'No'}`,
+  ].filter(Boolean).join('\n');
 }
 
 export function createCompanyContent(company: any): string {
@@ -154,7 +169,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     );
 
     // Filter by similarity threshold and transform results
-    const ragResults: RAGResult[] = results
+    let ragResults: RAGResult[] = results
       .filter(row => parseFloat(row.similarity) >= similarityThreshold)
       .map(row => ({
         workday_id: row.workday_id,
@@ -163,6 +178,10 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
         metadata: row.metadata,
         similarity: parseFloat(row.similarity)
       }));
+
+    if (documentType === 'cost_center') {
+      ragResults = rankCostCenterSearchResults(ragResults, query);
+    }
 
     // Consolidated RAG results log
     if (ragResults.length > 0) {

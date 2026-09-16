@@ -43,6 +43,8 @@ Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
 
+`employee` documents cache rows from the **Worker Assignment For AP Agent** custom report. Metadata: `email` (exact assignee lookup on create-invoice), `active` (boolean from Workday `Active_Status` / terminated flag; missing treated as active for legacy rows), optional `name` and `employeeId`. Inactive workers remain in the cache with `active: false`; assignee lookup ignores them. Populated by `cache_employees`, not WQL.
+
 ## Cache prune
 
 `syncDataSource` does not delete by default. `pruneAbsent: true` deletes existing
@@ -74,6 +76,8 @@ Do not dump all cached IDs into prompts. Extract candidate codes from the email,
 ## Cost center related LOB metadata
 
 `cache_cost_centers` stores Workday related Line of Business worktags on existing `cost_center` documents (`metadata.relatedLob`). It does not add a document type. Lookup is by `metadata.code` / `workday_id` via `getCostCenterRelatedLobsByCodes`, not RAG. Cost center codes match with spaces or underscores (`CC-Building Services-PBG` and `CC-Building_Services-PBG`). RAG content is name + code only; a relatedLob-only rewrite updates metadata and keeps the existing embedding so an OpenAI 500 cannot block the cache.
+
+Hybrid `findCostCenters` reranks via `rankCostCenterSearchResults`; inexact `resolveReferenceCode` cost-center hits use `adjustCostCenterSimilarity` plus the same non-DNU tie-break when adjusted confidence ties (`cost_center_match.ts`). Name or code starting with `zDNU` or `DNU` get a lower effective score unless the query is that explicit code or starts with `zDNU`/`DNU`.
 
 `relatedLob` shape:
 
