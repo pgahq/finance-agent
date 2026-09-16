@@ -1,5 +1,6 @@
 import {
   classifyApAgentWorkerReportEntry,
+  listApAgentWorkerReportColumnNames,
   normalizeEmployeeEmail,
   parseApAgentWorkerReport,
   parseApAgentWorkerReportRow,
@@ -78,6 +79,18 @@ describe('ap_agent_workers_report', () => {
       workdayId: 'wid-leave',
       email: 'leave@pgahq.com',
     });
+  });
+
+  it('lists unique column names across report rows', () => {
+    expect(listApAgentWorkerReportColumnNames([
+      { Workday_ID: 'a', 'Primary Work - Email': 'a@pgahq.com' },
+      { Employee_ID: 'PGA1', Terminated: '' },
+    ])).toEqual([
+      'Employee_ID',
+      'Primary Work - Email',
+      'Terminated',
+      'Workday_ID',
+    ]);
   });
 
   it('parses work email and WID from nonstandard column names', () => {

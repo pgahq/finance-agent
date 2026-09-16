@@ -4,6 +4,7 @@ import {
   AP_AGENT_WORKERS_CUSTOM_REPORT_PATH,
   classifyApAgentWorkerReportEntry,
   extractApAgentWorkerReportEntries,
+  listApAgentWorkerReportColumnNames,
   parseApAgentWorkerReport,
 } from './lib/ap_agent_workers_report.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
@@ -17,6 +18,13 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
     AP_AGENT_WORKERS_CUSTOM_REPORT_PATH,
   );
   const reportEntries = extractApAgentWorkerReportEntries(payload);
+  const reportColumns = listApAgentWorkerReportColumnNames(reportEntries);
+
+  debug('AP agent workers report columns', {
+    reportEntryCount: reportEntries.length,
+    columnCount: reportColumns.length,
+    columns: reportColumns,
+  });
 
   if (reportEntries.length === 0) {
     debug('AP agent workers report returned no entries - skipping sync without prune');
