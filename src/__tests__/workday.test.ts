@@ -3625,9 +3625,72 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockSupplierID }]
       });
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data?.Assignee_Reference).toBeUndefined();
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
       });
+    });
+
+    it('includes Assignee_Reference when assigneeWID is provided', async () => {
+      const mockClient = mockSoapClient();
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, {
+          Supplier_Invoice_Reference: {
+            ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
+          },
+        });
+      });
+
+      await submitNewSupplierInvoiceForTest({ assigneeWID: 'assignee-worker-wid' });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data.Assignee_Reference).toEqual({
+        ID: [{ $attributes: { type: 'WID' }, $value: 'assignee-worker-wid' }],
+      });
+    });
+
+    it('retries without Assignee_Reference when Workday rejects the assignee', async () => {
+      const mockClient = mockSoapClient();
+      const assigneeFault = Object.assign(
+        new Error('The assignee is not valid for this supplier invoice.'),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'The assignee is not valid for this supplier invoice.',
+              },
+            },
+          },
+        },
+      );
+
+      const capturedRequests: unknown[] = [];
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((request: unknown, callback: (err: Error | null, result: unknown) => void) => {
+          capturedRequests.push(request);
+          callback(assigneeFault, null);
+        })
+        .mockImplementationOnce((request: unknown, callback: (err: Error | null, result: unknown) => void) => {
+          capturedRequests.push(request);
+          callback(null, {
+            Supplier_Invoice_Reference: {
+              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
+            },
+          });
+        });
+
+      const result = await submitNewSupplierInvoiceForTest({ assigneeWID: 'bad-assignee-wid' });
+
+      expect(result.success).toBe(true);
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      const firstData = (capturedRequests[0] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      const secondData = (capturedRequests[1] as any).Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(firstData.Work_Queue_Information_Data.Assignee_Reference).toBeDefined();
+      expect(secondData.Work_Queue_Information_Data?.Assignee_Reference).toBeUndefined();
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
+      );
     });
 
     it('omits invoiceNumber when Get Invoice_Number fails after create', async () => {

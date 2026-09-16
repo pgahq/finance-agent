@@ -222,6 +222,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         emailContext: attachment.emailContext,
         conversationId,
         ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+        ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
         ...(conversationData.conversationCreatedAt
           ? { conversationCreatedAt: conversationData.conversationCreatedAt }
           : {}),

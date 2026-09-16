@@ -91,6 +91,9 @@ describe('notifyResult', () => {
         recommendedName: 'PGA Foundation Inc',
       },
       extracted: { invoiceDate: '2026-08-21', amountDue: '$448.92' },
+      assigneeName: 'Joe Carey',
+      assigneeEmail: 'jcarey@pgahq.com',
+      assigneeWorkdayId: 'wid-jcarey',
       lineCount: 3,
       priorFailures: [
         { attempt: 1, message: "Enter a Supplier's Invoice Number that isn't already in use..." },
@@ -105,6 +108,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Company* → PGA Foundation Inc (recommended)');
     expect(texts).toContain('*Invoice Date* → 2026-08-21');
     expect(texts).toContain('*Amount Due* → $448.92');
+    expect(texts).toContain('*Assignee* → Joe Carey (jcarey@pgahq.com)');
     expect(texts).toContain('*Prior submit failures*');
     expect(texts).toContain("Attempt 1: Enter a Supplier's Invoice Number that isn't already in use...");
     expect(texts).toContain('"invoiceNumber": "SUPIN-412727"');

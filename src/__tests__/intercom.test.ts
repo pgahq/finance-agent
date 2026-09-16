@@ -138,6 +138,7 @@ describe('intercom', () => {
 
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
         appId: 'sandbox-app',
+        assigneeEmail: undefined,
         conversationCreatedAt: '2024-01-01',
         attachments: [
           {
@@ -221,6 +222,37 @@ describe('intercom', () => {
             plainTextBody: mergedPlainTextBody,
           },
         }],
+      });
+    });
+
+    it('returns assigneeEmail from the last custom_action_started part', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          source: {
+            attachments: [
+              { name: 'invoice.pdf', url: 'https://downloads.intercomcdn.com/invoice.pdf', content_type: 'application/pdf' },
+            ],
+          },
+          conversation_parts: {
+            conversation_parts: [
+              {
+                part_type: 'custom_action_started',
+                author: { email: 'first@pgahq.com' },
+              },
+              {
+                part_type: 'custom_action_started',
+                author: { email: 'jcarey@pgahq.com', type: 'user' },
+              },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
+        assigneeEmail: 'jcarey@pgahq.com',
       });
     });
 

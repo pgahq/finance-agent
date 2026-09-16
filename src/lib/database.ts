@@ -22,6 +22,7 @@ export const DOCUMENT_TYPES = [
   'lob',
   'fund',
   'spend_category',
+  'employee',
 ] as const;
 
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
