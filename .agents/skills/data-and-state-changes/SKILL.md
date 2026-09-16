@@ -43,7 +43,7 @@ Lambda cold starts.
 
 Do not delete production orphan rows from app code without an explicit ops decision.
 
-`employee` documents cache rows from the **Worker Assignment For AP Agent** custom report (`metadata.email` for exact assignee lookup on create-invoice). Populated by `cache_employees`, not WQL.
+`employee` documents cache rows from the **Worker Assignment For AP Agent** custom report. Metadata: `email` (exact assignee lookup on create-invoice), `active` (boolean from Workday `Active_Status` / terminated flag; missing treated as active for legacy rows), optional `name` and `employeeId`. Inactive workers remain in the cache with `active: false`; assignee lookup ignores them. Populated by `cache_employees`, not WQL.
 
 ## Cache prune
 
