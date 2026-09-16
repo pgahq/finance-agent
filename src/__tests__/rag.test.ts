@@ -667,7 +667,12 @@ Primary Address: 100 PGA Tour Blvd`);
       });
 
       expect(result.success).toBe(true);
+      expect(result.addressMatch).toBe('none');
+      expect(result.message).toBe(
+        'Company cache list failed; billed-street tags omitted. Name search results only.'
+      );
       expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual(['georgia-wid']);
+      expect(result.results[0].addressMatch).toBe('none');
     });
 
     it('recovers a concatenated bill-to remainder for tagging', async () => {

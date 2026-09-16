@@ -323,6 +323,7 @@ export const findCompaniesTool = tool({
     }
 
     const resultLimit = limit ?? DEFAULT_RAG_LIMIT;
+    let companyCacheFailed = false;
     const [results, cachedCompanies] = await Promise.all([
       queryDocuments({
         query: nameQuery,
@@ -332,28 +333,37 @@ export const findCompaniesTool = tool({
       }),
       billToAddress
         ? getDatabaseConnection(process.env).then((db) => getDocumentsByType(db, 'company')).catch((error) => {
-            debug('Find Companies Tool: company cache list failed; tagging name hits only', error);
+            debug('Find Companies Tool: company cache list failed; omitting billed-street tags', error);
+            companyCacheFailed = true;
             return [];
           })
         : Promise.resolve([]),
     ]);
 
-    const tagged = includeCompaniesMatchingBillToAddress(
-      results,
-      cachedCompanies.map((document) => ({
-        workday_id: document.workday_id,
-        type: 'company' as const,
-        content: document.content ?? '',
-        metadata: document.metadata,
-      })),
-      billToAddress,
-      resultLimit
-    );
+    const tagged = companyCacheFailed
+      ? {
+          addressMatch: 'none' as const,
+          results: results.map((result) => ({ ...result, addressMatch: 'none' as const })),
+        }
+      : includeCompaniesMatchingBillToAddress(
+          results,
+          cachedCompanies.map((document) => ({
+            workday_id: document.workday_id,
+            type: 'company' as const,
+            content: document.content ?? '',
+            metadata: document.metadata,
+          })),
+          billToAddress,
+          resultLimit
+        );
     debug(`Find Companies Tool: Found ${tagged.results.length} companies (addressMatch=${tagged.addressMatch})`);
 
     return {
       success: true,
       addressMatch: tagged.addressMatch,
+      ...(companyCacheFailed
+        ? { message: 'Company cache list failed; billed-street tags omitted. Name search results only.' }
+        : {}),
       results: tagged.results.map(result => {
         const similarity = 'similarity' in result ? result.similarity : undefined;
         return {
