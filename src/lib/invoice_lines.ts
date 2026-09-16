@@ -20,40 +20,86 @@ export interface ExtractedInvoiceLine {
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
 
-function isNumericOrAmountCell(value: string): boolean {
-  return /^\$?-?[\d,]+(?:\.\d+)?$/.test(value.replace(/\s/g, ''));
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function composeInvoiceLineDescription(
-  cells?: Array<string | null | undefined> | null,
-  description?: string | null
-): string | undefined {
+function compactAmount(value: string): string {
+  return value.replace(/[$,\s]/g, '');
+}
+
+function isCurrencyCell(value: string): boolean {
+  return /\$/.test(value) && /^\$?-?[\d,]+(?:\.\d+)?$/.test(value.replace(/\s/g, ''));
+}
+
+function cellMatchesLineAmount(
+  cell: string,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): boolean {
+  if (isCurrencyCell(cell)) return true;
+  if (!line) return false;
+  const compact = compactAmount(cell);
+  const candidates = [
+    line.quantity != null ? String(line.quantity) : null,
+    line.unitCost ?? null,
+    line.totalPrice ?? null,
+  ];
+  return candidates.some(candidate => candidate != null && compactAmount(String(candidate)) === compact);
+}
+
+function containsAsToken(haystack: string, needle: string): boolean {
+  if (haystack.length <= needle.length) return false;
+  return new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(needle)}([^A-Za-z0-9]|$)`, 'i').test(haystack);
+}
+
+function identifyingCells(
+  cells: Array<string | null | undefined> | null | undefined,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): string[] {
   const cleaned: string[] = [];
-  for (const raw of [...(cells ?? []), description]) {
+  for (const raw of cells ?? []) {
     const cell = raw?.replace(/\s+/g, ' ').trim();
-    if (!cell || isNumericOrAmountCell(cell)) continue;
+    if (!cell || cellMatchesLineAmount(cell, line)) continue;
     const lower = cell.toLowerCase();
     if (cleaned.some(existing => existing.toLowerCase() === lower)) continue;
     cleaned.push(cell);
   }
-
-  const survivors = cleaned.filter((cell, index) => {
-    const lower = cell.toLowerCase();
-    return !cleaned.some((other, otherIndex) => (
+  return cleaned.filter((cell, index) => (
+    !cleaned.some((other, otherIndex) => (
       otherIndex !== index
       && other.length > cell.length
-      && other.toLowerCase().includes(lower)
-    ));
-  });
+      && containsAsToken(other, cell)
+    ))
+  ));
+}
 
-  return survivors.length ? survivors.join(INVOICE_LINE_DESCRIPTION_SEPARATOR) : undefined;
+export function composeInvoiceLineDescription(
+  cells?: Array<string | null | undefined> | null,
+  description?: string | null,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): string | undefined {
+  const fromCells = identifyingCells(cells, line);
+  if (fromCells.length) return fromCells.join(INVOICE_LINE_DESCRIPTION_SEPARATOR);
+  const fromDescription = identifyingCells([description], line);
+  return fromDescription.length ? fromDescription.join(INVOICE_LINE_DESCRIPTION_SEPARATOR) : undefined;
 }
 
 export function withComposedLineDescriptions<T extends ExtractedInvoiceLine>(lines: T[]): T[] {
   return lines.map(line => {
-    const composed = composeInvoiceLineDescription(line.descriptionCells, line.description);
+    const composed = composeInvoiceLineDescription(line.descriptionCells, line.description, line);
     if (!composed || composed === line.description) return line;
     return { ...line, description: composed };
+  });
+}
+
+export function pinExtractedLineDescriptions(
+  merged: FinalInvoiceLine[],
+  extracted: ExtractedInvoiceLine[]
+): FinalInvoiceLine[] {
+  return merged.map((line, index) => {
+    const extractedDescription = extracted[index]?.description;
+    if (!extractedDescription || extractedDescription === line.description) return line;
+    return { ...line, description: extractedDescription };
   });
 }
 
@@ -633,7 +679,14 @@ export async function buildFinalInvoiceLines(
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  return finalizeInvoiceLines(lines, appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+  return finalizeInvoiceLines(
+    pinExtractedLineDescriptions(lines, extractedLines),
+    appliedFallbacks,
+    parsedPoLines,
+    emailWorktags,
+    relatedLobLookup,
+    fallbackIds
+  );
 }
 
 async function finalizeInvoiceLines(

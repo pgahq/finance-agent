@@ -348,6 +348,37 @@ describe('create_invoice', () => {
     expect(submitArgs.extractedFreightAmount).toBe('$15.00');
   });
 
+  it('classifies freight from the original Description column before composing row text', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false },
+        {
+          description: 'Shipping',
+          descriptionCells: ['Ryan Poland', 'Shipping'],
+          quantity: 1,
+          unitCost: '15.00',
+          totalPrice: '15.00',
+          hasDiscount: false,
+        }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-cells/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+    ]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+  });
+
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({

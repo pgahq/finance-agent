@@ -252,10 +252,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
-      withComposedLineDescriptions(result.extractedInvoiceLines ?? [])
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
+      (result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
+    const candidateLines = withComposedLineDescriptions(merchandiseLines);
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 

@@ -92,9 +92,9 @@ Pay-file / check print safety:
 
 Workday Line Item Description (`Item_Description`) is the concatenated identifying text from the invoice **row**, not a one-sentence summary and not only the column labeled Description.
 
-Enrichment prompt (`src/prompts/enrich_invoice_prompt.ts` Part 9) extracts `descriptionCells` left-to-right (Activity, Resource, SKU, Description, and similar). `composeInvoiceLineDescription` / `withComposedLineDescriptions` in `src/lib/invoice_lines.ts` then join those cells with ` - `, drop empty and qty/rate/amount cells, and drop a cell that is already contained in a longer cell. Example: Activity `Ryan Poland` + Description `Project Management` → `Ryan Poland - Project Management`. Header service dates, PO, account, job, and customer ID stay out of Item Description.
+Enrichment prompt (`src/prompts/enrich_invoice_prompt.ts` Part 9) extracts `descriptionCells` left-to-right (Activity, Resource, SKU, Description, and similar). `composeInvoiceLineDescription` / `withComposedLineDescriptions` in `src/lib/invoice_lines.ts` then join those cells with ` - ` when any identifying cells exist (the model `description` is fallback only). Empty cells, Notes/Comments, and cells that match the line's printed quantity, unit cost, amount, or a `$` currency value are dropped. A shorter cell is dropped only when a longer cell contains it as a whole token, not as a raw substring. Example: Activity `Ryan Poland` + Description `Project Management` → `Ryan Poland - Project Management`. Header service dates, PO, account, job, and customer ID stay out of Item Description. Freight is classified from the original Description column, then remaining merchandise rows are composed.
 
-The terse 1-sentence summary is line `Memo`, generated **after** that concatenation (merge prompt), then identifier-prefixed in `composeInvoiceMemo`. Merge must copy the concatenated `description` unchanged.
+The terse 1-sentence summary is line `Memo`, generated **after** that concatenation (merge prompt), then identifier-prefixed in `composeInvoiceMemo`. After merge, `pinExtractedLineDescriptions` overlays the composed description by line index so the merge model cannot shorten Item Description.
 
 ## Secrets / env
 

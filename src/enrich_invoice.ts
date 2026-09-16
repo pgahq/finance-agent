@@ -216,12 +216,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
       canModifyInvoice
-        ? withComposedLineDescriptions(result.extractedInvoiceLines ?? [])
-          .filter(l => l.description && (l.totalPrice || l.unitCost))
+        ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
     );
+    const candidateLines = withComposedLineDescriptions(merchandiseLines);
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
