@@ -239,6 +239,25 @@ export function relatedLobHasUsableValue(related: RelatedLob | null | undefined)
   );
 }
 
+function relatedLobCandidateValues(related: RelatedLob): string[] {
+  return [
+    ...(related.defaultIds ?? []).map(id => id.value),
+    ...(related.allowedIds ?? []).map(id => id.value),
+    ...(related.defaultReferenceId ? [related.defaultReferenceId] : []),
+    ...(related.allowedReferenceIds ?? []),
+  ].filter(Boolean);
+}
+
+export function relatedLobAllowsId(
+  related: RelatedLob | null | undefined,
+  id?: string | null
+): boolean {
+  if (!related || !id) return false;
+  const needle = normalizeReferenceId(id);
+  if (!needle) return false;
+  return relatedLobCandidateValues(related).some(value => normalizeReferenceId(value) === needle);
+}
+
 const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_0?1$/i;
 
 function normalizeReferenceId(value: string): string {

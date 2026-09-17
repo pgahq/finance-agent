@@ -317,6 +317,52 @@ describe('create_invoice', () => {
     expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
   });
 
+  it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$4,960.00',
+      extractedPurchaseOrderNumber: 'PO-413898',
+      extractedServicePeriod: '9/7/26 - 9/13/26',
+      extractedInvoiceLines: [
+        {
+          description: 'Project Management',
+          descriptionCells: ['', 'Ryan Poland', 'Project Management', '32', '155.00', '4,960.00'],
+          quantity: 32,
+          unitCost: '155.00',
+          totalPrice: '4,960.00',
+          hasDiscount: false,
+        }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: typeof baseEnrichmentResult.extractedInvoiceLines) => ({
+      lines: [{
+        lineOrder: 1,
+        description: extracted[0].description,
+        memo: 'Project management services for Ryan Poland',
+        quantity: 32,
+        unitCost: 155,
+        extendedAmount: 4960,
+      }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map(),
+    }));
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-hashrocket/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0][0].description).toBe(
+      'Ryan Poland - Project Management'
+    );
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.finalLines[0].description).toBe('Ryan Poland - Project Management');
+    expect(submitArgs.finalLines[0].memo).toBe(
+      'PO-413898. Service Period 9/7/26 - 9/13/26. Project management services for Ryan Poland'
+    );
+    expect(submitArgs.finalLines[0].description).not.toContain('PO-413898');
+  });
+
   it('should exclude freight/shipping extracted lines from merge and still submit Freight_Amount', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -332,6 +378,37 @@ describe('create_invoice', () => {
 
     await processor({
       data: [attachmentRequest('new-invoices/req-freight/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+    ]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+  });
+
+  it('classifies freight from the original Description column before composing row text', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false },
+        {
+          description: 'Shipping',
+          descriptionCells: ['Ryan Poland', 'Shipping'],
+          quantity: 1,
+          unitCost: '15.00',
+          totalPrice: '15.00',
+          hasDiscount: false,
+        }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-cells/invoice.pdf')]
     } as any);
 
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([

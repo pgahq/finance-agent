@@ -4,6 +4,8 @@ import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
 import {
   extractLineOfBusinessId,
+  relatedLobAllowsId,
+  relatedLobHasUsableValue,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -11,10 +13,103 @@ import type { PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
+  descriptionCells?: string[] | null;
   quantity?: number | null;
   unitCost?: string | null;
   totalPrice?: string | null;
   hasDiscount?: boolean | null;
+}
+
+export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compactAmount(value: string): string {
+  return value.replace(/[$,\s]/g, '');
+}
+
+function isCurrencyCell(value: string): boolean {
+  return /\$/.test(value) && /^\$?-?[\d,]+(?:\.\d+)?$/.test(value.replace(/\s/g, ''));
+}
+
+function cellMatchesLineAmount(
+  cell: string,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): boolean {
+  if (isCurrencyCell(cell)) return true;
+  if (!line) return false;
+  const compact = compactAmount(cell);
+  const candidates = [
+    line.quantity != null ? String(line.quantity) : null,
+    line.unitCost ?? null,
+    line.totalPrice ?? null,
+  ];
+  return candidates.some(candidate => candidate != null && compactAmount(String(candidate)) === compact);
+}
+
+function containsAsToken(haystack: string, needle: string): boolean {
+  if (haystack.length <= needle.length) return false;
+  return new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(needle)}([^A-Za-z0-9]|$)`, 'i').test(haystack);
+}
+
+function identifyingCells(
+  cells: Array<string | null | undefined> | null | undefined,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): string[] {
+  const cleaned: string[] = [];
+  for (const raw of cells ?? []) {
+    const cell = raw?.replace(/\s+/g, ' ').trim();
+    if (!cell || cellMatchesLineAmount(cell, line)) continue;
+    const lower = cell.toLowerCase();
+    if (cleaned.some(existing => existing.toLowerCase() === lower)) continue;
+    cleaned.push(cell);
+  }
+  return cleaned.filter((cell, index) => (
+    !cleaned.some((other, otherIndex) => (
+      otherIndex !== index
+      && other.length > cell.length
+      && containsAsToken(other, cell)
+    ))
+  ));
+}
+
+export function composeInvoiceLineDescription(
+  cells?: Array<string | null | undefined> | null,
+  description?: string | null,
+  line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
+): string | undefined {
+  const fromDescription = identifyingCells([description], line);
+  const original = fromDescription.length
+    ? fromDescription.join(INVOICE_LINE_DESCRIPTION_SEPARATOR)
+    : undefined;
+  const fromCells = identifyingCells(cells, line);
+  if (!fromCells.length) return original;
+  const composed = fromCells.join(INVOICE_LINE_DESCRIPTION_SEPARATOR);
+  if (isFreightOrHandlingLine(composed) && !isFreightOrHandlingLine(original)) {
+    return original;
+  }
+  return composed;
+}
+
+export function withComposedLineDescriptions<T extends ExtractedInvoiceLine>(lines: T[]): T[] {
+  return lines.map(line => {
+    const composed = composeInvoiceLineDescription(line.descriptionCells, line.description, line);
+    if (!composed || composed === line.description) return line;
+    return { ...line, description: composed };
+  });
+}
+
+export function pinExtractedLineDescriptions(
+  merged: FinalInvoiceLine[],
+  extracted: ExtractedInvoiceLine[]
+): FinalInvoiceLine[] {
+  return merged.map((line, index) => {
+    const extractedDescription = extracted[index]?.description;
+    if (!extractedDescription || extractedDescription === line.description) return line;
+    return { ...line, description: extractedDescription };
+  });
 }
 
 export interface FinalInvoiceLine {
@@ -358,6 +453,25 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+export function constrainEmailLobToRelatedWorktags(
+  lines: FinalInvoiceLine[],
+  relatedByCostCenterId: Map<string, RelatedLob>,
+  emailWorktags?: EmailWorktags,
+  fallbackCostCenterId?: string | null
+): FinalInvoiceLine[] {
+  if (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId) return lines;
+
+  return lines.map(line => {
+    const costCenterId = line.costCenterId;
+    if (!costCenterId || costCenterId === fallbackCostCenterId) return line;
+    const related = relatedByCostCenterId.get(costCenterId);
+    if (!relatedLobHasUsableValue(related)) return line;
+    if (relatedLobAllowsId(related, line.lineOfBusinessId)) return line;
+    const resolved = resolveRelatedLobId(related, costCenterId, fallbackCostCenterId);
+    return { ...line, lineOfBusinessId: resolved };
+  });
+}
+
 export function overlayPoLineOfBusiness(
   lines: FinalInvoiceLine[],
   poLines: ParsedPoLineWorktags[]
@@ -387,17 +501,24 @@ export function applyRelatedLobWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   fallbackCostCenterId?: string | null,
-  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean }
+  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean; replaceDisallowed?: boolean }
 ): FinalInvoiceLine[] {
   const replaceIds = new Set(options?.replaceIds ?? []);
+  const replaceDisallowed = Boolean(options?.replaceDisallowed);
   return lines.map(line => {
     const current = line.lineOfBusinessId;
-    if (current && !replaceIds.has(current)) return line;
+    const related = relatedByCostCenterId.get(line.costCenterId ?? '');
+    const shouldReplace = !current
+      || replaceIds.has(current)
+      || (replaceDisallowed && !relatedLobAllowsId(related, current));
+    if (!shouldReplace) return line;
+    const exclude = new Set(replaceIds);
+    if (replaceDisallowed && current) exclude.add(current);
     const resolved = resolveRelatedLobId(
-      relatedByCostCenterId.get(line.costCenterId ?? ''),
+      related,
       line.costCenterId,
       fallbackCostCenterId,
-      replaceIds,
+      exclude,
       { anyAllowed: Boolean(options?.anyAllowed) }
     );
     return resolved && resolved !== current ? { ...line, lineOfBusinessId: resolved } : line;
@@ -593,7 +714,14 @@ export async function buildFinalInvoiceLines(
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  return finalizeInvoiceLines(lines, appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+  return finalizeInvoiceLines(
+    pinExtractedLineDescriptions(lines, extractedLines),
+    appliedFallbacks,
+    parsedPoLines,
+    emailWorktags,
+    relatedLobLookup,
+    fallbackIds
+  );
 }
 
 async function finalizeInvoiceLines(
@@ -608,7 +736,13 @@ async function finalizeInvoiceLines(
   const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
   const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
-  const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
+  const withConstrainedEmailLob = constrainEmailLobToRelatedWorktags(
+    withRelated,
+    relatedByCostCenterId,
+    emailWorktags,
+    process.env.FALLBACK_COST_CENTER_ID
+  );
+  const fallbackLob = applyFallbackLineOfBusiness(withConstrainedEmailLob, fallbackIds.lineOfBusinessId);
   return {
     lines: fallbackLob.lines,
     appliedFallbacks: {

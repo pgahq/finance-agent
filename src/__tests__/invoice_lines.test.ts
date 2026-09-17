@@ -5,6 +5,7 @@ import {
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
+  constrainEmailLobToRelatedWorktags,
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
@@ -267,6 +268,63 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-A');
   });
 
+  it('replaces a disallowed LOB with the related default', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('replaces a disallowed LOB with the first allowed value when there is no default', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['LOB-TV', 'LOB-Radio'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
+  });
+
+  it('keeps a LOB that is already allowed for the cost center', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'Event Broadcasting'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+  });
+
   it('replaces Default_Line_Of_Business with a related allowed LOB', () => {
     const related = new Map([
       ['CC-001', {
@@ -305,12 +363,73 @@ describe('applyRelatedLobWorktags', () => {
   });
 });
 
+describe('constrainEmailLobToRelatedWorktags', () => {
+  const related = new Map([
+    ['CC-Other Broadcasting', {
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Other_Broadcasting',
+      allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+    }]
+  ]);
+
+  it('does not change lines when email has an LOB but no cost center', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      { lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+  });
+
+  it('replaces a catalog LOB with the related default when email has both cost center and LOB', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+});
+
 describe('buildFinalInvoiceLines', () => {
   const extracted = [{ description: 'Janitorial', quantity: 1, unitCost: '100', totalPrice: '100', hasDiscount: null }];
 
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FALLBACK_COST_CENTER_ID;
+  });
+
+  it('pins the extracted description when merge returns a shortened category', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Services',
+        memo: 'Project management services for Ryan Poland',
+        quantity: 32,
+        unitCost: 155,
+        extendedAmount: 4960,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Ryan Poland - Project Management', quantity: 32, unitCost: '155.00', totalPrice: '4,960.00', hasDiscount: null }],
+      undefined,
+      undefined,
+      {}
+    );
+
+    expect(result.lines[0].description).toBe('Ryan Poland - Project Management');
+    expect(result.lines[0].memo).toBe('Project management services for Ryan Poland');
   });
 
   it('overlays PO LOB when the merge model omits lineOfBusinessId', async () => {
@@ -372,6 +491,87 @@ describe('buildFinalInvoiceLines', () => {
     );
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-From-Email');
+  });
+
+  it('replaces an email LOB that is not allowed for the email cost center with the related default', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      {},
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' },
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+    expect(result.lines[0].costCenterId).toBe('CC-Other Broadcasting');
+  });
+
+  it('keeps an email LOB that is already allowed for the email cost center', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'Event Broadcasting'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      {},
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' },
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('Event Broadcasting');
   });
 
   it('fills related LOB from cache when there is no PO LOB', async () => {

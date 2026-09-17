@@ -677,7 +677,7 @@ function linesWithRelatedLob(
     lines,
     related,
     process.env.FALLBACK_COST_CENTER_ID,
-    { replaceIds: fallbackLobExcludeIds(), anyAllowed }
+    { replaceIds: fallbackLobExcludeIds(), anyAllowed, replaceDisallowed: anyAllowed }
   );
   const changed = next.some((line, index) => line.lineOfBusinessId !== lines[index].lineOfBusinessId);
   return changed ? next : undefined;
