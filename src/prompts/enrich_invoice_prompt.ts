@@ -106,7 +106,7 @@ export const InvoiceEnrichmentSchema = z.object({
     }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
     lineOfBusiness: z.object({
       extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
-      referenceId: z.string().nullable().describe('The referenceId from the matched LOB in Workday (used as Organization_Reference_ID). Populate after calling findLobs.'),
+      referenceId: z.string().nullable().describe('When a cost center was also resolved, the related default (or allowed) LOB referenceId for that cost center — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
     }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
     fund: z.object({
       extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
@@ -140,9 +140,9 @@ You have access to nine search tools:
 - **findSuppliers**: Search our supplier database using semantic similarity to find relevant suppliers.
 - **findCompanies**: Search our company database using semantic similarity to find relevant companies (the buyer/recipient entity on the invoice). Call it with the billed company name or Company_Reference_ID in \`query\` and the bill-to street address in \`address\`. Never concatenate street, city, state, or ZIP into \`query\`. Name rank is embedding similarity (plus exact companyName / Company_Reference_ID), not substring. Each result is independently tagged addressMatch unique, shared, or none from the full company cache. A unique tag means exactly one cached company sits on that street — it may be appended if name search missed it. Shared means several companies share that street; ZIP and city never pick among them. Do not prefer address over name or name over address. Recommend a company when those signals agree. If they point at different companies, leave workdayId unset.
 - **findPaymentTerms**: Search our payment terms database to match payment terms from the invoice against Workday payment terms.
-- **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday.
+- **findCostCenters**: Search our cost center database by name or code to look up available cost centers in Workday. Results include relatedLob (default and allowed Line of Business ids).
 - **findEvents**: Search our events database by name to look up events (tournaments, championships, conferences) in Workday.
-- **findLobs**: Search our lines of business database by name or reference to look up LOBs in Workday.
+- **findLobs**: Search the full LOB catalog only when the email mentions a Line of Business and does not also identify a cost center. Do not use this to pick among all LOBs when a cost center is already resolved.
 - **findFunds**: Search our funds database by reference ID or name to look up funds in Workday.
 - **findSpendCategories**: Search our spend categories database by name or reference to look up spend categories in Workday.
 - **resolveReferenceCode**: Look up a short code (e.g. "912", "72200") across cached companies, cost centers, funds, LOBs, and spend categories. Exact metadata matches win; otherwise use \`topMatch.type\` as the object-type hint. Do not copy an inexact match (confidence below 1.0) into company workdayId or referenceId. Use this before assuming a bare number is a cost center.
@@ -349,6 +349,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - Populate emailWorktags.costCenter.extracted with what you found in the email
    - Populate emailWorktags.costCenter.name with the matched cost center name from the top result's metadata
    - Populate emailWorktags.costCenter.code with the matched cost center's code (Cost_Center_Reference_ID) from the top result's metadata
+   - If the email also mentions a Line of Business, use the result's relatedLob (default, then unique allowed). Do not call findLobs.
    - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
 
 2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
@@ -358,10 +359,10 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.event.workdayId to null
 
 3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
-   - Call **findLobs** with the LOB name to resolve it in Workday
+   - If you already resolved a cost center, do **not** call findLobs. Treat the email LOB as that cost center's related Line of Business: use relatedLob.defaultReferenceId when present, otherwise the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that related value.
+   - Call **findLobs** only when the email mentions an LOB and does not identify a cost center
    - Populate emailWorktags.lineOfBusiness.extracted with what you found in the email
-   - Populate emailWorktags.lineOfBusiness.referenceId with the matched LOB's referenceId from the top result's metadata (this is the value used as the Organization_Reference_ID worktag)
-   - If no match is found, set emailWorktags.lineOfBusiness.referenceId to null
+   - If no related or findLobs match is available, set emailWorktags.lineOfBusiness.referenceId to null
 
 4. **Funds**: Look for any mention of a fund, fund code, or funding source — whether labeled explicitly (e.g., "FD-001") or referenced contextually (e.g., "Operating Fund"). If found:
    - Call **findFunds** with the fund name or reference to resolve it in Workday

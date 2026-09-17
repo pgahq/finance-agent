@@ -5,6 +5,7 @@ import {
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
+  constrainEmailLobToRelatedWorktags,
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
@@ -362,6 +363,36 @@ describe('applyRelatedLobWorktags', () => {
   });
 });
 
+describe('constrainEmailLobToRelatedWorktags', () => {
+  const related = new Map([
+    ['CC-Other Broadcasting', {
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Other_Broadcasting',
+      allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+    }]
+  ]);
+
+  it('does not change lines when email has an LOB but no cost center', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      { lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+  });
+
+  it('replaces a catalog LOB with the related default when email has both cost center and LOB', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+});
+
 describe('buildFinalInvoiceLines', () => {
   const extracted = [{ description: 'Janitorial', quantity: 1, unitCost: '100', totalPrice: '100', hasDiscount: null }];
 
@@ -460,6 +491,87 @@ describe('buildFinalInvoiceLines', () => {
     );
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-From-Email');
+  });
+
+  it('replaces an email LOB that is not allowed for the email cost center with the related default', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      {},
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' },
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+    expect(result.lines[0].costCenterId).toBe('CC-Other Broadcasting');
+  });
+
+  it('keeps an email LOB that is already allowed for the email cost center', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Janitorial',
+        memo: null,
+        quantity: 1,
+        unitCost: 100,
+        extendedAmount: 100,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const lookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'Event Broadcasting'],
+      }]
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      {},
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' },
+      lookup
+    );
+
+    expect(result.lines[0].lineOfBusinessId).toBe('Event Broadcasting');
   });
 
   it('fills related LOB from cache when there is no PO LOB', async () => {

@@ -156,6 +156,11 @@ describe('invoice line description prompts', () => {
     expect(invoiceEnrichmentPrompt).toContain('Ryan Poland - Project Management');
   });
 
+  it('tells enrichment not to catalog-match LOB when a cost center is already resolved', () => {
+    expect(invoiceEnrichmentPrompt).toContain('do **not** call findLobs');
+    expect(invoiceEnrichmentPrompt).toContain('relatedLob.defaultReferenceId');
+  });
+
   it('tells merge to copy the concatenated description unchanged and write memo after', () => {
     expect(mergeInvoiceLinesPrompt).toContain('Copy `description` from the extracted line **unchanged**');
     expect(mergeInvoiceLinesPrompt).toContain('after** the concatenated description is set');

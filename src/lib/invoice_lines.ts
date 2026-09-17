@@ -5,6 +5,7 @@ import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLine
 import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
+  relatedLobHasUsableValue,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -452,6 +453,25 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+export function constrainEmailLobToRelatedWorktags(
+  lines: FinalInvoiceLine[],
+  relatedByCostCenterId: Map<string, RelatedLob>,
+  emailWorktags?: EmailWorktags,
+  fallbackCostCenterId?: string | null
+): FinalInvoiceLine[] {
+  if (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId) return lines;
+
+  return lines.map(line => {
+    const costCenterId = line.costCenterId;
+    if (!costCenterId || costCenterId === fallbackCostCenterId) return line;
+    const related = relatedByCostCenterId.get(costCenterId);
+    if (!relatedLobHasUsableValue(related)) return line;
+    if (relatedLobAllowsId(related, line.lineOfBusinessId)) return line;
+    const resolved = resolveRelatedLobId(related, costCenterId, fallbackCostCenterId);
+    return { ...line, lineOfBusinessId: resolved };
+  });
+}
+
 export function overlayPoLineOfBusiness(
   lines: FinalInvoiceLine[],
   poLines: ParsedPoLineWorktags[]
@@ -716,7 +736,13 @@ async function finalizeInvoiceLines(
   const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
   const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
-  const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
+  const withConstrainedEmailLob = constrainEmailLobToRelatedWorktags(
+    withRelated,
+    relatedByCostCenterId,
+    emailWorktags,
+    process.env.FALLBACK_COST_CENTER_ID
+  );
+  const fallbackLob = applyFallbackLineOfBusiness(withConstrainedEmailLob, fallbackIds.lineOfBusinessId);
   return {
     lines: fallbackLob.lines,
     appliedFallbacks: {
