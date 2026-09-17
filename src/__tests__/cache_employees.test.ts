@@ -183,4 +183,46 @@ describe('cache_employees processor', () => {
       active: false,
     });
   });
+
+  it('caches Preferred Name in employee metadata', async () => {
+    mockExecuteWorkdayCustomReport.mockResolvedValue({
+      Report_Entry: [{
+        'Workday ID': 'wid-a',
+        'Primary Work - Email': 'a@pgahq.com',
+        'Full Legal Name': 'Joseph A Carey Jr.',
+        'Preferred Name': 'Joe Carey',
+        'Active Status': 'Yes',
+      }],
+    });
+
+    await processor({});
+
+    const call = mockSyncDataSource.mock.calls[0][0];
+    const employee = call.items.get('wid-a');
+    expect(employee).toMatchObject({
+      workdayId: 'wid-a',
+      email: 'a@pgahq.com',
+      name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
+      active: true,
+    });
+    expect(call.createMetadata(employee)).toEqual({
+      email: 'a@pgahq.com',
+      active: true,
+      name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
+    });
+    expect(call.isUpdated).toBeDefined();
+    expect(call.isUpdated?.({
+      email: 'a@pgahq.com',
+      active: true,
+      name: 'Joseph A Carey Jr.',
+    }, employee)).toBe(true);
+    expect(call.isUpdated?.({
+      email: 'a@pgahq.com',
+      active: true,
+      name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
+    }, employee)).toBe(false);
+  });
 });

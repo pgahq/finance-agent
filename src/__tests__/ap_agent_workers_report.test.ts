@@ -14,6 +14,7 @@ describe('ap_agent_workers_report', () => {
       'Workday ID': 'cab0b1d2505a01c2514ea9134d2886ce',
       'Primary Work - Email': 'jcarey@pgahq.com',
       'Full Legal Name': 'Joseph A Carey Jr.',
+      'Preferred Name': 'Joe Carey',
       'Employee ID': 'PGA000001',
       'Active Status': 'Yes',
       Terminated: '',
@@ -21,6 +22,7 @@ describe('ap_agent_workers_report', () => {
       workdayId: 'cab0b1d2505a01c2514ea9134d2886ce',
       email: 'jcarey@pgahq.com',
       name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
       employeeId: 'PGA000001',
       active: true,
     });
@@ -132,6 +134,7 @@ describe('ap_agent_workers_report', () => {
           'Primary_Work_-_Email': 'ap@pgahq.com',
           Active_Status: 'Yes',
           Full_Legal_Name: 'AP Agent',
+          Preferred_Name: 'AP',
           Employee_ID: 'PGA000001',
         },
       ],
@@ -140,9 +143,24 @@ describe('ap_agent_workers_report', () => {
       workdayId: 'abc123def456abc123def456abc123de',
       email: 'ap@pgahq.com',
       name: 'AP Agent',
+      preferredName: 'AP',
       employeeId: 'PGA000001',
       active: true,
     }]);
+  });
+
+  it('omits preferredName when the Preferred Name column is blank', () => {
+    expect(parseApAgentWorkerReportRow({
+      Workday_ID: 'wid-legal-only',
+      'Primary_Work_-_Email': 'legal@pgahq.com',
+      Full_Legal_Name: 'Legal Name',
+      Preferred_Name: '  ',
+    })).toEqual({
+      workdayId: 'wid-legal-only',
+      email: 'legal@pgahq.com',
+      name: 'Legal Name',
+      active: true,
+    });
   });
 
   it('parses array-wrapped Workday custom report field values', () => {

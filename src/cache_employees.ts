@@ -68,6 +68,7 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
         email: worker.email,
         active: worker.active,
         name: worker.name,
+        preferredName: worker.preferredName,
         employeeId: worker.employeeId,
       },
     ])
@@ -86,11 +87,13 @@ async function syncEmployeesFromReport(context: ProcessingContext): Promise<void
       email: employee.email,
       active: employee.active,
       ...(employee.name ? { name: employee.name } : {}),
+      ...(employee.preferredName ? { preferredName: employee.preferredName } : {}),
       ...(employee.employeeId ? { employeeId: employee.employeeId } : {}),
     }),
     isUpdated: (existingMetadata, employee) => (
       existingMetadata?.email !== employee.email
       || existingMetadata?.name !== employee.name
+      || existingMetadata?.preferredName !== employee.preferredName
       || existingMetadata?.employeeId !== employee.employeeId
       || existingMetadata?.active !== employee.active
     ),
