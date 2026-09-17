@@ -4,6 +4,7 @@ import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
 import {
   extractLineOfBusinessId,
+  relatedLobAllowsId,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -480,17 +481,24 @@ export function applyRelatedLobWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   fallbackCostCenterId?: string | null,
-  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean }
+  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean; replaceDisallowed?: boolean }
 ): FinalInvoiceLine[] {
   const replaceIds = new Set(options?.replaceIds ?? []);
+  const replaceDisallowed = Boolean(options?.replaceDisallowed);
   return lines.map(line => {
     const current = line.lineOfBusinessId;
-    if (current && !replaceIds.has(current)) return line;
+    const related = relatedByCostCenterId.get(line.costCenterId ?? '');
+    const shouldReplace = !current
+      || replaceIds.has(current)
+      || (replaceDisallowed && !relatedLobAllowsId(related, current));
+    if (!shouldReplace) return line;
+    const exclude = new Set(replaceIds);
+    if (replaceDisallowed && current) exclude.add(current);
     const resolved = resolveRelatedLobId(
-      relatedByCostCenterId.get(line.costCenterId ?? ''),
+      related,
       line.costCenterId,
       fallbackCostCenterId,
-      replaceIds,
+      exclude,
       { anyAllowed: Boolean(options?.anyAllowed) }
     );
     return resolved && resolved !== current ? { ...line, lineOfBusinessId: resolved } : line;

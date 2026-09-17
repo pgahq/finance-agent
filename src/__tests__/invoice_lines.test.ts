@@ -267,6 +267,63 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-A');
   });
 
+  it('replaces a disallowed LOB with the related default', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('replaces a disallowed LOB with the first allowed value when there is no default', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['LOB-TV', 'LOB-Radio'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
+  });
+
+  it('keeps a LOB that is already allowed for the cost center', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'Event Broadcasting'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+  });
+
   it('replaces Default_Line_Of_Business with a related allowed LOB', () => {
     const related = new Map([
       ['CC-001', {
