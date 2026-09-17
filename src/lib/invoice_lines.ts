@@ -78,10 +78,17 @@ export function composeInvoiceLineDescription(
   description?: string | null,
   line?: Pick<ExtractedInvoiceLine, 'quantity' | 'unitCost' | 'totalPrice'>
 ): string | undefined {
-  const fromCells = identifyingCells(cells, line);
-  if (fromCells.length) return fromCells.join(INVOICE_LINE_DESCRIPTION_SEPARATOR);
   const fromDescription = identifyingCells([description], line);
-  return fromDescription.length ? fromDescription.join(INVOICE_LINE_DESCRIPTION_SEPARATOR) : undefined;
+  const original = fromDescription.length
+    ? fromDescription.join(INVOICE_LINE_DESCRIPTION_SEPARATOR)
+    : undefined;
+  const fromCells = identifyingCells(cells, line);
+  if (!fromCells.length) return original;
+  const composed = fromCells.join(INVOICE_LINE_DESCRIPTION_SEPARATOR);
+  if (isFreightOrHandlingLine(composed) && !isFreightOrHandlingLine(original)) {
+    return original;
+  }
+  return composed;
 }
 
 export function withComposedLineDescriptions<T extends ExtractedInvoiceLine>(lines: T[]): T[] {

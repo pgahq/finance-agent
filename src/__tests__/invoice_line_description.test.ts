@@ -1,6 +1,7 @@
 import {
   composeInvoiceLineDescription,
   pinExtractedLineDescriptions,
+  splitFreightLines,
   withComposedLineDescriptions,
 } from '../lib/invoice_lines.js';
 import { formatInvoiceLinesNotes } from '../lib/invoice_enrichment.js';
@@ -57,6 +58,13 @@ describe('composeInvoiceLineDescription', () => {
   it('skips currency amount cells', () => {
     expect(composeInvoiceLineDescription(['Consulting', '$1,250.00'], 'Consulting')).toBe('Consulting');
   });
+
+  it('keeps the original description when concatenated cells would classify as freight', () => {
+    expect(composeInvoiceLineDescription(
+      ['Ground Shipping'],
+      'Shipping Supplies'
+    )).toBe('Shipping Supplies');
+  });
 });
 
 describe('withComposedLineDescriptions', () => {
@@ -83,6 +91,22 @@ describe('withComposedLineDescriptions', () => {
     }]);
 
     expect(lines[0].description).toBe('Widgets');
+  });
+
+  it('does not reclass a merchandise row as freight after compose', () => {
+    const lines = withComposedLineDescriptions([{
+      description: 'Shipping Supplies',
+      descriptionCells: ['Ground Shipping'],
+      quantity: 1,
+      unitCost: '50.00',
+      totalPrice: '50.00',
+      hasDiscount: false,
+    }]);
+    const split = splitFreightLines(lines);
+
+    expect(lines[0].description).toBe('Shipping Supplies');
+    expect(split.merchandiseLines).toEqual(lines);
+    expect(split.freightLines).toEqual([]);
   });
 });
 

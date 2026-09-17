@@ -92,7 +92,7 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedInvoiceLines: z.array(z.object({
     description: z.string().describe('Concatenated meaningful text from this invoice row (all identifying columns, left-to-right, joined with " - "). Not a terse summary. Not qty/rate/amount. Not header PO, account, job, customer ID, or service-period identifiers.'),
-    descriptionCells: z.array(z.string()).nullable().describe('Every meaningful text cell on this row in left-to-right order (Activity, Resource, Consultant, Employee, SKU, Item, Description, Project, Notes, and similar). Exclude empty cells, quantity, rate, amount, and header PO/account/service-period values. Code concatenates these into description. Null if the row has only the value already in description.'),
+    descriptionCells: z.array(z.string()).nullable().describe('Every meaningful text cell on this row in left-to-right order (Activity, Resource, Consultant, Employee, SKU, Item, Description, Project, and similar). Exclude empty cells, quantity, rate, amount, Notes, Comments, and header PO/account/service-period values. Code concatenates these into description. Null if the row has only the value already in description.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
