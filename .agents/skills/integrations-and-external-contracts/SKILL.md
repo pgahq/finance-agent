@@ -4,8 +4,9 @@ description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
   create-invoice, enrich-invoice, Workday, SSM secrets). Use when changing
   POST /create-invoice or /enrich-invoice, Intercom Data Connectors, bearer
-  auth tokens, attachment upload contracts, or Workday invoice memos / supplier
-  invoice numbers (check-print order and pay-file-safe characters).
+  auth tokens, attachment upload contracts, or Workday invoice memos, line item
+  descriptions, or supplier invoice numbers (check-print order and pay-file-safe
+  characters).
 ---
 
 # Integrations and external contracts
@@ -86,6 +87,14 @@ Pay-file / check print safety:
 - The same identifier prefix is applied to every invoice line memo. Header `extractedInformation.memo` and the line-merge prompt must not prepend identifiers — composition strips those tokens if the model still includes them.
 - **Create** always submits the composed memo, including a description-only sentence on a new invoice.
 - **Enrich** submits a composed header memo only when identifier tokens exist, so a description-only extraction does not overwrite an existing OCR header memo. Workday keeps `currentInvoice.Memo` when `memo` is omitted. Line memos still get the identifier prefix when identifiers exist.
+
+## Invoice line item descriptions
+
+Workday Line Item Description (`Item_Description`) is the concatenated identifying text from the invoice **row**, not a one-sentence summary and not only the column labeled Description.
+
+Enrichment prompt (`src/prompts/enrich_invoice_prompt.ts` Part 9) extracts `descriptionCells` left-to-right (Activity, Resource, SKU, Description, and similar) and asks the model to skip Notes and Comments. `composeInvoiceLineDescription` / `withComposedLineDescriptions` in `src/lib/invoice_lines.ts` then join those cells with ` - ` when any identifying cells exist (the model `description` is fallback only). Code drops empty cells and cells that match the line's printed quantity, unit cost, amount, or a `$` currency value; it does not drop Notes/Comments by column name. A shorter cell is dropped only when a longer cell contains it as a whole token, not as a raw substring. Example: Activity `Ryan Poland` + Description `Project Management` → `Ryan Poland - Project Management`. Header service dates, PO, account, job, and customer ID stay out of Item Description. Freight is classified from the original Description column, then remaining merchandise rows are composed. Compose keeps that original Description when the concatenated cells would classify as freight and the original would not, so SOAP `splitFreightLines` does not reclass the merchandise row.
+
+The terse 1-sentence summary is line `Memo`, generated **after** that concatenation (merge prompt), then identifier-prefixed in `composeInvoiceMemo`. After merge, `pinExtractedLineDescriptions` overlays the composed description by line index so the merge model cannot shorten Item Description.
 
 ## Secrets / env
 

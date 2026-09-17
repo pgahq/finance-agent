@@ -313,6 +313,37 @@ describe('buildFinalInvoiceLines', () => {
     delete process.env.FALLBACK_COST_CENTER_ID;
   });
 
+  it('pins the extracted description when merge returns a shortened category', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{
+        lineOrder: 1,
+        description: 'Services',
+        memo: 'Project management services for Ryan Poland',
+        quantity: 32,
+        unitCost: 155,
+        extendedAmount: 4960,
+        costCenterId: null,
+        fundId: null,
+        spendCategoryId: null,
+        lineOfBusinessId: null,
+        eventId: null,
+        shipToAddressId: null,
+        purchaseOrderLineId: null,
+        hasDiscount: null,
+      }]
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Ryan Poland - Project Management', quantity: 32, unitCost: '155.00', totalPrice: '4,960.00', hasDiscount: null }],
+      undefined,
+      undefined,
+      {}
+    );
+
+    expect(result.lines[0].description).toBe('Ryan Poland - Project Management');
+    expect(result.lines[0].memo).toBe('Project management services for Ryan Poland');
+  });
+
   it('overlays PO LOB when the merge model omits lineOfBusinessId', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{

@@ -3,6 +3,7 @@ import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
+import { withComposedLineDescriptions } from './invoice_lines.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
@@ -254,7 +255,7 @@ export function formatInvoiceLinesNotes(
   resolvedInvoiceLineQuantityDisplayed?: boolean
 ): string {
   if (!result.extractedInvoiceLines?.length) return '';
-  const lineTexts = result.extractedInvoiceLines.map((line, i) => {
+  const lineTexts = withComposedLineDescriptions(result.extractedInvoiceLines).map((line, i) => {
     const parts = [line.description];
     if (line.quantity != null) parts.push(`Qty: ${line.quantity}`);
     if (line.unitCost) parts.push(`Unit Cost: ${line.unitCost}`);

@@ -3,8 +3,8 @@ import { z } from 'zod';
 export const MergeInvoiceLinesSchema = z.object({
   lines: z.array(z.object({
     lineOrder: z.number().describe('Sequential line number starting at 1'),
-    description: z.string().describe('Line item description from the invoice'),
-    memo: z.string().nullable().describe('A terse 1-sentence memo describing what this line item is for, generated from the invoice line description (e.g. "Monthly software subscription", "Event catering services"). If a matched PO line has a memo, use it as context but still generate your own. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Null only if the description is too vague to summarize.'),
+    description: z.string().describe('Concatenated line item description from the extracted invoice line. Copy it unchanged — do not shorten to a category or one-sentence summary.'),
+    memo: z.string().nullable().describe('A terse 1-sentence memo describing what this line item is for, generated from the concatenated invoice line description (e.g. "Monthly software subscription", "Event catering services"). Write this after the concatenated description is set. If a matched PO line has a memo, use it as context but still generate your own. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Null only if the description is too vague to summarize.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
     unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00). Null if not stated. Do not compute from quantity and totalPrice.'),
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
@@ -25,13 +25,13 @@ export const mergeInvoiceLinesPrompt = `You are an expert at mapping invoice lin
 
 You will receive a JSON object with the following fields:
 - **invoiceLineQuantityDisplayed**: When false, the invoice document has no quantity column — preserve null quantity on each line and set extendedAmount from totalPrice; do not infer quantity from unit cost and total.
-- **extractedInvoiceLines**: Line items extracted from the invoice document (description, quantity, unitCost as string, totalPrice as string)
+- **extractedInvoiceLines**: Line items extracted from the invoice document (concatenated description, quantity, unitCost as string, totalPrice as string)
 - **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId, lineOfBusinessId (extracted ID strings), and worktagsReference (the full array of raw Workday worktag reference objects for that line)
 - **emailBody** (optional): The plain-text email that accompanied this invoice. Do not copy codes from it into ID fields; email coding is resolved upstream.
 
 Your task is to produce final invoice lines by:
 
-1. Using the extracted invoice lines as the source of truth for line data (description, quantity, unit cost, total price)
+1. Using the extracted invoice lines as the source of truth for line data (description, quantity, unit cost, total price). Copy \`description\` from the extracted line **unchanged**. Never replace it with a category, PO item name, or one-sentence summary — Workday Line Item Description is this concatenated row text.
 2. Matching each extracted line to a PO line by semantic similarity of description and applying the PO line's worktag IDs (costCenterId, fundId, spendCategoryId, lineOfBusinessId) to the matched invoice line
 3. For lineOfBusinessId: copy the matched PO line's lineOfBusinessId value when it is present. Do not invent an LOB id from the description or email.
 4. For eventId: inspect the matched PO line's worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Set null if you are unsure or no event-like worktag is present
@@ -40,7 +40,7 @@ Your task is to produce final invoice lines by:
 7. For hasDiscount: copy the value directly from the matching extracted invoice line
 8. When invoiceLineQuantityDisplayed is false: keep quantity null and set extendedAmount from the extracted line's totalPrice (as a decimal); do not compute quantity from unit cost and total
 9. Do not invent unitCost from quantity and totalPrice. Copy unitCost only when the extracted line has one; otherwise keep it null. Do not recompute extendedAmount to force quantity * unitCost to match
-10. For memo: write a terse 1-sentence description of what the line item is for, based on the invoice line's description. If a matched PO line has a memo, use it as additional context. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Set null only if the description is too vague to summarize
+10. For memo: **after** the concatenated description is set, write a terse 1-sentence summary of what the line item is for, based on that full description. If a matched PO line has a memo, use it as additional context. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Set null only if the description is too vague to summarize
 11. Do not copy codes from the email body into costCenterId, fundId, or other ID fields. Email coding is resolved upstream and applied separately. A short code in the email may be a company, cost center, fund, LOB, or spend category — do not assume it is a cost center. If there is no PO match, set those IDs to null.
 12. For any worktag field you cannot determine from any source, set it to null — fallback values will be applied separately
 

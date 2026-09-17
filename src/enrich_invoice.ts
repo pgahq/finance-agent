@@ -30,6 +30,7 @@ import {
   normalizeSupplierInvoiceLineAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
+  withComposedLineDescriptions,
   type EmailWorktags,
   type FinalInvoiceLine,
   type LineFallbacks,
@@ -215,11 +216,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines: candidateLines, freightAmountFromLines } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
     );
+    const candidateLines = withComposedLineDescriptions(merchandiseLines);
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
 
