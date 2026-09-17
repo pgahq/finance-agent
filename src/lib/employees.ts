@@ -5,6 +5,17 @@ import { normalizeEmployeeEmail } from './ap_agent_workers_report.js';
 export interface EmployeeLookupResult {
   workdayId: string;
   name?: string;
+  preferredName?: string;
+}
+
+/** Preferred Name from the AP agent workers report, else Full Legal Name. */
+export function employeeDisplayName(
+  employee: Pick<EmployeeLookupResult, 'name' | 'preferredName'>,
+): string | undefined {
+  const preferredName = employee.preferredName?.trim();
+  if (preferredName) return preferredName;
+  const name = employee.name?.trim();
+  return name || undefined;
 }
 
 export async function getEmployeeWidByEmail(
@@ -24,7 +35,10 @@ export async function getEmployeeWidByEmail(
         AND LOWER(COALESCE(metadata->>'email', '')) = $1
         AND COALESCE((metadata->>'active')::boolean, true) = true
       LIMIT 2
-    `, [normalized]) as Array<{ workday_id: string; metadata?: { name?: string } }>;
+    `, [normalized]) as Array<{
+      workday_id: string;
+      metadata?: { name?: string; preferredName?: string };
+    }>;
 
     if (results.length === 0) {
       debug('No employee cache match for assignee email', { email: normalized });
@@ -42,6 +56,7 @@ export async function getEmployeeWidByEmail(
     return {
       workdayId: match.workday_id,
       ...(match.metadata?.name ? { name: match.metadata.name } : {}),
+      ...(match.metadata?.preferredName ? { preferredName: match.metadata.preferredName } : {}),
     };
   } catch (error) {
     debug('Error looking up employee by email; omitting assignee', error);

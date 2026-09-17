@@ -23,7 +23,7 @@ import {
   sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
-import { getEmployeeWidByEmail } from './lib/employees.js';
+import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
@@ -370,6 +370,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         : '')
       : emailWorktagNotes;
     const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+    const assigneeName = assigneeMatch ? employeeDisplayName(assigneeMatch) : undefined;
     if (assigneeEmail && !assigneeMatch) {
       debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
         assigneeEmail,
@@ -382,7 +383,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
-          assigneeName: assigneeMatch?.name,
+          assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
         + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
@@ -470,7 +471,10 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       },
       lineCount: finalLines.length,
       ...(assigneeEmail ? { assigneeEmail } : {}),
-      ...(assigneeMatch ? { assigneeWorkdayId: assigneeMatch.workdayId, assigneeName: assigneeMatch.name } : {}),
+      ...(assigneeMatch ? {
+        assigneeWorkdayId: assigneeMatch.workdayId,
+        ...(assigneeName ? { assigneeName } : {}),
+      } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
     }, conversationId, intercomAppId));

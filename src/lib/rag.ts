@@ -49,12 +49,14 @@ export function createSupplierContent(supplier: any): string {
 
 export function createEmployeeContent(employee: {
   name?: string;
+  preferredName?: string;
   email: string;
   employeeId?: string;
   active: boolean;
 }): string {
   return [
     employee.name ? `Name: ${employee.name}` : null,
+    employee.preferredName ? `Preferred Name: ${employee.preferredName}` : null,
     `Email: ${employee.email}`,
     employee.employeeId ? `Employee ID: ${employee.employeeId}` : null,
     `Active: ${employee.active ? 'Yes' : 'No'}`,
