@@ -645,7 +645,10 @@ export async function searchDocuments(
     // Format the embedding as a PostgreSQL vector literal
     const vectorString = `[${queryEmbedding.join(',')}]`;
 
-    // Search combining semantic similarity with text matching
+    // Search combining semantic similarity with text matching.
+    // Companies do not get a substring LIKE 1.0 — section legal names contain
+    // short billed phrases such as "PGA of America" and that boost crowds out
+    // the national company. Boost only exact companyName / Company_Reference_ID.
     const results = await db.query(`
       SELECT 
         id,
@@ -653,9 +656,12 @@ export async function searchDocuments(
         type,
         content,
         metadata,
-        -- Boost exact matches significantly
-        CASE 
-          WHEN LOWER(content) LIKE LOWER($3) THEN 1.0
+        CASE
+          WHEN $1 = 'company' AND (
+            TRIM(LOWER(COALESCE(metadata->>'companyName', ''))) = LOWER(TRIM($4))
+            OR TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))
+          ) THEN 1.0
+          WHEN $1 <> 'company' AND LOWER(content) LIKE LOWER($3) THEN 1.0
           ELSE 1 - (embedding <=> '${vectorString}'::vector)
         END as similarity
       FROM documents 
@@ -665,7 +671,8 @@ export async function searchDocuments(
     `, [
       documentType,
       limit,
-      `%${queryText.toLowerCase()}%`
+      `%${queryText.toLowerCase()}%`,
+      queryText
     ]);
 
     debug(`Found ${results.length} hybrid search results for ${documentType}`);

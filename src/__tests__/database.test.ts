@@ -305,9 +305,34 @@ describe('Database Library', () => {
 
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('SELECT'),
-        ['supplier', 10, '%test query%']
+        ['supplier', 10, '%test query%', 'test query']
       );
       expect(result).toEqual(mockResults);
+    });
+
+    it('does not boost company substring LIKE to 1.0', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      mockQuery.mockResolvedValue([]);
+
+      await searchDocuments(
+        mockConnection,
+        [0.1, 0.2, 0.3],
+        'PGA of America',
+        'company',
+        10
+      );
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining("metadata->>'companyName'"),
+        ['company', 10, '%pga of america%', 'PGA of America']
+      );
+      const sql = mockQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("$1 <> 'company' AND LOWER(content) LIKE LOWER($3)");
+      expect(sql).toContain("TRIM(LOWER(COALESCE(metadata->>'companyName', ''))) = LOWER(TRIM($4))");
+      expect(sql).toContain("TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))");
     });
 
     it('should handle search errors', async () => {

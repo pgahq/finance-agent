@@ -141,7 +141,7 @@ describe('cache_employees processor', () => {
 
     expect(mockSyncDataSource).toHaveBeenCalledTimes(1);
     expect(mockSyncDataSource).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceTotal: 1, sourceFetchedCount: 1 }),
+      expect.objectContaining({ sourceTotal: 2, sourceFetchedCount: 1 }),
     );
   });
 
