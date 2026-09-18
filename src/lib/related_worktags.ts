@@ -239,10 +239,47 @@ export function relatedLobHasUsableValue(related: RelatedLob | null | undefined)
   );
 }
 
+function relatedLobCandidateValues(related: RelatedLob): string[] {
+  return [
+    ...(related.defaultIds ?? []).map(id => id.value),
+    ...(related.allowedIds ?? []).map(id => id.value),
+    ...(related.defaultReferenceId ? [related.defaultReferenceId] : []),
+    ...(related.allowedReferenceIds ?? []),
+  ].filter(Boolean);
+}
+
+export function relatedLobAllowsId(
+  related: RelatedLob | null | undefined,
+  id?: string | null
+): boolean {
+  if (!related || !id) return false;
+  return relatedLobCandidateValues(related).some(value => relatedLobIdsMatch(value, id));
+}
+
 const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_0?1$/i;
 
 function normalizeReferenceId(value: string): string {
   return value.trim().replace(/[\s_]+/g, '_').toLowerCase();
+}
+
+function relatedLobIdAliases(value: string): string[] {
+  const normalized = normalizeReferenceId(value);
+  if (!normalized) return [];
+  const aliases = [normalized];
+  if (normalized.startsWith('lob-') && !WORKDAY_WID.test(value.trim())) {
+    aliases.push(normalized.slice(4));
+  }
+  return aliases;
+}
+
+export function relatedLobIdsMatch(a: string, b: string): boolean {
+  const aAliases = relatedLobIdAliases(a);
+  return relatedLobIdAliases(b).some(alias => aAliases.includes(alias));
+}
+
+function relatedLobIdentityKey(id: string): string {
+  const aliases = relatedLobIdAliases(id);
+  return aliases[aliases.length - 1] || normalizeReferenceId(id);
 }
 
 function soapDescriptor(node: unknown): string | undefined {
@@ -382,7 +419,7 @@ function relatedIdentityIds(ids: string[]): string[] {
 
 function uniqueRelatedId(ids: string[]): string | null {
   const identity = relatedIdentityIds(ids);
-  const unique = new Set(identity.map(normalizeReferenceId));
+  const unique = new Set(identity.map(relatedLobIdentityKey).filter(Boolean));
   return unique.size === 1 ? identity[0] : null;
 }
 
@@ -424,10 +461,10 @@ export function relatedLobSoapReference(
 ): RelatedWorktagId {
   const ids = [...(related?.defaultIds ?? []), ...(related?.allowedIds ?? [])];
   for (const type of PREFERRED_RELATED_LOB_ID_TYPES) {
-    const match = ids.find(item => item.type === type && item.value === id);
+    const match = ids.find(item => item.type === type && relatedLobIdsMatch(item.value, id));
     if (match) return match;
   }
-  const match = ids.find(item => item.value === id);
+  const match = ids.find(item => relatedLobIdsMatch(item.value, id));
   if (match) return match;
   return {
     type: WORKDAY_WID.test(id) ? 'WID' : 'Organization_Reference_ID',

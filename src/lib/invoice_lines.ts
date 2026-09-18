@@ -4,6 +4,9 @@ import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
 import {
   extractLineOfBusinessId,
+  relatedLobAllowsId,
+  relatedLobHasUsableValue,
+  relatedLobIdsMatch,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -451,6 +454,27 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+export function constrainEmailLobToRelatedWorktags(
+  lines: FinalInvoiceLine[],
+  relatedByCostCenterId: Map<string, RelatedLob>,
+  emailWorktags?: EmailWorktags,
+  fallbackCostCenterId?: string | null
+): FinalInvoiceLine[] {
+  if (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId) return lines;
+
+  return lines.map(line => {
+    const costCenterId = line.costCenterId;
+    if (!costCenterId || costCenterId === fallbackCostCenterId) return line;
+    const related = relatedByCostCenterId.get(costCenterId);
+    if (!relatedLobHasUsableValue(related)) return line;
+    if (relatedLobAllowsId(related, line.lineOfBusinessId)) return line;
+    const resolved = resolveRelatedLobId(related, costCenterId, fallbackCostCenterId);
+    return resolved && resolved !== line.lineOfBusinessId
+      ? { ...line, lineOfBusinessId: resolved }
+      : line;
+  });
+}
+
 export function overlayPoLineOfBusiness(
   lines: FinalInvoiceLine[],
   poLines: ParsedPoLineWorktags[]
@@ -480,17 +504,32 @@ export function applyRelatedLobWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   fallbackCostCenterId?: string | null,
-  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean }
+  options?: { replaceIds?: Iterable<string>; anyAllowed?: boolean; replaceDisallowed?: boolean }
 ): FinalInvoiceLine[] {
   const replaceIds = new Set(options?.replaceIds ?? []);
+  const replaceDisallowed = Boolean(options?.replaceDisallowed);
   return lines.map(line => {
     const current = line.lineOfBusinessId;
-    if (current && !replaceIds.has(current)) return line;
+    const related = relatedByCostCenterId.get(line.costCenterId ?? '');
+    const relatedDefault = related?.defaultReferenceId;
+    if (current && relatedDefault && relatedLobIdsMatch(relatedDefault, current)) {
+      return relatedDefault !== current
+        ? { ...line, lineOfBusinessId: relatedDefault }
+        : line;
+    }
+    const shouldReplace = !current
+      || replaceIds.has(current)
+      || replaceDisallowed;
+    if (!shouldReplace) return line;
+    const exclude = new Set(replaceIds);
+    if (replaceDisallowed && current && !relatedLobAllowsId(related, current)) {
+      exclude.add(current);
+    }
     const resolved = resolveRelatedLobId(
-      relatedByCostCenterId.get(line.costCenterId ?? ''),
+      related,
       line.costCenterId,
       fallbackCostCenterId,
-      replaceIds,
+      exclude,
       { anyAllowed: Boolean(options?.anyAllowed) }
     );
     return resolved && resolved !== current ? { ...line, lineOfBusinessId: resolved } : line;
@@ -708,7 +747,13 @@ async function finalizeInvoiceLines(
   const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
   const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
-  const fallbackLob = applyFallbackLineOfBusiness(withRelated, fallbackIds.lineOfBusinessId);
+  const withConstrainedEmailLob = constrainEmailLobToRelatedWorktags(
+    withRelated,
+    relatedByCostCenterId,
+    emailWorktags,
+    process.env.FALLBACK_COST_CENTER_ID
+  );
+  const fallbackLob = applyFallbackLineOfBusiness(withConstrainedEmailLob, fallbackIds.lineOfBusinessId);
   return {
     lines: fallbackLob.lines,
     appliedFallbacks: {

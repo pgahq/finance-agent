@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
+import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
 export type { DocumentType } from './database.js';
@@ -261,6 +262,8 @@ export const findCostCentersTool = tool({
   - Cost center code (e.g., "72200")
   - Partial name or code
 
+  Each result includes relatedLob (default and allowed Line of Business ids for that cost center). When the email also mentions a Line of Business, do not call findLobs against the full LOB catalog. Keep the mentioned LOB when it is in relatedLob default/allowed ids; otherwise use the related default, then unique allowed.
+
   Examples: "72200", "Marketing", "Engineering Operations"`,
   inputSchema: z.object({
     query: z.string().describe('Search query for cost centers (name or code)'),
@@ -284,6 +287,7 @@ export const findCostCentersTool = tool({
         type: result.type,
         content: result.content,
         metadata: result.metadata,
+        relatedLob: parseRelatedLob(result.metadata?.relatedLob) ?? null,
         similarity: result.similarity
       }))
     };
@@ -413,7 +417,7 @@ export const findEventsTool = tool({
 export const findLobsTool = tool({
   description: `Search for lines of business (LOBs) using semantic similarity and exact text matching.
 
-  Use this tool to look up lines of business by name or reference ID when mentioned in an email.
+  Use this only when the email mentions a Line of Business and does not also identify a cost center. If a cost center is already resolved, do not search the full catalog. Keep the mentioned LOB when it is in that cost center's related set; otherwise use related default or unique allowed.
 
   Examples: "Golf", "Technology Services", "Media"`,
   inputSchema: z.object({

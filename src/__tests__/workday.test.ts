@@ -3214,6 +3214,205 @@ describe('Workday utilities', () => {
         ]);
       });
 
+      it('should swap a disallowed LOB for the related default instead of omitting Line of Business', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Results: { Total_Pages: 1 },
+            Response_Data: {
+              Related_Worktags: {
+                Related_Worktag_Reference: {
+                  ID: [
+                    { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Other Broadcasting' }
+                  ]
+                },
+                Related_Worktags_Data: {
+                  Related_Worktags_by_Type_Data: {
+                    Required_On_Transaction: true,
+                    Default_Worktag_Data: {
+                      Default_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Other_Broadcasting' }] }
+                    },
+                    Allowed_Worktag_Data: [
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Other_Broadcasting' }] } },
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-TV' }] } }
+                    ]
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        const capturedRequests: any[] = [];
+        rmClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          const worktags = JSON.stringify(request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? []);
+          if (worktags.includes('Event Broadcasting')) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center "CC-Other Broadcasting" does not allow worktag values: "Line of Business: Event Broadcasting"',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            {
+              lineOrder: 1,
+              description: 'Production overtime',
+              quantity: 1,
+              unitCost: 100,
+              extendedAmount: 100,
+              fundId: 'FUND-General_Fund_Unrestricted',
+              costCenterId: 'CC-Other Broadcasting',
+              lineOfBusinessId: 'Event Broadcasting',
+            }
+          ]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(result.success).toBe(true);
+        expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(fmClient.Get_Related_Worktags_for_Worktags).toHaveBeenCalled();
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Other Broadcasting' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Other_Broadcasting' }] }
+        ]);
+        expect(JSON.stringify(capturedRequests[1])).not.toContain('Event Broadcasting');
+        expect(result.appliedFallbacks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ field: 'worktag:lob', label: 'related line of business' })
+          ])
+        );
+        expect(result.appliedFallbacks).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ label: 'omitted Line of Business worktag' })
+          ])
+        );
+      });
+
+      it('should swap a rejected LOB- alias to the related catalog id instead of omitting', async () => {
+        const rmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const fmClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Related_Worktags_for_Worktags: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((wsdlPath: any, _options: any, callback: any) => {
+          callback(null, String(wsdlPath).includes('Financial_Management') ? fmClient : rmClient);
+        });
+        rmClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+        fmClient.Get_Related_Worktags_for_Worktags.mockImplementation((_request: any, callback: any) => {
+          callback(null, {
+            Response_Results: { Total_Pages: 1 },
+            Response_Data: {
+              Related_Worktags: {
+                Related_Worktag_Reference: {
+                  ID: [
+                    { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }
+                  ]
+                },
+                Related_Worktags_Data: {
+                  Related_Worktags_by_Type_Data: {
+                    Worktag_Type_Reference: {
+                      ID: [{ $attributes: { type: 'Worktag_Type_ID' }, $value: 'CUSTOM_ORGANIZATION_01' }]
+                    },
+                    Required_On_Transaction: true,
+                    Allowed_Worktag_Data: [
+                      { Allowed_Worktag_Reference: { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Building Services' }] } }
+                    ]
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        const capturedRequests: any[] = [];
+        rmClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          const worktags = JSON.stringify(request?.Submit_Supplier_Invoice_Request?.Supplier_Invoice_Data?.Invoice_Line_Replacement_Data?.[0]?.Worktags_Reference ?? []);
+          if (worktags.includes('LOB-Building_Services')) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center "CC-Building Services-PBG" does not allow worktag values: "Line of Business: LOB-Building_Services"',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            {
+              lineOrder: 1,
+              description: 'Janitorial',
+              quantity: 1,
+              unitCost: 100,
+              extendedAmount: 100,
+              fundId: 'FUND-General_Fund_Unrestricted',
+              costCenterId: 'CC-Building Services-PBG',
+              lineOfBusinessId: 'LOB-Building_Services',
+            }
+          ]
+        });
+        delete process.env.FALLBACK_LOB_ID;
+
+        expect(result.success).toBe(true);
+        expect(rmClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Worktags_Reference).toEqual([
+          { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
+          { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-Building Services-PBG' }] },
+          { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'Building Services' }] }
+        ]);
+        expect(JSON.stringify(capturedRequests[1])).not.toContain('LOB-Building_Services');
+        expect(result.appliedFallbacks).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ label: 'omitted Line of Business worktag' })
+          ])
+        );
+      });
+
       it('should apply a related LOB instead of fallback cost center when Workday also says the cost center is unavailable', async () => {
         const rmClient = {
           setSecurity: jest.fn(),

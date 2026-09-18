@@ -2,6 +2,8 @@ import {
   EMPTY_RELATED_LOB,
   parseRelatedLob,
   parseRelatedWorktagsResponse,
+  relatedLobAllowsId,
+  relatedLobIdsMatch,
   relatedLobSoapReference,
   relatedWorktagsTotalPages,
   resolveRelatedLobId,
@@ -323,12 +325,28 @@ describe('resolveRelatedLobId', () => {
     }, 'CC-001')).toBeNull();
   });
 
+  it('treats an optional LOB- prefix as the same unique allowed value', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-TV', 'TV'],
+    }, 'CC-001')).toBe('LOB-TV');
+  });
+
   it('can use any allowed LOB on the validation retry path', () => {
     expect(resolveRelatedLobId({
       requiredOnTransaction: true,
       defaultReferenceId: null,
       allowedReferenceIds: ['LOB-A', 'LOB-B'],
     }, 'CC-001', undefined, undefined, { anyAllowed: true })).toBe('LOB-A');
+  });
+
+  it('still prefers the default when anyAllowed is set', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Default',
+      allowedReferenceIds: ['LOB-A', 'LOB-B'],
+    }, 'CC-001', undefined, undefined, { anyAllowed: true })).toBe('LOB-Default');
   });
 
   it('treats org and WID ids for the same LOB as one allowed value', () => {
@@ -361,6 +379,40 @@ describe('resolveRelatedLobId', () => {
       defaultReferenceId: 'LOB-Default',
       allowedReferenceIds: ['LOB-Default'],
     }, 'CC0000', 'CC0000')).toBeNull();
+  });
+});
+
+describe('relatedLobAllowsId', () => {
+  it('matches default and allowed ids with space vs underscore', () => {
+    const related = {
+      requiredOnTransaction: true,
+      defaultReferenceId: 'LOB-Other_Broadcasting',
+      allowedReferenceIds: ['LOB-Other_Broadcasting', 'Event Broadcasting'],
+    };
+
+    expect(relatedLobAllowsId(related, 'LOB-Other Broadcasting')).toBe(true);
+    expect(relatedLobAllowsId(related, 'Event_Broadcasting')).toBe(true);
+    expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
+    expect(relatedLobAllowsId(undefined, 'LOB-TV')).toBe(false);
+  });
+
+  it('treats an optional LOB- prefix as the same related id', () => {
+    const related = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+    };
+
+    expect(relatedLobAllowsId(related, 'LOB-Building_Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'Building Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
+  });
+});
+
+describe('relatedLobIdsMatch', () => {
+  it('treats an optional LOB- prefix as the same id', () => {
+    expect(relatedLobIdsMatch('LOB-Other_Broadcasting', 'Other Broadcasting')).toBe(true);
+    expect(relatedLobIdsMatch('LOB-TV', 'LOB-Radio')).toBe(false);
   });
 });
 
@@ -421,6 +473,21 @@ describe('relatedLobSoapReference', () => {
     }, 'LOB-Building_Services')).toEqual({
       type: 'Organization_Reference_ID',
       value: 'LOB-Building_Services',
+    });
+  });
+
+  it('matches a LOB- prefixed submit id to the unprefixed catalog value', () => {
+    expect(relatedLobSoapReference({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'Building Services' },
+        { type: 'Organization_Reference_ID', value: 'Building Services' },
+      ],
+    }, 'LOB-Building_Services')).toEqual({
+      type: 'Organization_Reference_ID',
+      value: 'Building Services',
     });
   });
 
