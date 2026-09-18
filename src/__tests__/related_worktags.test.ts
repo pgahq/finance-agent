@@ -386,6 +386,18 @@ describe('relatedLobAllowsId', () => {
     expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
     expect(relatedLobAllowsId(undefined, 'LOB-TV')).toBe(false);
   });
+
+  it('treats an optional LOB- prefix as the same related id', () => {
+    const related = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+    };
+
+    expect(relatedLobAllowsId(related, 'LOB-Building_Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'Building Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
+  });
 });
 
 describe('parseRelatedLob', () => {

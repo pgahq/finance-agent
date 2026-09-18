@@ -106,7 +106,7 @@ export const InvoiceEnrichmentSchema = z.object({
     }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
     lineOfBusiness: z.object({
       extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
-      referenceId: z.string().nullable().describe('When a cost center was also resolved, the related default (or allowed) LOB referenceId for that cost center — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
+      referenceId: z.string().nullable().describe('When a cost center was also resolved, keep the mentioned LOB if it is in that cost center relatedLob default/allowed set; otherwise the related default or unique allowed id — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
     }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
     fund: z.object({
       extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
@@ -349,7 +349,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - Populate emailWorktags.costCenter.extracted with what you found in the email
    - Populate emailWorktags.costCenter.name with the matched cost center name from the top result's metadata
    - Populate emailWorktags.costCenter.code with the matched cost center's code (Cost_Center_Reference_ID) from the top result's metadata
-   - If the email also mentions a Line of Business, use the result's relatedLob (default, then unique allowed). Do not call findLobs.
+   - If the email also mentions a Line of Business, do not call findLobs. Keep the mentioned LOB when it matches relatedLob.defaultReferenceId or relatedLob.allowedReferenceIds; otherwise use relatedLob.defaultReferenceId, then the unique allowed id.
    - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
 
 2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
@@ -359,7 +359,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.event.workdayId to null
 
 3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
-   - If you already resolved a cost center, do **not** call findLobs. Treat the email LOB as that cost center's related Line of Business: use relatedLob.defaultReferenceId when present, otherwise the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that related value.
+   - If you already resolved a cost center, do **not** call findLobs. Keep the mentioned LOB when it is already in that cost center's relatedLob default or allowed ids. Otherwise use relatedLob.defaultReferenceId when present, else the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that value.
    - Call **findLobs** only when the email mentions an LOB and does not identify a cost center
    - Populate emailWorktags.lineOfBusiness.extracted with what you found in the email
    - If no related or findLobs match is available, set emailWorktags.lineOfBusiness.referenceId to null

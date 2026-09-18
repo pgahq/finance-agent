@@ -253,15 +253,28 @@ export function relatedLobAllowsId(
   id?: string | null
 ): boolean {
   if (!related || !id) return false;
-  const needle = normalizeReferenceId(id);
-  if (!needle) return false;
-  return relatedLobCandidateValues(related).some(value => normalizeReferenceId(value) === needle);
+  const needles = relatedLobIdAliases(id);
+  if (needles.length === 0) return false;
+  return relatedLobCandidateValues(related).some(value => {
+    const candidates = relatedLobIdAliases(value);
+    return needles.some(needle => candidates.includes(needle));
+  });
 }
 
 const CUSTOM_ORGANIZATION_TYPE_ID = /^CUSTOM_ORGANIZATION_0?1$/i;
 
 function normalizeReferenceId(value: string): string {
   return value.trim().replace(/[\s_]+/g, '_').toLowerCase();
+}
+
+function relatedLobIdAliases(value: string): string[] {
+  const normalized = normalizeReferenceId(value);
+  if (!normalized) return [];
+  const aliases = [normalized];
+  if (normalized.startsWith('lob-') && !WORKDAY_WID.test(value.trim())) {
+    aliases.push(normalized.slice(4));
+  }
+  return aliases;
 }
 
 function soapDescriptor(node: unknown): string | undefined {

@@ -158,6 +158,7 @@ describe('invoice line description prompts', () => {
 
   it('tells enrichment not to catalog-match LOB when a cost center is already resolved', () => {
     expect(invoiceEnrichmentPrompt).toContain('do **not** call findLobs');
+    expect(invoiceEnrichmentPrompt).toContain('Keep the mentioned LOB when it is already in that cost center\'s relatedLob');
     expect(invoiceEnrichmentPrompt).toContain('relatedLob.defaultReferenceId');
   });
 

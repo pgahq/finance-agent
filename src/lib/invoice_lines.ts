@@ -468,7 +468,9 @@ export function constrainEmailLobToRelatedWorktags(
     if (!relatedLobHasUsableValue(related)) return line;
     if (relatedLobAllowsId(related, line.lineOfBusinessId)) return line;
     const resolved = resolveRelatedLobId(related, costCenterId, fallbackCostCenterId);
-    return { ...line, lineOfBusinessId: resolved };
+    return resolved && resolved !== line.lineOfBusinessId
+      ? { ...line, lineOfBusinessId: resolved }
+      : line;
   });
 }
 

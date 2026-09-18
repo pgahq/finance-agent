@@ -391,6 +391,54 @@ describe('constrainEmailLobToRelatedWorktags', () => {
 
     expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
   });
+
+  it('keeps an email LOB that matches related allowed ids only by LOB- prefix', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Janitorial', costCenterId: 'CC-Building Services-PBG', lineOfBusinessId: 'LOB-Building_Services' }],
+      new Map([
+        ['CC-Building Services-PBG', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['Building Services'],
+        }]
+      ]),
+      { costCenterId: 'CC-Building Services-PBG', lobReferenceId: 'LOB-Building_Services' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Building_Services');
+  });
+
+  it('uses the unique allowed LOB when email has a catalog value and there is no default', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      new Map([
+        ['CC-Other Broadcasting', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['LOB-TV'],
+        }]
+      ]),
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
+  });
+
+  it('keeps the email LOB when several allowed values exist and there is no default', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      new Map([
+        ['CC-Other Broadcasting', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['LOB-TV', 'LOB-Radio'],
+        }]
+      ]),
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+  });
 });
 
 describe('buildFinalInvoiceLines', () => {
