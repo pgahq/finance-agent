@@ -1,56 +1,32 @@
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
-import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
+import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { createCompanyContent } from './lib/rag.js';
+import { notifyResult } from './lib/slack.js';
 import { syncDataSource } from './lib/sync.js';
-import { extractCompanyReferenceId, textFromWqlValue } from './lib/workday_reference_id.js';
+import { getAllWorkdayCompanies, type WorkdayCompany } from './lib/workday.js';
 
-function wqlDescriptors(values: unknown[] | undefined): string[] | undefined {
-  if (!values?.length) return undefined;
-  const descriptors = values
-    .map((value) => textFromWqlValue(value))
-    .filter((value): value is string => Boolean(value));
-  return descriptors.length > 0 ? descriptors : undefined;
-}
+async function syncCompaniesFromWorkday(context: ProcessingContext): Promise<void> {
+  let companies: WorkdayCompany[];
+  try {
+    companies = await getAllWorkdayCompanies(context);
+  } catch (error) {
+    const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'cache_companies';
+    await notifyResult(lambdaName, 'error', undefined, undefined, error);
+    throw error;
+  }
 
-export const QUERY = `
-  SELECT
-    company,
-    referenceID1,
-    addressPrimary,
-    publicAddresses,
-    emailAddresses,
-    phoneNumbers
-  FROM companies
-`;
-
-export const handler = withQueryHandler(QUERY)({
-  processorFunctionName: `${process.env.AWS_STACK_NAME}-CacheCompaniesProcessor`,
-  pageSize: null
-});
-
-export const processor = withProcessorHandler(async (context, companies, _event) => {
-  if (!companies || companies.length === 0) {
-    debug('No company data received - skipping sync');
+  if (companies.length === 0) {
+    debug('No company data received from Workday - skipping sync');
     return;
   }
 
-  debug(`Processing ${companies.length} companies from Workday query`);
+  debug(`Processing ${companies.length} companies from Get_Workday_Companies`);
 
   const items = new Map(
-    companies.map((company: any) => [
-      company.company.id,
-      {
-        workdayId: company.company.id,
-        companyName: company.company.descriptor,
-        companyReferenceId: extractCompanyReferenceId(
-          [company.referenceID1],
-          { workdayId: company.company.id, companyName: company.company.descriptor }
-        ),
-        addressPrimary: textFromWqlValue(company.addressPrimary),
-        publicAddresses: wqlDescriptors(company.publicAddresses),
-        emailAddresses: wqlDescriptors(company.emailAddresses),
-        phoneNumbers: wqlDescriptors(company.phoneNumbers),
-      }
+    companies.map((company) => [
+      company.workdayId,
+      company,
     ])
   );
 
@@ -66,13 +42,37 @@ export const processor = withProcessorHandler(async (context, companies, _event)
       companyReferenceId: company.companyReferenceId,
       addressPrimary: company.addressPrimary,
       publicAddresses: company.publicAddresses,
+      financeAgentAliases: company.financeAgentAliases,
     }),
-    isUpdated: (existingMetadata, company) =>
+    isUpdated: (existingMetadata: {
+      companyReferenceId?: string;
+      companyName?: string;
+      addressPrimary?: string;
+      publicAddresses?: string[];
+      financeAgentAliases?: string[];
+    } | undefined, company) =>
       existingMetadata?.companyReferenceId !== company.companyReferenceId
       || existingMetadata?.companyName !== company.companyName
       || existingMetadata?.addressPrimary !== company.addressPrimary
-      || JSON.stringify(existingMetadata?.publicAddresses ?? null) !== JSON.stringify(company.publicAddresses ?? null),
+      || JSON.stringify(existingMetadata?.publicAddresses ?? null) !== JSON.stringify(company.publicAddresses ?? null)
+      || JSON.stringify(existingMetadata?.financeAgentAliases ?? []) !== JSON.stringify(company.financeAgentAliases),
     notifyLabel: 'cache_companies',
     itemLabel: 'companies',
   });
+}
+
+export const processor = withHandler(async (context) => {
+  await syncCompaniesFromWorkday(context);
+});
+
+export const handler = withHandler(async () => {
+  const processorFunctionName = `${process.env.AWS_STACK_NAME}-CacheCompaniesProcessor`;
+  debug(`Invoking ${processorFunctionName} for Get_Workday_Companies`);
+
+  const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+  await lambda.send(new InvokeCommand({
+    FunctionName: processorFunctionName,
+    InvocationType: 'Event',
+    Payload: '{}',
+  }));
 });

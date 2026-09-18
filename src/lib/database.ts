@@ -648,7 +648,8 @@ export async function searchDocuments(
     // Search combining semantic similarity with text matching.
     // Companies do not get a substring LIKE 1.0 — section legal names contain
     // short billed phrases such as "PGA of America" and that boost crowds out
-    // the national company. Boost only exact companyName / Company_Reference_ID.
+    // the national company. Boost only exact companyName / Company_Reference_ID
+    // / Finance Agent alias.
     const results = await db.query(`
       SELECT 
         id,
@@ -660,6 +661,17 @@ export async function searchDocuments(
           WHEN $1 = 'company' AND (
             TRIM(LOWER(COALESCE(metadata->>'companyName', ''))) = LOWER(TRIM($4))
             OR TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(
+                CASE
+                  WHEN jsonb_typeof(metadata->'financeAgentAliases') = 'array'
+                    THEN metadata->'financeAgentAliases'
+                  ELSE '[]'::jsonb
+                END
+              ) AS alias
+              WHERE TRIM(LOWER(alias)) = LOWER(TRIM($4))
+            )
           ) THEN 1.0
           WHEN $1 <> 'company' AND LOWER(content) LIKE LOWER($3) THEN 1.0
           ELSE 1 - (embedding <=> '${vectorString}'::vector)

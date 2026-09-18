@@ -71,9 +71,16 @@ export function createCompanyContent(company: any): string {
       .map((value) => textFromWqlValue(value))
       .filter((value): value is string => Boolean(value))
     : [];
+  const rawAliases = Array.isArray(company.financeAgentAliases)
+    ? (company.financeAgentAliases as unknown[])
+    : [];
+  const financeAgentAliases = rawAliases.filter((alias): alias is string => (
+    typeof alias === 'string' && Boolean(alias.trim())
+  ));
   const content = [
     `Company Name: ${company.companyName}`,
     company.companyReferenceId ? `Company Reference ID: ${company.companyReferenceId}` : null,
+    ...financeAgentAliases.map((alias: string) => `Finance Agent Alias: ${alias}`),
     addressPrimary ? `Primary Address: ${addressPrimary}` : null,
     publicAddresses.length > 0 ? `Public Addresses: ${publicAddresses.join(', ')}` : null,
     company.emailAddresses?.length > 0 ? `Email Addresses: ${company.emailAddresses.join(', ')}` : null,
@@ -299,10 +306,11 @@ export const findCompaniesTool = tool({
 
   This tool is optimized for finding companies by:
   - Company names (e.g., "PGA JR. LEAGUE", "PGA of America", "Acme Corp")
+  - Finance Agent aliases stored on the company (exact billed nicknames such as "PGA of America" for company 310)
   - Company Reference IDs (e.g., "912")
   - Company Workday IDs (WIDs)
 
-  Pass the billed company name or ID in query. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Name search uses embedding similarity (plus exact companyName / Company_Reference_ID). Street is compared independently against the full company cache and tagged unique, shared, or none — it does not reorder name results. Cache companies on that street that name search missed are appended so both signals are visible. Do not prefer address over name or name over address.
+  Pass the billed company name or ID in query. A billed name may be the legal companyName or a Finance Agent alias, not only the legal name. Pass the bill-to street address in address when it is visible on the invoice. Do not put street, city, state, or ZIP in query — those tokens are stripped before search. Name search uses embedding similarity (plus exact companyName / Company_Reference_ID / Finance Agent alias). Street is compared independently against the full company cache and tagged unique, shared, or none — it does not reorder name results. Cache companies on that street that name search missed are appended so both signals are visible. Do not prefer address over name or name over address.
 
   Examples: query "PGA of America" with address "1916 PGA Parkway, Frisco, TX 75033"`,
   inputSchema: z.object({
