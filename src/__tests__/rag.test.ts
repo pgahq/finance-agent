@@ -1,4 +1,4 @@
-import { createEmbedding, createSupplierContent, createCompanyContent, queryDocuments } from '../lib/rag.js';
+import { createEmbedding, createEmployeeContent, createSupplierContent, createCompanyContent, queryDocuments } from '../lib/rag.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -88,6 +88,22 @@ describe('rag', () => {
           input: 'test text'
         })
       });
+    });
+  });
+
+  describe('createEmployeeContent', () => {
+    it('includes preferred name when present', () => {
+      expect(createEmployeeContent({
+        name: 'Joseph A Carey Jr.',
+        preferredName: 'Joe Carey',
+        email: 'jcarey@pgahq.com',
+        employeeId: 'PGA000001',
+        active: true,
+      })).toBe(`Name: Joseph A Carey Jr.
+Preferred Name: Joe Carey
+Email: jcarey@pgahq.com
+Employee ID: PGA000001
+Active: Yes`);
     });
   });
 

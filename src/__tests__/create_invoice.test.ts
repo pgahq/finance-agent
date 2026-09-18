@@ -31,6 +31,7 @@ jest.mock('../lib/workday.js', () => ({
 }));
 
 jest.mock('../lib/employees.js', () => ({
+  ...jest.requireActual('../lib/employees.js'),
   getEmployeeWidByEmail: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -180,12 +181,13 @@ describe('create_invoice', () => {
 
   it('passes assigneeWID when the AP agent employee cache matches assigneeEmail', async () => {
     process.env.INVOICE_MOD_ENABLED = 'true';
-    const { processor, workday, invoiceEnrichment, invoiceLines, employees } = freshRequire();
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
     employees.getEmployeeWidByEmail.mockResolvedValue({
       workdayId: 'wid-jcarey',
-      name: 'Joe Carey',
+      name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
     });
 
     await processor({
@@ -199,6 +201,43 @@ describe('create_invoice', () => {
     expect(submitArgs.assigneeWID).toBe('wid-jcarey');
     expect(employees.getEmployeeWidByEmail).toHaveBeenCalledWith(expect.anything(), 'jcarey@pgahq.com');
     expect(submitArgs.buildNotes([])).toContain('Work queue assignee: Joe Carey (jcarey@pgahq.com)');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        assigneeEmail: 'jcarey@pgahq.com',
+        assigneeWorkdayId: 'wid-jcarey',
+        assigneeName: 'Joe Carey',
+      }),
+    );
+  });
+
+  it('uses legal name on Slack when preferredName is not cached', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    employees.getEmployeeWidByEmail.mockResolvedValue({
+      workdayId: 'wid-jcarey',
+      name: 'Joseph A Carey Jr.',
+    });
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-1/invoice.pdf'),
+        assigneeEmail: 'jcarey@pgahq.com',
+      }],
+    } as any);
+
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        assigneeName: 'Joseph A Carey Jr.',
+      }),
+    );
   });
 
   it('should create a new supplier invoice from an uploaded attachment', async () => {

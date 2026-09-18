@@ -14,6 +14,7 @@ export const AP_AGENT_WORKERS_REPORT_COLUMNS = {
   activeStatus: 'Active_Status',
   employeeId: 'Employee_ID',
   fullLegalName: 'Full_Legal_Name',
+  preferredName: 'Preferred_Name',
   primaryWorkEmail: 'Primary_Work_-_Email',
   workdayId: 'Workday_ID',
 } as const;
@@ -24,6 +25,7 @@ export interface ApAgentWorkerRow {
   /** From Workday `Active_Status` (and termination flags when present). */
   active: boolean;
   name?: string;
+  preferredName?: string;
   employeeId?: string;
 }
 
@@ -280,6 +282,8 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
 
   const name = readKnownReportField(record, 'fullLegalName')
     ?? readField(record, 'Full Legal Name', 'Full_Legal_Name', 'fullLegalName');
+  const preferredName = readKnownReportField(record, 'preferredName')
+    ?? readField(record, 'Preferred Name', 'Preferred_Name', 'preferredName');
   const employeeId = readKnownReportField(record, 'employeeId')
     ?? readField(record, 'Employee ID', 'Employee_ID', 'employeeId');
 
@@ -288,6 +292,7 @@ export function parseApAgentWorkerReportRow(row: unknown): ApAgentWorkerRow | un
     email,
     active,
     ...(name ? { name } : {}),
+    ...(preferredName ? { preferredName } : {}),
     ...(employeeId ? { employeeId } : {}),
   };
 }
