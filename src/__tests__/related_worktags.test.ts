@@ -324,6 +324,14 @@ describe('resolveRelatedLobId', () => {
     }, 'CC-001')).toBeNull();
   });
 
+  it('treats an optional LOB- prefix as the same unique allowed value', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-TV', 'TV'],
+    }, 'CC-001')).toBe('LOB-TV');
+  });
+
   it('can use any allowed LOB on the validation retry path', () => {
     expect(resolveRelatedLobId({
       requiredOnTransaction: true,
@@ -457,6 +465,21 @@ describe('relatedLobSoapReference', () => {
     }, 'LOB-Building_Services')).toEqual({
       type: 'Organization_Reference_ID',
       value: 'LOB-Building_Services',
+    });
+  });
+
+  it('matches a LOB- prefixed submit id to the unprefixed catalog value', () => {
+    expect(relatedLobSoapReference({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'Building Services' },
+        { type: 'Organization_Reference_ID', value: 'Building Services' },
+      ],
+    }, 'LOB-Building_Services')).toEqual({
+      type: 'Organization_Reference_ID',
+      value: 'Building Services',
     });
   });
 

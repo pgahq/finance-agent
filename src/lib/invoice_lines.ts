@@ -512,7 +512,7 @@ export function applyRelatedLobWorktags(
     const related = relatedByCostCenterId.get(line.costCenterId ?? '');
     const shouldReplace = !current
       || replaceIds.has(current)
-      || (replaceDisallowed && !relatedLobAllowsId(related, current));
+      || replaceDisallowed;
     if (!shouldReplace) return line;
     const exclude = new Set(replaceIds);
     if (replaceDisallowed && current) exclude.add(current);

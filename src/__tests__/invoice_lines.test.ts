@@ -306,7 +306,7 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
   });
 
-  it('keeps a LOB that is already allowed for the cost center', () => {
+  it('replaces a rejected in-list LOB with the related default', () => {
     const related = new Map([
       ['CC-Other Broadcasting', {
         requiredOnTransaction: true,
@@ -322,7 +322,26 @@ describe('applyRelatedLobWorktags', () => {
       { anyAllowed: true, replaceDisallowed: true }
     );
 
-    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('rewrites a rejected LOB- alias to the related catalog id', () => {
+    const related = new Map([
+      ['CC-Building Services-PBG', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Janitorial', costCenterId: 'CC-Building Services-PBG', lineOfBusinessId: 'LOB-Building_Services' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Building Services');
   });
 
   it('replaces Default_Line_Of_Business with a related allowed LOB', () => {
