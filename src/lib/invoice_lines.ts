@@ -6,6 +6,7 @@ import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
   relatedLobHasUsableValue,
+  relatedLobIdsMatch,
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
@@ -510,12 +511,20 @@ export function applyRelatedLobWorktags(
   return lines.map(line => {
     const current = line.lineOfBusinessId;
     const related = relatedByCostCenterId.get(line.costCenterId ?? '');
+    const relatedDefault = related?.defaultReferenceId;
+    if (current && relatedDefault && relatedLobIdsMatch(relatedDefault, current)) {
+      return relatedDefault !== current
+        ? { ...line, lineOfBusinessId: relatedDefault }
+        : line;
+    }
     const shouldReplace = !current
       || replaceIds.has(current)
       || replaceDisallowed;
     if (!shouldReplace) return line;
     const exclude = new Set(replaceIds);
-    if (replaceDisallowed && current) exclude.add(current);
+    if (replaceDisallowed && current && !relatedLobAllowsId(related, current)) {
+      exclude.add(current);
+    }
     const resolved = resolveRelatedLobId(
       related,
       line.costCenterId,

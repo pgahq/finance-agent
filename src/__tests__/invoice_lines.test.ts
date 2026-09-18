@@ -306,6 +306,29 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
   });
 
+  it('keeps a line already on the related default while replacing a disallowed LOB', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [
+        { lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' },
+        { lineOrder: 2, description: 'Studio', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'LOB-Other_Broadcasting' },
+      ],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+    expect(lines[1].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
   it('replaces a rejected in-list LOB with the related default', () => {
     const related = new Map([
       ['CC-Other Broadcasting', {

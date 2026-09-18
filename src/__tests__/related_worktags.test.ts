@@ -3,6 +3,7 @@ import {
   parseRelatedLob,
   parseRelatedWorktagsResponse,
   relatedLobAllowsId,
+  relatedLobIdsMatch,
   relatedLobSoapReference,
   relatedWorktagsTotalPages,
   resolveRelatedLobId,
@@ -405,6 +406,13 @@ describe('relatedLobAllowsId', () => {
     expect(relatedLobAllowsId(related, 'LOB-Building_Services')).toBe(true);
     expect(relatedLobAllowsId(related, 'Building Services')).toBe(true);
     expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
+  });
+});
+
+describe('relatedLobIdsMatch', () => {
+  it('treats an optional LOB- prefix as the same id', () => {
+    expect(relatedLobIdsMatch('LOB-Other_Broadcasting', 'Other Broadcasting')).toBe(true);
+    expect(relatedLobIdsMatch('LOB-TV', 'LOB-Radio')).toBe(false);
   });
 });
 

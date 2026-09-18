@@ -272,7 +272,7 @@ function relatedLobIdAliases(value: string): string[] {
   return aliases;
 }
 
-function relatedLobIdsMatch(a: string, b: string): boolean {
+export function relatedLobIdsMatch(a: string, b: string): boolean {
   const aAliases = relatedLobIdAliases(a);
   return relatedLobIdAliases(b).some(alias => aAliases.includes(alias));
 }
