@@ -4997,7 +4997,11 @@ describe('Workday utilities', () => {
       expect(mockClient.Get_Workday_Companies).toHaveBeenCalledWith(
         {
           Get_Workday_Companies_Request: {
-            Response_Filter: { Page: 1, Count: 999 }
+            Response_Filter: {
+              Page: 1,
+              Count: 999,
+              As_Of_Entry_DateTime: expect.any(String),
+            }
           }
         },
         expect.any(Function)
@@ -5059,6 +5063,111 @@ describe('Workday utilities', () => {
       expect(mockClient.Get_Workday_Companies).toHaveBeenCalledTimes(2);
       expect(result.map((company) => company.workdayId)).toEqual(['pga-wid', 'section-wid']);
       expect(result[1].financeAgentAliases).toEqual([]);
+      const firstAsOf = mockClient.Get_Workday_Companies.mock.calls[0][0]
+        .Get_Workday_Companies_Request.Response_Filter.As_Of_Entry_DateTime;
+      const secondAsOf = mockClient.Get_Workday_Companies.mock.calls[1][0]
+        .Get_Workday_Companies_Request.Response_Filter.As_Of_Entry_DateTime;
+      expect(firstAsOf).toEqual(expect.any(String));
+      expect(secondAsOf).toBe(firstAsOf);
+    });
+
+    it('skips companies whose Organization_Active is false', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1 },
+          Response_Data: {
+            Company: [
+              company310,
+              {
+                Company_Reference: {
+                  ID: [
+                    { $attributes: { type: 'WID' }, $value: 'inactive-wid' },
+                    { $attributes: { type: 'Company_Reference_ID' }, $value: '999' },
+                  ]
+                },
+                Company_Data: {
+                  Organization_Data: {
+                    Organization_Name: 'Inactive Company',
+                    Organization_Active: false,
+                  }
+                }
+              }
+            ]
+          }
+        });
+      });
+
+      const result = await getAllWorkdayCompanies(mockContext);
+
+      expect(result.map((company) => company.workdayId)).toEqual(['pga-wid']);
+    });
+
+    it('returns no companies when Workday itself reports none', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 0 },
+          Response_Data: {},
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).resolves.toEqual([]);
+    });
+
+    it('returns no companies when every node is inactive', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 1 },
+          Response_Data: {
+            Company: {
+              Company_Reference: {
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'inactive-wid' },
+                  { $attributes: { type: 'Company_Reference_ID' }, $value: '999' },
+                ]
+              },
+              Company_Data: {
+                Organization_Data: {
+                  Organization_Name: 'Inactive Company',
+                  Organization_Active: false,
+                }
+              }
+            }
+          }
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).resolves.toEqual([]);
+    });
+
+    it('throws when Total_Results reports companies but Response_Data has none', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 12 },
+          Response_Data: {},
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.toThrow(
+        'Get_Workday_Companies reported 12 companies but Response_Data had none'
+      );
+    });
+
+    it('throws when company nodes are present but none parse', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 1 },
+          Response_Data: {
+            Company: {
+              Company_Reference: { ID: { $attributes: { type: 'Company_Reference_ID' }, $value: '310' } },
+              Company_Data: { Organization_Data: { Organization_Name: 'Dropped WID' } },
+            }
+          }
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.toThrow(
+        'Get_Workday_Companies returned 1 company nodes but none parsed (1 unparsed, 0 inactive)'
+      );
     });
 
     it('throws a sanitized error when Get_Workday_Companies is not authorized', async () => {

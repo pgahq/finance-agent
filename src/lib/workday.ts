@@ -2430,7 +2430,7 @@ interface WorkdayCompaniesSoapClient {
   Get_Workday_Companies(
     request: {
       Get_Workday_Companies_Request: {
-        Response_Filter: { Page: number; Count: number };
+        Response_Filter: { Page: number; Count: number; As_Of_Entry_DateTime?: string };
       };
     },
     callback: (err: unknown, result: unknown) => void
@@ -2463,6 +2463,15 @@ function soapText(value: unknown): string | undefined {
 
 function isSoapTrue(value: unknown): boolean {
   return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function isSoapFalse(value: unknown): boolean {
+  return value === false || value === 0 || value === '0' || value === 'false';
+}
+
+function organizationIsInactive(organization: unknown): boolean {
+  if (!isSoapRecord(organization)) return false;
+  return isSoapFalse(organization.Organization_Active);
 }
 
 function uniqueNonEmpty(values: Array<string | undefined>): string[] {
@@ -2578,46 +2587,75 @@ function parseFinanceAgentAliases(organization: unknown, systemId: string): stri
   );
 }
 
-function parseWorkdayCompany(entry: unknown, systemId: string): WorkdayCompany | undefined {
-  if (!isSoapRecord(entry)) return undefined;
+type ClassifiedWorkdayCompany =
+  | { kind: 'company'; company: WorkdayCompany }
+  | { kind: 'inactive' }
+  | { kind: 'unparsed' };
+
+function classifyWorkdayCompany(entry: unknown, systemId: string): ClassifiedWorkdayCompany {
+  if (!isSoapRecord(entry)) return { kind: 'unparsed' };
   const reference = asArray(entry.Company_Reference)[0] ?? entry.Company_Reference;
   const ids = soapTypedIds(reference);
   const workdayId = ids.find((id) => id.type === 'WID')?.value;
-  if (!workdayId) return undefined;
+  if (!workdayId) return { kind: 'unparsed' };
 
   const companyData = asArray(entry.Company_Data)[0];
   const organization = isSoapRecord(companyData) ? asArray(companyData.Organization_Data)[0] : undefined;
+  if (organizationIsInactive(organization)) return { kind: 'inactive' };
   const descriptor = soapAttributes(reference).Descriptor;
   const companyName = (
     (isSoapRecord(organization) ? soapText(organization.Organization_Name) : undefined)
     || (typeof descriptor === 'string' ? descriptor.trim() : undefined)
   );
-  if (!companyName) return undefined;
+  if (!companyName) return { kind: 'unparsed' };
 
   const contact = isSoapRecord(companyData) ? asArray(companyData.Contact_Data)[0] : undefined;
   const addresses = parseCompanyAddresses(contact);
 
   return {
-    workdayId,
-    companyName,
-    companyReferenceId: ids.find((id) => id.type === 'Company_Reference_ID')?.value,
-    ...addresses,
-    emailAddresses: parseCompanyEmails(contact),
-    phoneNumbers: parseCompanyPhones(contact),
-    financeAgentAliases: parseFinanceAgentAliases(organization, systemId),
+    kind: 'company',
+    company: {
+      workdayId,
+      companyName,
+      companyReferenceId: ids.find((id) => id.type === 'Company_Reference_ID')?.value,
+      ...addresses,
+      emailAddresses: parseCompanyEmails(contact),
+      phoneNumbers: parseCompanyPhones(contact),
+      financeAgentAliases: parseFinanceAgentAliases(organization, systemId),
+    },
   };
 }
 
-function parseWorkdayCompaniesResponse(response: unknown, systemId: string): WorkdayCompany[] {
+function companyNodesFromResponse(response: unknown): unknown[] {
   if (!isSoapRecord(response)) return [];
   return asArray(response.Response_Data).flatMap((data) => (
-    isSoapRecord(data)
-      ? asArray(data.Company).flatMap((company) => {
-          const parsed = parseWorkdayCompany(company, systemId);
-          return parsed ? [parsed] : [];
-        })
-      : []
+    isSoapRecord(data) ? asArray(data.Company) : []
   ));
+}
+
+function soapResponseTotalResults(response: unknown): number | undefined {
+  if (!isSoapRecord(response)) return undefined;
+  const results = asArray(response.Response_Results)[0];
+  if (!isSoapRecord(results)) return undefined;
+  const totalResults = Number(results.Total_Results);
+  return Number.isFinite(totalResults) && totalResults >= 0 ? totalResults : undefined;
+}
+
+function emptyCompaniesParseError(
+  totalResults: number | undefined,
+  companyNodeCount: number,
+  unparsedCount: number,
+  inactiveCount: number
+): Error {
+  const reported = totalResults ?? 0;
+  if (companyNodeCount === 0) {
+    return new Error(
+      `Get_Workday_Companies reported ${reported} companies but Response_Data had none`
+    );
+  }
+  return new Error(
+    `Get_Workday_Companies returned ${companyNodeCount} company nodes but none parsed (${unparsedCount} unparsed, ${inactiveCount} inactive)`
+  );
 }
 
 function asWorkdayCompaniesClient(client: unknown): WorkdayCompaniesSoapClient {
@@ -2633,12 +2671,17 @@ function asWorkdayCompaniesClient(client: unknown): WorkdayCompaniesSoapClient {
 
 function fetchWorkdayCompaniesPage(
   client: WorkdayCompaniesSoapClient,
-  page: number
+  page: number,
+  asOfEntryDateTime: string
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     client.Get_Workday_Companies({
       Get_Workday_Companies_Request: {
-        Response_Filter: { Page: page, Count: WORKDAY_COMPANIES_PAGE_SIZE }
+        Response_Filter: {
+          Page: page,
+          Count: WORKDAY_COMPANIES_PAGE_SIZE,
+          As_Of_Entry_DateTime: asOfEntryDateTime,
+        }
       }
     }, (err: unknown, result: unknown) => {
       if (err) return reject(err);
@@ -2656,15 +2699,42 @@ export async function getAllWorkdayCompanies(
     const client = asWorkdayCompaniesClient(await buildFinancialManagementClient(context));
     const systemId = financeAgentSystemId();
     const companies: WorkdayCompany[] = [];
+    const asOfEntryDateTime = new Date().toISOString();
     let page = 1;
     let totalPages = 1;
+    let totalResults: number | undefined;
+    let companyNodeCount = 0;
+    let unparsedCount = 0;
+    let inactiveCount = 0;
 
     do {
-      const response = await fetchWorkdayCompaniesPage(client, page);
-      companies.push(...parseWorkdayCompaniesResponse(response, systemId));
+      const response = await fetchWorkdayCompaniesPage(client, page, asOfEntryDateTime);
+      const pageTotalResults = soapResponseTotalResults(response);
+      if (pageTotalResults != null) totalResults = pageTotalResults;
+      const nodes = companyNodesFromResponse(response);
+      companyNodeCount += nodes.length;
+      let pageParsed = 0;
+      for (const node of nodes) {
+        const classified = classifyWorkdayCompany(node, systemId);
+        if (classified.kind === 'company') {
+          companies.push(classified.company);
+          pageParsed += 1;
+        } else if (classified.kind === 'inactive') {
+          inactiveCount += 1;
+        } else {
+          unparsedCount += 1;
+        }
+      }
       totalPages = relatedWorktagsTotalPages(response);
+      debug(`Get_Workday_Companies page ${page}/${totalPages} parsed ${pageParsed} companies`);
       page += 1;
     } while (page <= totalPages);
+
+    const workdayReturnedNone = companyNodeCount === 0 && (totalResults ?? 0) === 0;
+    const allInactive = companyNodeCount > 0 && unparsedCount === 0;
+    if (companies.length === 0 && !workdayReturnedNone && !allInactive) {
+      throw emptyCompaniesParseError(totalResults, companyNodeCount, unparsedCount, inactiveCount);
+    }
 
     debug(`Fetched ${companies.length} Workday companies`);
     return companies;
