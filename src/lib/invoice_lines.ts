@@ -399,6 +399,19 @@ export function overlayPoWorktagsFromPurchaseOrder(
   });
 }
 
+export function overlaySharedPoWorktagsOnUnmatchedLines(
+  lines: FinalInvoiceLine[],
+  poLines: PurchaseOrderLine[] | undefined
+): FinalInvoiceLine[] {
+  const unmatched = lines.map(line => ({
+    ...line,
+    purchaseOrderLineId: null,
+    poPassthroughWorktagsReference: undefined,
+    supplierInvoiceSplitLineData: undefined,
+  }));
+  return overlayPoWorktagsFromPurchaseOrder(unmatched, parsePoLineWorktags(poLines));
+}
+
 function applyFallbacks(
   mergedLines: MergeInvoiceLinesResult['lines'],
   fallbackIds: InvoiceLineFallbackIds
