@@ -1,3 +1,10 @@
+import {
+  isLineOfBusinessReferenceId,
+  relatedLobAllowsId,
+  relatedLobIdsMatch,
+  type RelatedLob,
+} from './related_worktags.js';
+
 export interface PurchaseOrderLineSplit {
   quantity?: number;
   extendedAmount?: number;
@@ -5,9 +12,17 @@ export interface PurchaseOrderLineSplit {
   worktagReference: any[];
 }
 
+export interface OrgPassthroughContext {
+  relatedLob?: RelatedLob | null;
+  lineOfBusinessId?: string | null;
+}
+
 const SPLIT_LINE_PASSTHROUGH_OMIT_TYPES = new Set([
   'Cost_Center_Reference_ID',
   'Fund_ID',
+]);
+
+const ORG_WORKTAG_ID_TYPES = new Set([
   'Organization_Reference_ID',
   'Custom_Organization_Reference_ID',
 ]);
@@ -24,6 +39,50 @@ function primaryWorktagType(tag: any): string | null {
   const ids = ([] as any[]).concat(tag?.ID ?? []);
   const primary = ids.find((id: any) => id.$attributes?.type && id.$attributes.type !== 'WID');
   return primary?.$attributes?.type ?? null;
+}
+
+function worktagIdValues(tag: any): string[] {
+  return ([] as any[])
+    .concat(tag?.ID ?? [])
+    .map((id: any) => id?.$value)
+    .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0);
+}
+
+function worktagWid(tag: any): string | null {
+  const ids = ([] as any[]).concat(tag?.ID ?? []);
+  const wid = ids.find((id: any) => id.$attributes?.type === 'WID');
+  return typeof wid?.$value === 'string' && wid.$value ? wid.$value : null;
+}
+
+function isOrgWorktag(tag: any): boolean {
+  const type = primaryWorktagType(tag);
+  return type != null && ORG_WORKTAG_ID_TYPES.has(type);
+}
+
+export function isLobWorktag(
+  tag: any,
+  relatedLob?: RelatedLob | null,
+  lineOfBusinessId?: string | null
+): boolean {
+  for (const value of worktagIdValues(tag)) {
+    if (isLineOfBusinessReferenceId(value)) return true;
+    if (relatedLob && relatedLobAllowsId(relatedLob, value)) return true;
+    if (
+      lineOfBusinessId &&
+      (value === lineOfBusinessId || relatedLobIdsMatch(value, lineOfBusinessId))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function baseHasLobWorktag(
+  base: any[],
+  relatedLob?: RelatedLob | null,
+  lineOfBusinessId?: string | null
+): boolean {
+  return base.some(tag => isOrgWorktag(tag) && isLobWorktag(tag, relatedLob, lineOfBusinessId));
 }
 
 export function dedupeWorktagReferences(worktags: any[]): any[] {
@@ -75,29 +134,60 @@ export function mergePurchaseOrderLineWorktags(
   return { worktagsReference, lineLevelWorktagsReference, splitLineData };
 }
 
-/** When splits carry allocation worktags, keep custom/additional tags on the parent line only. */
+/** When splits carry allocation worktags, keep custom/additional tags on the parent line only.
+ * Fund, cost center, and LOB live on the splits; venue/event orgs stay on the parent. */
 export function passthroughWorktagsForSplitInvoiceLine(
   passthrough: any[] | undefined,
-  hasSplits: boolean
+  hasSplits: boolean,
+  context?: OrgPassthroughContext
 ): any[] | undefined {
   if (!passthrough?.length) return passthrough;
   if (!hasSplits) return passthrough;
   return passthrough.filter(tag => {
     const type = primaryWorktagType(tag);
-    return !type || !SPLIT_LINE_PASSTHROUGH_OMIT_TYPES.has(type);
+    if (!type) return true;
+    if (SPLIT_LINE_PASSTHROUGH_OMIT_TYPES.has(type)) return false;
+    if (isOrgWorktag(tag)) {
+      return !isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId);
+    }
+    return true;
   });
 }
 
-export function mergePassthroughWorktagReferences(base: any[], passthrough: any[] | undefined): any[] {
+export function mergePassthroughWorktagReferences(
+  base: any[],
+  passthrough: any[] | undefined,
+  context?: OrgPassthroughContext
+): any[] {
   if (!passthrough?.length) return base;
   const seenTypes = new Set(
     base.map(primaryWorktagType).filter((type): type is string => Boolean(type))
   );
+  const baseIdentities = new Set(
+    base.map(worktagIdentity).filter((identity): identity is string => Boolean(identity))
+  );
+  const baseWids = new Set(
+    base.map(worktagWid).filter((wid): wid is string => Boolean(wid))
+  );
+  const baseHasLob = baseHasLobWorktag(base, context?.relatedLob, context?.lineOfBusinessId);
   const additions = passthrough.filter(tag => {
     const type = primaryWorktagType(tag);
     if (!type) {
       const identity = worktagIdentity(tag);
-      return identity && !base.some(existing => worktagIdentity(existing) === identity);
+      return identity != null && !baseIdentities.has(identity);
+    }
+    if (isOrgWorktag(tag)) {
+      const identity = worktagIdentity(tag);
+      if (identity != null && baseIdentities.has(identity)) return false;
+      const wid = worktagWid(tag);
+      if (wid != null && baseWids.has(wid)) return false;
+      if (
+        baseHasLob &&
+        isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId)
+      ) {
+        return false;
+      }
+      return true;
     }
     return !seenTypes.has(type);
   });

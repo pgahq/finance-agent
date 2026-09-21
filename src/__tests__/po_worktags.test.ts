@@ -1,6 +1,7 @@
 import {
   dedupeWorktagReferences,
   firstNonEmptyPoLineArray,
+  isLobWorktag,
   mapPoSplitsToSupplierInvoiceSplitLineData,
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
@@ -11,6 +12,14 @@ const makeWorktag = (type: string, value: string) => ({
   ID: [
     { $attributes: { type: 'WID' }, $value: `wid-${value}` },
     { $attributes: { type }, $value: value },
+  ],
+});
+
+const makeOrgWorktag = (value: string, wid?: string) => ({
+  ID: [
+    { $attributes: { type: 'WID' }, $value: wid ?? `wid-${value}` },
+    { $attributes: { type: 'Organization_Reference_ID' }, $value: value },
+    { $attributes: { type: 'Custom_Organization_Reference_ID' }, $value: value },
   ],
 });
 
@@ -85,6 +94,62 @@ describe('po_worktags', () => {
     const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
     const filtered = passthroughWorktagsForSplitInvoiceLine([fund, cc, venue], true);
     expect(filtered).toEqual([venue]);
+  });
+
+  it('passthroughWorktagsForSplitInvoiceLine keeps org venue/event but strips LOB on splits', () => {
+    const fund = makeWorktag('Fund_ID', 'FUND-A');
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const event = makeOrgWorktag('2026-PGA_Championship');
+    const lob = makeOrgWorktag('LOB-Technology_Services');
+    const filtered = passthroughWorktagsForSplitInvoiceLine(
+      [fund, venue, event, lob],
+      true,
+      { lineOfBusinessId: 'LOB-Technology_Services' }
+    );
+    expect(filtered).toEqual([venue, event]);
+  });
+
+  it('isLobWorktag distinguishes LOB from venue via related cache', () => {
+    const related = {
+      requiredOnTransaction: false,
+      defaultReferenceId: 'Building Services',
+      allowedReferenceIds: ['Building Services'],
+      defaultIds: [{ type: 'Organization_Reference_ID', value: 'Building Services' }],
+      allowedIds: [{ type: 'Organization_Reference_ID', value: 'Building Services' }],
+    };
+    expect(isLobWorktag(makeOrgWorktag('Building Services'), related)).toBe(true);
+    expect(isLobWorktag(makeOrgWorktag('VENU-Contestant_Indirect'), related)).toBe(false);
+    expect(isLobWorktag(makeOrgWorktag('2026-PGA_Championship'), related)).toBe(false);
+  });
+
+  it('mergePassthroughWorktagReferences allows org venue alongside org LOB', () => {
+    const lobScalar = makeWorktag('Organization_Reference_ID', 'LOB-Technology_Services');
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const merged = mergePassthroughWorktagReferences(
+      [lobScalar],
+      [venue],
+      { lineOfBusinessId: 'LOB-Technology_Services' }
+    );
+    expect(merged).toEqual([lobScalar, venue]);
+  });
+
+  it('mergePassthroughWorktagReferences skips duplicate LOB org but keeps venue', () => {
+    const lobScalar = makeWorktag('Organization_Reference_ID', 'LOB-Technology_Services');
+    const lobPo = makeOrgWorktag('LOB-Technology_Services');
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const merged = mergePassthroughWorktagReferences(
+      [lobScalar],
+      [lobPo, venue],
+      { lineOfBusinessId: 'LOB-Technology_Services' }
+    );
+    expect(merged).toEqual([lobScalar, venue]);
+  });
+
+  it('mergePassthroughWorktagReferences skips org passthrough sharing a WID with base', () => {
+    const base = [{ ID: [{ $attributes: { type: 'WID' }, $value: 'event-wid-1' }] }];
+    const sameEvent = makeOrgWorktag('2026-PGA_Championship', 'event-wid-1');
+    const merged = mergePassthroughWorktagReferences(base, [sameEvent]);
+    expect(merged).toEqual(base);
   });
 
   it('firstNonEmptyPoLineArray prefers first non-empty source', () => {

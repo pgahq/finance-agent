@@ -4157,6 +4157,75 @@ describe('Workday utilities', () => {
       expect(worktagValues).not.toContain('Cost_Center_Reference_ID:CC-SPLIT');
     });
 
+    it('keeps org venue passthrough alongside LOB and on split parents', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      const makeOrgWorktag = (value: string) => ({
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+          { $attributes: { type: 'Organization_Reference_ID' }, $value: value },
+          { $attributes: { type: 'Custom_Organization_Reference_ID' }, $value: value },
+        ],
+      });
+      const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+      const lobPassthrough = makeOrgWorktag('LOB-Technology_Services');
+      const ccSplit = makeOrgWorktag('CC-SPLIT');
+
+      await submitNewSupplierInvoiceForTest({
+        finalLines: [
+          {
+            lineOrder: 1,
+            description: 'Non-split line with LOB',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-INV',
+            costCenterId: 'CC-INV',
+            lineOfBusinessId: 'LOB-Technology_Services',
+            poPassthroughWorktagsReference: [venue, lobPassthrough],
+          },
+          {
+            lineOrder: 2,
+            description: 'Split line with venue',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            fundId: 'FUND-INV',
+            costCenterId: 'CC-INV',
+            lineOfBusinessId: 'LOB-Technology_Services',
+            poPassthroughWorktagsReference: [venue, lobPassthrough],
+            supplierInvoiceSplitLineData: [
+              { extendedAmount: 60, worktagReference: [ccSplit] },
+              { extendedAmount: 40, worktagReference: [ccSplit] },
+            ],
+          },
+        ],
+      });
+
+      const lines = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+      const valuesFor = (line: any) =>
+        (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+          ([] as any[]).concat(tag.ID ?? [])
+            .filter((id: any) => id.$attributes?.type !== 'WID')
+            .map((id: any) => `${id.$attributes.type}:${id.$value}`)
+        );
+
+      const nonSplitValues = valuesFor(lines[0]);
+      expect(nonSplitValues).toContain('Organization_Reference_ID:VENU-Contestant_Indirect');
+      expect(nonSplitValues.filter((v: string) => v.endsWith(':LOB-Technology_Services'))).toHaveLength(1);
+
+      const splitValues = valuesFor(lines[1]);
+      expect(splitValues).toContain('Organization_Reference_ID:VENU-Contestant_Indirect');
+      expect(splitValues.filter((v: string) => v.endsWith(':LOB-Technology_Services'))).toHaveLength(0);
+      expect(lines[1].Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+    });
+
     it('should propagate SOAP errors without request headers or bodies', async () => {
       const mockClient = mockSoapClient();
       const soapError = Object.assign(new Error('Create failed'), {
