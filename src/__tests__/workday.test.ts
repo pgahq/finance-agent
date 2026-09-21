@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -4911,6 +4911,166 @@ describe('Workday utilities', () => {
       const result = await getAllPaymentTerms(mockContext);
 
       expect(result).toEqual([{ paymentTermsId: 'NET_30', name: 'Net 30' }]);
+    });
+  });
+
+  describe('getAllWorkdayCompanies', () => {
+    const mockContext = {
+      workdayConfig: {
+        domain: 'test.workday.com',
+        tenant: 'test-tenant',
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        refreshToken: 'test-refresh-token'
+      }
+    };
+
+    const company310 = {
+      Company_Reference: {
+        $attributes: { Descriptor: 'The Professional Golfers Association of America' },
+        ID: [
+          { $attributes: { type: 'WID' }, $value: 'pga-wid' },
+          { $attributes: { type: 'Company_Reference_ID' }, $value: '310' },
+        ]
+      },
+      Company_Data: {
+        Organization_Data: {
+          Organization_Name: 'The Professional Golfers Association of America',
+          Integration_ID_Data: {
+            ID: [
+              { $attributes: { System_ID: 'FinanceAgent' }, $value: 'PGA of America' },
+              { $attributes: { System_ID: 'OtherSystem' }, $value: 'ignore-me' },
+            ]
+          }
+        },
+        Contact_Data: {
+          Address_Data: [
+            {
+              $attributes: { Formatted_Address: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418' },
+              Usage_Data: {
+                $attributes: { Public: true },
+                Type_Data: { $attributes: { Primary: true } }
+              }
+            },
+            {
+              $attributes: { Formatted_Address: 'PO Box 109601, Palm Beach Gardens, FL 33410' },
+              Usage_Data: { $attributes: { Public: true } }
+            }
+          ],
+          Email_Address_Data: { Email_Address: 'ap@pga.org' },
+          Phone_Data: {
+            Phone_Number: '5551234',
+            $attributes: { Tenant_Formatted_Phone: '(555) 123-4567' }
+          }
+        }
+      }
+    };
+
+    beforeEach(() => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
+      });
+      delete process.env.WORKDAY_FINANCE_AGENT_SYSTEM_ID;
+    });
+
+    function mockCompaniesClient(getImplementation: (request: any, callback: any) => void) {
+      const mockClient = { setSecurity: jest.fn(), setEndpoint: jest.fn(), Get_Workday_Companies: jest.fn() };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Workday_Companies.mockImplementation(getImplementation);
+      return mockClient;
+    }
+
+    it('parses WID, Company_Reference_ID, formatted addresses, and FinanceAgent aliases', async () => {
+      const mockClient = mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1 },
+          Response_Data: { Company: [company310] }
+        });
+      });
+
+      const result = await getAllWorkdayCompanies(mockContext);
+
+      expect(mockClient.Get_Workday_Companies).toHaveBeenCalledWith(
+        {
+          Get_Workday_Companies_Request: {
+            Response_Filter: { Page: 1, Count: 999 }
+          }
+        },
+        expect.any(Function)
+      );
+      expect(result).toEqual([{
+        workdayId: 'pga-wid',
+        companyName: 'The Professional Golfers Association of America',
+        companyReferenceId: '310',
+        addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+        publicAddresses: [
+          '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+          'PO Box 109601, Palm Beach Gardens, FL 33410',
+        ],
+        emailAddresses: ['ap@pga.org'],
+        phoneNumbers: ['(555) 123-4567'],
+        financeAgentAliases: ['PGA of America'],
+      }]);
+    });
+
+    it('ignores Integration_ID values from other systems', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1 },
+          Response_Data: { Company: company310 }
+        });
+      });
+
+      const result = await getAllWorkdayCompanies(mockContext);
+
+      expect(result[0].financeAgentAliases).toEqual(['PGA of America']);
+      expect(result[0].financeAgentAliases).not.toContain('ignore-me');
+    });
+
+    it('pages when Total_Pages is greater than 1', async () => {
+      const mockClient = mockCompaniesClient((request: any, callback: any) => {
+        const page = request.Get_Workday_Companies_Request.Response_Filter.Page;
+        callback(null, {
+          Response_Results: { Total_Pages: 2 },
+          Response_Data: {
+            Company: page === 1
+              ? [company310]
+              : [{
+                  Company_Reference: {
+                    ID: [
+                      { $attributes: { type: 'WID' }, $value: 'section-wid' },
+                      { $attributes: { type: 'Company_Reference_ID' }, $value: '320' },
+                    ]
+                  },
+                  Company_Data: {
+                    Organization_Data: { Organization_Name: 'PGA Section' }
+                  }
+                }]
+          }
+        });
+      });
+
+      const result = await getAllWorkdayCompanies(mockContext);
+
+      expect(mockClient.Get_Workday_Companies).toHaveBeenCalledTimes(2);
+      expect(result.map((company) => company.workdayId)).toEqual(['pga-wid', 'section-wid']);
+      expect(result[1].financeAgentAliases).toEqual([]);
+    });
+
+    it('throws a sanitized error when Get_Workday_Companies is not authorized', async () => {
+      const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback({ body: soapBody }, null);
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.toMatchObject({
+        message: 'Processing error occurred. The task submitted is not authorized.'
+      });
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.not.toHaveProperty('body');
     });
   });
 
