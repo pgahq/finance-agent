@@ -517,6 +517,7 @@ interface buildSubmitInvoiceDataOptions {
   applyAmountOnlyLineRetry?: boolean;
   currencyWID?: string;
   attachment?: { fileName: string; contentType: string; base64Content: string };
+  attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
 }
@@ -979,7 +980,8 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachment, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
+  const attachmentList = attachments?.length ? attachments : attachment ? [attachment] : undefined;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1240,11 +1242,11 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
 
-    ...(attachment && {
-      Attachment_Data: [{
-        $attributes: { Content_Type: attachment.contentType, Filename: attachment.fileName },
-        File_Content: attachment.base64Content
-      }]
+    ...(attachmentList && {
+      Attachment_Data: attachmentList.map((item) => ({
+        $attributes: { Content_Type: item.contentType, Filename: item.fileName },
+        File_Content: item.base64Content
+      }))
     }),
 
     ...((invoiceLines?.length || (invoiceHadExistingLines && invoiceLines)) && {
@@ -2054,7 +2056,8 @@ export interface SubmitNewSupplierInvoiceParams {
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
-  attachment: { fileName: string; contentType: string; base64Content: string };
+  attachment?: { fileName: string; contentType: string; base64Content: string };
+  attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
 }
 
@@ -2080,6 +2083,7 @@ export async function submitNewSupplierInvoice(
     resolveCostCenterWorkdayIds,
     paymentTermsId,
     attachment,
+    attachments,
     assigneeWID,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
@@ -2128,6 +2132,7 @@ export async function submitNewSupplierInvoice(
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
       attachment,
+      attachments,
       assigneeWID,
     },
     buildNotes,

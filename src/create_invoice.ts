@@ -1,3 +1,4 @@
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
@@ -15,7 +16,14 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
+  type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
+import {
+  isInvoiceAttachmentClusteringEnabled,
+  parseAndClusterInvoiceAttachments,
+  type ClassifiedAttachment,
+  type ClusterableAttachment,
+} from './lib/invoice_attachment_clustering.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
@@ -113,10 +121,23 @@ function enrichmentStubCompany(parsedPo?: ParsedPurchaseOrder) {
   return { descriptor: fallback.descriptor, id: fallback.id };
 }
 
+export interface CreateInvoiceAttachment extends ClusterableAttachment {
+  kind?: ClassifiedAttachment['kind'];
+  supportingKind?: ClassifiedAttachment['supportingKind'];
+  supplierName?: ClassifiedAttachment['supplierName'];
+  invoiceNumber?: ClassifiedAttachment['invoiceNumber'];
+  purchaseOrderNumber?: ClassifiedAttachment['purchaseOrderNumber'];
+  invoiceDate?: ClassifiedAttachment['invoiceDate'];
+  amountDue?: ClassifiedAttachment['amountDue'];
+  confidence?: number;
+}
+
 export interface CreateInvoiceRequest {
-  s3Key: string;
-  fileName: string;
-  contentType: string;
+  s3Key?: string;
+  fileName?: string;
+  contentType?: string;
+  attachments?: CreateInvoiceAttachment[];
+  clustered?: boolean;
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
@@ -146,46 +167,229 @@ export const processor = withProcessorHandler(async (context, requests) => {
   }
 });
 
+function requestFilenames(request: CreateInvoiceRequest): string[] {
+  if (request.attachments?.length) return request.attachments.map((attachment) => attachment.fileName);
+  return request.fileName ? [request.fileName] : [];
+}
+
+async function fanOutCluster(
+  clusterFiles: CreateInvoiceAttachment[],
+  shared: Pick<
+    CreateInvoiceRequest,
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt'
+  >
+): Promise<void> {
+  if (!process.env.AWS_STACK_NAME) {
+    throw new Error('AWS_STACK_NAME is required to fan out invoice clusters');
+  }
+  const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+  await lambda.send(new InvokeCommand({
+    FunctionName: `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`,
+    InvocationType: 'Event',
+    Payload: JSON.stringify({
+      data: [{ ...shared, attachments: clusterFiles, clustered: true }],
+      page: 1,
+      totalPages: 1,
+    }),
+  }));
+}
+
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
   const {
     s3Key,
     fileName,
     contentType,
+    attachments,
+    clustered,
     emailContext,
     conversationId,
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
   } = request;
+  const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
   if (!INVOICE_MOD_ENABLED) {
-    debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
+    debug('Invoice modification is disabled - skipping new invoice creation', { s3Key, fileName });
     await notifyResult(
       'create_invoice',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
+      slackInvoiceDetails({ s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) }, conversationId, intercomAppId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     return;
   }
 
-  try {
-    debug(`Processing new invoice from S3: ${s3Key}`);
-    const [buffer, presignedUrl] = await Promise.all([
-      getBinaryFromS3(context.s3Config, s3Key),
-      getPresignedUrl(context.s3Config, s3Key),
-    ]);
-    const attachment = {
-      id: s3Key,
+  if (clusteringEnabled && attachments?.length && !clustered) {
+    let firstCluster;
+    let unrelated: ClassifiedAttachment[] = [];
+    try {
+      const { clustering } = await parseAndClusterInvoiceAttachments(
+        attachments,
+        (key) => getBinaryFromS3(context.s3Config, key)
+      );
+      if (clustering.clusters.length === 0) {
+        throw new Error('Invoice attachment clustering returned no clusters');
+      }
+      const [first, ...rest] = clustering.clusters;
+      firstCluster = first;
+      unrelated = clustering.unrelated;
+      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt };
+      await Promise.all(
+        rest.map((cluster) => fanOutCluster([cluster.primary, ...cluster.supporting], shared))
+      );
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      debug('Error clustering invoice attachments:', error);
+      await notifyResult(
+        'create_invoice',
+        'error',
+        processingTime,
+        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId),
+        error
+      );
+      throw error;
+    }
+    await createInvoiceFromCluster(context, {
+      files: [firstCluster.primary, ...firstCluster.supporting],
+      unrelated,
+      emailContext,
+      conversationId,
+      intercomAppId,
+      assigneeEmail,
+      conversationCreatedAt,
+      startTime,
+      clustered: true,
+    });
+    return;
+  }
+
+  if (attachments?.length && (clustered || clusteringEnabled)) {
+    await createInvoiceFromCluster(context, {
+      files: attachments,
+      unrelated: [],
+      emailContext,
+      conversationId,
+      intercomAppId,
+      assigneeEmail,
+      conversationCreatedAt,
+      startTime,
+      clustered: true,
+    });
+    return;
+  }
+
+  if (attachments?.length) {
+    for (const attachment of attachments) {
+      await createInvoiceFromCluster(context, {
+        files: [attachment],
+        unrelated: [],
+        emailContext: attachment.emailContext ?? emailContext,
+        conversationId: attachment.conversationId ?? conversationId,
+        intercomAppId: attachment.intercomAppId ?? intercomAppId,
+        assigneeEmail: attachment.assigneeEmail ?? assigneeEmail,
+        conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
+        startTime,
+        clustered: false,
+      });
+    }
+    return;
+  }
+
+  if (!s3Key || !fileName || !contentType) {
+    throw new Error('CreateInvoice request has no attachment');
+  }
+  await createInvoiceFromCluster(context, {
+    files: [{
+      s3Key,
       fileName,
       contentType,
-      presignedUrl,
+      ...(emailContext ? { emailContext } : {}),
+    }],
+    unrelated: [],
+    emailContext,
+    conversationId,
+    intercomAppId,
+    assigneeEmail,
+    conversationCreatedAt,
+    startTime,
+    clustered: false,
+  });
+}
+
+interface ClusterInvoiceInput {
+  files: CreateInvoiceAttachment[];
+  unrelated: ClassifiedAttachment[];
+  emailContext?: InvoiceData['emailContext'];
+  conversationId?: string;
+  intercomAppId?: string;
+  assigneeEmail?: string;
+  conversationCreatedAt?: string;
+  startTime: number;
+  clustered: boolean;
+}
+
+interface LoadedClusterFile extends CreateInvoiceAttachment {
+  buffer: Buffer;
+  presignedUrl: string;
+}
+
+function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<string, unknown>> {
+  return files.map((file, index) => ({
+    fileName: file.fileName,
+    contentType: file.contentType,
+    sizeBytes: file.buffer.length,
+    role: index === 0 ? 'invoice' : 'supporting',
+    ...(file.kind ? { kind: file.kind } : {}),
+    ...(file.supportingKind ? { supportingKind: file.supportingKind } : {}),
+    includedInline: true,
+  }));
+}
+
+async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
+  const {
+    files,
+    unrelated,
+    emailContext: requestEmailContext,
+    conversationId,
+    intercomAppId,
+    assigneeEmail,
+    conversationCreatedAt,
+    startTime,
+    clustered,
+  } = input;
+  const [primary] = files;
+  const { s3Key, fileName, contentType } = primary;
+  const emailContext = requestEmailContext ?? primary.emailContext;
+
+  try {
+    debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
+    const loaded: LoadedClusterFile[] = await Promise.all(files.map(async (file) => {
+      const [buffer, presignedUrl] = await Promise.all([
+        getBinaryFromS3(context.s3Config, file.s3Key),
+        getPresignedUrl(context.s3Config, file.s3Key),
+      ]);
+      return { ...file, buffer, presignedUrl };
+    }));
+    const buffer = loaded[0].buffer;
+    const processedAttachments = loaded.map((file) => ({
+      id: file.s3Key,
+      fileName: file.fileName,
+      contentType: file.contentType,
+      presignedUrl: file.presignedUrl,
       expiresAt: new Date(Date.now() + 3600 * 1000),
-      s3Key,
-      buffer,
-    };
+      s3Key: file.s3Key,
+      buffer: file.buffer,
+    }));
+    const attachmentRoles: InvoiceAttachmentRole[] | undefined =
+      clustered && loaded.length > 1
+        ? loaded.map((file, index) => ({
+          fileName: file.fileName,
+          role: index === 0 ? 'invoice' as const : 'supporting' as const,
+        }))
+        : undefined;
 
     // There's no existing Workday invoice yet, so enrich against a stub with no
     // existing supplier. Prefer the PO company when a matching PO is found;
@@ -196,11 +400,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
     const result = await enrichInvoiceFromAttachments(
       stubInvoice,
-      [attachment],
+      processedAttachments,
       undefined,
       stubCompany,
       emailContext,
-      parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined
+      parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
+      attachmentRoles
     );
     debug('Enrichment result:', result);
 
@@ -411,11 +616,11 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
       paymentTermsId,
-      attachment: {
-        fileName,
-        contentType,
-        base64Content: buffer.toString('base64'),
-      },
+      attachments: loaded.map((file) => ({
+        fileName: file.fileName,
+        contentType: file.contentType,
+        base64Content: file.buffer.toString('base64'),
+      })),
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
     });
 
@@ -457,6 +662,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         sizeBytes: buffer.length,
         includedInline: true,
       },
+      ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
+      ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
@@ -487,7 +694,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       'create_invoice',
       'error',
       processingTime,
-      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
+      slackInvoiceDetails({
+        s3Key,
+        fileName,
+        ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
+        ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      }, conversationId, intercomAppId),
       error
     );
     throw error;

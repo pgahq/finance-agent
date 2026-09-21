@@ -38,13 +38,19 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   return parts;
 }
 
+export interface InvoiceAttachmentRole {
+  fileName: string;
+  role: 'invoice' | 'supporting';
+}
+
 export async function enrichInvoiceFromAttachments(
   invoice: WorkdayInvoice,
   processedAttachments: PresignedAttachment[],
   existingSupplier?: { descriptor: string; id: string },
   existingCompany?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext'],
-  purchaseOrder?: PurchaseOrderEnrichmentContext
+  purchaseOrder?: PurchaseOrderEnrichmentContext,
+  attachmentRoles?: InvoiceAttachmentRole[]
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
@@ -115,6 +121,10 @@ export async function enrichInvoiceFromAttachments(
       ? `Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`
       : `Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`;
 
+    const documentRolesText = attachmentRoles?.length
+      ? `\n\nDocument roles: ${attachmentRoles.map((role) => `${role.fileName} is ${role.role === 'invoice' ? 'the supplier invoice' : 'supporting backup'}`).join('; ')}. Extract header, lines, and amounts from the supplier invoice. Use supporting files only as backup context — do not extract a separate invoice from them.`
+      : '';
+
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
       schema: InvoiceEnrichmentSchema,
@@ -124,7 +134,7 @@ export async function enrichInvoiceFromAttachments(
           content: [
             {
               type: 'text',
-              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${purchaseOrderText}`
+              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${documentRolesText}${emailContextText}${purchaseOrderText}`
             },
             ...attachmentContentParts(processedAttachments)
           ]

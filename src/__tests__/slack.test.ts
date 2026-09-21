@@ -119,6 +119,25 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('lists clustered files and unrelated docs on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      attachments: [
+        { fileName: 'invoice.pdf', kind: 'supplier_invoice' },
+        { fileName: 'packing-slip.pdf', kind: 'supporting' },
+      ],
+      unrelatedAttachments: ['other.pdf'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"fileName": "invoice.pdf"');
+    expect(texts).toContain('invoice.pdf (supplier_invoice)');
+    expect(texts).toContain('packing-slip.pdf (supporting)');
+    expect(texts).toContain('"unrelatedAttachments"');
+  });
+
   it('omits the Workday invoice number on create when Invoice_Number is missing', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

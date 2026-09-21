@@ -237,18 +237,39 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+    const clusteringEnabled = process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED === 'true';
 
-    await Promise.all(uploadedAttachments.map((attachment) =>
-      lambda.send(new InvokeCommand({
+    if (clusteringEnabled) {
+      const shared = {
+        conversationId,
+        ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+        ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
+        ...(conversationData.conversationCreatedAt
+          ? { conversationCreatedAt: conversationData.conversationCreatedAt }
+          : {}),
+      };
+      await lambda.send(new InvokeCommand({
         FunctionName: processorFunctionName,
         InvocationType: 'Event',
         Payload: JSON.stringify({
-          data: [attachment],
+          data: [{ ...shared, attachments: uploadedAttachments }],
           page: 1,
           totalPages: 1,
         }),
-      }))
-    ));
+      }));
+    } else {
+      await Promise.all(uploadedAttachments.map((attachment) =>
+        lambda.send(new InvokeCommand({
+          FunctionName: processorFunctionName,
+          InvocationType: 'Event',
+          Payload: JSON.stringify({
+            data: [attachment],
+            page: 1,
+            totalPages: 1,
+          }),
+        }))
+      ));
+    }
 
     return jsonResponse(202, {
       status: 'accepted',

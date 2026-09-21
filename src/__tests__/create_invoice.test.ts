@@ -88,6 +88,25 @@ jest.mock('../lib/invoice_lines.js', () => {
   };
 });
 
+jest.mock('../lib/invoice_attachment_clustering.js', () => {
+  const actual = jest.requireActual('../lib/invoice_attachment_clustering.js');
+  return {
+    ...actual,
+    isInvoiceAttachmentClusteringEnabled: jest.fn(
+      (env: NodeJS.ProcessEnv = process.env) => env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED === 'true'
+    ),
+    parseAndClusterInvoiceAttachments: jest.fn(),
+  };
+});
+
+const mockLambdaSend = jest.fn().mockResolvedValue({});
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn().mockImplementation(() => ({
+    send: (...args: unknown[]) => mockLambdaSend(...args),
+  })),
+  InvokeCommand: jest.fn(),
+}));
+
 const baseEnrichmentResult = {
   supplier: {
     status: 'found',
@@ -149,6 +168,8 @@ function freshRequire() {
     invoiceEnrichment: require('../lib/invoice_enrichment.js'),
     invoiceLines: require('../lib/invoice_lines.js'),
     database: require('../lib/database.js'),
+    clustering: require('../lib/invoice_attachment_clustering.js'),
+    lambda: require('@aws-sdk/client-lambda'),
     loadEnv: require('@pga/lambda-env').default,
   };
 }
@@ -165,6 +186,8 @@ describe('create_invoice', () => {
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
     delete process.env.INTERCOM_APP_ID;
+    delete process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED;
+    delete process.env.AWS_STACK_NAME;
   });
 
   afterEach(() => {
@@ -173,6 +196,8 @@ describe('create_invoice', () => {
     delete process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
     delete process.env.INVOICE_MOD_ENABLED;
     delete process.env.INTERCOM_APP_ID;
+    delete process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED;
+    delete process.env.AWS_STACK_NAME;
     delete process.env.FALLBACK_FUND_ID;
     delete process.env.FALLBACK_COST_CENTER_ID;
     delete process.env.FALLBACK_SPEND_CATEGORY_ID;
@@ -278,11 +303,12 @@ describe('create_invoice', () => {
     expect(submitArgs.supplierWID).toBe('supplier-wid-1');
     expect(submitArgs.companyWID).toBe('Default_OCR_Company');
     expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(submitArgs.attachment).toEqual({
+    expect(submitArgs.attachment).toBeUndefined();
+    expect(submitArgs.attachments).toEqual([{
       fileName: 'invoice.pdf',
       contentType: 'application/pdf',
       base64Content: Buffer.from('fake-pdf-content').toString('base64')
-    });
+    }]);
     expect(submitArgs.assigneeWID).toBeUndefined();
 
     expect(slack.notifyResult).toHaveBeenCalledWith(
@@ -1427,5 +1453,176 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).toContain('Job Number (from document): 5914196');
     expect(submitArgs.buildNotes([])).toContain('Customer ID (from document): CU0122145');
     expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
+  });
+
+  describe('invoice attachment clustering', () => {
+    const invoiceFile = {
+      s3Key: 'new-invoices/req-1/1-invoice.pdf',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      kind: 'supplier_invoice',
+      confidence: 0.95,
+    };
+    const supportFile = {
+      s3Key: 'new-invoices/req-1/2-support.pdf',
+      fileName: 'support.pdf',
+      contentType: 'application/pdf',
+      kind: 'supporting',
+      supportingKind: 'packing_slip',
+      confidence: 0.8,
+    };
+
+    function clusteredRequest() {
+      return {
+        conversationId: '1234567890',
+        attachments: [invoiceFile, supportFile],
+      };
+    }
+
+    it('parses unclustered attachments and enriches the whole cluster', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoiceFile, supportFile],
+        clustering: {
+          clusters: [{ primary: invoiceFile, supporting: [supportFile], fallback: false }],
+          unrelated: [],
+        },
+      });
+
+      await processor({ data: [clusteredRequest()] } as any);
+
+      expect(clustering.parseAndClusterInvoiceAttachments).toHaveBeenCalledTimes(1);
+      const enrichArgs = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0];
+      expect(enrichArgs[1].map((att: { fileName: string }) => att.fileName))
+        .toEqual(['invoice.pdf', 'support.pdf']);
+      expect(enrichArgs[6]).toEqual([
+        { fileName: 'invoice.pdf', role: 'invoice' },
+        { fileName: 'support.pdf', role: 'supporting' },
+      ]);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.attachments).toHaveLength(2);
+      expect(submitArgs.attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['invoice.pdf', 'support.pdf']);
+
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ fileName: 'invoice.pdf', role: 'invoice' }),
+            expect.objectContaining({ fileName: 'support.pdf', role: 'supporting' }),
+          ]),
+        }),
+      );
+    });
+
+    it('fans out leftover clusters to separate processor invocations', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, lambda, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({
+        INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true',
+        AWS_STACK_NAME: 'finance-agent',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const secondInvoice = {
+        s3Key: 'new-invoices/req-1/3-second.pdf',
+        fileName: 'second.pdf',
+        contentType: 'application/pdf',
+        kind: 'supplier_invoice',
+        confidence: 0.9,
+      };
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoiceFile, supportFile, secondInvoice],
+        clustering: {
+          clusters: [
+            { primary: invoiceFile, supporting: [supportFile], fallback: false },
+            { primary: secondInvoice, supporting: [], fallback: false },
+          ],
+          unrelated: [],
+        },
+      });
+
+      await processor({ data: [{ conversationId: '1234567890', attachments: [invoiceFile, supportFile, secondInvoice] }] } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(lambda.InvokeCommand).toHaveBeenCalledTimes(1);
+      const fanOutPayload = JSON.parse(lambda.InvokeCommand.mock.calls[0][0].Payload);
+      expect(fanOutPayload.data[0].clustered).toBe(true);
+      expect(fanOutPayload.data[0].attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['second.pdf']);
+    });
+
+    it('processes an already-clustered fan-out payload without re-parsing', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({ data: [{ ...clusteredRequest(), clustered: true }] } as any);
+
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].attachments).toHaveLength(2);
+    });
+
+    it('keeps one invoke per PDF when clustering is disabled', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({ data: [clusteredRequest()] } as any);
+
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].attachments).toHaveLength(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[1][1].attachments).toHaveLength(1);
+    });
+
+    it('Slacks once and rethrows when clustering fails', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      clustering.parseAndClusterInvoiceAttachments.mockRejectedValue(new Error('classify boom'));
+
+      await expect(processor({ data: [clusteredRequest()] } as any)).rejects.toThrow('classify boom');
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'error',
+        expect.any(Number),
+        expect.objectContaining({ attachments: ['invoice.pdf', 'support.pdf'] }),
+        expect.any(Error),
+      );
+    });
+
+    it('Slacks once when invoice creation fails after successful clustering', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        supplier: { status: 'error', reason: 'unreadable' },
+      });
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoiceFile, supportFile],
+        clustering: {
+          clusters: [{ primary: invoiceFile, supporting: [supportFile], fallback: false }],
+          unrelated: [],
+        },
+      });
+
+      await expect(processor({ data: [clusteredRequest()] } as any)).rejects.toThrow(
+        'Invoice enrichment returned error status'
+      );
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+    });
   });
 });
