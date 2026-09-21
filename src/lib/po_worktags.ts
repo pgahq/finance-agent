@@ -2,7 +2,6 @@ import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   isLineOfBusinessReferenceId,
   relatedLobAllowsId,
-  relatedLobIdsMatch,
   type RelatedLob,
 } from './related_worktags.js';
 
@@ -55,6 +54,27 @@ function isOrgWorktag(tag: any): boolean {
   return type != null && ORG_WORKTAG_ID_TYPES.has(type);
 }
 
+const WORKDAY_WID_PATTERN = /^[0-9a-f]{32}$/i;
+
+function normalizeLobValue(value: string): string {
+  return value.trim().replace(/[\s_]+/g, '_').toLowerCase();
+}
+
+function lobValueAliases(value: string): string[] {
+  const normalized = normalizeLobValue(value);
+  if (!normalized) return [];
+  const aliases = [normalized];
+  if (normalized.startsWith('lob-') && !WORKDAY_WID_PATTERN.test(value.trim())) {
+    aliases.push(normalized.slice(4));
+  }
+  return aliases;
+}
+
+function lobValuesMatch(a: string, b: string): boolean {
+  const aAliases = lobValueAliases(a);
+  return lobValueAliases(b).some(alias => aAliases.includes(alias));
+}
+
 export function isLobWorktag(
   tag: any,
   relatedLob?: RelatedLob | null,
@@ -63,10 +83,7 @@ export function isLobWorktag(
   for (const value of worktagIdValues(tag)) {
     if (isLineOfBusinessReferenceId(value)) return true;
     if (relatedLob && relatedLobAllowsId(relatedLob, value)) return true;
-    if (
-      lineOfBusinessId &&
-      (value === lineOfBusinessId || relatedLobIdsMatch(value, lineOfBusinessId))
-    ) {
+    if (lineOfBusinessId && (value === lineOfBusinessId || lobValuesMatch(value, lineOfBusinessId))) {
       return true;
     }
   }
@@ -104,7 +121,7 @@ function isFallbackLobValue(value: string | null): boolean {
   if (value === DEFAULT_LINE_OF_BUSINESS_ID) return true;
   const fallback = process.env.FALLBACK_LOB_ID;
   if (!fallback) return false;
-  return value === fallback || relatedLobIdsMatch(value, fallback);
+  return value === fallback || lobValuesMatch(value, fallback);
 }
 
 function isFallbackFundTag(tag: any): boolean {
