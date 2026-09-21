@@ -27,6 +27,10 @@ Parameters:
     Type: String
     Description: Whether to enable invoice modification
     Default: "false"
+  InvoiceAttachmentClusteringEnabled:
+    Type: String
+    Description: Whether to classify and cluster create-invoice attachments before Workday submit
+    Default: "false"
   DefaultOcrSpendCategoryId:
     Type: String
     Description: Workday Spend_Category_ID to apply as fallback for OCR lines missing a spend category
@@ -63,6 +67,7 @@ Globals:
         FALLBACK_PAYMENT_TERMS_ID: !Ref FallbackPaymentTermsId
         FALLBACK_COST_CENTER_ID: !Ref FallbackCostCenterId
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
+        INVOICE_ATTACHMENT_CLUSTERING_ENABLED: !Ref InvoiceAttachmentClusteringEnabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
