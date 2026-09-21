@@ -5198,6 +5198,74 @@ describe('Workday utilities', () => {
       expect(result.map((company) => company.workdayId)).toEqual(['pga-wid']);
     });
 
+    it('returns no companies when Workday itself reports none', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 0 },
+          Response_Data: {},
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).resolves.toEqual([]);
+    });
+
+    it('returns no companies when every node is inactive', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 1 },
+          Response_Data: {
+            Company: {
+              Company_Reference: {
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'inactive-wid' },
+                  { $attributes: { type: 'Company_Reference_ID' }, $value: '999' },
+                ]
+              },
+              Company_Data: {
+                Organization_Data: {
+                  Organization_Name: 'Inactive Company',
+                  Organization_Active: false,
+                }
+              }
+            }
+          }
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).resolves.toEqual([]);
+    });
+
+    it('throws when Total_Results reports companies but Response_Data has none', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 12 },
+          Response_Data: {},
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.toThrow(
+        'Get_Workday_Companies reported 12 companies but Response_Data had none'
+      );
+    });
+
+    it('throws when company nodes are present but none parse', async () => {
+      mockCompaniesClient((_request: any, callback: any) => {
+        callback(null, {
+          Response_Results: { Total_Pages: 1, Total_Results: 1 },
+          Response_Data: {
+            Company: {
+              Company_Reference: { ID: { $attributes: { type: 'Company_Reference_ID' }, $value: '310' } },
+              Company_Data: { Organization_Data: { Organization_Name: 'Dropped WID' } },
+            }
+          }
+        });
+      });
+
+      await expect(getAllWorkdayCompanies(mockContext)).rejects.toThrow(
+        'Get_Workday_Companies returned 1 company nodes but none parsed (1 unparsed, 0 inactive)'
+      );
+    });
+
     it('throws a sanitized error when Get_Workday_Companies is not authorized', async () => {
       const soapBody = '<?xml version="1.0" encoding="utf-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server.processingError</faultcode><faultstring>Processing error occurred. The task submitted is not authorized.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>';
       mockCompaniesClient((_request: any, callback: any) => {
