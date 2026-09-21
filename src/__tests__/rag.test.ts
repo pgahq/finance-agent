@@ -224,6 +224,18 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(result).toContain('Public Addresses: PO Box 109601, Palm Beach Gardens, FL 33410');
       expect(result).not.toContain('[object Object]');
     });
+
+    it('includes Finance Agent aliases', () => {
+      const result = createCompanyContent({
+        companyName: 'The Professional Golfers Association of America',
+        companyReferenceId: '310',
+        financeAgentAliases: ['PGA of America'],
+      });
+
+      expect(result).toContain('Company Name: The Professional Golfers Association of America');
+      expect(result).toContain('Company Reference ID: 310');
+      expect(result).toContain('Finance Agent Alias: PGA of America');
+    });
   });
 
   describe('queryDocuments', () => {

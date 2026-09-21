@@ -335,6 +335,28 @@ describe('Database Library', () => {
       expect(sql).toContain("TRIM(LOWER(COALESCE(metadata->>'companyReferenceId', ''))) = LOWER(TRIM($4))");
     });
 
+    it('boosts an exact Finance Agent alias to 1.0 without company LIKE', async () => {
+      const mockConnection = {
+        query: mockQuery,
+        close: jest.fn()
+      };
+      mockQuery.mockResolvedValue([]);
+
+      await searchDocuments(
+        mockConnection,
+        [0.1, 0.2, 0.3],
+        'PGA of America',
+        'company',
+        10
+      );
+
+      const sql = mockQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("jsonb_array_elements_text(");
+      expect(sql).toContain("metadata->'financeAgentAliases'");
+      expect(sql).toContain("$1 <> 'company' AND LOWER(content) LIKE LOWER($3)");
+      expect(sql).not.toContain("WHEN $1 = 'company' AND LOWER(content) LIKE");
+    });
+
     it('should handle search errors', async () => {
       const mockConnection = { 
         query: mockQuery,

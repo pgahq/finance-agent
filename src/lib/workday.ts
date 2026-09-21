@@ -6,6 +6,7 @@ import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
+  asArray,
   extractLineOfBusinessId,
   parseRelatedWorktagsResponse,
   relatedLobHasUsableValue,
@@ -2409,4 +2410,335 @@ export async function getAllPaymentTerms(
     if (!paymentTermsId || !name) return [];
     return [{ paymentTermsId, name }];
   });
+}
+
+export const DEFAULT_FINANCE_AGENT_SYSTEM_ID = 'FinanceAgent';
+const WORKDAY_COMPANIES_PAGE_SIZE = 999;
+
+export interface WorkdayCompany {
+  workdayId: string;
+  companyName: string;
+  companyReferenceId?: string;
+  addressPrimary?: string;
+  publicAddresses?: string[];
+  emailAddresses?: string[];
+  phoneNumbers?: string[];
+  financeAgentAliases: string[];
+}
+
+interface WorkdayCompaniesSoapClient {
+  Get_Workday_Companies(
+    request: {
+      Get_Workday_Companies_Request: {
+        Response_Filter: { Page: number; Count: number; As_Of_Entry_DateTime?: string };
+      };
+    },
+    callback: (err: unknown, result: unknown) => void
+  ): void;
+}
+
+function financeAgentSystemId(): string {
+  return process.env.WORKDAY_FINANCE_AGENT_SYSTEM_ID?.trim() || DEFAULT_FINANCE_AGENT_SYSTEM_ID;
+}
+
+function isSoapRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value != null;
+}
+
+function soapAttributes(value: unknown): Record<string, unknown> {
+  if (!isSoapRecord(value)) return {};
+  const attrs = value.$attributes ?? value.attributes;
+  return isSoapRecord(attrs) ? attrs : {};
+}
+
+function soapText(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (!isSoapRecord(value)) return undefined;
+  for (const candidate of [value.$value, value._]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
+function isSoapTrue(value: unknown): boolean {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function isSoapFalse(value: unknown): boolean {
+  return value === false || value === 0 || value === '0' || value === 'false';
+}
+
+function organizationIsInactive(organization: unknown): boolean {
+  if (!isSoapRecord(organization)) return false;
+  return isSoapFalse(organization.Organization_Active);
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function soapTypedIds(reference: unknown): Array<{ type?: string; systemId?: string; value: string }> {
+  if (!isSoapRecord(reference)) return [];
+  return asArray(reference.ID).flatMap((id) => {
+    const value = soapText(id);
+    if (!value) return [];
+    const attrs = soapAttributes(id);
+    return [{
+      type: typeof attrs.type === 'string' ? attrs.type : undefined,
+      systemId: typeof attrs.System_ID === 'string' ? attrs.System_ID : undefined,
+      value,
+    }];
+  });
+}
+
+function usageIsPrimary(usage: unknown): boolean {
+  if (!isSoapRecord(usage)) return false;
+  if (isSoapTrue(soapAttributes(usage).Primary)) return true;
+  return asArray(usage.Type_Data).some((typeData) => (
+    isSoapTrue(soapAttributes(typeData).Primary)
+    || (isSoapRecord(typeData) && isSoapTrue(soapAttributes(typeData.Type_Reference).Primary))
+  )) || asArray(usage.Type_Reference).some((typeRef) => isSoapTrue(soapAttributes(typeRef).Primary));
+}
+
+function usageIsPublic(usage: unknown): boolean {
+  return isSoapTrue(soapAttributes(usage).Public);
+}
+
+function formattedAddress(address: unknown): string | undefined {
+  const formatted = soapAttributes(address).Formatted_Address;
+  return typeof formatted === 'string' && formatted.trim() ? formatted.trim() : undefined;
+}
+
+function parseCompanyAddresses(contact: unknown): {
+  addressPrimary?: string;
+  publicAddresses?: string[];
+} {
+  if (!isSoapRecord(contact)) return {};
+  const addresses = asArray(contact.Address_Data);
+  let addressPrimary: string | undefined;
+  const publicAddresses: string[] = [];
+
+  for (const address of addresses) {
+    const formatted = formattedAddress(address);
+    if (!formatted) continue;
+    const usages = isSoapRecord(address) ? asArray(address.Usage_Data) : [];
+    const isPrimary = usages.some(usageIsPrimary);
+    const isPublic = usages.some(usageIsPublic);
+    if (isPrimary && !addressPrimary) addressPrimary = formatted;
+    if (isPublic) publicAddresses.push(formatted);
+  }
+
+  if (!addressPrimary) {
+    addressPrimary = formattedAddress(addresses[0]);
+  }
+
+  const uniquePublic = uniqueNonEmpty(publicAddresses);
+  return {
+    addressPrimary,
+    publicAddresses: uniquePublic.length > 0 ? uniquePublic : undefined,
+  };
+}
+
+function parseCompanyEmails(contact: unknown): string[] | undefined {
+  if (!isSoapRecord(contact)) return undefined;
+  const emails = uniqueNonEmpty(
+    asArray(contact.Email_Address_Data).map((email) => (
+      isSoapRecord(email) ? soapText(email.Email_Address) : soapText(email)
+    ))
+  );
+  return emails.length > 0 ? emails : undefined;
+}
+
+function parseCompanyPhones(contact: unknown): string[] | undefined {
+  if (!isSoapRecord(contact)) return undefined;
+  const phones = uniqueNonEmpty(asArray(contact.Phone_Data).map((phone) => {
+    const attrs = soapAttributes(phone);
+    const formatted = [
+      attrs.Tenant_Formatted_Phone,
+      attrs.International_Formatted_Phone,
+      attrs.National_Formatted_Phone,
+      attrs.Workday_Traditional_Formatted_Phone,
+    ].find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+    if (formatted) return formatted.trim();
+    return isSoapRecord(phone) ? soapText(phone.Phone_Number) : soapText(phone);
+  }));
+  return phones.length > 0 ? phones : undefined;
+}
+
+function parseFinanceAgentAliases(organization: unknown, systemId: string): string[] {
+  if (!isSoapRecord(organization)) return [];
+  const wanted = systemId.toLowerCase();
+  return uniqueNonEmpty(
+    asArray(organization.Integration_ID_Data).flatMap((integration) => (
+      soapTypedIds(integration).flatMap((id) => (
+        id.systemId?.toLowerCase() === wanted ? [id.value] : []
+      ))
+    ))
+  );
+}
+
+type ClassifiedWorkdayCompany =
+  | { kind: 'company'; company: WorkdayCompany }
+  | { kind: 'inactive' }
+  | { kind: 'unparsed' };
+
+function classifyWorkdayCompany(entry: unknown, systemId: string): ClassifiedWorkdayCompany {
+  if (!isSoapRecord(entry)) return { kind: 'unparsed' };
+  const reference = asArray(entry.Company_Reference)[0] ?? entry.Company_Reference;
+  const ids = soapTypedIds(reference);
+  const workdayId = ids.find((id) => id.type === 'WID')?.value;
+  if (!workdayId) return { kind: 'unparsed' };
+
+  const companyData = asArray(entry.Company_Data)[0];
+  const organization = isSoapRecord(companyData) ? asArray(companyData.Organization_Data)[0] : undefined;
+  if (organizationIsInactive(organization)) return { kind: 'inactive' };
+  const descriptor = soapAttributes(reference).Descriptor;
+  const companyName = (
+    (isSoapRecord(organization) ? soapText(organization.Organization_Name) : undefined)
+    || (typeof descriptor === 'string' ? descriptor.trim() : undefined)
+  );
+  if (!companyName) return { kind: 'unparsed' };
+
+  const contact = isSoapRecord(companyData) ? asArray(companyData.Contact_Data)[0] : undefined;
+  const addresses = parseCompanyAddresses(contact);
+
+  return {
+    kind: 'company',
+    company: {
+      workdayId,
+      companyName,
+      companyReferenceId: ids.find((id) => id.type === 'Company_Reference_ID')?.value,
+      ...addresses,
+      emailAddresses: parseCompanyEmails(contact),
+      phoneNumbers: parseCompanyPhones(contact),
+      financeAgentAliases: parseFinanceAgentAliases(organization, systemId),
+    },
+  };
+}
+
+function companyNodesFromResponse(response: unknown): unknown[] {
+  if (!isSoapRecord(response)) return [];
+  return asArray(response.Response_Data).flatMap((data) => (
+    isSoapRecord(data) ? asArray(data.Company) : []
+  ));
+}
+
+function soapResponseTotalResults(response: unknown): number | undefined {
+  if (!isSoapRecord(response)) return undefined;
+  const results = asArray(response.Response_Results)[0];
+  if (!isSoapRecord(results)) return undefined;
+  const totalResults = Number(results.Total_Results);
+  return Number.isFinite(totalResults) && totalResults >= 0 ? totalResults : undefined;
+}
+
+function emptyCompaniesParseError(
+  totalResults: number | undefined,
+  companyNodeCount: number,
+  unparsedCount: number,
+  inactiveCount: number
+): Error {
+  const reported = totalResults ?? 0;
+  if (companyNodeCount === 0) {
+    return new Error(
+      `Get_Workday_Companies reported ${reported} companies but Response_Data had none`
+    );
+  }
+  return new Error(
+    `Get_Workday_Companies returned ${companyNodeCount} company nodes but none parsed (${unparsedCount} unparsed, ${inactiveCount} inactive)`
+  );
+}
+
+function asWorkdayCompaniesClient(client: unknown): WorkdayCompaniesSoapClient {
+  if (
+    typeof client !== 'object'
+    || client == null
+    || typeof (client as { Get_Workday_Companies?: unknown }).Get_Workday_Companies !== 'function'
+  ) {
+    throw new Error('Financial Management SOAP client is missing Get_Workday_Companies');
+  }
+  return client as WorkdayCompaniesSoapClient;
+}
+
+function fetchWorkdayCompaniesPage(
+  client: WorkdayCompaniesSoapClient,
+  page: number,
+  asOfEntryDateTime: string
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    client.Get_Workday_Companies({
+      Get_Workday_Companies_Request: {
+        Response_Filter: {
+          Page: page,
+          Count: WORKDAY_COMPANIES_PAGE_SIZE,
+          As_Of_Entry_DateTime: asOfEntryDateTime,
+        }
+      }
+    }, (err: unknown, result: unknown) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
+}
+
+export async function getAllWorkdayCompanies(
+  context: { workdayConfig: WorkdayConfig }
+): Promise<WorkdayCompany[]> {
+  debug('Fetching all Workday companies from Get_Workday_Companies');
+
+  try {
+    const client = asWorkdayCompaniesClient(await buildFinancialManagementClient(context));
+    const systemId = financeAgentSystemId();
+    const companies: WorkdayCompany[] = [];
+    const asOfEntryDateTime = new Date().toISOString();
+    let page = 1;
+    let totalPages = 1;
+    let totalResults: number | undefined;
+    let companyNodeCount = 0;
+    let unparsedCount = 0;
+    let inactiveCount = 0;
+
+    do {
+      const response = await fetchWorkdayCompaniesPage(client, page, asOfEntryDateTime);
+      const pageTotalResults = soapResponseTotalResults(response);
+      if (pageTotalResults != null) totalResults = pageTotalResults;
+      const nodes = companyNodesFromResponse(response);
+      companyNodeCount += nodes.length;
+      let pageParsed = 0;
+      for (const node of nodes) {
+        const classified = classifyWorkdayCompany(node, systemId);
+        if (classified.kind === 'company') {
+          companies.push(classified.company);
+          pageParsed += 1;
+        } else if (classified.kind === 'inactive') {
+          inactiveCount += 1;
+        } else {
+          unparsedCount += 1;
+        }
+      }
+      totalPages = relatedWorktagsTotalPages(response);
+      debug(`Get_Workday_Companies page ${page}/${totalPages} parsed ${pageParsed} companies`);
+      page += 1;
+    } while (page <= totalPages);
+
+    const workdayReturnedNone = companyNodeCount === 0 && (totalResults ?? 0) === 0;
+    const allInactive = companyNodeCount > 0 && unparsedCount === 0;
+    if (companies.length === 0 && !workdayReturnedNone && !allInactive) {
+      throw emptyCompaniesParseError(totalResults, companyNodeCount, unparsedCount, inactiveCount);
+    }
+
+    debug(`Fetched ${companies.length} Workday companies`);
+    return companies;
+  } catch (error) {
+    throw sanitizeSoapError(error);
+  }
 }
