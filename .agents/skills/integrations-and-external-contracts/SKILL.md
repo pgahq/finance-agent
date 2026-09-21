@@ -35,8 +35,8 @@ Flow:
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
 5. Resolve **assignee email** from the same conversation GET: among `conversation_parts.conversation_parts`, use the **last** part with `part_type === "custom_action_started"` and take `author.email` (any `author.type`). Forward as `assigneeEmail` on each processor invoke.
-6. Async-invoke `CreateInvoiceProcessor` once per attachment with `emailContext` (`emailFrom` / `subject` from the attachment’s message when applicable; `plainTextBody` is the **source email body plus every non-empty `conversation_parts` body**, joined with blank lines in API order — including internal notes, not only the message that holds the PDF), shared `assigneeEmail`, and `conversationCreatedAt` from Intercom `created_at`. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
-7. Each record creates a separate Workday invoice; return HTTP status to the Data Connector
+6. Async-invoke `CreateInvoiceProcessor` with `emailContext` (`emailFrom` / `subject` from the attachment’s message when applicable; `plainTextBody` is the **source email body plus every non-empty `conversation_parts` body**, joined with blank lines in API order — including internal notes, not only the message that holds the PDF), shared `assigneeEmail`, and `conversationCreatedAt` from Intercom `created_at`. When `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` is `true`, invoke **once per conversation** with `attachments` (every uploaded file's metadata); when `false` (default), invoke **once per attachment**. Processor Lambda async retries are off (`MaximumRetryAttempts: 0`); a thrown error Slacks once and does not re-run.
+7. Flag off: each record creates a separate Workday invoice. Flag on: the processor classifies and clusters attachments (see the `invoice-attachment-clustering` skill) and creates **one Workday invoice per invoice cluster**, with that cluster's PDFs as `Attachment_Data`; leftover clusters fan out to separate processor invokes. Return HTTP status to the Data Connector
 8. Workday `Invoice_Received_Date` on each new supplier invoice is set from the Intercom conversation `created_at` (mailbox receipt), formatted as `YYYY-MM-DD` like other SOAP dates
 
 **Workday assignee on create:** `CreateInvoiceProcessor` looks up `assigneeEmail` in the daily **Worker Assignment For AP Agent** custom report cache (`employee` documents, exact email match). Report **Workday ID** values must be Worker WIDs (`WorkerObjectType`: `WID`, `Employee_ID`, or `Contingent_Worker_ID`; we send `WID`). When a Worker WID is found, SOAP `Submit_Supplier_Invoice` sets `Supplier_Invoice_Data.Work_Queue_Information_Data.Assignee_Reference` (not a top-level `Supplier_Invoice_Data` field); when the part is missing, email is blank, or there is no cache match, **omit** `Assignee_Reference` (create still succeeds). If Workday returns a validation fault that references assignee, submit **retries once** without `Assignee_Reference`. Cache job: `CacheEmployees` / `CacheEmployeesProcessor` fetches `AP_AGENT_WORKERS_CUSTOM_REPORT_PATH` in `ap_agent_workers_report.ts` (`wdw-7212/Worker_Assignment_For_AP_Agent`, `customreport2` JSON). Report columns: `Workday_ID`, `Primary_Work_-_Email`, `Active_Status`, `Full_Legal_Name`, `Preferred_Name`, `Employee_ID` (logged on each sync). All parseable report rows are cached; `metadata.active` is a boolean derived from `Active_Status` (and terminated when present). Assignee lookup requires `active !== false`. Create-invoice Slack and Workday notes display `preferredName`, falling back to Full Legal Name (`name`) when Preferred Name is blank or not yet cached. Prune removes employees no longer in the report snapshot.
@@ -104,6 +104,7 @@ The terse 1-sentence summary is line `Memo`, generated **after** that concatenat
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
 | `INTERCOM_APP_ID` | CFT `IntercomAppId` (`c722leqk` on `deploy-to-dev`, `jyi16dpc` on `deploy-to-prod`) | Slack inbox permalink workspace. Create-invoice uses this stack value, not the conversation `app_id`. |
+| `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` | CFT `InvoiceAttachmentClusteringEnabled` (`"true"` on `deploy-to-dev`, `"false"` on `deploy-to-prod`) | Gates create-invoice attachment clustering (one invoke per conversation, one Workday invoice per cluster). Read inside the handler after `loadEnv()`, never as a module-level constant. |
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
@@ -161,7 +162,7 @@ envelope `Header` element.
   concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Each Workday invoice receives its corresponding PDF as `Attachment_Data`
+- Each Workday invoice receives its cluster's PDFs as `Attachment_Data` (invoice first; single-file when clustering is off)
 - Success Slack details include filename, content type, byte size, and
   `includedInline`; never include base64 content
 - Success Slack details include `conversationId` / Intercom conversation URL
