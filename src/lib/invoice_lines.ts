@@ -10,7 +10,7 @@ import {
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
-import type { PurchaseOrderLineSplit } from './po_worktags.js';
+import { worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -348,6 +348,28 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
   });
 }
 
+function passthroughForPoLine(poLine: ParsedPoLineWorktags): any[] {
+  return poLine.lineLevelWorktagsReference?.length
+    ? poLine.lineLevelWorktagsReference
+    : poLine.worktagsReference;
+}
+
+function sharedPassthroughWorktags(poLines: ParsedPoLineWorktags[]): any[] {
+  if (poLines.length === 0) return [];
+  const perLineIdentities = poLines.map(
+    line =>
+      new Set(
+        passthroughForPoLine(line)
+          .map(tag => worktagIdentity(tag))
+          .filter((identity): identity is string => identity != null)
+      )
+  );
+  return passthroughForPoLine(poLines[0]).filter(tag => {
+    const identity = worktagIdentity(tag);
+    return identity != null && perLineIdentities.every(set => set.has(identity));
+  });
+}
+
 export function overlayPoWorktagsFromPurchaseOrder(
   lines: FinalInvoiceLine[],
   poLines: ParsedPoLineWorktags[]
@@ -359,18 +381,21 @@ export function overlayPoWorktagsFromPurchaseOrder(
       .filter(line => line.purchaseOrderLineId)
       .map(line => [line.purchaseOrderLineId as string, line])
   );
+  const fallbackPassthrough = sharedPassthroughWorktags(poLines);
 
   return lines.map(line => {
-    if (!line.purchaseOrderLineId) return line;
-    const poLine = byPurchaseOrderLineId.get(line.purchaseOrderLineId);
-    if (!poLine) return line;
-    return {
-      ...line,
-      poPassthroughWorktagsReference: poLine.lineLevelWorktagsReference?.length
-        ? poLine.lineLevelWorktagsReference
-        : poLine.worktagsReference,
-      ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
-    };
+    const poLine = line.purchaseOrderLineId
+      ? byPurchaseOrderLineId.get(line.purchaseOrderLineId)
+      : undefined;
+    if (poLine) {
+      return {
+        ...line,
+        poPassthroughWorktagsReference: passthroughForPoLine(poLine),
+        ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
+      };
+    }
+    if (fallbackPassthrough.length === 0 || line.poPassthroughWorktagsReference?.length) return line;
+    return { ...line, poPassthroughWorktagsReference: fallbackPassthrough };
   });
 }
 

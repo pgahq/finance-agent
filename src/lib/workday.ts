@@ -1115,13 +1115,15 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     };
     const passthrough = passthroughWorktagsForSplitInvoiceLine(
       line.poPassthroughWorktagsReference,
-      Boolean(line.supplierInvoiceSplitLineData?.length),
+      line.supplierInvoiceSplitLineData,
       orgPassthroughContext
     );
     const worktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
     const supplierInvoiceSplitLineData = mapPoSplitsToSupplierInvoiceSplitLineData(
       line.supplierInvoiceSplitLineData,
-      extendedAmountForSoap ?? line.extendedAmount
+      extendedAmountForSoap ?? line.extendedAmount,
+      passthrough,
+      orgPassthroughContext
     );
     return {
       Line_Order: line.lineOrder,

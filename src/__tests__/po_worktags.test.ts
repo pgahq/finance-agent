@@ -1,5 +1,6 @@
 import {
   dedupeWorktagReferences,
+  enrichSplitWorktagsWithLineLevel,
   firstNonEmptyPoLineArray,
   isLobWorktag,
   mapPoSplitsToSupplierInvoiceSplitLineData,
@@ -150,6 +151,88 @@ describe('po_worktags', () => {
     const sameEvent = makeOrgWorktag('2026-PGA_Championship', 'event-wid-1');
     const merged = mergePassthroughWorktagReferences(base, [sameEvent]);
     expect(merged).toEqual(base);
+  });
+
+  it('mergePassthroughWorktagReferences lets PO fund replace fallback fund', () => {
+    const prev = process.env.FALLBACK_FUND_ID;
+    process.env.FALLBACK_FUND_ID = 'FUND-FALLBACK';
+    try {
+      const fallback = makeWorktag('Fund_ID', 'FUND-FALLBACK');
+      const poFund = makeWorktag('Fund_ID', 'FUND-PO');
+      expect(mergePassthroughWorktagReferences([fallback], [poFund])).toEqual([poFund]);
+
+      const real = makeWorktag('Fund_ID', 'FUND-EMAIL');
+      expect(mergePassthroughWorktagReferences([real], [poFund])).toEqual([real]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_FUND_ID;
+      else process.env.FALLBACK_FUND_ID = prev;
+    }
+  });
+
+  it('mergePassthroughWorktagReferences lets PO LOB replace fallback LOB', () => {
+    const prev = process.env.FALLBACK_LOB_ID;
+    process.env.FALLBACK_LOB_ID = 'LOB-Fallback';
+    try {
+      const fallback = makeWorktag('Organization_Reference_ID', 'LOB-Fallback');
+      const poLob = makeOrgWorktag('LOB-Technology_Services');
+      const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+      const merged = mergePassthroughWorktagReferences([fallback], [poLob, venue], {
+        lineOfBusinessId: 'LOB-Fallback',
+      });
+      expect(merged).toEqual([poLob, venue]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_LOB_ID;
+      else process.env.FALLBACK_LOB_ID = prev;
+    }
+  });
+
+  it('passthroughWorktagsForSplitInvoiceLine keeps shared fund when splits lack it', () => {
+    const fund = makeWorktag('Fund_ID', 'FUND-PO');
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+    const splitsWithoutFund = [
+      { extendedAmount: 60, worktagReference: [cc] },
+      { extendedAmount: 40, worktagReference: [cc] },
+    ];
+    expect(passthroughWorktagsForSplitInvoiceLine([fund, venue], splitsWithoutFund)).toEqual([
+      fund,
+      venue,
+    ]);
+
+    const splitsWithFund = [
+      { extendedAmount: 60, worktagReference: [fund, cc] },
+      { extendedAmount: 40, worktagReference: [fund, cc] },
+    ];
+    expect(passthroughWorktagsForSplitInvoiceLine([fund, venue], splitsWithFund)).toEqual([venue]);
+  });
+
+  it('enrichSplitWorktagsWithLineLevel copies venue/custom to splits lacking them', () => {
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const custom = makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-A');
+    const fund = makeWorktag('Fund_ID', 'FUND-PO');
+    const lob = makeOrgWorktag('LOB-Technology_Services');
+    const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+
+    expect(enrichSplitWorktagsWithLineLevel([cc], [venue, custom, fund, lob])).toEqual([
+      cc,
+      venue,
+      custom,
+    ]);
+    expect(enrichSplitWorktagsWithLineLevel([cc, venue], [venue])).toEqual([cc, venue]);
+    expect(
+      enrichSplitWorktagsWithLineLevel([makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-B')], [custom])
+    ).toEqual([makeWorktag('Custom_Worktag_01_ID', 'PROGRAM-B')]);
+  });
+
+  it('mapPoSplitsToSupplierInvoiceSplitLineData inherits line venue on splits', () => {
+    const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+    const venue = makeOrgWorktag('VENU-Contestant_Indirect');
+    const mapped = mapPoSplitsToSupplierInvoiceSplitLineData(
+      [{ extendedAmount: 60, worktagReference: [cc] }],
+      60,
+      [venue]
+    );
+    expect(mapped?.[0].Worktag_Reference).toEqual([cc, venue]);
   });
 
   it('firstNonEmptyPoLineArray prefers first non-empty source', () => {

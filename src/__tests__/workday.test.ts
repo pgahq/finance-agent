@@ -4134,8 +4134,8 @@ describe('Workday utilities', () => {
           costCenterId: 'CC-INV',
           poPassthroughWorktagsReference: [fundPassthrough, ccSplit, venue],
           supplierInvoiceSplitLineData: [
-            { extendedAmount: 60, worktagReference: [ccSplit] },
-            { extendedAmount: 40, worktagReference: [ccSplit] },
+            { extendedAmount: 60, worktagReference: [fundPassthrough, ccSplit] },
+            { extendedAmount: 40, worktagReference: [fundPassthrough, ccSplit] },
           ],
         }],
       });
@@ -4173,9 +4173,15 @@ describe('Workday utilities', () => {
           { $attributes: { type: 'Custom_Organization_Reference_ID' }, $value: value },
         ],
       });
+      const makeWorktag = (type: string, value: string) => ({
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+          { $attributes: { type }, $value: value },
+        ],
+      });
       const venue = makeOrgWorktag('VENU-Contestant_Indirect');
       const lobPassthrough = makeOrgWorktag('LOB-Technology_Services');
-      const ccSplit = makeOrgWorktag('CC-SPLIT');
+      const ccSplit = makeWorktag('Cost_Center_Reference_ID', 'CC-SPLIT');
 
       await submitNewSupplierInvoiceForTest({
         finalLines: [
@@ -4201,8 +4207,8 @@ describe('Workday utilities', () => {
             lineOfBusinessId: 'LOB-Technology_Services',
             poPassthroughWorktagsReference: [venue, lobPassthrough],
             supplierInvoiceSplitLineData: [
-              { extendedAmount: 60, worktagReference: [ccSplit] },
-              { extendedAmount: 40, worktagReference: [ccSplit] },
+              { extendedAmount: 60, worktagReference: [ccSplit, lobPassthrough] },
+              { extendedAmount: 40, worktagReference: [ccSplit, lobPassthrough] },
             ],
           },
         ],
@@ -4224,6 +4230,13 @@ describe('Workday utilities', () => {
       expect(splitValues).toContain('Organization_Reference_ID:VENU-Contestant_Indirect');
       expect(splitValues.filter((v: string) => v.endsWith(':LOB-Technology_Services'))).toHaveLength(0);
       expect(lines[1].Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+      const splitWorktagValues = (lines[1].Supplier_Invoice_Split_Line_Data[0].Worktag_Reference ?? []).flatMap(
+        (tag: any) =>
+          ([] as any[]).concat(tag.ID ?? [])
+            .filter((id: any) => id.$attributes?.type !== 'WID')
+            .map((id: any) => `${id.$attributes.type}:${id.$value}`)
+      );
+      expect(splitWorktagValues).toContain('Organization_Reference_ID:VENU-Contestant_Indirect');
     });
 
     it('should propagate SOAP errors without request headers or bodies', async () => {
