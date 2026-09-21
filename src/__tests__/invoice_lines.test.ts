@@ -9,6 +9,7 @@ import {
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
+  overlaySharedPoWorktagsOnUnmatchedLines,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   type FinalInvoiceLine,
@@ -193,6 +194,84 @@ describe('overlayPoWorktagsFromPurchaseOrder', () => {
 
     expect(lines[0].poPassthroughWorktagsReference).toEqual([program]);
     expect(lines[0].supplierInvoiceSplitLineData).toHaveLength(1);
+  });
+
+  it('copies shared PO worktags to unmatched lines without splits', () => {
+    const venue = makeWorktag('Organization_Reference_ID', 'VENU-Contestant_Indirect');
+    const fundA = makeWorktag('Fund_ID', 'FUND-A');
+    const fundB = makeWorktag('Fund_ID', 'FUND-B');
+    const lines = overlayPoWorktagsFromPurchaseOrder(
+      [{ lineOrder: 1, description: 'Service', purchaseOrderLineId: null }],
+      [
+        {
+          lineOrder: 1,
+          purchaseOrderLineId: 'POL-001',
+          lineOfBusinessId: null,
+          costCenterId: null,
+          fundId: 'FUND-A',
+          spendCategoryId: null,
+          worktagsReference: [venue, fundA],
+          lineLevelWorktagsReference: [venue, fundA],
+          description: null,
+          memo: null,
+          shipToAddressId: null,
+          splitLineData: [],
+        },
+        {
+          lineOrder: 2,
+          purchaseOrderLineId: 'POL-002',
+          lineOfBusinessId: null,
+          costCenterId: null,
+          fundId: 'FUND-B',
+          spendCategoryId: null,
+          worktagsReference: [venue, fundB],
+          lineLevelWorktagsReference: [venue, fundB],
+          description: null,
+          memo: null,
+          shipToAddressId: null,
+          splitLineData: [],
+        },
+      ]
+    );
+
+    expect(lines[0].poPassthroughWorktagsReference).toEqual([venue]);
+    expect(lines[0].supplierInvoiceSplitLineData).toBeUndefined();
+  });
+});
+
+describe('overlaySharedPoWorktagsOnUnmatchedLines', () => {
+  it('clears PO line id and splits then copies only shared additional worktags', () => {
+    const venue = makeWorktag('Organization_Reference_ID', 'VENU-Contestant_Indirect');
+    const fundA = makeWorktag('Fund_ID', 'FUND-A');
+    const fundB = makeWorktag('Fund_ID', 'FUND-B');
+    const lines = overlaySharedPoWorktagsOnUnmatchedLines(
+      [{
+        lineOrder: 1,
+        description: 'Invoice',
+        purchaseOrderLineId: 'POL-001',
+        poPassthroughWorktagsReference: [fundA],
+        supplierInvoiceSplitLineData: [{ extendedAmount: 100, worktagReference: [fundA] }],
+      }],
+      [
+        poLine({
+          purchaseOrderLineId: 'POL-001',
+          worktagsReference: [venue, fundA],
+          lineLevelWorktagsReference: [venue, fundA],
+          splitLineData: [{ extendedAmount: 100, worktagReference: [fundA] }],
+        }),
+        poLine({
+          lineOrder: 2,
+          purchaseOrderLineId: 'POL-002',
+          worktagsReference: [venue, fundB],
+          lineLevelWorktagsReference: [venue, fundB],
+          splitLineData: [],
+        }),
+      ]
+    );
+
+    expect(lines[0].purchaseOrderLineId).toBeNull();
+    expect(lines[0].supplierInvoiceSplitLineData).toBeUndefined();
+    expect(lines[0].poPassthroughWorktagsReference).toEqual([venue]);
   });
 });
 

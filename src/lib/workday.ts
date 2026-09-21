@@ -1109,14 +1109,21 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     const isDiscountOverride = line.hasDiscount === true;
     const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
     const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
+    const orgPassthroughContext = {
+      relatedLob: relatedLobByCostCenter?.get(line.costCenterId ?? ''),
+      lineOfBusinessId: line.lineOfBusinessId ?? null,
+    };
     const passthrough = passthroughWorktagsForSplitInvoiceLine(
       line.poPassthroughWorktagsReference,
-      Boolean(line.supplierInvoiceSplitLineData?.length)
+      line.supplierInvoiceSplitLineData,
+      orgPassthroughContext
     );
-    const worktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough);
+    const worktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
     const supplierInvoiceSplitLineData = mapPoSplitsToSupplierInvoiceSplitLineData(
       line.supplierInvoiceSplitLineData,
-      extendedAmountForSoap ?? line.extendedAmount
+      extendedAmountForSoap ?? line.extendedAmount,
+      passthrough,
+      orgPassthroughContext
     );
     return {
       Line_Order: line.lineOrder,

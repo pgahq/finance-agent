@@ -28,6 +28,7 @@ import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
   normalizeSupplierInvoiceLineAmounts,
+  overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -324,7 +325,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           relatedLobLookup,
           invoiceLineQuantityDisplayed
         );
-        finalLines = synthetic.lines;
+        finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else if (remainder != null && remainder <= 0) {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
@@ -345,7 +346,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           relatedLobLookup,
           invoiceLineQuantityDisplayed
         );
-        finalLines = synthetic.lines;
+        finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
