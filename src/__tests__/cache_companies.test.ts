@@ -82,6 +82,7 @@ describe('cache_companies processor', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAllWorkdayCompanies.mockResolvedValue([soapCompany]);
+    jest.mocked(getDocumentsByType).mockResolvedValue([]);
     process.env.AWS_LAMBDA_FUNCTION_NAME = 'CacheCompaniesProcessor';
   });
 
@@ -117,7 +118,7 @@ describe('cache_companies processor', () => {
   });
 
   it('rewrites existing companies when aliases are cleared', async () => {
-    jest.mocked(getDocumentsByType).mockResolvedValueOnce([{
+    jest.mocked(getDocumentsByType).mockResolvedValue([{
       workday_id: 'pga-wid',
       content: 'Company Name: The Professional Golfers Association of America\nFinance Agent Alias: PGA of America',
       metadata: {
@@ -134,12 +135,49 @@ describe('cache_companies processor', () => {
 
     await expect(processor({})).resolves.not.toThrow();
 
-    expect(bulkInsertDocuments).not.toHaveBeenCalled();
     expect(bulkUpdateDocuments).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps cached streets when SOAP omits formatted addresses', async () => {
+    jest.mocked(getDocumentsByType).mockResolvedValue([{
+      workday_id: 'pga-wid',
+      content: 'Company Name: The Professional Golfers Association of America\nPrimary Address: 100 Avenue of the Champions, Palm Beach Gardens, FL 33418\nFinance Agent Alias: PGA of America',
+      metadata: {
+        companyName: 'The Professional Golfers Association of America',
+        companyReferenceId: '310',
+        addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+        publicAddresses: ['100 Avenue of the Champions, Palm Beach Gardens, FL 33418'],
+        financeAgentAliases: ['PGA of America'],
+      },
+      created_at: new Date('2026-01-01T00:00:00Z'),
+    }]);
+    mockGetAllWorkdayCompanies.mockResolvedValueOnce([{
+      ...soapCompany,
+      addressPrimary: undefined,
+      publicAddresses: undefined,
+      financeAgentAliases: [],
+    }]);
+
+    await expect(processor({})).resolves.not.toThrow();
+
+    expect(bulkInsertDocuments).not.toHaveBeenCalled();
+    expect(bulkUpdateDocuments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({
+          workdayId: 'pga-wid',
+          metadata: expect.objectContaining({
+            addressPrimary: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418',
+            publicAddresses: ['100 Avenue of the Champions, Palm Beach Gardens, FL 33418'],
+            financeAgentAliases: [],
+          }),
+        }),
+      ])
+    );
+  });
+
   it('rewrites existing companies when primary address was not stored', async () => {
-    jest.mocked(getDocumentsByType).mockResolvedValueOnce([{
+    jest.mocked(getDocumentsByType).mockResolvedValue([{
       workday_id: 'pga-wid',
       content: 'Company Name: The Professional Golfers Association of America\nPrimary Address: [object Object]',
       metadata: {
