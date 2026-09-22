@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { z } from 'zod';
+import { buildConversationTranscript, type ConversationTranscript } from './conversation_transcript.js';
 import type { InvoiceData } from './types.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.intercom.io';
@@ -21,6 +22,7 @@ export interface IntercomAttachment {
 
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
+  transcript: ConversationTranscript;
   appId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
@@ -74,12 +76,14 @@ const intercomAttachmentSchema = z.object({
   content_type: z.string().optional(),
 });
 const intercomAuthorSchema = z.object({
+  name: z.string().nullable().optional().catch(undefined),
   email: z.string().nullable().optional(),
   type: z.string().nullable().optional(),
 });
 const intercomConversationPartSchema = z.object({
   part_type: z.string().optional(),
   body: z.string().nullable().optional(),
+  created_at: z.number().optional().catch(undefined),
   author: intercomAuthorSchema.optional(),
   attachments: z.array(intercomAttachmentSchema).optional(),
 });
@@ -87,6 +91,10 @@ const intercomConversationSchema = z.object({
   id: z.string().optional(),
   app_id: z.string().optional(),
   created_at: z.number().optional().catch(undefined),
+  title: z.string().nullable().optional().catch(undefined),
+  custom_attributes: z.object({
+    Brand: z.string().nullable().optional().catch(undefined),
+  }).passthrough().nullable().optional().catch(undefined),
   source: z.object({
     subject: z.string().nullable().optional(),
     body: z.string().nullable().optional(),
@@ -298,12 +306,14 @@ export async function fetchConversationInvoiceData(
   const conversationCreatedAt = conversation.created_at != null
     ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
     : undefined;
+  const transcript = buildConversationTranscript(conversation, { conversationId });
 
   return {
     attachments: invoiceAttachments.map((attachment) => ({
       ...attachment,
       name: sanitizeFileName(attachment.name),
     })),
+    transcript,
     ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
     ...(assigneeEmail ? { assigneeEmail } : {}),
     ...(conversationCreatedAt ? { conversationCreatedAt } : {}),

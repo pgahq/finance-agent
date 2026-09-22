@@ -3725,11 +3725,11 @@ describe('Workday utilities', () => {
         quantity: 1,
         unitCost: 100
       }],
-      attachment: {
+      attachments: [{
         fileName: 'invoice.pdf',
         contentType: 'application/pdf',
         base64Content: 'ZmFrZS1wZGYtY29udGVudA=='
-      },
+      }],
       ...overrides
     });
 
@@ -3950,6 +3950,45 @@ describe('Workday utilities', () => {
       );
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('secret-access-token');
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
+    });
+
+    it('embeds the vendor PDF and conversation transcript as Attachment_Data', async () => {
+      const mockClient = mockSoapClient();
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      await submitNewSupplierInvoiceForTest({
+        attachments: [
+          {
+            fileName: 'invoice.pdf',
+            contentType: 'application/pdf',
+            base64Content: 'aW52b2ljZQ==',
+          },
+          {
+            fileName: 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
+            contentType: 'application/pdf',
+            base64Content: 'dHJhbnNjcmlwdA==',
+          },
+        ],
+      });
+
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([
+        {
+          $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
+          File_Content: 'aW52b2ljZQ==',
+        },
+        {
+          $attributes: {
+            Content_Type: 'application/pdf',
+            Filename: 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
+          },
+          File_Content: 'dHJhbnNjcmlwdA==',
+        },
+      ]);
     });
 
     it('sets Invoice_Received_Date when invoiceReceivedDate is provided', async () => {
