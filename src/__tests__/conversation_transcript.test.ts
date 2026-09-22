@@ -1,3 +1,4 @@
+import PDFDocument from 'pdfkit';
 import {
   buildConversationTranscript,
   renderConversationTranscriptPdf,
@@ -172,5 +173,21 @@ describe('renderConversationTranscriptPdf', () => {
 
     expect(text).toContain('Paid thanks ? ??');
     expect(text).not.toContain('北京');
+  });
+
+  it('rejects when PDF drawing throws', async () => {
+    const original = PDFDocument.prototype.font;
+    PDFDocument.prototype.font = function font() {
+      throw new Error('font failed');
+    };
+    try {
+      await expect(renderConversationTranscriptPdf({
+        fileName: 'x.pdf',
+        title: 'Conversation',
+        messages: [],
+      })).rejects.toThrow('font failed');
+    } finally {
+      PDFDocument.prototype.font = original;
+    }
   });
 });

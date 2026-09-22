@@ -320,27 +320,31 @@ export function renderConversationTranscriptPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    doc.font('Helvetica-Bold').fontSize(16).fillColor('#111111').text(pdfText(transcript.title), { width });
-    if (transcript.startedOn) {
-      doc.moveDown(0.4);
-      doc.font('Helvetica').fontSize(10).fillColor('#444444').text(pdfText(transcript.startedOn), { width });
-    }
-    doc.moveDown(0.6);
-    const ruleY = doc.y;
-    doc.moveTo(doc.page.margins.left, ruleY)
-      .lineTo(doc.page.width - doc.page.margins.right, ruleY)
-      .strokeColor('#1a73e8')
-      .stroke();
-    doc.moveDown(0.8);
+    try {
+      const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      doc.font('Helvetica-Bold').fontSize(16).fillColor('#111111').text(pdfText(transcript.title), { width });
+      if (transcript.startedOn) {
+        doc.moveDown(0.4);
+        doc.font('Helvetica').fontSize(10).fillColor('#444444').text(pdfText(transcript.startedOn), { width });
+      }
+      doc.moveDown(0.6);
+      const ruleY = doc.y;
+      doc.moveTo(doc.page.margins.left, ruleY)
+        .lineTo(doc.page.width - doc.page.margins.right, ruleY)
+        .strokeColor('#1a73e8')
+        .stroke();
+      doc.moveDown(0.8);
 
-    for (const message of transcript.messages) {
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#333333').text(pdfText(message.meta), { width });
-      doc.moveDown(0.35);
-      doc.font('Helvetica').fontSize(11).fillColor('#111111').text(pdfText(message.body), { width });
-      doc.moveDown(1);
-    }
+      for (const message of transcript.messages) {
+        doc.font('Helvetica-Bold').fontSize(10).fillColor('#333333').text(pdfText(message.meta), { width });
+        doc.moveDown(0.35);
+        doc.font('Helvetica').fontSize(11).fillColor('#111111').text(pdfText(message.body), { width });
+        doc.moveDown(1);
+      }
 
-    doc.end();
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
   });
 }
