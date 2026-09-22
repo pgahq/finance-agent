@@ -511,6 +511,7 @@ interface buildSubmitInvoiceDataOptions {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  hasHeaderTax?: boolean;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
@@ -586,6 +587,14 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 
 function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
   return { ID: [{ $attributes: { type }, $value: value }] };
+}
+
+export const USA_TAXABLE_APPLICABILITY_ID = 'USA_Taxable';
+
+export function hasHeaderTaxAmount(extractedTaxAmount?: string | null): boolean {
+  if (extractedTaxAmount == null) return false;
+  const parsed = parseExtractedAmount(extractedTaxAmount);
+  return parsed != null && parsed > 0;
 }
 
 function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
@@ -979,7 +988,7 @@ function getFallbackRetryBuildOptions(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, hasHeaderTax, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1001,6 +1010,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const taxAmount = extractedTaxAmount
     ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
     : (currentInvoice.Tax_Amount ?? 0);
+  const hasHeaderTaxForLines = hasHeaderTax === true;
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
@@ -1145,6 +1155,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
       ...((applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID : line.spendCategoryId) && {
         Spend_Category_Reference: createReference('Spend_Category_ID', applySpendCategoryFallback ? process.env.FALLBACK_SPEND_CATEGORY_ID! : line.spendCategoryId!),
       }),
+      ...(!isDiscountOverride && hasHeaderTaxForLines && {
+        Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
+      }),
       ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
       ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
       ...(line.memo && { Memo: line.memo }),
@@ -1203,6 +1216,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         ...(remainderWorktags.length && { Worktags_Reference: remainderWorktags }),
         ...(fallbackSpendCategoryId && {
           Spend_Category_Reference: createReference('Spend_Category_ID', fallbackSpendCategoryId),
+        }),
+        ...(hasHeaderTaxForLines && {
+          Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
         }),
       }];
     }
@@ -1943,6 +1959,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  hasHeaderTax?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -1963,6 +1980,7 @@ export async function submitSupplierInvoiceUpdate(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
+    hasHeaderTax,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2020,6 +2038,7 @@ export async function submitSupplierInvoiceUpdate(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      hasHeaderTax,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
@@ -2056,6 +2075,7 @@ export interface SubmitNewSupplierInvoiceParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  hasHeaderTax?: boolean;
   finalLines: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -2081,6 +2101,7 @@ export async function submitNewSupplierInvoice(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
+    hasHeaderTax,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2129,6 +2150,7 @@ export async function submitNewSupplierInvoice(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      hasHeaderTax,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
