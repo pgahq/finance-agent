@@ -111,18 +111,60 @@ function decodeEntities(value: string): string {
     .replace(/&#39;|&apos;/gi, "'");
 }
 
-const HTML_BREAK = /<br\b[^>]*\/?>/gi;
-const HTML_BLOCK_END = /<\/(?:p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol|section|article|header|footer)>/gi;
-const HTML_TAG = /<\/?(?:a|article|b|blockquote|body|br|center|code|div|em|figcaption|figure|font|footer|h[1-6]|head|header|hr|html|i|img|li|link|meta|nav|ol|p|pre|script|section|small|span|strong|style|sub|sup|table|tbody|td|tfoot|th|thead|title|tr|u|ul|wbr)\b[^>]*>/gi;
+const HTML_TAG_NAME = /^(?:a|article|b|blockquote|body|br|center|code|div|em|figcaption|figure|font|footer|h[1-6]|head|header|hr|html|i|img|li|link|meta|nav|ol|p|pre|script|section|small|span|strong|style|sub|sup|table|tbody|td|tfoot|th|thead|title|tr|u|ul|wbr)$/i;
+const HTML_BLOCK_NAME = /^(?:p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol|section|article|header|footer)$/i;
+const MAX_TAG_LENGTH = 200;
+
+function tagReplacement(inner: string): string | null {
+  let body = inner.trim();
+  const closing = body.startsWith('/');
+  if (closing) {
+    body = body.slice(1).trim();
+  }
+  body = body.replace(/\/$/, '').trim();
+  const name = body.match(/^([A-Za-z][A-Za-z0-9]*)/);
+  if (!name || !HTML_TAG_NAME.test(name[1])) {
+    return null;
+  }
+  const rest = body.slice(name[1].length);
+  if (rest.length > 0 && !/^[\s/]/.test(rest)) {
+    return null;
+  }
+  if (!closing && /^br$/i.test(name[1])) {
+    return '\n';
+  }
+  if (HTML_BLOCK_NAME.test(name[1])) {
+    return '\n';
+  }
+  return '';
+}
 
 function stripHtml(value: string | null | undefined): string {
   if (!value) {
     return '';
   }
-  return decodeEntities(value)
-    .replace(HTML_BREAK, '\n')
-    .replace(HTML_BLOCK_END, '\n')
-    .replace(HTML_TAG, '')
+  const decoded = decodeEntities(value);
+  const parts: string[] = [];
+  for (let i = 0; i < decoded.length; i++) {
+    if (decoded[i] !== '<') {
+      parts.push(decoded[i]);
+      continue;
+    }
+    const windowEnd = Math.min(decoded.length, i + 1 + MAX_TAG_LENGTH);
+    const rel = decoded.slice(i + 1, windowEnd).indexOf('>');
+    if (rel === -1) {
+      parts.push('<');
+      continue;
+    }
+    const replacement = tagReplacement(decoded.slice(i + 1, i + 1 + rel));
+    if (replacement === null) {
+      parts.push('<');
+      continue;
+    }
+    parts.push(replacement);
+    i += rel + 1;
+  }
+  return parts.join('')
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
