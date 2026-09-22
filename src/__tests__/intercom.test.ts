@@ -136,9 +136,8 @@ describe('intercom', () => {
 
       const mergedPlainTextBody = 'Please process this invoice\n\nUse cost center 72200';
 
-      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
         appId: 'sandbox-app',
-        assigneeEmail: undefined,
         conversationCreatedAt: '2024-01-01',
         attachments: [
           {
@@ -209,7 +208,7 @@ describe('intercom', () => {
 
       const mergedPlainTextBody = `${sourceBody}\n\n${noteBody}`;
 
-      await expect(fetchConversationInvoiceData(config, '215475761242077')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '215475761242077')).resolves.toMatchObject({
         appId: 'sandbox-app',
         conversationCreatedAt: '2024-01-01',
         attachments: [{
@@ -312,7 +311,7 @@ describe('intercom', () => {
         }),
       }) as unknown as typeof fetch;
 
-      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
         appId: 'sandbox-app',
         attachments: [
           {

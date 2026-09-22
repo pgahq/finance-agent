@@ -177,6 +177,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
+    ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
+      ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
+      : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
