@@ -41,7 +41,7 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, hasHeaderTaxAmount, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -293,6 +293,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         extractedTaxAmount,
+        hasHeaderTax: hasHeaderTaxAmount(extractedTaxAmount),
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
