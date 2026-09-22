@@ -163,7 +163,7 @@ envelope `Header` element.
   concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Each Workday invoice receives its corresponding PDF as `Attachment_Data`
+- Each Workday invoice receives its corresponding vendor PDF as `Attachment_Data`. Create-invoice from an Intercom conversation also appends the conversation transcript as the second `Attachment_Data`
 - Success Slack details include filename, content type, byte size, and
   `includedInline`; never include base64 content
 - Success Slack details include `conversationId` / Intercom conversation URL
