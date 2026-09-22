@@ -2907,7 +2907,7 @@ describe('Workday utilities', () => {
       });
 
       describe('line Tax_Applicability_Reference', () => {
-        const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'USA_Taxable' }] };
+        const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
         it('should set USA Taxable on merchandise lines when header tax is present', async () => {
           const { getCapturedRequest } = setupMockClient();
@@ -4703,7 +4703,7 @@ describe('Workday utilities', () => {
     });
 
     describe('line Tax_Applicability_Reference', () => {
-      const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'USA_Taxable' }] };
+      const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
       it('should set USA Taxable on merchandise lines when header tax is present', async () => {
         const mockClient = mockSoapClient();
