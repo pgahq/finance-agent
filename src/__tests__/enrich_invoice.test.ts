@@ -40,8 +40,7 @@ jest.mock('../lib/workday.js', () => ({
     }]
   }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
-  annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
-  hasHeaderTaxAmount: jest.requireActual('../lib/workday.js').hasHeaderTaxAmount
+  annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -499,7 +498,6 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
-        hasHeaderTax: false,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
@@ -573,7 +571,6 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
-        hasHeaderTax: false,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
@@ -585,66 +582,6 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain('Invoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (2026-04-01).');
 
     jest.useRealTimers();
-  });
-
-  it('should pass hasHeaderTax when a tax amount was extracted', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
-    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
-
-    getAiResponse.mockResolvedValueOnce({
-      supplier: {
-        status: 'matching',
-        confidence: 0.9,
-        extractedInformation: {
-          supplierName: 'Test Supplier',
-          memo: 'Test invoice'
-        },
-        resolvedSupplier: null,
-        potentialDuplicateSuppliers: null,
-        recommendation: {
-          action: 'no_action',
-          reason: 'Supplier matches existing assignment'
-        },
-        reason: 'High confidence match'
-      },
-      companyVerification: {
-        status: 'matching',
-        confidence: 0.85,
-        extractedInformation: {},
-        recommended: null,
-        reason: 'Company matches existing assignment'
-      },
-      extractedTaxAmount: '$45.00'
-    });
-
-    const mockEvent = {
-      data: [{
-        workdayID: 'test-invoice-id',
-        invoiceStatusAsText: 'Draft',
-        supplier: {
-          descriptor: 'Existing Supplier',
-          id: 'SUP-1'
-        },
-        company1: {
-          descriptor: 'Test Company',
-          id: 'COMP-1'
-        },
-        OCRSupplierInvoice: {
-          descriptor: '24953$4729',
-          id: '0627e00a601c1001085f64bd33e20000'
-        }
-      }]
-    };
-
-    await expect(processor(mockEvent as any)).resolves.not.toThrow();
-
-    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        extractedTaxAmount: '$45.00',
-        hasHeaderTax: true,
-      })
-    );
   });
 
   it('should pass the email-coded company workdayId as companyWID on update', async () => {
