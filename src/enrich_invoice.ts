@@ -318,6 +318,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     await notifyEnrichmentResult({
       processingTime,
+      invoiceWID: invoiceData.workdayID,
       ...(typeof detailedInvoice.Invoice_Number === 'string' && detailedInvoice.Invoice_Number
         ? { invoiceNumber: detailedInvoice.Invoice_Number }
         : {}),

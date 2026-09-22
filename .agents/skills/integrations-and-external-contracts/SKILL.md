@@ -4,9 +4,9 @@ description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
   create-invoice, enrich-invoice, Workday, SSM secrets). Use when changing
   POST /create-invoice or /enrich-invoice, Intercom Data Connectors, bearer
-  auth tokens, attachment upload contracts, or Workday invoice memos, line item
-  descriptions, or supplier invoice numbers (check-print order and pay-file-safe
-  characters).
+  auth tokens, attachment upload contracts, Workday invoice memos, line item
+  descriptions, supplier invoice numbers (check-print order and pay-file-safe
+  characters), or Slack Workday object deep links.
 ---
 
 # Integrations and external contracts
@@ -104,10 +104,11 @@ The terse 1-sentence summary is line `Memo`, generated **after** that concatenat
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |
 | `INTERCOM_APP_ID` | CFT `IntercomAppId` (`c722leqk` on `deploy-to-dev`, `jyi16dpc` on `deploy-to-prod`) | Slack inbox permalink workspace. Create-invoice uses this stack value, not the conversation `app_id`. |
+| `WORKDAY_UI_BASE_URL` | CFT `WorkdayUiBaseUrl` (`https://impl.workday.com` on `deploy-to-dev`, `https://www.myworkday.com` on `deploy-to-prod`) | Slack Workday object deep links. SOAP still uses `WORKDAY_DOMAIN`. |
 
 Intercom Access Token needs **Read conversations** only (`read_conversations`).
 
-Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP dumps. Remaining invoice details (`fileName`, `s3Key`, `workdayId`, not-authorized `note`) still appear as JSON; `conversationUrl` stays a footer link. Create-invoice Slack **success** uses the same human layout as enrich (`*Changes*`, fallbacks, `*Prior submit failures*`). The Workday **Invoice Number** (`SUPIN-XXXX`, SOAP `Invoice_Number`) is in the headline and as the first Changes bullet, plus a small JSON of `invoiceNumber` / `invoiceWID` / `fileName` / `conversationId` / `lineCount`. If Get has no `Invoice_Number`, omit that number from the create headline, Changes bullet, and JSON. Enrich success already puts that number in the `processed \`SUPIN-XXXX\`` headline and repeats it as `*Workday Invoice*`. Do not use `Supplier_Invoice_Reference_ID` (`SUPPLIER_INVOICE-3-…`) for Slack. After create, Get the invoice by WID and read `Invoice_Number`. Enrich uses Get `Invoice_Number` only — omit the Slack invoice number if Get does not return it. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches, and keep `serializedError` for a future threaded dump once a Slack bot token exists. Successful Workday submits that retried after a validation fault also include `priorFailures` on create and enrich Slack success.
+Create-invoice Slack **errors** show the Workday `Message` plus prior submit attempts — not SOAP dumps. Remaining invoice details (`fileName`, `s3Key`) still appear as JSON; `conversationUrl` stays a footer link. Enrich Slack **errors** include `workdayId` in that JSON plus a not-authorized `note` when the task is not authorized; the Workday footer link uses `workdayId`. Create-invoice Slack **success** uses the same human layout as enrich (`*Changes*`, fallbacks, `*Prior submit failures*`). The Workday **Invoice Number** (`SUPIN-XXXX`, SOAP `Invoice_Number`) is in the headline and as the first Changes bullet, plus a small JSON of `invoiceNumber` / `invoiceWID` / `fileName` / `conversationId` / `lineCount`. If Get has no `Invoice_Number`, omit that number from the create headline, Changes bullet, and JSON. Enrich success already puts that number in the `processed \`SUPIN-XXXX\`` headline and repeats it as `*Workday Invoice*`. When Slack has an invoice WID (`invoiceWID` on create/enrich success, `workdayId` on enrich error), add a footer `<url|View in Workday>` and, when an invoice number is also present, make the Changes bullet number a Slack link. URL: `{WORKDAY_UI_BASE_URL}/{WORKDAY_TENANT}/d/inst/deeplink/{WID}.htmld` (`https://impl.workday.com` in implementation, `https://www.myworkday.com` in production). Omit the Workday link when the WID, UI base URL, or tenant is missing. Do not use `Supplier_Invoice_Reference_ID` (`SUPPLIER_INVOICE-3-…`) for Slack. After create, Get the invoice by WID and read `Invoice_Number`. Enrich uses Get `Invoice_Number` only — omit the Slack invoice number if Get does not return it. Sanitized SOAP throws keep a `Validation_Fault` object so enrich skip-registry classification still matches, and keep `serializedError` for a future threaded dump once a Slack bot token exists. Successful Workday submits that retried after a validation fault also include `priorFailures` on create and enrich Slack success.
 
 ## Workday SOAP authentication
 

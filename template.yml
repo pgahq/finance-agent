@@ -38,6 +38,9 @@ Parameters:
     Type: String
     Description: Intercom workspace app_id for Slack inbox permalinks (sandbox vs prod)
     Default: jyi16dpc
+  WorkdayUiBaseUrl:
+    Type: String
+    Description: Workday UI host for object deep links (implementation vs production)
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -53,6 +56,7 @@ Globals:
         LOG_LEVEL: !Ref LogLevel
         WORKDAY_DOMAIN: !Ref WorkdayDomain
         WORKDAY_TENANT: !Ref WorkdayTenant
+        WORKDAY_UI_BASE_URL: !Ref WorkdayUiBaseUrl
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
