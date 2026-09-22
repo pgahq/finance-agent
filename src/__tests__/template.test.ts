@@ -19,9 +19,12 @@ describe('SAM template', () => {
   });
 
   it('wires WORKDAY_UI_BASE_URL from the WorkdayUiBaseUrl parameter', () => {
-    expect(globals).toMatch(/WorkdayUiBaseUrl:/);
+    const workdayUiParam = globals.match(
+      /WorkdayUiBaseUrl:\n(?:    .*\n)+/,
+    )?.[0];
+    expect(workdayUiParam).toBeDefined();
+    expect(workdayUiParam).not.toMatch(/Default:/);
     expect(globals).toMatch(/WORKDAY_UI_BASE_URL:\s*!Ref WorkdayUiBaseUrl/);
-    expect(globals).not.toMatch(/WorkdayUiBaseUrl:[\s\S]*?Default:/);
     expect(circleci).toMatch(/WorkdayUiBaseUrl=\$WORKDAY_UI_BASE_URL/);
     expect(circleci).toMatch(/WORKDAY_UI_BASE_URL:\s*https:\/\/impl\.workday\.com/);
     expect(circleci).toMatch(/WORKDAY_UI_BASE_URL:\s*https:\/\/www\.myworkday\.com/);
