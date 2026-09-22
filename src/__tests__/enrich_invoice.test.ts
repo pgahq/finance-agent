@@ -720,6 +720,7 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult).toHaveBeenCalledWith(
       expect.objectContaining({
         invoiceNumber: 'SUPIN-412727',
+        invoiceWID: 'test-invoice-id',
         priorFailures: [
           { attempt: 1, message: 'The invoice date must be the first day of the month.' },
         ],
@@ -748,6 +749,7 @@ describe('enrich_invoice', () => {
     const slackPayload = notifyEnrichmentResult.mock.calls.at(-1)?.[0];
     expect(slackPayload).toBeDefined();
     expect(slackPayload).not.toHaveProperty('invoiceNumber');
+    expect(slackPayload).toEqual(expect.objectContaining({ invoiceWID: 'test-invoice-id' }));
   });
 
   it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {
