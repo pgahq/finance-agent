@@ -41,7 +41,6 @@ Parameters:
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
-    Default: https://www.myworkday.com
 Globals:
   Function:
     Runtime: nodejs24.x
