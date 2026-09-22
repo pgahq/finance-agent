@@ -123,6 +123,10 @@ export interface CreateInvoiceRequest {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  conversationPdf?: {
+    s3Key: string;
+    fileName: string;
+  };
 }
 
 function slackInvoiceDetails(
@@ -158,6 +162,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
+    conversationPdf,
   } = request;
 
   if (!INVOICE_MOD_ENABLED) {
@@ -174,9 +179,12 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
   try {
     debug(`Processing new invoice from S3: ${s3Key}`);
-    const [buffer, presignedUrl] = await Promise.all([
+    const [buffer, presignedUrl, conversationPdfBuffer] = await Promise.all([
       getBinaryFromS3(context.s3Config, s3Key),
       getPresignedUrl(context.s3Config, s3Key),
+      conversationPdf
+        ? getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
+        : Promise.resolve(undefined),
     ]);
     const attachment = {
       id: s3Key,
@@ -412,11 +420,18 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
       paymentTermsId,
-      attachment: {
-        fileName,
-        contentType,
-        base64Content: buffer.toString('base64'),
-      },
+      attachments: [
+        {
+          fileName,
+          contentType,
+          base64Content: buffer.toString('base64'),
+        },
+        ...(conversationPdf && conversationPdfBuffer ? [{
+          fileName: conversationPdf.fileName,
+          contentType: 'application/pdf',
+          base64Content: conversationPdfBuffer.toString('base64'),
+        }] : []),
+      ],
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
     });
 
@@ -458,6 +473,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         sizeBytes: buffer.length,
         includedInline: true,
       },
+      ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,

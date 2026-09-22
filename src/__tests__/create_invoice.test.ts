@@ -278,11 +278,11 @@ describe('create_invoice', () => {
     expect(submitArgs.supplierWID).toBe('supplier-wid-1');
     expect(submitArgs.companyWID).toBe('Default_OCR_Company');
     expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(submitArgs.attachment).toEqual({
+    expect(submitArgs.attachments).toEqual([{
       fileName: 'invoice.pdf',
       contentType: 'application/pdf',
       base64Content: Buffer.from('fake-pdf-content').toString('base64')
-    });
+    }]);
     expect(submitArgs.assigneeWID).toBeUndefined();
 
     expect(slack.notifyResult).toHaveBeenCalledWith(
@@ -299,6 +299,47 @@ describe('create_invoice', () => {
           includedInline: true,
         }
       })
+    );
+  });
+
+  it('attaches the conversation transcript without sending it to enrichment', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    const transcriptName = 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf';
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-transcript/invoice.pdf'),
+        conversationPdf: {
+          s3Key: 'new-invoices/req-transcript/pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
+          fileName: transcriptName,
+        },
+      }],
+    } as any);
+
+    const enrichmentAttachments = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1];
+    expect(enrichmentAttachments).toHaveLength(1);
+    expect(enrichmentAttachments[0].fileName).toBe('invoice.pdf');
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.attachments).toEqual([
+      {
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        base64Content: Buffer.from('fake-pdf-content').toString('base64'),
+      },
+      {
+        fileName: transcriptName,
+        contentType: 'application/pdf',
+        base64Content: Buffer.from('fake-pdf-content').toString('base64'),
+      },
+    ]);
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({ conversationTranscriptFileName: transcriptName }),
     );
   });
 

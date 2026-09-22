@@ -2,7 +2,8 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import loadEnv from '@pga/lambda-env';
 import { debug } from '@pga/logger';
 import { extractBearerToken, isAuthorizedBearer } from './lib/api_auth.js';
-import { ingestCreateInvoiceAttachments } from './lib/create_invoice_ingest.js';
+import { renderConversationTranscriptPdf } from './lib/conversation_transcript.js';
+import { ingestCreateInvoiceAttachments, MAX_CONCURRENT_ATTACHMENT_DOWNLOADS } from './lib/create_invoice_ingest.js';
 import { formatError, jsonResponse, readRequestBody } from './lib/http_api.js';
 import {
   downloadAttachment,
@@ -15,7 +16,6 @@ import {
   MAX_ATTACHMENT_BYTES,
   type IntercomAttachment,
 } from './lib/intercom.js';
-import { MAX_CONCURRENT_ATTACHMENT_DOWNLOADS } from './lib/create_invoice_ingest.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
@@ -178,6 +178,11 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   try {
+    if (!conversationData.transcript) {
+      throw new Error('Conversation transcript is missing');
+    }
+    const transcript = conversationData.transcript;
+    const transcriptBuffer = await renderConversationTranscriptPdf(transcript);
     const ingested = await ingestCreateInvoiceAttachments(
       process.env,
       attachments.map((attachment, index) => ({
@@ -195,6 +200,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         },
       })),
       { 'intercom-conversation-id': conversationId },
+      {
+        fileName: transcript.fileName,
+        contentType: 'application/pdf',
+        buffer: transcriptBuffer,
+        payloadField: 'conversationPdf',
+      },
     );
 
     return jsonResponse(202, {

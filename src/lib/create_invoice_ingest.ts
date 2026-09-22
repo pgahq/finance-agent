@@ -14,10 +14,18 @@ export interface CreateInvoiceIngestAttachment {
   processorFields?: Record<string, string>;
 }
 
+export interface CreateInvoiceSharedFile {
+  fileName: string;
+  contentType: string;
+  buffer: Buffer;
+  payloadField: string;
+}
+
 export async function ingestCreateInvoiceAttachments(
   env: NodeJS.ProcessEnv,
   attachments: CreateInvoiceIngestAttachment[],
   s3Metadata: Record<string, string>,
+  sharedFile?: CreateInvoiceSharedFile,
 ): Promise<{ requestId: string; attachmentCount: number; totalBytes: number }> {
   const s3Config = getS3Config(env);
   const requestId = randomUUID();
@@ -37,9 +45,28 @@ export async function ingestCreateInvoiceAttachments(
     };
   }));
 
-  const totalBytes = attachments.reduce((total, attachment) => total + attachment.buffer.length, 0);
+  let sharedPayload: Record<string, { s3Key: string; fileName: string }> = {};
+  if (sharedFile) {
+    const s3Key = `new-invoices/${requestId}/${sharedFile.fileName}`;
+    await putBinaryToS3(s3Config, s3Key, sharedFile.buffer, sharedFile.contentType, {
+      'original-filename': sharedFile.fileName,
+      'upload-timestamp': new Date().toISOString(),
+      ...s3Metadata,
+    });
+    sharedPayload = {
+      [sharedFile.payloadField]: { s3Key, fileName: sharedFile.fileName },
+    };
+  }
+  const processorRecords = uploadedAttachments.map((attachment) => ({
+    ...attachment,
+    ...sharedPayload,
+  }));
+
+  const totalBytes = attachments.reduce((total, attachment) => total + attachment.buffer.length, 0)
+    + (sharedFile?.buffer.length ?? 0);
   debug('Uploaded new invoice attachments to S3', {
     attachmentCount: uploadedAttachments.length,
+    ...(sharedFile ? { transcriptFileName: sharedFile.fileName } : {}),
     totalBytes,
     ...s3Metadata,
   });
@@ -47,7 +74,7 @@ export async function ingestCreateInvoiceAttachments(
   const processorFunctionName = `${env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
   const lambda = new LambdaClient({ region: env.AWS_REGION });
 
-  await Promise.all(uploadedAttachments.map((attachment) =>
+  await Promise.all(processorRecords.map((attachment) =>
     lambda.send(new InvokeCommand({
       FunctionName: processorFunctionName,
       InvocationType: 'Event',
