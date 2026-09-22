@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -511,7 +511,7 @@ interface buildSubmitInvoiceDataOptions {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
-  hasHeaderTax?: boolean;
+  omitTaxApplicability?: boolean;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
@@ -522,8 +522,8 @@ interface buildSubmitInvoiceDataOptions {
   omitAssigneeReference?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability'>;
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -591,10 +591,23 @@ function createReference(type: string, value: string): { ID: Array<{ $attributes
 
 export const USA_TAXABLE_APPLICABILITY_ID = 'USA_Taxable';
 
-export function hasHeaderTaxAmount(extractedTaxAmount?: string | null): boolean {
-  if (extractedTaxAmount == null) return false;
-  const parsed = parseExtractedAmount(extractedTaxAmount);
-  return parsed != null && parsed > 0;
+function soapAmount(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
+  if (typeof value === 'string') return parseExtractedAmount(value);
+  return undefined;
+}
+
+function resolveHeaderTaxAmount(currentInvoice: any, extractedTaxAmount?: string): unknown {
+  return extractedTaxAmount
+    ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
+    : (currentInvoice.Tax_Amount ?? 0);
+}
+
+// Workday may reject line applicability without a line tax code, so a validation retry can drop it.
+function linesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boolean {
+  if (options.omitTaxApplicability) return false;
+  const tax = soapAmount(resolveHeaderTaxAmount(options.currentInvoice, options.extractedTaxAmount));
+  return tax != null && tax > 0;
 }
 
 function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
@@ -662,6 +675,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitAssigneeReference) {
     fallbacks.push({ field: 'assignee', label: 'omitted assignee' });
+  }
+
+  if (options.omitTaxApplicability) {
+    fallbacks.push({ field: 'taxApplicability', label: 'omitted line tax applicability' });
   }
 
   return fallbacks;
@@ -826,6 +843,11 @@ async function getValidationFallbackField(
     return 'assignee';
   }
 
+  if (linesCarryTaxApplicability(options) && isTaxApplicabilityValidationError(validationText)) {
+    debug('Validation references tax applicability or tax code; retrying without line Tax_Applicability_Reference');
+    return 'taxApplicability';
+  }
+
   if (isQuantityUnitExtendedMismatchError(validationText)) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
       debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
@@ -984,11 +1006,18 @@ function getFallbackRetryBuildOptions(
     };
   }
 
+  if (field === 'taxApplicability' && linesCarryTaxApplicability(options)) {
+    return {
+      buildOptions: { ...options, omitTaxApplicability: true },
+      fallbackLabel: 'omitted line tax applicability',
+    };
+  }
+
   return undefined;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, hasHeaderTax, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1007,10 +1036,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const freightAmount = extractedFreightAmount
     ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
     : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
-  const taxAmount = extractedTaxAmount
-    ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
-    : (currentInvoice.Tax_Amount ?? 0);
-  const hasHeaderTaxForLines = hasHeaderTax === true;
+  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
+  const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
@@ -1192,11 +1219,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     : mappedMerchandiseOcrLines;
 
   if (invoiceHadExistingLines && Array.isArray(invoiceLines) && invoiceLines.length === 0) {
-    const soapAmount = (value: unknown): number | undefined => {
-      if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
-      if (typeof value === 'string') return parseExtractedAmount(value);
-      return undefined;
-    };
     const control = soapAmount(controlAmountTotal);
     const freight = soapAmount(freightAmount) ?? 0;
     const tax = soapAmount(taxAmount) ?? 0;
@@ -1959,7 +1981,6 @@ export interface SubmitSupplierInvoiceUpdateParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
-  hasHeaderTax?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -1980,7 +2001,6 @@ export async function submitSupplierInvoiceUpdate(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
-    hasHeaderTax,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2038,7 +2058,6 @@ export async function submitSupplierInvoiceUpdate(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
-      hasHeaderTax,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
@@ -2075,7 +2094,6 @@ export interface SubmitNewSupplierInvoiceParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
-  hasHeaderTax?: boolean;
   finalLines: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -2101,7 +2119,6 @@ export async function submitNewSupplierInvoice(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
-    hasHeaderTax,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2150,7 +2167,6 @@ export async function submitNewSupplierInvoice(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
-      hasHeaderTax,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,

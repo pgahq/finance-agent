@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, hasHeaderTaxAmount, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -610,20 +610,6 @@ describe('Workday utilities', () => {
       const result = await getSupplierInvoiceWithAttachments(mockContext, mockWorkdayID);
 
       expect(result.invoice.Invoice_Number).toBeUndefined();
-    });
-  });
-
-  describe('hasHeaderTaxAmount', () => {
-    it.each([
-      ['$45.00', true],
-      ['45', true],
-      ['0', false],
-      ['$0.00', false],
-      ['not a number', false],
-      [null, false],
-      [undefined, false],
-    ])('should return %s for %s', (extractedTaxAmount, expected) => {
-      expect(hasHeaderTaxAmount(extractedTaxAmount as string | null | undefined)).toBe(expected);
     });
   });
 
@@ -2928,7 +2914,6 @@ describe('Workday utilities', () => {
 
           await submitSupplierInvoiceUpdateForTest({
             extractedTaxAmount: '$45.00',
-            hasHeaderTax: true,
             finalLines: [
               { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
               { lineOrder: 2, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 },
@@ -2947,18 +2932,6 @@ describe('Workday utilities', () => {
           const { getCapturedRequest } = setupMockClient();
 
           await submitSupplierInvoiceUpdateForTest({
-            hasHeaderTax: false,
-            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
-          });
-
-          const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
-          expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
-        });
-
-        it('should omit Tax_Applicability_Reference when hasHeaderTax is not provided', async () => {
-          const { getCapturedRequest } = setupMockClient();
-
-          await submitSupplierInvoiceUpdateForTest({
             finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
           });
 
@@ -2971,7 +2944,6 @@ describe('Workday utilities', () => {
 
           await submitSupplierInvoiceUpdateForTest({
             extractedTaxAmount: '$45.00',
-            hasHeaderTax: true,
             finalLines: [
               { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
               { lineOrder: 2, description: 'Loyalty discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -10 },
@@ -2989,7 +2961,6 @@ describe('Workday utilities', () => {
 
           await submitSupplierInvoiceUpdateForTest({
             extractedTaxAmount: '$45.00',
-            hasHeaderTax: true,
             finalLines: [
               { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
               { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
@@ -3027,7 +2998,6 @@ describe('Workday utilities', () => {
 
           await submitSupplierInvoiceUpdateForTest({
             extractedTaxAmount: '$25.00',
-            hasHeaderTax: true,
             extractedFreightAmount: '$15.00',
             finalLines: [
               { lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
@@ -3066,13 +3036,95 @@ describe('Workday utilities', () => {
           });
 
           await submitSupplierInvoiceUpdateForTest({
-            extractedTaxAmount: '$10.00',
-            hasHeaderTax: true
+            extractedTaxAmount: '$10.00'
           });
 
           const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
           expect(lines).toHaveLength(1);
           expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
+        it('should set USA Taxable when header tax comes from the existing Workday Tax_Amount', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '12.50'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe('12.50');
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+        });
+
+        it('should omit Tax_Applicability_Reference when the existing Workday Tax_Amount is zero', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '0.00'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
+        it('should retry without Tax_Applicability_Reference when Workday rejects line tax applicability', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback({
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: 'Tax Code is required when Tax Applicability is entered.',
+                    Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Tax_Applicability_Reference'
+                  }
+                }
+              }, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '$45.00',
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          const firstData = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          const retryData = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(firstData.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+          expect(retryData.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+          expect(retryData.Tax_Amount).toBe(45);
+          expect(result.appliedFallbacks).toEqual(
+            expect.arrayContaining([expect.objectContaining({ field: 'taxApplicability', label: 'omitted line tax applicability' })])
+          );
         });
       });
 
@@ -4613,7 +4665,6 @@ describe('Workday utilities', () => {
 
         await submitNewSupplierInvoiceForTest({
           extractedTaxAmount: '$45.00',
-          hasHeaderTax: true,
           finalLines: [
             { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 },
             { lineOrder: 2, description: 'Gadgets', quantity: 1, unitCost: 25, extendedAmount: 25 },
@@ -4637,10 +4688,31 @@ describe('Workday utilities', () => {
           callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
         });
 
-        await submitNewSupplierInvoiceForTest({ hasHeaderTax: false });
+        await submitNewSupplierInvoiceForTest();
 
         const lines = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
         expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
+      });
+
+      it.each([
+        ['$45.00', true],
+        ['45', true],
+        ['0', false],
+        ['$0.00', false],
+        ['not a number', false],
+      ])('with extractedTaxAmount %p tags lines: %p', async (extractedTaxAmount, tagged) => {
+        const mockClient = mockSoapClient();
+
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+        });
+
+        await submitNewSupplierInvoiceForTest({ extractedTaxAmount });
+
+        const line = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(line.Tax_Applicability_Reference).toEqual(tagged ? usaTaxableRef : undefined);
       });
 
       it('should never set Tax_Applicability_Reference on discount lines', async () => {
@@ -4654,7 +4726,6 @@ describe('Workday utilities', () => {
 
         await submitNewSupplierInvoiceForTest({
           extractedTaxAmount: '$45.00',
-          hasHeaderTax: true,
           finalLines: [
             { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 },
             { lineOrder: 2, description: 'Loyalty discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -10 },
