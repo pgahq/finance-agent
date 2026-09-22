@@ -27,7 +27,8 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
   parsePurchaseOrder: jest.fn(),
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
-  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] })
+  submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
+  hasHeaderTaxAmount: jest.requireActual('../lib/workday.js').hasHeaderTaxAmount
 }));
 
 jest.mock('../lib/employees.js', () => ({
@@ -341,6 +342,52 @@ describe('create_invoice', () => {
       expect.any(Number),
       expect.objectContaining({ conversationTranscriptFileName: transcriptName }),
     );
+  });
+
+  it('passes hasHeaderTax true when enrichment extracted a tax amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedTaxAmount: '$45.00',
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-1/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedTaxAmount).toBe('$45.00');
+    expect(submitArgs.hasHeaderTax).toBe(true);
+  });
+
+  it('passes hasHeaderTax false when no tax amount was extracted', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-1/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.hasHeaderTax).toBe(false);
+  });
+
+  it('passes hasHeaderTax false when the extracted tax amount is zero', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedTaxAmount: '0',
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-1/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.hasHeaderTax).toBe(false);
   });
 
   it('should create one invoice for each processor record', async () => {
