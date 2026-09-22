@@ -2907,7 +2907,7 @@ describe('Workday utilities', () => {
       });
 
       describe('line Tax_Applicability_Reference', () => {
-        const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'USA_Taxable' }] };
+        const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
         it('should set USA Taxable on merchandise lines when header tax is present', async () => {
           const { getCapturedRequest } = setupMockClient();
@@ -3125,6 +3125,38 @@ describe('Workday utilities', () => {
           expect(result.appliedFallbacks).toEqual(
             expect.arrayContaining([expect.objectContaining({ field: 'taxApplicability', label: 'omitted line tax applicability' })])
           );
+        });
+
+        it('should retry without Tax_Applicability_Reference when Workday rejects the applicability ID', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback({
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: "Invalid ID value. 'USA_Taxable' is not a valid ID value for type = 'Tax_Applicability_ID'",
+                    Xpath: '/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[1]/ns1:Tax_Applicability_Reference[1]'
+                  }
+                }
+              }, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '$45.00',
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+          expect(result.priorFailures).toEqual([
+            { attempt: 1, message: "Invalid ID value. 'USA_Taxable' is not a valid ID value for type = 'Tax_Applicability_ID'" },
+          ]);
         });
 
         it('should not retry a tax fault when no submitted line carries Tax_Applicability_Reference', async () => {
@@ -4575,7 +4607,7 @@ describe('Workday utilities', () => {
     });
 
     describe('line Tax_Applicability_Reference', () => {
-      const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'USA_Taxable' }] };
+      const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
       it('should set USA Taxable on merchandise lines when header tax is present', async () => {
         const mockClient = mockSoapClient();

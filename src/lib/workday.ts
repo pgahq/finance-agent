@@ -589,7 +589,7 @@ function createReference(type: string, value: string): { ID: Array<{ $attributes
   return { ID: [{ $attributes: { type }, $value: value }] };
 }
 
-export const USA_TAXABLE_APPLICABILITY_ID = 'USA_Taxable';
+export const USA_TAXABLE_APPLICABILITY_ID = 'TAX_APPLICABILITY-3-2';
 
 function soapAmount(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
