@@ -3126,6 +3126,25 @@ describe('Workday utilities', () => {
             expect.arrayContaining([expect.objectContaining({ field: 'taxApplicability', label: 'omitted line tax applicability' })])
           );
         });
+
+        it('should not retry a tax fault when no submitted line carries Tax_Applicability_Reference', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Tax Code is required when there is a tax amount.',
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '$45.00',
+            finalLines: [{ lineOrder: 1, description: 'Loyalty discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -10 }]
+          })).rejects.toThrow('Tax Code is required when there is a tax amount.');
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        });
       });
 
       it('should append fallback worktags to finalLines missing those worktag types', async () => {

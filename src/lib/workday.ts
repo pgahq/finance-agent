@@ -610,6 +610,12 @@ function linesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boo
   return tax != null && tax > 0;
 }
 
+function submittedLinesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boolean {
+  if (!linesCarryTaxApplicability(options)) return false;
+  const lines = ([] as any[]).concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? []);
+  return lines.some((line: any) => line.Tax_Applicability_Reference);
+}
+
 function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
   if (line?.costCenterId) return line.costCenterId;
   for (const worktag of ([] as any[]).concat(line?.Worktags_Reference ?? [])) {
@@ -843,7 +849,7 @@ async function getValidationFallbackField(
     return 'assignee';
   }
 
-  if (linesCarryTaxApplicability(options) && isTaxApplicabilityValidationError(validationText)) {
+  if (isTaxApplicabilityValidationError(validationText) && submittedLinesCarryTaxApplicability(options)) {
     debug('Validation references tax applicability or tax code; retrying without line Tax_Applicability_Reference');
     return 'taxApplicability';
   }
@@ -1006,7 +1012,7 @@ function getFallbackRetryBuildOptions(
     };
   }
 
-  if (field === 'taxApplicability' && linesCarryTaxApplicability(options)) {
+  if (field === 'taxApplicability' && submittedLinesCarryTaxApplicability(options)) {
     return {
       buildOptions: { ...options, omitTaxApplicability: true },
       fallbackLabel: 'omitted line tax applicability',
