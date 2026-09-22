@@ -1,3 +1,4 @@
+import PDFDocument from 'pdfkit';
 import {
   buildConversationTranscript,
   renderConversationTranscriptPdf,
@@ -98,6 +99,28 @@ describe('buildConversationTranscript', () => {
     expect(transcript.messages).toEqual([]);
   });
 
+  it('keeps angle-bracket addresses, urls, and tokens while stripping HTML tags', () => {
+    const transcript = buildConversationTranscript({
+      created_at: 1790013750,
+      source: {
+        subject: '<p>Invoice <E54219></p>',
+        body: 'Send to <accounting@safari-solutions.com> <a@vendor.com> <i@vendor.com> <b@pgahq.com> <p@example.com> <pre@example.com> <br@example.com> via <https://vendor.example/inv>\nAmount < 500 > remaining\nLine<br>break<p class="x">Next</p>Done',
+        author: { email: 'accounting@safari-solutions.com' },
+      },
+    }, { conversationId: '215476033237026' });
+
+    expect(transcript.messages[0].body).toBe([
+      'Invoice <E54219>',
+      '',
+      'Send to <accounting@safari-solutions.com> <a@vendor.com> <i@vendor.com> <b@pgahq.com> <p@example.com> <pre@example.com> <br@example.com> via <https://vendor.example/inv>',
+      'Amount < 500 > remaining',
+      'Line',
+      'break',
+      'Next',
+      'Done',
+    ].join('\n'));
+  });
+
   it('falls back to the conversation title when brand is missing', () => {
     const transcript = buildConversationTranscript({
       title: 'Invoice E54219 from Safari Solutions',
@@ -106,6 +129,17 @@ describe('buildConversationTranscript', () => {
 
     expect(transcript.title).toBe('Invoice E54219 from Safari Solutions');
     expect(transcript.messages[0].meta).toBe('Safari');
+  });
+
+  it('keeps a long unclosed tag prefix', () => {
+    const body = '<b'.repeat(20000);
+    const started = Date.now();
+    const transcript = buildConversationTranscript({
+      source: { body, author: { email: 'ap@vendor.com' } },
+    }, { conversationId: '1', now: new Date('2026-09-21T18:02:30Z') });
+
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(transcript.messages[0].body.startsWith('<b<b')).toBe(true);
   });
 });
 
@@ -125,5 +159,35 @@ describe('renderConversationTranscriptPdf', () => {
     expect(text).toContain('accounting@safari-solutions.com');
     expect(text).toContain('Thank you for contacting the Corporate Accounts Payable Team.');
     expect(text).toContain('SUPIN-460853 submitted');
+  });
+
+  it('replaces characters Helvetica cannot encode', async () => {
+    const pdf = await renderConversationTranscriptPdf({
+      fileName: 'x.pdf',
+      title: 'Conversation',
+      messages: [{ kind: 'note', meta: 'Note', body: 'Paid thanks 😀 北京' }],
+    }, { compress: false });
+    const text = [...pdf.toString('latin1').matchAll(/<([0-9A-Fa-f]+)>/g)]
+      .map((match) => Buffer.from(match[1], 'hex').toString('latin1'))
+      .join('');
+
+    expect(text).toContain('Paid thanks ? ??');
+    expect(text).not.toContain('北京');
+  });
+
+  it('rejects when PDF drawing throws', async () => {
+    const original = PDFDocument.prototype.font;
+    PDFDocument.prototype.font = function font() {
+      throw new Error('font failed');
+    };
+    try {
+      await expect(renderConversationTranscriptPdf({
+        fileName: 'x.pdf',
+        title: 'Conversation',
+        messages: [],
+      })).rejects.toThrow('font failed');
+    } finally {
+      PDFDocument.prototype.font = original;
+    }
   });
 });

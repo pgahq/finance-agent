@@ -111,16 +111,91 @@ function decodeEntities(value: string): string {
     .replace(/&#39;|&apos;/gi, "'");
 }
 
+const HTML_TAG_NAME = /^(?:a|article|b|blockquote|body|br|center|code|div|em|figcaption|figure|font|footer|h[1-6]|head|header|hr|html|i|img|li|link|meta|nav|ol|p|pre|script|section|small|span|strong|style|sub|sup|table|tbody|td|tfoot|th|thead|title|tr|u|ul|wbr)$/i;
+const HTML_BLOCK_NAME = /^(?:p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol|section|article|header|footer)$/i;
+const MAX_TAG_LENGTH = 200;
+
+function tagReplacement(inner: string): string | null {
+  let body = inner.trim();
+  const closing = body.startsWith('/');
+  if (closing) {
+    body = body.slice(1).trim();
+  }
+  body = body.replace(/\/$/, '').trim();
+  const name = body.match(/^([A-Za-z][A-Za-z0-9]*)/);
+  if (!name || !HTML_TAG_NAME.test(name[1])) {
+    return null;
+  }
+  const rest = body.slice(name[1].length);
+  if (rest.length > 0 && !/^[\s/]/.test(rest)) {
+    return null;
+  }
+  if (!closing && /^br$/i.test(name[1])) {
+    return '\n';
+  }
+  if (HTML_BLOCK_NAME.test(name[1])) {
+    return '\n';
+  }
+  return '';
+}
+
 function stripHtml(value: string | null | undefined): string {
   if (!value) {
     return '';
   }
-  return decodeEntities(value)
-    .replace(/<[^>]*>/g, '')
+  const decoded = decodeEntities(value);
+  const parts: string[] = [];
+  for (let i = 0; i < decoded.length; i++) {
+    if (decoded[i] !== '<') {
+      parts.push(decoded[i]);
+      continue;
+    }
+    const windowEnd = Math.min(decoded.length, i + 1 + MAX_TAG_LENGTH);
+    const rel = decoded.slice(i + 1, windowEnd).indexOf('>');
+    if (rel === -1) {
+      parts.push('<');
+      continue;
+    }
+    const replacement = tagReplacement(decoded.slice(i + 1, i + 1 + rel));
+    if (replacement === null) {
+      parts.push('<');
+      continue;
+    }
+    parts.push(replacement);
+    i += rel + 1;
+  }
+  return parts.join('')
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+const WIN_ANSI_EXTRA = new Set([
+  338, 339, 352, 353, 376, 381, 382, 402, 710, 732, 8211, 8212, 8216, 8217, 8218,
+  8220, 8221, 8222, 8224, 8225, 8226, 8230, 8240, 8249, 8250, 8364, 8482,
+]);
+
+function isWinAnsi(code: number): boolean {
+  if (code === 9 || code === 10 || code === 13) {
+    return true;
+  }
+  if (code >= 32 && code <= 126) {
+    return true;
+  }
+  if (code >= 160 && code <= 255) {
+    return true;
+  }
+  return WIN_ANSI_EXTRA.has(code);
+}
+
+function pdfText(value: string): string {
+  let out = '';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    out += isWinAnsi(code) ? char : '?';
+  }
+  return out;
 }
 
 function oneLine(value: string): string {
@@ -245,27 +320,31 @@ export function renderConversationTranscriptPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    doc.font('Helvetica-Bold').fontSize(16).fillColor('#111111').text(transcript.title, { width });
-    if (transcript.startedOn) {
-      doc.moveDown(0.4);
-      doc.font('Helvetica').fontSize(10).fillColor('#444444').text(transcript.startedOn, { width });
-    }
-    doc.moveDown(0.6);
-    const ruleY = doc.y;
-    doc.moveTo(doc.page.margins.left, ruleY)
-      .lineTo(doc.page.width - doc.page.margins.right, ruleY)
-      .strokeColor('#1a73e8')
-      .stroke();
-    doc.moveDown(0.8);
+    try {
+      const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      doc.font('Helvetica-Bold').fontSize(16).fillColor('#111111').text(pdfText(transcript.title), { width });
+      if (transcript.startedOn) {
+        doc.moveDown(0.4);
+        doc.font('Helvetica').fontSize(10).fillColor('#444444').text(pdfText(transcript.startedOn), { width });
+      }
+      doc.moveDown(0.6);
+      const ruleY = doc.y;
+      doc.moveTo(doc.page.margins.left, ruleY)
+        .lineTo(doc.page.width - doc.page.margins.right, ruleY)
+        .strokeColor('#1a73e8')
+        .stroke();
+      doc.moveDown(0.8);
 
-    for (const message of transcript.messages) {
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#333333').text(message.meta, { width });
-      doc.moveDown(0.35);
-      doc.font('Helvetica').fontSize(11).fillColor('#111111').text(message.body, { width });
-      doc.moveDown(1);
-    }
+      for (const message of transcript.messages) {
+        doc.font('Helvetica-Bold').fontSize(10).fillColor('#333333').text(pdfText(message.meta), { width });
+        doc.moveDown(0.35);
+        doc.font('Helvetica').fontSize(11).fillColor('#111111').text(pdfText(message.body), { width });
+        doc.moveDown(1);
+      }
 
-    doc.end();
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
   });
 }
