@@ -166,7 +166,7 @@ envelope `Header` element.
   concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key
 - Processor Event payload is metadata only (no file bytes)
-- Each Workday invoice receives its vendor PDF(s) as `Attachment_Data` (invoice first; a cluster's PDFs when clustering is on), with the conversation transcript appended last
+- Each Workday invoice receives its vendor PDF(s) as `Attachment_Data` (invoice first; a cluster's PDFs when clustering is on), with the conversation transcript appended last. `Submit_Supplier_Invoice` appends attachments on update, so resend updates send only newly received vendor PDFs plus a fresh transcript
 - Success Slack details include filename, content type, byte size, and
   `includedInline`; never include base64 content
 - Success Slack details include `conversationId` / Intercom conversation URL

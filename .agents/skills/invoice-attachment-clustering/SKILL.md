@@ -99,8 +99,13 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 - Registry hit with newer documents: check editability via WQL
   (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
   canceled, not paid/partially paid). Editable → `submitSupplierInvoiceUpdate`
-  with the latest cluster (lines, memo, company, attachments; assignee is left
-  untouched) and bump the watermark. Not editable or missing in Workday →
+  with the latest cluster (lines, memo, company; assignee is left untouched)
+  and bump the watermark. `Submit_Supplier_Invoice` appends `Attachment_Data`
+  rather than replacing it, so the update sends only vendor PDFs received after
+  the watermark plus a fresh conversation transcript (which records the
+  back-and-forth with the supplier). A text-only reply attaches just the
+  transcript. Enrichment still reads the whole cluster. Work queue notes and
+  Slack (`newAttachments`) name the files appended. Not editable or missing in Workday →
   skip with a `*Skipped*` note naming manual review. Status-check errors fail
   closed (Slack error, throw).
 - No extracted invoice number: the registry cannot key the invoice, so always
