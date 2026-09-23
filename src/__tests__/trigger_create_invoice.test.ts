@@ -526,6 +526,10 @@ describe('trigger_create_invoice handler', () => {
       S3_BUCKET_NAME: 'test-bucket',
       INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true',
     });
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      latestMessageAt: 1704153600,
+    });
 
     const response = await handler(buildEvent());
 
@@ -537,6 +541,7 @@ describe('trigger_create_invoice handler', () => {
       Payload: JSON.stringify({
         data: [{
           conversationId: '1234567890',
+          latestMessageAt: 1704153600,
           intercomAppId: 'sandbox-app',
           conversationCreatedAt: '2024-01-01',
           conversationPdf: {

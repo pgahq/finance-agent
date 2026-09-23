@@ -261,6 +261,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     if (clusteringEnabled) {
       const shared = {
         conversationId,
+        ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
         ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
         ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
         ...(conversationData.conversationCreatedAt

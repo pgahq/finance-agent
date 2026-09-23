@@ -1876,6 +1876,31 @@ describe('create_invoice', () => {
       );
     });
 
+    it('updates when a text-only supplier reply is newer even though no new PDF arrived', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          latestMessageAt: 300,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate).toHaveBeenCalledTimes(1);
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ lastProcessedReceivedAt: 300 })
+      );
+    });
+
     it('skips with a manual-review note when the invoice is no longer editable', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);

@@ -150,6 +150,7 @@ export interface CreateInvoiceRequest {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  latestMessageAt?: number;
   conversationPdf?: {
     s3Key: string;
     fileName: string;
@@ -187,7 +188,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -219,6 +220,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     assigneeEmail,
     conversationCreatedAt,
     conversationPdf,
+    latestMessageAt,
   } = request;
   const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
@@ -248,7 +250,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       const [first, ...rest] = clustering.clusters;
       firstCluster = first;
       unrelated = clustering.unrelated;
-      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf };
+      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf, latestMessageAt };
       await Promise.all(
         rest.map((cluster) => fanOutCluster([cluster.primary, ...cluster.supporting], shared))
       );
@@ -273,6 +275,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       assigneeEmail,
       conversationCreatedAt,
       conversationPdf,
+      latestMessageAt,
       startTime,
       clustered: true,
     });
@@ -289,6 +292,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       assigneeEmail,
       conversationCreatedAt,
       conversationPdf,
+      latestMessageAt,
       startTime,
       clustered: true,
     });
@@ -347,6 +351,7 @@ interface ClusterInvoiceInput {
     s3Key: string;
     fileName: string;
   };
+  latestMessageAt?: number;
   startTime: number;
   clustered: boolean;
 }
@@ -378,6 +383,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     assigneeEmail,
     conversationCreatedAt,
     conversationPdf,
+    latestMessageAt,
     startTime,
     clustered,
   } = input;
@@ -692,7 +698,9 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const registryNumber = extractedSuppliersInvoiceNumber
       ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
       : undefined;
-    const clusterReceivedAt = clusterMaxReceivedAt(loaded);
+    // A supplier can answer AP's request for missing info in the email body with no new PDF,
+    // so the newest message counts as new information alongside the newest document.
+    const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
 
     if (clusteringEnabled && conversationId && registryNumber) {
       const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
@@ -700,14 +708,14 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         existing?.supplierWid && targetSupplierWID && existing.supplierWid !== targetSupplierWID
       );
       if (existing && !supplierChanged) {
-        const hasNewerDocuments =
+        const hasNewerInformation =
           clusterReceivedAt == null ||
           existing.lastProcessedReceivedAt == null ||
           clusterReceivedAt > existing.lastProcessedReceivedAt;
-        if (!hasNewerDocuments) {
+        if (!hasNewerInformation) {
           const processingTime = Date.now() - startTime;
           const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
-          debug('Skipping resend: no documents newer than the last processing', {
+          debug('Skipping resend: no documents or messages newer than the last processing', {
             conversationId,
             invoiceLabel,
           });
@@ -716,7 +724,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             invoiceWID: existing.workdayInvoiceWid,
             invoiceNumber: existing.workdayInvoiceNumber,
             skipped: true,
-            skipReason: `No documents newer than the last processing of ${invoiceLabel}.`,
+            skipReason: `No documents or messages newer than the last processing of ${invoiceLabel}.`,
           }, conversationId, intercomAppId));
           return;
         }
