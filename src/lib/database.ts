@@ -73,6 +73,25 @@ export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents USING ivfflat (embedding vector_cosine_ops);`
 ];
 
+export const CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE = `
+  CREATE TABLE IF NOT EXISTS conversation_supplier_invoices (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id VARCHAR(255) NOT NULL,
+    supplier_invoice_number VARCHAR(255) NOT NULL,
+    supplier_wid VARCHAR(255),
+    workday_invoice_wid VARCHAR(255) NOT NULL,
+    workday_invoice_number VARCHAR(255),
+    last_processed_received_at BIGINT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (conversation_id, supplier_invoice_number)
+  );
+`;
+
+export const CREATE_CONVERSATION_SUPPLIER_INVOICES_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_conversation_supplier_invoices_lookup ON conversation_supplier_invoices(conversation_id, supplier_invoice_number);`,
+];
+
 export async function migrateDocumentsTypeCheck(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
 ): Promise<void> {
@@ -179,6 +198,12 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
 
       // Create indexes
       for (const indexSql of CREATE_INDEXES) {
+        await pool.query(indexSql);
+      }
+
+      // Conversation invoice registry (create-invoice resend dedupe)
+      await pool.query(CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE);
+      for (const indexSql of CREATE_CONVERSATION_SUPPLIER_INVOICES_INDEXES) {
         await pool.query(indexSql);
       }
 
