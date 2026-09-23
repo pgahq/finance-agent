@@ -25,6 +25,14 @@ description: >-
 `CREATE TABLE IF NOT EXISTS` does not alter existing tables. Type allowlist
 changes must go through the migration helper.
 
+`conversation_supplier_invoices` (conversation resend registry: conversation
+plus normalized supplier invoice number → Workday invoice WID/number,
+supplier WID, `last_processed_received_at` watermark) is created the same way
+in `getDatabaseConnection` with a lookup index. Reads/writes go through
+`src/lib/conversation_invoices.ts`, keyed by `normalizeClusterInvoiceNumber`.
+Concurrent double-fires can race lookup-then-create; the unique key keeps one
+row per conversation and number.
+
 ## Shared pool lifetime
 
 The Postgres `Pool` is process-global. Do not close it after individual RAG

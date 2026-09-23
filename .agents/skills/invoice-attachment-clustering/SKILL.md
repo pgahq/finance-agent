@@ -2,9 +2,10 @@
 name: invoice-attachment-clustering
 description: >-
   Classify and cluster create-invoice PDFs before supplier-invoice processing
-  (same invoice vs different invoices, supporting docs ride along). Use when
-  changing attachment classification, clustering rules, the
-  parse_invoice_attachments prompt, CreateInvoiceProcessor fan-out, or
+  (same invoice vs different invoices, supporting docs ride along) and dedupe
+  conversation resends via the Postgres invoice registry. Use when changing
+  attachment classification, clustering rules, the parse_invoice_attachments
+  prompt, CreateInvoiceProcessor fan-out, resend update/skip behavior, or
   INVOICE_ATTACHMENT_CLUSTERING_ENABLED.
 ---
 
@@ -52,6 +53,10 @@ These kinds are **not** RAG `DOCUMENT_TYPES` — do not add them to the Postgres
   normalized invoice numbers match (`normalizeClusterInvoiceNumber`, case and
   whitespace insensitive) **and** suppliers agree or one side is missing.
   Different numbers, missing numbers, or disagreeing suppliers stay separate.
+- Within a merged same-invoice group, the **latest-received** file is primary
+  (`receivedAt` from the Intercom part `created_at`, source falls back to
+  conversation `created_at`; missing counts as oldest, ties keep conversation
+  order). Extraction, PO matching, and submit all key off the primary.
 - `supporting` joins by invoice number, else PO
   (`normalizePurchaseOrderNumber`), else supplier; with exactly one invoice
   cluster it attaches there. With several clusters and no key match it falls
@@ -62,6 +67,32 @@ These kinds are **not** RAG `DOCUMENT_TYPES` — do not add them to the Postgres
   never drop the conversation.
 - Parser throw: Slack-then-throw like other processor failures. Async retries
   stay off (`MaximumRetryAttempts: 0`).
+
+## Resends: update instead of duplicating
+
+A conversation can be triggered again after the supplier sends corrected or
+missing documents. The processor keeps a Postgres registry
+(`conversation_supplier_invoices`, keyed by conversation plus normalized
+supplier invoice number) so a resend never creates a second supplier invoice:
+
+- Registry miss (or same number resolving to a **different** supplier):
+  create as usual, then upsert the registry row with the Workday WID/number,
+  supplier WID, and the cluster's max `receivedAt` watermark.
+- Registry hit with **no documents newer** than the watermark: skip with a
+  Slack `*Skipped*` note. No Workday write.
+- Registry hit with newer documents: check editability via WQL
+  (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
+  canceled, not paid/partially paid). Editable → `submitSupplierInvoiceUpdate`
+  with the latest cluster (lines, memo, company, attachments; assignee is left
+  untouched) and bump the watermark. Not editable or missing in Workday →
+  skip with a `*Skipped*` note naming manual review. Status-check errors fail
+  closed (Slack error, throw).
+- No extracted invoice number: the registry cannot key the invoice, so always
+  create (current behavior).
+- Registry writes never fail the invoice: a failed upsert after a successful
+  create/update surfaces as `registrySync: failed` in the success Slack
+  details. Concurrent double-fires can still race lookup-then-create; the
+  unique key keeps the registry to one row (last write wins).
 
 ## Flag discipline
 
