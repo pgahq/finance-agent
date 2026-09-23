@@ -171,6 +171,13 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
+  if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Skipped*\n${details.skipReason}`) }
+    });
+  }
+
   const attachment = details.attachment as { fileName?: string } | undefined;
   const clusterFiles = Array.isArray(details.attachments)
     ? (details.attachments as Array<{ fileName?: string; kind?: string }>)
@@ -186,6 +193,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
     ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
+    ...(details.skipped === true ? { skipped: true } : {}),
+    ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
@@ -296,11 +305,14 @@ export async function notifyResult(
     && details.invoiceNumber
     ? details.invoiceNumber
     : undefined;
+  const updatedInvoice = createdInvoiceNumber && details?.updated === true;
 
   // Build the main message
-  let mainMessage = createdInvoiceNumber
-    ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
-    : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = updatedInvoice
+    ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
+    : createdInvoiceNumber
+      ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+      : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;

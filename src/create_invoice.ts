@@ -19,11 +19,17 @@ import {
   type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
 import {
+  clusterMaxReceivedAt,
   isInvoiceAttachmentClusteringEnabled,
+  normalizeClusterInvoiceNumber,
   parseAndClusterInvoiceAttachments,
   type ClassifiedAttachment,
   type ClusterableAttachment,
 } from './lib/invoice_attachment_clustering.js';
+import {
+  getConversationSupplierInvoice,
+  upsertConversationSupplierInvoice,
+} from './lib/conversation_invoices.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
@@ -55,7 +61,7 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { loadPurchaseOrder, submitNewSupplierInvoice, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
+import { getSupplierInvoiceEditability, loadPurchaseOrder, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(
   purchaseOrder: ParsedPurchaseOrder
@@ -598,6 +604,167 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
+    const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
+      status: 'email_resolved',
+      appliedFrom: 'email',
+      appliedFromEmail: true,
+      appliedName: emailCompany.name,
+      appliedId: companyWID,
+      appliedReferenceId: emailCompany.referenceId,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : selectedCompany.source === 'po' ? {
+      status: 'po',
+      appliedFrom: 'po',
+      appliedName: matchedPo?.company?.descriptor,
+      appliedId: companyWID,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : selectedCompany.source === 'recommended' ? {
+      status: result.companyVerification?.status ?? 'different',
+      appliedFrom: 'recommended',
+      appliedName: result.companyVerification?.recommended?.companyName,
+      appliedId: companyWID,
+      recommendedName: result.companyVerification?.recommended?.companyName,
+    } : {
+      status: 'default',
+      appliedFrom: 'default',
+      appliedName: defaultCompany.descriptor,
+      appliedId: companyWID,
+    };
+
+    const sharedSlackDetails = {
+      attachment: {
+        fileName,
+        contentType,
+        sizeBytes: buffer.length,
+        includedInline: true,
+      },
+      ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
+      ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      supplier: {
+        status: result.supplier.status,
+        resolvedName: result.supplier.resolvedSupplier?.supplierName,
+        isDefault: !result.supplier.resolvedSupplier?.workdayId,
+      },
+      company: companyNotification,
+      extracted: {
+        invoiceDate: extractedInvoiceDate,
+        amountDue: extractedAmountDue,
+        suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+        freightAmount: extractedFreightAmount,
+        purchaseOrderNumber: extractedPurchaseOrderNumber,
+        paymentTerms: result.extractedPaymentTerms?.name,
+      },
+      lineCount: finalLines.length,
+    };
+
+    const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
+    const registryNumber = extractedSuppliersInvoiceNumber
+      ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
+      : undefined;
+    const clusterReceivedAt = clusterMaxReceivedAt(loaded);
+
+    if (clusteringEnabled && conversationId && registryNumber) {
+      const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
+      const supplierChanged = Boolean(
+        existing?.supplierWid && targetSupplierWID && existing.supplierWid !== targetSupplierWID
+      );
+      if (existing && !supplierChanged) {
+        const hasNewerDocuments =
+          clusterReceivedAt == null ||
+          existing.lastProcessedReceivedAt == null ||
+          clusterReceivedAt > existing.lastProcessedReceivedAt;
+        if (!hasNewerDocuments) {
+          const processingTime = Date.now() - startTime;
+          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
+          debug('Skipping resend: no documents newer than the last processing', {
+            conversationId,
+            invoiceLabel,
+          });
+          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+            ...sharedSlackDetails,
+            invoiceWID: existing.workdayInvoiceWid,
+            invoiceNumber: existing.workdayInvoiceNumber,
+            skipped: true,
+            skipReason: `No documents newer than the last processing of ${invoiceLabel}.`,
+          }, conversationId, intercomAppId));
+          return;
+        }
+        const editability = await getSupplierInvoiceEditability(context, existing.workdayInvoiceWid);
+        if (!editability.editable) {
+          const processingTime = Date.now() - startTime;
+          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
+          const reason = !editability.found
+            ? `Invoice ${invoiceLabel} is no longer in Workday; re-sent documents need manual review.`
+            : `Invoice ${invoiceLabel} is ${editability.status ?? 'not editable'}${editability.isPaid ? ' (paid)' : ''}${editability.isPartiallyPaid ? ' (partially paid)' : ''}${editability.isCanceled ? ' (canceled)' : ''}; re-sent documents need manual review.`;
+          debug('Skipping resend update: invoice is not editable', {
+            conversationId,
+            invoiceLabel,
+            editability,
+          });
+          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+            ...sharedSlackDetails,
+            invoiceWID: existing.workdayInvoiceWid,
+            invoiceNumber: existing.workdayInvoiceNumber,
+            skipped: true,
+            skipReason: reason,
+          }, conversationId, intercomAppId));
+          return;
+        }
+        const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) =>
+          `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents.` +
+          (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+        const updateOutcome = await submitSupplierInvoiceUpdate(context, {
+          invoiceWorkdayID: existing.workdayInvoiceWid,
+          supplierWID: targetSupplierWID,
+          buildNotes: buildUpdateNotes,
+          memo,
+          invoiceDate: extractedInvoiceDate,
+          companyWID,
+          companyReferenceType,
+          extractedAmountDue,
+          suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+          extractedFreightAmount,
+          extractedTaxAmount,
+          finalLines,
+          invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
+          relatedLobByCostCenter,
+          resolveCostCenterWorkdayIds: (costCenterIds) =>
+            getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+          paymentTermsId,
+          attachments: loaded.map((file) => ({
+            fileName: file.fileName,
+            contentType: file.contentType,
+            base64Content: file.buffer.toString('base64'),
+          })),
+        });
+        let updateRegistrySyncFailed = false;
+        try {
+          await upsertConversationSupplierInvoice(context.dbConnection, {
+            conversationId,
+            supplierInvoiceNumber: registryNumber,
+            supplierWid: targetSupplierWID ?? existing.supplierWid,
+            workdayInvoiceWid: existing.workdayInvoiceWid,
+            workdayInvoiceNumber: existing.workdayInvoiceNumber,
+            lastProcessedReceivedAt: clusterReceivedAt ?? existing.lastProcessedReceivedAt,
+          });
+        } catch (error) {
+          debug('Failed to update conversation invoice registry after update:', error);
+          updateRegistrySyncFailed = true;
+        }
+        const processingTime = Date.now() - startTime;
+        await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+          ...sharedSlackDetails,
+          updated: true,
+          invoiceWID: existing.workdayInvoiceWid,
+          invoiceNumber: existing.workdayInvoiceNumber,
+          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),
+          ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
+          ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
+        }, conversationId, intercomAppId));
+        return;
+      }
+    }
+
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
@@ -626,59 +793,31 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const processingTime = Date.now() - startTime;
 
-    const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
-      status: 'email_resolved',
-      appliedFrom: 'email',
-      appliedFromEmail: true,
-      appliedName: emailCompany.name,
-      appliedId: companyWID,
-      appliedReferenceId: emailCompany.referenceId,
-      recommendedName: result.companyVerification?.recommended?.companyName,
-    } : selectedCompany.source === 'po' ? {
-      status: 'po',
-      appliedFrom: 'po',
-      appliedName: matchedPo?.company?.descriptor,
-      appliedId: companyWID,
-      recommendedName: result.companyVerification?.recommended?.companyName,
-    } : selectedCompany.source === 'recommended' ? {
-      status: result.companyVerification?.status ?? 'different',
-      appliedFrom: 'recommended',
-      appliedName: result.companyVerification?.recommended?.companyName,
-      appliedId: companyWID,
-      recommendedName: result.companyVerification?.recommended?.companyName,
-    } : {
-      status: 'default',
-      appliedFrom: 'default',
-      appliedName: defaultCompany.descriptor,
-      appliedId: companyWID,
-    };
+    let registrySyncFailed = false;
+    if (clusteringEnabled && conversationId && registryNumber) {
+      if (!createOutcome.invoiceWID) {
+        registrySyncFailed = true;
+      } else {
+        try {
+          await upsertConversationSupplierInvoice(context.dbConnection, {
+            conversationId,
+            supplierInvoiceNumber: registryNumber,
+            supplierWid: targetSupplierWID ?? null,
+            workdayInvoiceWid: createOutcome.invoiceWID,
+            workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
+            lastProcessedReceivedAt: clusterReceivedAt ?? null,
+          });
+        } catch (error) {
+          debug('Failed to record conversation invoice registry after create:', error);
+          registrySyncFailed = true;
+        }
+      }
+    }
 
     await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+      ...sharedSlackDetails,
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
-      attachment: {
-        fileName,
-        contentType,
-        sizeBytes: buffer.length,
-        includedInline: true,
-      },
-      ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
-      ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
-      supplier: {
-        status: result.supplier.status,
-        resolvedName: result.supplier.resolvedSupplier?.supplierName,
-        isDefault: !result.supplier.resolvedSupplier?.workdayId,
-      },
-      company: companyNotification,
-      extracted: {
-        invoiceDate: extractedInvoiceDate,
-        amountDue: extractedAmountDue,
-        suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-        freightAmount: extractedFreightAmount,
-        purchaseOrderNumber: extractedPurchaseOrderNumber,
-        paymentTerms: result.extractedPaymentTerms?.name,
-      },
-      lineCount: finalLines.length,
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,
@@ -686,6 +825,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
+      ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));
   } catch (error) {
     const processingTime = Date.now() - startTime;
