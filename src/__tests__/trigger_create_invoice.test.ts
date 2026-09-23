@@ -444,6 +444,38 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('forwards receivedAt from Intercom attachments to the processor payload', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      attachments: [{
+        ...conversationInvoiceData.attachments[0],
+        receivedAt: 1704153600,
+      }],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    await handler(buildEvent());
+
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: invoiceEmailContext,
+          conversationId: '1234567890',
+          receivedAt: 1704153600,
+          intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+  });
+
   it('invokes the processor once with all attachments when clustering is enabled', async () => {
     const loadEnv = jest.requireMock('@pga/lambda-env').default;
     loadEnv.mockResolvedValueOnce({

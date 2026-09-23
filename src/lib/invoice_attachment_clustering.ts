@@ -23,6 +23,7 @@ export interface ClusterableAttachment {
   s3Key: string;
   fileName: string;
   contentType: string;
+  receivedAt?: number;
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
@@ -89,6 +90,16 @@ function sameInvoice(a: ClassifiedAttachment, b: ClassifiedAttachment): boolean 
   return supplierNamesAgree(a.supplierName, b.supplierName);
 }
 
+function pickLatestPrimary(members: ClassifiedAttachment[]): ClassifiedAttachment {
+  let primary = members[0];
+  for (const candidate of members.slice(1)) {
+    const primaryAt = primary.receivedAt ?? Number.NEGATIVE_INFINITY;
+    const candidateAt = candidate.receivedAt ?? Number.NEGATIVE_INFINITY;
+    if (candidateAt > primaryAt) primary = candidate;
+  }
+  return primary;
+}
+
 function supportingTargetCluster(
   supporting: ClassifiedAttachment,
   clusters: InvoiceAttachmentCluster[]
@@ -118,6 +129,14 @@ function supportingTargetCluster(
   return bySupplier[0] ?? candidates[0];
 }
 
+export function clusterMaxReceivedAt(files: Array<{ receivedAt?: number }>): number | undefined {
+  let max: number | undefined;
+  for (const file of files) {
+    if (file.receivedAt != null && (max == null || file.receivedAt > max)) max = file.receivedAt;
+  }
+  return max;
+}
+
 export function clusterClassifiedAttachments(classified: ClassifiedAttachment[]): InvoiceAttachmentClustering {
   const invoices = classified.filter((attachment) => attachment.kind === 'supplier_invoice');
   const supporting = classified.filter((attachment) => attachment.kind === 'supporting');
@@ -138,15 +157,19 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     };
   }
 
-  const clusters: InvoiceAttachmentCluster[] = [];
+  const groups: ClassifiedAttachment[][] = [];
   for (const invoice of invoices) {
-    const match = clusters.find((cluster) => sameInvoice(invoice, cluster.primary));
-    if (match) {
-      match.supporting.push(invoice);
+    const group = groups.find((members) => sameInvoice(invoice, members[0]));
+    if (group) {
+      group.push(invoice);
     } else {
-      clusters.push({ primary: invoice, supporting: [], fallback: false });
+      groups.push([invoice]);
     }
   }
+  const clusters: InvoiceAttachmentCluster[] = groups.map((members) => {
+    const primary = pickLatestPrimary(members);
+    return { primary, supporting: members.filter((member) => member !== primary), fallback: false };
+  });
 
   for (const doc of supporting) {
     const target = supportingTargetCluster(doc, clusters);

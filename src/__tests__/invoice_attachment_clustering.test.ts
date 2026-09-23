@@ -1,5 +1,6 @@
 import {
   clusterClassifiedAttachments,
+  clusterMaxReceivedAt,
   isInvoiceAttachmentClusteringEnabled,
   joinClassifications,
   normalizeClusterInvoiceNumber,
@@ -156,6 +157,34 @@ describe('clusterClassifiedAttachments', () => {
     expect(clustering.clusters).toHaveLength(1);
     expect(clustering.clusters[0].fallback).toBe(true);
     expect(clustering.clusters[0].primary.fileName).toBe('b.pdf');
+  });
+
+  it('uses the latest-received file as primary for same-invoice versions', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'v1.pdf', invoiceNumber: 'INV-100', supplierName: 'Acme', receivedAt: 100 }),
+      classified({ fileName: 'v2.pdf', invoiceNumber: 'INV-100', supplierName: 'Acme', receivedAt: 200 }),
+    ]);
+
+    expect(clustering.clusters).toHaveLength(1);
+    expect(clustering.clusters[0].primary.fileName).toBe('v2.pdf');
+    expect(clustering.clusters[0].supporting.map((doc) => doc.fileName)).toEqual(['v1.pdf']);
+  });
+
+  it('treats files without receivedAt as older than timestamped versions', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'new.pdf', invoiceNumber: 'INV-100', receivedAt: 200 }),
+      classified({ fileName: 'old.pdf', invoiceNumber: 'INV-100' }),
+    ]);
+
+    expect(clustering.clusters[0].primary.fileName).toBe('new.pdf');
+  });
+});
+
+describe('clusterMaxReceivedAt', () => {
+  it('returns the newest receivedAt and undefined when no file has one', () => {
+    expect(clusterMaxReceivedAt([{ receivedAt: 100 }, {}, { receivedAt: 300 }])).toBe(300);
+    expect(clusterMaxReceivedAt([{}, {}])).toBeUndefined();
+    expect(clusterMaxReceivedAt([])).toBeUndefined();
   });
 });
 
