@@ -403,18 +403,17 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const conversationPdfBuffer = conversationPdf
       ? await getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
       : undefined;
-    const submitAttachments = [
-      ...loaded.map((file) => ({
-        fileName: file.fileName,
-        contentType: file.contentType,
-        base64Content: file.buffer.toString('base64'),
-      })),
-      ...(conversationPdf && conversationPdfBuffer ? [{
-        fileName: conversationPdf.fileName,
-        contentType: 'application/pdf',
-        base64Content: conversationPdfBuffer.toString('base64'),
-      }] : []),
-    ];
+    const toSubmitAttachment = (file: LoadedClusterFile) => ({
+      fileName: file.fileName,
+      contentType: file.contentType,
+      base64Content: file.buffer.toString('base64'),
+    });
+    const transcriptAttachments = conversationPdf && conversationPdfBuffer ? [{
+      fileName: conversationPdf.fileName,
+      contentType: 'application/pdf',
+      base64Content: conversationPdfBuffer.toString('base64'),
+    }] : [];
+    const submitAttachments = [...loaded.map(toSubmitAttachment), ...transcriptAttachments];
     const buffer = loaded[0].buffer;
     const processedAttachments = loaded.map((file) => ({
       id: file.s3Key,
@@ -749,8 +748,16 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           }, conversationId, intercomAppId));
           return;
         }
+        // Submit_Supplier_Invoice appends Attachment_Data, so re-sending earlier PDFs would duplicate
+        // them. Send only documents received since the last processing, plus a fresh transcript.
+        const watermark = existing.lastProcessedReceivedAt;
+        const newFiles = watermark == null
+          ? loaded
+          : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
+        const updateAttachments = [...newFiles.map(toSubmitAttachment), ...transcriptAttachments];
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) =>
-          `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents.` +
+          `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
+          (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
           (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
@@ -770,7 +777,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           resolveCostCenterWorkdayIds: (costCenterIds) =>
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
-          attachments: submitAttachments,
+          attachments: updateAttachments,
         });
         let updateRegistrySyncFailed = false;
         try {
@@ -790,6 +797,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
           ...sharedSlackDetails,
           updated: true,
+          newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
           appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),

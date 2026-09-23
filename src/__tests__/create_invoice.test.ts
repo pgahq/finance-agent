@@ -1876,7 +1876,12 @@ describe('create_invoice', () => {
       );
     });
 
-    it('updates when a text-only supplier reply is newer even though no new PDF arrived', async () => {
+    const transcriptPdf = {
+      s3Key: 'new-invoices/req-2/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+      fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+    };
+
+    it('updates when a text-only supplier reply is newer, attaching only the fresh transcript', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -1889,15 +1894,55 @@ describe('create_invoice', () => {
           conversationId: '1234567890',
           clustered: true,
           latestMessageAt: 300,
+          conversationPdf: transcriptPdf,
           attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
         }],
       } as any);
 
       expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
       expect(workday.submitSupplierInvoiceUpdate).toHaveBeenCalledTimes(1);
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual([transcriptPdf.fileName]);
+      expect(updateArgs.buildNotes([])).toContain('No new attachments.');
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1]).toHaveLength(1);
       expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ lastProcessedReceivedAt: 300 })
+      );
+    });
+
+    it('appends only documents newer than the last processing plus the transcript on update', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 100 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          conversationPdf: transcriptPdf,
+          attachments: [
+            { ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 },
+            { ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 100 },
+          ],
+        }],
+      } as any);
+
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['v2.pdf', transcriptPdf.fileName]);
+      expect(updateArgs.buildNotes([])).toContain('New attachments: v2.pdf.');
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1]
+        .map((att: { fileName: string }) => att.fileName)).toEqual(['v2.pdf', 'v1.pdf']);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ updated: true, newAttachments: ['v2.pdf'] }),
       );
     });
 

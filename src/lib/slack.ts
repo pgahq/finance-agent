@@ -197,6 +197,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
       ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
       : {}),
+    ...(details.updated === true && Array.isArray(details.newAttachments)
+      ? { newAttachments: (details.newAttachments as unknown[]).filter((name): name is string => typeof name === 'string') }
+      : {}),
     ...(details.skipped === true ? { skipped: true } : {}),
     ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
