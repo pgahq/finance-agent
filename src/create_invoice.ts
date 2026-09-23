@@ -748,13 +748,12 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           }, conversationId, intercomAppId));
           return;
         }
-        // Submit_Supplier_Invoice appends Attachment_Data, so re-sending earlier PDFs would duplicate
-        // them. Send only documents received since the last processing, plus a fresh transcript.
+        // Submit_Supplier_Invoice replaces Attachment_Data with what each call sends, so the update
+        // resends every cluster document plus a fresh transcript; newFiles only feeds notes and Slack.
         const watermark = existing.lastProcessedReceivedAt;
         const newFiles = watermark == null
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
-        const updateAttachments = [...newFiles.map(toSubmitAttachment), ...transcriptAttachments];
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) =>
           `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
           (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
@@ -777,7 +776,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           resolveCostCenterWorkdayIds: (costCenterIds) =>
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
-          attachments: updateAttachments,
+          attachments: submitAttachments,
         });
         let updateRegistrySyncFailed = false;
         try {

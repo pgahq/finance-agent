@@ -100,12 +100,12 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
   canceled, not paid/partially paid). Editable → `submitSupplierInvoiceUpdate`
   with the latest cluster (lines, memo, company; assignee is left untouched)
-  and bump the watermark. `Submit_Supplier_Invoice` appends `Attachment_Data`
-  rather than replacing it, so the update sends only vendor PDFs received after
-  the watermark plus a fresh conversation transcript (which records the
-  back-and-forth with the supplier). A text-only reply attaches just the
-  transcript. Enrichment still reads the whole cluster. Work queue notes and
-  Slack (`newAttachments`) name the files appended. Not editable or missing in Workday →
+  and bump the watermark. Each `Submit_Supplier_Invoice` call sets the
+  invoice's full `Attachment_Data` — anything left out is dropped — so the
+  update resends every cluster PDF (latest invoice version first) plus a fresh
+  conversation transcript that records the back-and-forth with the supplier.
+  Never send only the new files on an update. Work queue notes and Slack
+  (`newAttachments`) name the files received since the last processing. Not editable or missing in Workday →
   skip with a `*Skipped*` note naming manual review. Status-check errors fail
   closed (Slack error, throw).
 - No extracted invoice number: the registry cannot key the invoice, so always

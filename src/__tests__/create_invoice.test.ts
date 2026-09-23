@@ -1881,7 +1881,7 @@ describe('create_invoice', () => {
       fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
     };
 
-    it('updates when a text-only supplier reply is newer, attaching only the fresh transcript', async () => {
+    it('updates when a text-only supplier reply is newer, resending every document and the fresh transcript', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -1903,7 +1903,7 @@ describe('create_invoice', () => {
       expect(workday.submitSupplierInvoiceUpdate).toHaveBeenCalledTimes(1);
       const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
       expect(updateArgs.attachments.map((att: { fileName: string }) => att.fileName))
-        .toEqual([transcriptPdf.fileName]);
+        .toEqual(['v1.pdf', transcriptPdf.fileName]);
       expect(updateArgs.buildNotes([])).toContain('No new attachments.');
       expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1]).toHaveLength(1);
       expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
@@ -1912,7 +1912,7 @@ describe('create_invoice', () => {
       );
     });
 
-    it('appends only documents newer than the last processing plus the transcript on update', async () => {
+    it('resends the full document set plus the transcript on update and names the new files', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -1934,7 +1934,7 @@ describe('create_invoice', () => {
 
       const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
       expect(updateArgs.attachments.map((att: { fileName: string }) => att.fileName))
-        .toEqual(['v2.pdf', transcriptPdf.fileName]);
+        .toEqual(['v2.pdf', 'v1.pdf', transcriptPdf.fileName]);
       expect(updateArgs.buildNotes([])).toContain('New attachments: v2.pdf.');
       expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1]
         .map((att: { fileName: string }) => att.fileName)).toEqual(['v2.pdf', 'v1.pdf']);
