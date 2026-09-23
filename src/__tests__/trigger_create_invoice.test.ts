@@ -100,9 +100,20 @@ const supportEmailContext = {
   subject: 'Please process',
   plainTextBody: 'Use cost center 72200',
 };
+const conversationTranscript = {
+  fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+  title: 'Conversation with PGA Corp Accounts Payable',
+  startedOn: 'Started on September 21, 2026 at 01:02 PM Central Time',
+  messages: [{
+    kind: 'source' as const,
+    meta: '01:02 PM | ap@vendor.com',
+    body: 'Invoice attached',
+  }],
+};
 const conversationInvoiceData = {
   appId: 'sandbox-app',
   conversationCreatedAt: '2024-01-01',
+  transcript: conversationTranscript,
   attachments: [
     {
       name: 'invoice.pdf',
@@ -282,6 +293,7 @@ describe('trigger_create_invoice handler', () => {
 
   it('limits concurrent attachment downloads', async () => {
     mockFetchConversationInvoiceData.mockResolvedValue({
+      transcript: conversationTranscript,
       attachments: Array.from({ length: 6 }, (_, index) => ({
         name: `invoice-${index}.pdf`,
         url: `https://downloads.intercomcdn.com/invoice-${index}.pdf`,
@@ -376,6 +388,18 @@ describe('trigger_create_invoice handler', () => {
         'intercom-conversation-id': '1234567890',
       }),
     );
+    expect(mockPutBinaryToS3).toHaveBeenNthCalledWith(
+      3,
+      { bucketName: 'test-bucket' },
+      'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+      expect.any(Buffer),
+      'application/pdf',
+      expect.objectContaining({
+        'original-filename': 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+        'intercom-conversation-id': '1234567890',
+      }),
+    );
+    expect(mockPutBinaryToS3).toHaveBeenCalledTimes(3);
 
     expect(InvokeCommand).toHaveBeenNthCalledWith(1, {
       FunctionName: 'finance-agent-CreateInvoiceProcessor',
@@ -389,6 +413,10 @@ describe('trigger_create_invoice handler', () => {
           conversationId: '1234567890',
           intercomAppId: 'sandbox-app',
           conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
         }],
         page: 1,
         totalPages: 1,
@@ -406,6 +434,10 @@ describe('trigger_create_invoice handler', () => {
           conversationId: '1234567890',
           intercomAppId: 'sandbox-app',
           conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
         }],
         page: 1,
         totalPages: 1,
@@ -437,6 +469,10 @@ describe('trigger_create_invoice handler', () => {
           intercomAppId: 'sandbox-app',
           assigneeEmail: 'jcarey@pgahq.com',
           conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
         }],
         page: 1,
         totalPages: 1,
@@ -469,6 +505,10 @@ describe('trigger_create_invoice handler', () => {
           receivedAt: 1704153600,
           intercomAppId: 'sandbox-app',
           conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
         }],
         page: 1,
         totalPages: 1,
@@ -499,6 +539,10 @@ describe('trigger_create_invoice handler', () => {
           conversationId: '1234567890',
           intercomAppId: 'sandbox-app',
           conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
           attachments: [
             {
               s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
@@ -525,6 +569,24 @@ describe('trigger_create_invoice handler', () => {
       }),
     });
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 500 and does not create invoices when the transcript is missing', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      transcript: undefined,
+      attachments: [conversationInvoiceData.attachments[0]],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    const response = await handler(buildEvent());
+
+    expect(response).toEqual({
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'error', message: 'Internal server error' }),
+    });
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
 });

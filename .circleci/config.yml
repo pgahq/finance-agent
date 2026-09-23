@@ -48,6 +48,7 @@ references:
             LogLevel=$LOG_LEVEL
             WorkdayDomain=$WORKDAY_DOMAIN
             WorkdayTenant=$WORKDAY_TENANT
+            WorkdayUiBaseUrl=$WORKDAY_UI_BASE_URL
             FallbackFundId=$FALLBACK_FUND_ID
             FallbackPaymentTermsId=$FALLBACK_PAYMENT_TERMS_ID
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
@@ -109,6 +110,7 @@ jobs:
       LOG_LEVEL: DEBUG
       WORKDAY_DOMAIN: wd2-impl-services1.workday.com
       WORKDAY_TENANT: pgahq
+      WORKDAY_UI_BASE_URL: https://impl.workday.com
       FALLBACK_FUND_ID: FUND-General_Fund_Unrestricted
       FALLBACK_PAYMENT_TERMS_ID: FALLBACK_PAYMENT_TERMS
       FALLBACK_COST_CENTER_ID: CC0000
@@ -124,6 +126,7 @@ jobs:
       LOG_LEVEL: DEBUG
       WORKDAY_DOMAIN: services1.myworkday.com
       WORKDAY_TENANT: pgahq
+      WORKDAY_UI_BASE_URL: https://www.myworkday.com
       FALLBACK_FUND_ID: FUND-General_Fund_Unrestricted
       FALLBACK_PAYMENT_TERMS_ID: FALLBACK_PAYMENT_TERMS
       FALLBACK_COST_CENTER_ID: CC0000

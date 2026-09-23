@@ -450,6 +450,15 @@ export function isAssigneeValidationError(text: unknown): boolean {
   );
 }
 
+export function isTaxApplicabilityValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return (
+    /Tax_Applicability/i.test(validationText)
+    || /tax applicability/i.test(validationText)
+    || /Invoice_Line_Replacement_Data\[\d+\]\/(?:\w+:)?Tax_Code_Reference/i.test(validationText)
+  );
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

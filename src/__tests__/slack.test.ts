@@ -36,12 +36,16 @@ describe('notifyResult', () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_LAMBDA_LOG_GROUP_NAME;
     delete process.env.AWS_LAMBDA_LOG_STREAM_NAME;
+    delete process.env.WORKDAY_UI_BASE_URL;
+    delete process.env.WORKDAY_TENANT;
     global.fetch = jest.fn().mockResolvedValue({ ok: true });
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     delete process.env.SLACK_WEBHOOK_URL;
+    delete process.env.WORKDAY_UI_BASE_URL;
+    delete process.env.WORKDAY_TENANT;
     jest.restoreAllMocks();
   });
 
@@ -258,6 +262,83 @@ describe('notifyResult', () => {
     expect(texts).toContain('not retrying this Lambda invocation');
     expect(texts).not.toContain('conversationUrl');
   });
+
+  it('links the created invoice in implementation Workday', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://impl.workday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+      invoiceNumber: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    const implUrl = 'https://impl.workday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld';
+    expect(texts).toContain(`*Workday Invoice* → <${implUrl}|SUPIN-412727>`);
+    expect(texts).toContain(`<${implUrl}|View in Workday>`);
+    expect(texts).not.toContain('www.myworkday.com');
+  });
+
+  it('links the created invoice in production Workday', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://www.myworkday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+      invoiceNumber: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    const prodUrl = 'https://www.myworkday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld';
+    expect(texts).toContain(`*Workday Invoice* → <${prodUrl}|SUPIN-412727>`);
+    expect(texts).toContain(`<${prodUrl}|View in Workday>`);
+    expect(texts).not.toContain('impl.workday.com');
+  });
+
+  it('adds a Workday footer link when Invoice_Number is missing', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://impl.workday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).not.toContain('Workday Invoice');
+    expect(texts).toContain(
+      '<https://impl.workday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld|View in Workday>'
+    );
+  });
+
+  it('adds a Workday footer link on enrich errors that have a WID', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://www.myworkday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyResult(
+      'enrich_invoice',
+      'error',
+      1000,
+      { workdayId: 'a1b2c3d4e5f678901234567890abcdef' },
+      new Error('Enrich failed')
+    );
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(
+      '<https://www.myworkday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld|View in Workday>'
+    );
+  });
+
+  it('omits the Workday link when the UI base URL is not configured', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+      invoiceNumber: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Workday Invoice* → `SUPIN-412727`');
+    expect(texts).not.toContain('View in Workday');
+    expect(texts).not.toContain('d/inst/deeplink');
+  });
 });
 
 describe('notifyEnrichmentResult', () => {
@@ -266,12 +347,16 @@ describe('notifyEnrichmentResult', () => {
     delete process.env.AWS_REGION;
     delete process.env.AWS_LAMBDA_LOG_GROUP_NAME;
     delete process.env.AWS_LAMBDA_LOG_STREAM_NAME;
+    delete process.env.WORKDAY_UI_BASE_URL;
+    delete process.env.WORKDAY_TENANT;
     global.fetch = jest.fn().mockResolvedValue({ ok: true });
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     delete process.env.SLACK_WEBHOOK_URL;
+    delete process.env.WORKDAY_UI_BASE_URL;
+    delete process.env.WORKDAY_TENANT;
     jest.restoreAllMocks();
   });
 
@@ -332,5 +417,45 @@ describe('notifyEnrichmentResult', () => {
     );
     expect(priorBlock?.text?.text?.length).toBeLessThanOrEqual(2900);
     expect(priorBlock?.text?.text?.endsWith('…')).toBe(true);
+  });
+
+  it('links the enriched invoice in implementation Workday', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://impl.workday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    const implUrl = 'https://impl.workday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld';
+    expect(texts).toContain(`*Workday Invoice* → <${implUrl}|INV-1>`);
+    expect(texts).toContain(`<${implUrl}|View in Workday>`);
+  });
+
+  it('adds a Workday footer link when enrichment has a WID but no Invoice_Number', async () => {
+    process.env.WORKDAY_UI_BASE_URL = 'https://www.myworkday.com';
+    process.env.WORKDAY_TENANT = 'pgahq';
+
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceWID: 'a1b2c3d4e5f678901234567890abcdef',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).not.toContain('Workday Invoice');
+    expect(texts).toContain(
+      '<https://www.myworkday.com/pgahq/d/inst/deeplink/a1b2c3d4e5f678901234567890abcdef.htmld|View in Workday>'
+    );
   });
 });

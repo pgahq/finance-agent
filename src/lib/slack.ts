@@ -1,4 +1,5 @@
 import { debug } from '@pga/logger';
+import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
 
 // TypeScript types for Slack blocks
 interface SlackTextElement {
@@ -88,7 +89,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   const fallbackLines: string[] = [];
 
   if (typeof details.invoiceNumber === 'string' && details.invoiceNumber) {
-    changeLines.push(`*Workday Invoice* → \`${details.invoiceNumber}\``);
+    changeLines.push(workdayInvoiceChangeLine(details.invoiceNumber, workdayUrlFromDetails(details)));
   }
 
   const supplier = details.supplier as { status?: string; resolvedName?: string; isDefault?: boolean } | undefined;
@@ -193,6 +194,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
     ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
+    ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
+      ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
+      : {}),
     ...(details.skipped === true ? { skipped: true } : {}),
     ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
@@ -211,10 +215,33 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   }
 }
 
-function appendNotificationLinks(blocks: SlackBlock[], conversationUrl?: string): void {
+function invoiceWorkdayIdFromDetails(details?: unknown): string | undefined {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const record = details as Record<string, unknown>;
+  if (typeof record.invoiceWID === 'string' && record.invoiceWID.trim()) return record.invoiceWID.trim();
+  if (typeof record.workdayId === 'string' && record.workdayId.trim()) return record.workdayId.trim();
+  return undefined;
+}
+
+function workdayUrlFromDetails(details?: unknown): string | undefined {
+  return buildWorkdayObjectDeeplink(invoiceWorkdayIdFromDetails(details));
+}
+
+function workdayInvoiceChangeLine(invoiceNumber: string, workdayUrl?: string): string {
+  if (workdayUrl) return `*Workday Invoice* → <${workdayUrl}|${invoiceNumber}>`;
+  return `*Workday Invoice* → \`${invoiceNumber}\``;
+}
+
+function appendNotificationLinks(
+  blocks: SlackBlock[],
+  options: { conversationUrl?: string; workdayUrl?: string } = {}
+): void {
   const links: string[] = [];
-  if (conversationUrl) {
-    links.push(`<${conversationUrl}|View Intercom conversation>`);
+  if (options.workdayUrl) {
+    links.push(`<${options.workdayUrl}|View in Workday>`);
+  }
+  if (options.conversationUrl) {
+    links.push(`<${options.conversationUrl}|View Intercom conversation>`);
   }
   const logUrl = buildCloudWatchLogUrl();
   if (logUrl) {
@@ -345,10 +372,10 @@ export async function notifyResult(
     });
   }
 
-  appendNotificationLinks(
-    blocks,
-    typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined
-  );
+  appendNotificationLinks(blocks, {
+    conversationUrl: typeof details?.conversationUrl === 'string' ? details.conversationUrl : undefined,
+    workdayUrl: workdayUrlFromDetails(details),
+  });
 
   await sendSlackMessage(blocks);
 }
@@ -356,6 +383,7 @@ export async function notifyResult(
 export interface EnrichmentNotification {
   processingTime: number;
   invoiceNumber?: string;
+  invoiceWID?: string;
   canModify: boolean;
   supplier: {
     status: string;
@@ -392,7 +420,8 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
+  const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
   const blocks: SlackBlock[] = [];
@@ -410,7 +439,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   const fallbackLines: string[] = [];
 
   if (invoiceNumber) {
-    changeLines.push(`*Workday Invoice* → \`${invoiceNumber}\``);
+    changeLines.push(workdayInvoiceChangeLine(invoiceNumber, workdayUrl));
   }
 
   // Supplier
@@ -521,7 +550,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
   }
 
-  appendNotificationLinks(blocks);
+  appendNotificationLinks(blocks, { workdayUrl });
 
   await sendSlackMessage(blocks);
 }

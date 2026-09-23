@@ -311,7 +311,6 @@ describe('create_invoice', () => {
     expect(submitArgs.supplierWID).toBe('supplier-wid-1');
     expect(submitArgs.companyWID).toBe('Default_OCR_Company');
     expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(submitArgs.attachment).toBeUndefined();
     expect(submitArgs.attachments).toEqual([{
       fileName: 'invoice.pdf',
       contentType: 'application/pdf',
@@ -333,6 +332,47 @@ describe('create_invoice', () => {
           includedInline: true,
         }
       })
+    );
+  });
+
+  it('attaches the conversation transcript without sending it to enrichment', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    const transcriptName = 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf';
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-transcript/invoice.pdf'),
+        conversationPdf: {
+          s3Key: 'new-invoices/req-transcript/pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
+          fileName: transcriptName,
+        },
+      }],
+    } as any);
+
+    const enrichmentAttachments = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1];
+    expect(enrichmentAttachments).toHaveLength(1);
+    expect(enrichmentAttachments[0].fileName).toBe('invoice.pdf');
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.attachments).toEqual([
+      {
+        fileName: 'invoice.pdf',
+        contentType: 'application/pdf',
+        base64Content: Buffer.from('fake-pdf-content').toString('base64'),
+      },
+      {
+        fileName: transcriptName,
+        contentType: 'application/pdf',
+        base64Content: Buffer.from('fake-pdf-content').toString('base64'),
+      },
+    ]);
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({ conversationTranscriptFileName: transcriptName }),
     );
   });
 
@@ -573,6 +613,102 @@ describe('create_invoice', () => {
     expect(submitArgs.finalLines).toEqual([
       expect.objectContaining({ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 })
     ]);
+  });
+
+  it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
+    const venue = {
+      ID: [
+        { $attributes: { type: 'WID' }, $value: 'wid-VENU-Contestant_Indirect' },
+        { $attributes: { type: 'Organization_Reference_ID' }, $value: 'VENU-Contestant_Indirect' }
+      ]
+    };
+    const fundA = {
+      ID: [
+        { $attributes: { type: 'WID' }, $value: 'wid-FUND-A' },
+        { $attributes: { type: 'Fund_ID' }, $value: 'FUND-A' }
+      ]
+    };
+    const fundB = {
+      ID: [
+        { $attributes: { type: 'WID' }, $value: 'wid-FUND-B' },
+        { $attributes: { type: 'Fund_ID' }, $value: 'FUND-B' }
+      ]
+    };
+    const parsedPo = {
+      documentNumber: 'PO-414498',
+      company: {
+        workdayId: 'pga-company-wid',
+        descriptor: 'The Professional Golfers Association of America'
+      },
+      lines: [
+        {
+          lineOrder: 1,
+          purchaseOrderLineId: 'POL-1',
+          purchaseOrderDocumentNumber: 'PO-414498',
+          description: 'Summit ENG',
+          worktagsReference: [venue, fundA],
+          lineLevelWorktagsReference: [venue, fundA],
+          splitLineData: [{ extendedAmount: 100, worktagReference: [fundA] }]
+        },
+        {
+          lineOrder: 2,
+          purchaseOrderLineId: 'POL-2',
+          purchaseOrderDocumentNumber: 'PO-414498',
+          description: 'Hospitality',
+          worktagsReference: [venue, fundB],
+          lineLevelWorktagsReference: [venue, fundB],
+          splitLineData: []
+        }
+      ]
+    };
+
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockResolvedValue(parsedPo);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$115.00',
+      extractedFreightAmount: '$15.00',
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedInvoiceLines: [
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines
+      .mockResolvedValueOnce({
+        lines: [],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+      })
+      .mockResolvedValueOnce({
+        lines: [{
+          lineOrder: 1,
+          description: 'Invoice',
+          quantity: 1,
+          unitCost: 100,
+          purchaseOrderLineId: 'POL-1',
+          supplierInvoiceSplitLineData: [{ extendedAmount: 100, worktagReference: [fundA] }]
+        }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+      });
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-freight-remainder-po/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-414498' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][1]).toBeUndefined();
+    const remainderSubmitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(remainderSubmitArgs.finalLines).toEqual([
+      expect.objectContaining({
+        lineOrder: 1,
+        description: 'Invoice',
+        purchaseOrderLineId: null,
+        poPassthroughWorktagsReference: [venue]
+      })
+    ]);
+    expect(remainderSubmitArgs.finalLines[0].supplierInvoiceSplitLineData).toBeUndefined();
   });
 
   it('should fall back to the default supplier WID when none is resolved', async () => {

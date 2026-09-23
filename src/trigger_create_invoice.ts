@@ -15,6 +15,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   type IntercomAttachment,
 } from './lib/intercom.js';
+import { renderConversationTranscriptPdf } from './lib/conversation_transcript.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
@@ -230,9 +231,26 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       };
     }));
 
+    if (!conversationData.transcript) {
+      throw new Error('Conversation transcript is missing');
+    }
+    const transcript = conversationData.transcript;
+    const transcriptBuffer = await renderConversationTranscriptPdf(transcript);
+    const transcriptS3Key = `new-invoices/${requestId}/${transcript.fileName}`;
+    await putBinaryToS3(s3Config, transcriptS3Key, transcriptBuffer, 'application/pdf', {
+      'original-filename': transcript.fileName,
+      'upload-timestamp': new Date().toISOString(),
+      'intercom-conversation-id': conversationId,
+    });
+    const conversationPdf = {
+      s3Key: transcriptS3Key,
+      fileName: transcript.fileName,
+    };
+
     debug('Uploaded new invoice attachments to S3', {
       attachmentCount: uploadedAttachments.length,
-      totalBytes: buffers.reduce((total, buffer) => total + buffer.length, 0),
+      transcriptFileName: transcript.fileName,
+      totalBytes: buffers.reduce((total, buffer) => total + buffer.length, 0) + transcriptBuffer.length,
       conversationId,
     });
 
@@ -253,7 +271,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         FunctionName: processorFunctionName,
         InvocationType: 'Event',
         Payload: JSON.stringify({
-          data: [{ ...shared, attachments: uploadedAttachments }],
+          data: [{ ...shared, conversationPdf, attachments: uploadedAttachments }],
           page: 1,
           totalPages: 1,
         }),
@@ -264,7 +282,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
           FunctionName: processorFunctionName,
           InvocationType: 'Event',
           Payload: JSON.stringify({
-            data: [attachment],
+            data: [{
+              ...attachment,
+              conversationPdf,
+            }],
             page: 1,
             totalPages: 1,
           }),

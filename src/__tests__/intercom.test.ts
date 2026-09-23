@@ -137,10 +137,19 @@ describe('intercom', () => {
 
       const mergedPlainTextBody = 'Please process this invoice\n\nUse cost center 72200';
 
-      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
         appId: 'sandbox-app',
-        assigneeEmail: undefined,
         conversationCreatedAt: '2024-01-01',
+        transcript: {
+          fileName: 'pga_corp_accounts_payable_2023_12_31_123.pdf',
+          title: 'Conversation',
+          startedOn: 'Started on December 31, 2023 at 06:00 PM Central Time',
+          messages: [{
+            kind: 'source',
+            meta: '06:00 PM | ap@vendor.com',
+            body: 'Invoice\n\nPlease process this invoice',
+          }],
+        },
         attachments: [
           {
             name: 'support.pdf',
@@ -212,9 +221,26 @@ describe('intercom', () => {
 
       const mergedPlainTextBody = `${sourceBody}\n\n${noteBody}`;
 
-      await expect(fetchConversationInvoiceData(config, '215475761242077')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '215475761242077')).resolves.toMatchObject({
         appId: 'sandbox-app',
         conversationCreatedAt: '2024-01-01',
+        transcript: {
+          fileName: 'pga_corp_accounts_payable_2023_12_31_215475761242077.pdf',
+          title: 'Conversation',
+          startedOn: 'Started on December 31, 2023 at 06:00 PM Central Time',
+          messages: [
+            {
+              kind: 'source',
+              meta: '06:00 PM | jonyejekwe@pgahq.com',
+              body: `AP Agent\n\n${sourceBody}`,
+            },
+            {
+              kind: 'note',
+              meta: 'Note | jonyejekwe@pgahq.com',
+              body: noteBody,
+            },
+          ],
+        },
         attachments: [{
           name: 'PGA Invoice.pdf',
           url: 'https://downloads.intercomcdn.com/invoice.pdf',
@@ -316,8 +342,17 @@ describe('intercom', () => {
         }),
       }) as unknown as typeof fetch;
 
-      await expect(fetchConversationInvoiceData(config, '123')).resolves.toEqual({
+      await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
         appId: 'sandbox-app',
+        transcript: {
+          fileName: expect.stringMatching(/^pga_corp_accounts_payable_\d{4}_\d{2}_\d{2}_123\.pdf$/),
+          title: 'Conversation',
+          messages: [{
+            kind: 'source',
+            meta: 'ap@vendor.com',
+            body: 'Invoice\n\nPlease process',
+          }],
+        },
         attachments: [
           {
             name: 'invoice.pdf',

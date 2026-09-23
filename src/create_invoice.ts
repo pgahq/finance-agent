@@ -42,6 +42,7 @@ import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
   normalizeSupplierInvoiceLineAmounts,
+  overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -149,6 +150,10 @@ export interface CreateInvoiceRequest {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  conversationPdf?: {
+    s3Key: string;
+    fileName: string;
+  };
 }
 
 function slackInvoiceDetails(
@@ -182,7 +187,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -213,6 +218,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
+    conversationPdf,
   } = request;
   const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
@@ -242,7 +248,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       const [first, ...rest] = clustering.clusters;
       firstCluster = first;
       unrelated = clustering.unrelated;
-      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt };
+      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf };
       await Promise.all(
         rest.map((cluster) => fanOutCluster([cluster.primary, ...cluster.supporting], shared))
       );
@@ -266,6 +272,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       intercomAppId,
       assigneeEmail,
       conversationCreatedAt,
+      conversationPdf,
       startTime,
       clustered: true,
     });
@@ -281,6 +288,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       intercomAppId,
       assigneeEmail,
       conversationCreatedAt,
+      conversationPdf,
       startTime,
       clustered: true,
     });
@@ -297,6 +305,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         intercomAppId: attachment.intercomAppId ?? intercomAppId,
         assigneeEmail: attachment.assigneeEmail ?? assigneeEmail,
         conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
+        conversationPdf,
         startTime,
         clustered: false,
       });
@@ -320,6 +329,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
+    conversationPdf,
     startTime,
     clustered: false,
   });
@@ -333,6 +343,10 @@ interface ClusterInvoiceInput {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  conversationPdf?: {
+    s3Key: string;
+    fileName: string;
+  };
   startTime: number;
   clustered: boolean;
 }
@@ -363,6 +377,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
+    conversationPdf,
     startTime,
     clustered,
   } = input;
@@ -379,6 +394,21 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       ]);
       return { ...file, buffer, presignedUrl };
     }));
+    const conversationPdfBuffer = conversationPdf
+      ? await getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
+      : undefined;
+    const submitAttachments = [
+      ...loaded.map((file) => ({
+        fileName: file.fileName,
+        contentType: file.contentType,
+        base64Content: file.buffer.toString('base64'),
+      })),
+      ...(conversationPdf && conversationPdfBuffer ? [{
+        fileName: conversationPdf.fileName,
+        contentType: 'application/pdf',
+        base64Content: conversationPdfBuffer.toString('base64'),
+      }] : []),
+    ];
     const buffer = loaded[0].buffer;
     const processedAttachments = loaded.map((file) => ({
       id: file.s3Key,
@@ -535,7 +565,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           relatedLobLookup,
           invoiceLineQuantityDisplayed
         );
-        finalLines = synthetic.lines;
+        finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else if (remainder != null && remainder <= 0) {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
@@ -556,7 +586,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           relatedLobLookup,
           invoiceLineQuantityDisplayed
         );
-        finalLines = synthetic.lines;
+        finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
       } else {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
@@ -640,6 +670,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       },
       ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
@@ -731,11 +762,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           resolveCostCenterWorkdayIds: (costCenterIds) =>
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
-          attachments: loaded.map((file) => ({
-            fileName: file.fileName,
-            contentType: file.contentType,
-            base64Content: file.buffer.toString('base64'),
-          })),
+          attachments: submitAttachments,
         });
         let updateRegistrySyncFailed = false;
         try {
@@ -783,11 +810,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
       paymentTermsId,
-      attachments: loaded.map((file) => ({
-        fileName: file.fileName,
-        contentType: file.contentType,
-        base64Content: file.buffer.toString('base64'),
-      })),
+      attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
     });
 

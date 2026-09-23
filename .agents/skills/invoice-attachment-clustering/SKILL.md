@@ -34,7 +34,8 @@ is `true` (`InvoiceAttachmentClusteringEnabled` CFT parameter: `"true"` on
 4. Enrichment receives every PDF in the cluster with document roles (invoice vs
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
-   (invoice first). Slack success/error lists cluster filenames plus kinds.
+   (invoice first), with the Intercom conversation transcript appended last.
+   Slack success/error lists cluster filenames plus kinds.
 
 ## Taxonomy (per file)
 
