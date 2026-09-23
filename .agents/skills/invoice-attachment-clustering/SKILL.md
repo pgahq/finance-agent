@@ -48,11 +48,19 @@ is `true` (`InvoiceAttachmentClusteringEnabled` CFT parameter: `"true"` on
 These kinds are **not** RAG `DOCUMENT_TYPES` — do not add them to the Postgres
 `documents` type check.
 
+`joinClassifications` joins model output back to S3 objects by `fileNumber`
+(1-based input position), not by file name — resends often reuse a name such
+as `Invoice.pdf`. It falls back to a unique file name, then to position when
+counts match. A file the model skipped becomes `supporting` with confidence 0
+so a dropped classification never creates an extra supplier invoice.
+
 ## Clustering rules (`clusterClassifiedAttachments`)
 
 - Each `supplier_invoice` starts a cluster. Two invoice PDFs merge only when
   normalized invoice numbers match (`normalizeClusterInvoiceNumber`, case and
   whitespace insensitive) **and** suppliers agree or one side is missing.
+  Supplier names compare after dropping punctuation, `&`/`and`, and legal
+  suffixes (`Inc`, `LLC`, `Corp`, `Company`, `The`, ...).
   Different numbers, missing numbers, or disagreeing suppliers stay separate.
 - Within a merged same-invoice group, the **latest-received** file is primary
   (`receivedAt` from the Intercom part `created_at`, source falls back to
@@ -79,8 +87,15 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 - Registry miss (or same number resolving to a **different** supplier):
   create as usual, then upsert the registry row with the Workday WID/number,
   supplier WID, and the cluster's max `receivedAt` watermark.
-- Registry hit with **no documents newer** than the watermark: skip with a
-  Slack `*Skipped*` note. No Workday write.
+- The watermark is the newest of the cluster's `receivedAt` values and the
+  conversation's `latestMessageAt` (newest source/part with a body or
+  attachment; body-less assignments and custom actions do not count). A
+  supplier can answer AP's request for missing information in the email body
+  with no new PDF, so a newer message alone is enough to reprocess. Because
+  `latestMessageAt` is conversation-level, a new message reprocesses every
+  registered invoice in that conversation.
+- Registry hit with **no documents or messages newer** than the watermark:
+  skip with a Slack `*Skipped*` note. No Workday write.
 - Registry hit with newer documents: check editability via WQL
   (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
   canceled, not paid/partially paid). Editable → `submitSupplierInvoiceUpdate`
