@@ -3159,6 +3159,57 @@ describe('Workday utilities', () => {
           ]);
         });
 
+        it('should not drop line tax applicability for the header tax-code fault', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Tax Code is required when there is a tax amount.',
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '$45.00',
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          })).rejects.toThrow('Tax Code is required when there is a tax amount.');
+          expect(capturedRequests).toHaveLength(1);
+          expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeDefined();
+        });
+
+        it('should retry without line tax applicability for a line Tax_Code_Reference fault', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback({
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: 'Tax Code is required.',
+                    Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Tax_Code_Reference'
+                  }
+                }
+              }, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '$45.00',
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
         it('should not retry a tax fault when no submitted line carries Tax_Applicability_Reference', async () => {
           const { mockClient } = setupMockClient();
           mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {

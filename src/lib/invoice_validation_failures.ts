@@ -448,8 +448,8 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   const validationText = asValidationText(text);
   return (
     /Tax_Applicability/i.test(validationText)
-    || /Tax_Code_Reference/i.test(validationText)
-    || /tax (?:applicability|code)/i.test(validationText)
+    || /tax applicability/i.test(validationText)
+    || /Invoice_Line_Replacement_Data\[\d+\]\/(?:\w+:)?Tax_Code_Reference/i.test(validationText)
   );
 }
 
