@@ -61,9 +61,20 @@ export function normalizeClusterInvoiceNumber(value?: string | null): string | u
   return normalized || undefined;
 }
 
+const SUPPLIER_NAME_NOISE_TOKENS = new Set([
+  'the', 'inc', 'incorporated', 'llc', 'llp', 'ltd', 'limited', 'co', 'corp', 'corporation', 'company', 'lp', 'plc',
+]);
+
 export function normalizeClusterSupplierName(value?: string | null): string | undefined {
-  const trimmed = value?.trim().toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return trimmed || undefined;
+  const tokens = (value ?? '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const meaningful = tokens.filter((token) => !SUPPLIER_NAME_NOISE_TOKENS.has(token));
+  const normalized = (meaningful.length ? meaningful : tokens).join(' ');
+  return normalized || undefined;
 }
 
 export function supplierNamesAgree(a?: string | null, b?: string | null): boolean {
@@ -186,11 +197,11 @@ export interface ClassifiableDocument {
 }
 
 function classificationFileParts(documents: ClassifiableDocument[]) {
-  return documents.map((doc) => ({
+  return documents.map((doc, index) => ({
     type: 'file' as const,
     data: doc.buffer,
     mediaType: doc.contentType,
-    filename: doc.fileName,
+    filename: `${index + 1}-${doc.fileName}`,
   }));
 }
 
@@ -228,15 +239,36 @@ export async function classifyInvoiceAttachments(
   return parsed.data;
 }
 
+function findClassification(
+  attachments: ClusterableAttachment[],
+  classifications: InvoiceAttachmentParseResult['documents'],
+  index: number
+): InvoiceAttachmentParseResult['documents'][number] | undefined {
+  const byNumber = classifications.filter((doc) => doc.fileNumber === index + 1);
+  if (byNumber.length === 1) return byNumber[0];
+
+  const fileName = attachments[index].fileName;
+  const nameIsUnique = attachments.filter((attachment) => attachment.fileName === fileName).length === 1;
+  if (nameIsUnique) {
+    const byName = classifications.filter((doc) => doc.fileName === fileName);
+    if (byName.length === 1) return byName[0];
+  }
+
+  return classifications.length === attachments.length ? classifications[index] : undefined;
+}
+
 export function joinClassifications(
   attachments: ClusterableAttachment[],
   classifications: InvoiceAttachmentParseResult['documents']
 ): ClassifiedAttachment[] {
   return attachments.map((attachment, index) => {
-    const match =
-      classifications.find((doc) => doc.fileName === attachment.fileName) ?? classifications[index];
+    const match = findClassification(attachments, classifications, index);
     if (!match) {
-      return { ...attachment, kind: 'supplier_invoice' as const, confidence: 0 };
+      debug('Invoice attachment classification missing for file; treating as supporting', {
+        fileName: attachment.fileName,
+        fileNumber: index + 1,
+      });
+      return { ...attachment, kind: 'supporting' as const, confidence: 0 };
     }
     return {
       ...attachment,

@@ -14,7 +14,8 @@ export const SupportingDocumentKindSchema = z.enum([
 export type SupportingDocumentKind = z.infer<typeof SupportingDocumentKindSchema>;
 
 export const ParsedInvoiceAttachmentSchema = z.object({
-  fileName: z.string().describe('Exact fileName from the input list — used to join the classification back to the S3 object.'),
+  fileNumber: z.number().int().describe('The number of this file in the input list (1-based). File names can repeat, so this is the join key.'),
+  fileName: z.string().describe('fileName from the input list, copied exactly.'),
   kind: InvoiceAttachmentKindSchema.describe(
     'supplier_invoice: demands payment with an invoice number and total. supporting: belongs alongside an invoice but is not itself an invoice (packing slip, W-9, statement, contract, email, shipping confirmation). unrelated: belongs to a different transaction or is not AP backup at all.'
   ),
@@ -48,7 +49,7 @@ Also extract clustering keys from each document as shown: supplierName, invoiceN
 
 Rules:
 - Classify each file from its own content only.
-- Return exactly one entry per input file, matching fileName exactly.
+- Return exactly one entry per input file. Set fileNumber to that file's number in the input list; two files may share a name (for example a corrected resend), so never merge entries by name.
 - Packing slips, W-9s, statements, quotes, contracts, and shipping confirmations are supporting, never supplier_invoice — even when they show an order number or amount.
 - A file is unrelated only when it has no invoice number, PO, supplier, or amount linking it to an invoice in this batch.
 - Confidence below 0.5 means the kind is a guess — still pick the best kind and say why in reason.`;

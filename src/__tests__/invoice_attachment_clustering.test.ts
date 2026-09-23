@@ -47,6 +47,13 @@ describe('supplierNamesAgree', () => {
     expect(supplierNamesAgree('Acme Corp.', 'acme corp')).toBe(true);
     expect(supplierNamesAgree('Acme', 'Globex')).toBe(false);
   });
+
+  it('ignores legal suffixes and ampersands so one supplier is not split in two', () => {
+    expect(supplierNamesAgree('Acme Inc', 'ACME Incorporated')).toBe(true);
+    expect(supplierNamesAgree('The Acme Company, LLC', 'Acme')).toBe(true);
+    expect(supplierNamesAgree('Smith & Sons Ltd', 'Smith and Sons')).toBe(true);
+    expect(supplierNamesAgree('Acme Supply', 'Acme Services')).toBe(false);
+  });
 });
 
 describe('clusterClassifiedAttachments', () => {
@@ -188,7 +195,73 @@ describe('clusterMaxReceivedAt', () => {
   });
 });
 
+function parsedDoc(overrides: Record<string, unknown>) {
+  return {
+    fileNumber: 1,
+    fileName: 'invoice.pdf',
+    kind: 'supplier_invoice' as const,
+    supportingKind: null,
+    supplierName: 'Acme',
+    invoiceNumber: 'INV-100',
+    purchaseOrderNumber: null,
+    invoiceDate: null,
+    amountDue: null,
+    confidence: 0.9,
+    reason: 'test',
+    ...overrides,
+  };
+}
+
 describe('joinClassifications', () => {
+  it('joins by fileNumber so repeated file names keep their own classification', () => {
+    const joined = joinClassifications(
+      [
+        { s3Key: 'new-invoices/req-1/1-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+        { s3Key: 'new-invoices/req-1/2-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+      ],
+      [
+        parsedDoc({ fileNumber: 2, invoiceNumber: 'INV-200' }),
+        parsedDoc({ fileNumber: 1, invoiceNumber: 'INV-100' }),
+      ]
+    );
+
+    expect(joined[0].invoiceNumber).toBe('INV-100');
+    expect(joined[1].invoiceNumber).toBe('INV-200');
+    expect(clusterClassifiedAttachments(joined).clusters).toHaveLength(2);
+  });
+
+  it('treats a file the model skipped as supporting instead of a new invoice', () => {
+    const joined = joinClassifications(
+      [
+        { s3Key: 'new-invoices/req-1/1-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+        { s3Key: 'new-invoices/req-1/2-w9.pdf', fileName: 'w9.pdf', contentType: 'application/pdf' },
+      ],
+      [parsedDoc({ fileNumber: 1 })]
+    );
+
+    expect(joined[1].kind).toBe('supporting');
+    expect(joined[1].confidence).toBe(0);
+    const clustering = clusterClassifiedAttachments(joined);
+    expect(clustering.clusters).toHaveLength(1);
+    expect(clustering.clusters[0].supporting.map((doc) => doc.fileName)).toEqual(['w9.pdf']);
+  });
+
+  it('falls back to a unique fileName when fileNumber is wrong', () => {
+    const joined = joinClassifications(
+      [
+        { s3Key: 'new-invoices/req-1/1-a.pdf', fileName: 'a.pdf', contentType: 'application/pdf' },
+        { s3Key: 'new-invoices/req-1/2-b.pdf', fileName: 'b.pdf', contentType: 'application/pdf' },
+      ],
+      [
+        parsedDoc({ fileNumber: 7, fileName: 'b.pdf', kind: 'supporting' }),
+        parsedDoc({ fileNumber: 7, fileName: 'a.pdf' }),
+      ]
+    );
+
+    expect(joined[0].kind).toBe('supplier_invoice');
+    expect(joined[1].kind).toBe('supporting');
+  });
+
   it('joins model output back to S3 objects by fileName', () => {
     const joined = joinClassifications(
       [
@@ -197,6 +270,7 @@ describe('joinClassifications', () => {
       ],
       [
         {
+          fileNumber: 2,
           fileName: 'b.pdf',
           kind: 'supporting',
           supportingKind: 'packing_slip',
@@ -209,6 +283,7 @@ describe('joinClassifications', () => {
           reason: 'Packing slip for INV-100',
         },
         {
+          fileNumber: 1,
           fileName: 'a.pdf',
           kind: 'supplier_invoice',
           supportingKind: null,
