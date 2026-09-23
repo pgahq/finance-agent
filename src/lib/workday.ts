@@ -1813,6 +1813,47 @@ export async function getSupplierInvoice(
   return invoice;
 }
 
+export interface SupplierInvoiceEditability {
+  found: boolean;
+  editable: boolean;
+  status?: string;
+  isCanceled?: boolean;
+  isPaid?: boolean;
+  isPartiallyPaid?: boolean;
+}
+
+const WORKDAY_WID_PATTERN = /^[0-9a-f]{32}$/i;
+
+/** Mirrors the enrich-invoice editability guards so resends only touch Draft, unpaid, uncancelled invoices. */
+export async function getSupplierInvoiceEditability(
+  context: { workdayConfig: WorkdayConfig },
+  invoiceWorkdayID: string
+): Promise<SupplierInvoiceEditability> {
+  if (!WORKDAY_WID_PATTERN.test(invoiceWorkdayID)) {
+    throw new Error(`Invalid invoice Workday ID for status lookup: ${invoiceWorkdayID}`);
+  }
+  const result = await executeWorkdayQuery(
+    context.workdayConfig,
+    `SELECT workdayID, invoiceStatusAsText, isCanceled, invoiceIsPaid, invoiceIsPartiallyPaid
+     FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
+     WHERE workdayID = '${invoiceWorkdayID}'`
+  );
+  const row = (result.data as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!row) return { found: false, editable: false };
+  const status = typeof row.invoiceStatusAsText === 'string' ? row.invoiceStatusAsText : undefined;
+  const isCanceled = row.isCanceled === true;
+  const isPaid = row.invoiceIsPaid === true;
+  const isPartiallyPaid = row.invoiceIsPartiallyPaid === true;
+  return {
+    found: true,
+    editable: status === 'Draft' && !isCanceled && !isPaid && !isPartiallyPaid,
+    ...(status ? { status } : {}),
+    isCanceled,
+    isPaid,
+    isPartiallyPaid,
+  };
+}
+
 export interface InboundEmailData {
   emailFrom?: string;
   subject?: string;
@@ -1934,6 +1975,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   memo?: string;
   invoiceDate?: string;
   companyWID?: string;
+  companyReferenceType?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -1943,6 +1985,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
+  attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -1954,6 +1997,7 @@ export async function submitSupplierInvoiceUpdate(
     memo,
     invoiceDate,
     companyWID,
+    companyReferenceType,
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
@@ -1962,7 +2006,8 @@ export async function submitSupplierInvoiceUpdate(
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
-    paymentTermsId
+    paymentTermsId,
+    attachments
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{
   success: boolean;
@@ -2008,6 +2053,7 @@ export async function submitSupplierInvoiceUpdate(
       currentInvoice,
       supplierWID,
       companyWID,
+      companyReferenceType,
       workQueueTags,
       memo,
       invoiceDate,
@@ -2020,6 +2066,7 @@ export async function submitSupplierInvoiceUpdate(
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
+      attachments,
       filterInvoiceLines: true
     },
     buildNotes,
