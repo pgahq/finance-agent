@@ -61,9 +61,9 @@ describe('supplier_note_hints', () => {
     });
 
     it('reads labeled names from HTML note bodies', () => {
-      expect(extractSupplierNoteHints('<p>Please fix this one.</p><p>Supplier: Acme &amp; Sons</p>')).toEqual({
+      expect(extractSupplierNoteHints('<p>Please fix this one.</p><p>Supplier: O&#39;Brien &amp; Sons</p>')).toEqual({
         supplierIds: [],
-        supplierNames: ['Acme & Sons'],
+        supplierNames: ["O'Brien & Sons"],
       });
     });
 
@@ -128,6 +128,15 @@ describe('supplier_note_hints', () => {
       const text = formatSupplierNoteHintContext({ supplierIds: ['S-001234'], supplierNames: [] }, undefined);
       expect(text).toContain('could not be verified');
       expect(text).toContain('matches exactly');
+    });
+
+    it('lets a single exact ID match take precedence over name hints', () => {
+      const text = formatSupplierNoteHintContext(
+        { supplierIds: ['S-001234'], supplierNames: ['Globex'] },
+        [acme]
+      );
+      expect(text).toContain('exact cached Supplier ID match');
+      expect(text).not.toContain('Globex');
     });
 
     it('turns a hinted name into the first findSuppliers query', () => {

@@ -30,6 +30,10 @@ function htmlToText(value: string): string {
     .replace(/<\/(?:p|div|li)>/gi, '\n')
     .replace(/<[^>]{1,200}>/g, '')
     .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
     .replace(/&amp;/gi, '&');
 }
 
@@ -126,7 +130,8 @@ export function formatSupplierNoteHintContext(
       : `AP notes mention Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
   }
 
-  for (const name of hints.supplierNames) {
+  const nameHints = distinctSuppliers.size === 1 ? [] : hints.supplierNames;
+  for (const name of nameHints) {
     lines.push(`AP notes name the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
   }
 

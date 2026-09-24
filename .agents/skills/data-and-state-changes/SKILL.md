@@ -7,8 +7,9 @@ description: >-
   indexes, debugging documents_type_check / schema init Lambda failures, cache
   prune in syncDataSource, companyReferenceId / exact reference ID lookup,
   cache_companies SOAP Get_Workday_Companies, financeAgentAliases,
-  findCompanies billed-name search, company address tags,
-  or email short codes such as 912.
+  findCompanies billed-name search, company address tags, email short codes
+  such as 912, or cache_suppliers Workday Supplier IDs (S-XXXXXX,
+  metadata.supplierId) and the supplier re-sync backfill.
 ---
 
 # Data and state changes

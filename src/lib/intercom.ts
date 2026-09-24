@@ -171,11 +171,11 @@ export function buildIntercomPlainTextBody(conversation: IntercomConversationRes
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
-/** Bodies of internal `note` parts only, in API order. Intercom notes are teammate-only. */
+/** Bodies of teammate-authored `note` parts only, in API order; workflow and bot notes are excluded. */
 export function buildIntercomInternalNotes(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    if (part.part_type === 'note') {
+    if (part.part_type === 'note' && part.author?.type === 'admin') {
       appendBodySegment(segments, part.body);
     }
   }

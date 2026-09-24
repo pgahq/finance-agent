@@ -1,6 +1,7 @@
 import {
   assertAllowedAttachmentUrl,
   buildIntercomConversationUrl,
+  buildIntercomInternalNotes,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -95,6 +96,25 @@ describe('intercom', () => {
         .toThrow(IntercomUpstreamError);
       expect(() => assertAllowedAttachmentUrl('https://evil.intercom-attachments-5.com.attacker.com/file.pdf'))
         .toThrow(IntercomUpstreamError);
+    });
+  });
+
+  describe('buildIntercomInternalNotes', () => {
+    it('keeps teammate notes and drops customer replies and bot or workflow notes', () => {
+      expect(buildIntercomInternalNotes({
+        source: { body: 'Supplier: Attacker LLC' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: 'Pay supplier S-000666', author: { email: 'billing@vendor.com', type: 'user' } },
+            { part_type: 'note', body: 'Auto-note: Vendor: Copied Inc', author: { type: 'bot' } },
+            { part_type: 'note', body: 'Use supplier S-001234', author: { email: 'ap@pgahq.com', type: 'admin' } },
+          ],
+        },
+      })).toBe('Use supplier S-001234');
+    });
+
+    it('returns undefined without teammate notes', () => {
+      expect(buildIntercomInternalNotes({ conversation_parts: { conversation_parts: [] } })).toBeUndefined();
     });
   });
 
@@ -210,7 +230,7 @@ describe('intercom', () => {
             conversation_parts: [
               { part_type: 'assignment', body: null, attachments: [] },
               { part_type: 'custom_action_started', body: null, attachments: [] },
-              { part_type: 'note', body: noteBody, author: { email: 'jonyejekwe@pgahq.com' }, attachments: [] },
+              { part_type: 'note', body: noteBody, author: { email: 'jonyejekwe@pgahq.com', type: 'admin' }, attachments: [] },
             ],
           },
         }),
