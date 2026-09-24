@@ -45,8 +45,8 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   return parts;
 }
 
-async function buildSupplierHintText(conversationParts: string | undefined): Promise<string> {
-  const hints = extractSupplierNoteHints(conversationParts);
+async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
+  const hints = extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody);
   if (!hasSupplierNoteHints(hints)) return '';
 
   let resolved: ResolvedSupplierHint[] | undefined = [];
@@ -55,11 +55,11 @@ async function buildSupplierHintText(conversationParts: string | undefined): Pro
       const db = await getDatabaseConnection(process.env);
       resolved = await resolveSupplierIdHints(db, hints.supplierIds);
     } catch (error) {
-      debug('Failed to resolve supplier ID hints from conversation parts:', error);
+      debug('Failed to resolve supplier ID hints from email context:', error);
       resolved = undefined;
     }
   }
-  debug('Supplier hints from conversation parts', {
+  debug('Supplier hints from email context', {
     supplierIds: hints.supplierIds,
     supplierNames: hints.supplierNames,
     resolvedWorkdayIds: resolved?.map((hint) => hint.workdayId),
@@ -117,7 +117,7 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
-    const supplierHintText = await buildSupplierHintText(emailContext?.conversationParts);
+    const supplierHintText = await buildSupplierHintText(emailContext);
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`

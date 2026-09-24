@@ -1,12 +1,12 @@
 import type { DatabaseConnection } from './database.js';
 
 /**
- * Supplier hints from the Intercom conversation thread.
+ * Supplier hints from the email context (subject, source email, and every
+ * conversation part).
  *
- * Notes and replies often name the supplier explicitly (a name and/or a
- * Workday Supplier ID like S-001234). Every conversation part is scanned, but
- * not the source email, and only IDs that exact-match the supplier cache are
- * presented to the model as authoritative.
+ * Emails, notes, and replies often name the supplier explicitly (a name and/or
+ * a Workday Supplier ID like S-001234). Only IDs that exact-match the supplier
+ * cache are presented to the model as authoritative.
  */
 
 export interface SupplierNoteHints {
@@ -139,5 +139,5 @@ export function formatSupplierNoteHintContext(
     lines.push(`The conversation names the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
   }
 
-  return `\n\nSupplier hints from the conversation thread:\n${lines.map((line) => `- ${line}`).join('\n')}`;
+  return `\n\nSupplier hints from the email and conversation:\n${lines.map((line) => `- ${line}`).join('\n')}`;
 }

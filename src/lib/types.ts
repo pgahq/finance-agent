@@ -51,8 +51,6 @@ export interface InvoiceData {
     emailFrom?: string;
     subject?: string;
     plainTextBody?: string;
-    /** Every non-empty Intercom `conversation_parts` body (notes and comments); never the source email. */
-    conversationParts?: string;
   };
 }
 

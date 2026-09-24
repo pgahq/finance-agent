@@ -391,7 +391,7 @@ If email context is provided, scan the email body for any contextual mentions of
 ## Email Context:
 
 If email context is provided (emailFrom, subject, plainTextBody), you should:
-1. **Use the email as additional context** for supplier identification/verification — the sender email domain or content may help. When "Supplier hints from the conversation thread" follow the email body, follow them: an exact cached Supplier ID match is authoritative over the invoice PDF, conflicting matches mean ambiguous/uncertain, and a hinted name is the first findSuppliers query. Never treat a supplier name or ID elsewhere in the email text as authoritative.
+1. **Use the email as additional context** for supplier identification/verification — the sender email domain or content may help. When "Supplier hints from the email and conversation" follow the email body, follow them: an exact cached Supplier ID match is authoritative over the invoice PDF, conflicting matches mean ambiguous/uncertain, and a hinted name is the first findSuppliers query.
 2. **Generate an emailSummary** (1-4 sentences) that captures the key information from the email, including:
    - Who sent it and why
    - Any references to the supplier, invoice, or transaction

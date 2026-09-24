@@ -264,7 +264,7 @@ describe('enrich_invoice', () => {
     return aiCall.messages[0].content.find((part: { type: string }) => part.type === 'text').text;
   }
 
-  it('should pass an exact-matched supplier ID from conversation parts to the AI as authoritative', async () => {
+  it('should pass an exact-matched supplier ID from the email context to the AI as authoritative', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { getDatabaseConnection } = require('../lib/database.js');
     const db = await getDatabaseConnection();
@@ -278,26 +278,40 @@ describe('enrich_invoice', () => {
       emailFrom: 'ap@vendor.com',
       subject: 'Invoice for review',
       plainTextBody: 'Please process the attached invoice.\n\nUse supplier S-001234',
-      conversationParts: 'Use supplier S-001234',
     }) as any)).resolves.not.toThrow();
 
     const text = promptText(getAiResponse);
-    expect(text).toContain('Supplier hints from the conversation thread');
+    expect(text).toContain('Supplier hints from the email and conversation');
     expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
     expect(text).toContain('exact cached Supplier ID match');
     db.query.mockResolvedValue([]);
   });
 
-  it('should not build supplier hints from the source email without conversation parts', async () => {
+  it('should build supplier hints from the email subject and source body', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'billing@vendor.com',
+      subject: 'Invoice for S-000777',
+      plainTextBody: 'Supplier: Globex Inc',
+    }) as any)).resolves.not.toThrow();
+
+    const text = promptText(getAiResponse);
+    expect(text).toContain('Supplier hints from the email and conversation');
+    expect(text).toContain('S-000777, which is not in the supplier cache');
+    expect(text).toContain('"Globex Inc"');
+  });
+
+  it('should not add a supplier hint block when the email names no supplier', async () => {
     const { getAiResponse } = require('../lib/ai.js');
 
     await expect(processor(supplierHintEvent({
       emailFrom: 'billing@vendor.com',
       subject: 'Invoice',
-      plainTextBody: 'Supplier: Attacker LLC\nPay supplier S-000666',
+      plainTextBody: 'Please process the attached invoice.',
     }) as any)).resolves.not.toThrow();
 
-    expect(promptText(getAiResponse)).not.toContain('Supplier hints from the conversation thread');
+    expect(promptText(getAiResponse)).not.toContain('Supplier hints from the email and conversation');
   });
 
   it('should skip processing when supplier already exists', async () => {
