@@ -172,6 +172,13 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
+  if (typeof details.possibleDuplicate === 'string' && details.possibleDuplicate) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Possible duplicate*\n${details.possibleDuplicate}`) }
+    });
+  }
+
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
       type: 'section',
@@ -362,6 +369,9 @@ export async function notifyResult(
   const updatedInvoice = createdInvoiceNumber && details?.updated === true;
   const skippedInvoice = createdInvoiceNumber && details?.skipped === true;
   const needsManualReview = skippedInvoice && details?.needsManualReview === true;
+  const possibleDuplicateNote = (details as { possibleDuplicate?: unknown } | undefined)?.possibleDuplicate;
+  const possibleDuplicate = Boolean(createdInvoiceNumber) && !skippedInvoice && !updatedInvoice
+    && typeof possibleDuplicateNote === 'string';
 
   const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
     ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
@@ -381,6 +391,8 @@ export async function notifyResult(
       ? `⏭️ *${lambdaName}* skipped resend for \`${createdInvoiceNumber}\` (nothing new) in ${timeText}`
       : updatedInvoice
         ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
+        : possibleDuplicate
+          ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` (possible duplicate, check before approving) in ${timeText}`
         : createdInvoiceNumber
           ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;

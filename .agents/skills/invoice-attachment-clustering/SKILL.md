@@ -120,20 +120,31 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   W-9 arrives) updates the existing invoice, keeping the real supplier.
 - The watermark is the newest of the cluster's `receivedAt` values and the
   conversation's `latestMessageAt` (newest source/part with a body or
-  attachment; body-less assignments and custom actions do not count). A
-  supplier can answer AP's request for missing information in the email body
-  with no new PDF, so a newer message alone is enough to reprocess. Because
-  `latestMessageAt` is conversation-level, a new message reprocesses every
-  registered invoice in that conversation.
+  attachment; body-less assignments and custom actions do not count) at the
+  last processing. The registry is the only source for create vs update; it
+  never searches Workday for a matching supplier and invoice number.
+- "Newer for this invoice" means one of:
+  - a file in **this cluster** is newer than the watermark, or
+  - `latestMessageAt` is newer **and** no file in another cluster of the
+    conversation is newer (`otherClustersLatestReceivedAt`, computed at parse
+    time and passed to every fanned-out cluster). A supplier can answer AP's
+    request in the email body with no new PDF, so a text-only reply counts;
+    a reply that brought another invoice is about that invoice, so it does not
+    reprocess this one. Unrelated files do not block. When no `receivedAt`
+    is known at all, treat it as newer.
 - On every registry hit (same real supplier or unresolved), check the
   registered invoice's status via WQL (`getSupplierInvoiceEditability`) first.
-  If AP **canceled** it or it is **no longer in Workday**, the new trigger
-  creates a fresh supplier invoice (regardless of the watermark), repoints the
-  registry row at it, and notes "Replaces canceled invoice X" in the work
-  queue notes and Slack (`replacesCanceledInvoice`).
-- Registry hit with **no documents or messages newer** than the watermark:
-  skip with a Slack `*Skipped*` note and a "skipped resend" headline (never
-  "created"). No Workday write.
+  If AP **canceled** it or it is **no longer in Workday**, create a fresh
+  supplier invoice only when **this cluster** has a newer file (the supplier
+  re-sent it); repoint the registry row and note "Replaces canceled invoice X"
+  in the work queue notes and Slack (`replacesCanceledInvoice`). A newer
+  message alone never brings a canceled invoice back: skip with a `*Skipped*`
+  note instead.
+- Registry hit with nothing newer for this invoice: skip with a Slack
+  `*Skipped*` note and a "skipped resend" headline (never "created"). No
+  Workday write. Skips advance the row's watermark to the newest time seen, so
+  a later text-only reply about this invoice still counts after an unrelated
+  invoice arrived.
 - Registry hit with newer documents: editability uses the same guards as
   enrich (Draft, not canceled, not paid/partially paid). Only explicit false
   values (`false`, `'false'`, `0`, `'0'`) count as not canceled or paid;
@@ -153,6 +164,16 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   Status-check errors fail closed (Slack error, throw).
 - No extracted invoice number: the registry cannot key the invoice, so always
   create (current behavior).
+- Possible duplicates: Workday rejects a supplier invoice number already used
+  for that supplier, and the submit repair then retries with the default
+  supplier. The retry stays, because it also rescues a wrong supplier match.
+  With the registry on, a create that only succeeded after that rejection
+  (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus a
+  validation-driven supplier fallback) is flagged as a possible duplicate in
+  the work queue notes and the Slack headline/body (`possibleDuplicate`), and
+  the registry row records an unresolved supplier. This covers invoices the
+  registry never saw (created before the flag, by AP, or in another
+  conversation). `buildNotes` receives each attempt's prior failures for this.
 - Registry writes never fail the invoice: a failed upsert after a successful
   create/update surfaces as `registrySync: failed` in the success Slack
   details. Concurrent double-fires can still race lookup-then-create; the

@@ -63,7 +63,16 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { getSupplierInvoiceEditability, loadPurchaseOrder, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
+import {
+  getSupplierInvoiceEditability,
+  isDuplicateSuppliersInvoiceNumberMessage,
+  loadPurchaseOrder,
+  submitNewSupplierInvoice,
+  submitSupplierInvoiceUpdate,
+  type AppliedFallback,
+  type ParsedPurchaseOrder,
+  type SupplierInvoiceSubmitPriorFailure,
+} from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(
   purchaseOrder: ParsedPurchaseOrder
@@ -153,6 +162,8 @@ export interface CreateInvoiceRequest {
   assigneeEmail?: string;
   conversationCreatedAt?: string;
   latestMessageAt?: number;
+  /** Newest `receivedAt` among files grouped into the conversation's other invoice clusters. */
+  otherClustersLatestReceivedAt?: number;
   conversationPdf?: {
     s3Key: string;
     fileName: string;
@@ -190,7 +201,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -263,6 +274,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     conversationCreatedAt,
     conversationPdf,
     latestMessageAt,
+    otherClustersLatestReceivedAt,
   } = request;
   const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
@@ -280,6 +292,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
 
   if (clusteringEnabled && attachments?.length && !clustered) {
     let firstCluster;
+    let firstOtherClustersLatestReceivedAt: number | undefined;
     let unrelated: ClassifiedAttachment[] = [];
     try {
       const { clustering } = await parseAndClusterInvoiceAttachments(
@@ -289,12 +302,21 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
       }
-      const [first, ...rest] = clustering.clusters;
-      firstCluster = first;
+      const clusterFiles = clustering.clusters.map((cluster) => [cluster.primary, ...cluster.supporting]);
+      const othersLatest = (index: number) =>
+        clusterMaxReceivedAt(clusterFiles.filter((_, other) => other !== index).flat());
+      firstCluster = clustering.clusters[0];
+      firstOtherClustersLatestReceivedAt = othersLatest(0);
       unrelated = clustering.unrelated;
       const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf, latestMessageAt };
       await Promise.all(
-        rest.map((cluster) => fanOutCluster([cluster.primary, ...cluster.supporting], shared))
+        clusterFiles.slice(1).map((files, offset) => {
+          const otherLatest = othersLatest(offset + 1);
+          return fanOutCluster(files, {
+            ...shared,
+            ...(otherLatest != null ? { otherClustersLatestReceivedAt: otherLatest } : {}),
+          });
+        })
       );
     } catch (error) {
       const processingTime = Date.now() - startTime;
@@ -318,6 +340,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       conversationCreatedAt,
       conversationPdf,
       latestMessageAt,
+      otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
       startTime,
       clustered: true,
     });
@@ -335,6 +358,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       conversationCreatedAt,
       conversationPdf,
       latestMessageAt,
+      otherClustersLatestReceivedAt,
       startTime,
       clustered: true,
     });
@@ -394,6 +418,7 @@ interface ClusterInvoiceInput {
     fileName: string;
   };
   latestMessageAt?: number;
+  otherClustersLatestReceivedAt?: number;
   startTime: number;
   clustered: boolean;
 }
@@ -426,6 +451,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     conversationCreatedAt,
     conversationPdf,
     latestMessageAt,
+    otherClustersLatestReceivedAt,
     startTime,
     clustered,
   } = input;
@@ -739,9 +765,8 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const registryNumber = extractedSuppliersInvoiceNumber
       ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
       : undefined;
-    // A supplier can answer AP's request for missing info in the email body with no new PDF,
-    // so the newest message counts as new information alongside the newest document.
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
+    const clusterFilesReceivedAt = clusterMaxReceivedAt(loaded);
 
     // The default supplier means "not resolved", not a different supplier: a resend often moves
     // resolution between default and real (for example once a W-9 arrives), which must still update.
@@ -760,48 +785,84 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       const editability = existing && !supplierChanged
         ? await getSupplierInvoiceEditability(context, existing.workdayInvoiceWid)
         : undefined;
-      // AP canceled (or deleted) the registered invoice, so a new trigger creates a fresh one.
+      const watermark = existing?.lastProcessedReceivedAt ?? undefined;
+      const hasNewerFile = watermark == null
+        || (clusterFilesReceivedAt != null && clusterFilesReceivedAt > watermark);
+      // A supplier can answer AP's request for missing info in the email body with no new PDF, so a
+      // newer message counts too — unless it brought a file for another invoice in this conversation,
+      // in which case that message is about the other invoice.
+      const hasNewerMessage = watermark != null
+        && latestMessageAt != null
+        && latestMessageAt > watermark
+        && !(otherClustersLatestReceivedAt != null && otherClustersLatestReceivedAt > watermark);
+      const receivedAtUnknown = clusterFilesReceivedAt == null && latestMessageAt == null;
+      const hasNewerInformation = receivedAtUnknown || hasNewerFile || hasNewerMessage;
+      const invoiceLabel = existing ? existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid : undefined;
+
+      const skipResend = async (skipReason: string, extra: Record<string, unknown> = {}) => {
+        if (existing && clusterReceivedAt != null && (watermark == null || clusterReceivedAt > watermark)) {
+          // Everything up to now has been seen and judged not new for this invoice, so a later
+          // text-only reply about it still counts as new.
+          try {
+            await upsertConversationSupplierInvoice(context.dbConnection, {
+              conversationId,
+              supplierInvoiceNumber: registryNumber,
+              supplierWid: existing.supplierWid,
+              workdayInvoiceWid: existing.workdayInvoiceWid,
+              workdayInvoiceNumber: existing.workdayInvoiceNumber,
+              lastProcessedReceivedAt: clusterReceivedAt,
+            });
+          } catch (error) {
+            debug('Failed to advance conversation invoice registry watermark after skip:', error);
+          }
+        }
+        await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
+          ...sharedSlackDetails,
+          invoiceWID: existing?.workdayInvoiceWid,
+          invoiceNumber: existing?.workdayInvoiceNumber,
+          skipped: true,
+          skipReason,
+          ...extra,
+        }, conversationId, intercomAppId));
+      };
+
+      // AP canceled (or deleted) the registered invoice. Only a newer document for this invoice means
+      // the supplier re-sent it; anything else in the conversation must not bring it back.
       const registeredInvoiceWasRemoved = Boolean(
         editability && (!editability.found || editability.isCanceled || editability.status === 'Canceled')
       );
       if (existing && registeredInvoiceWasRemoved) {
-        replacedInvoice = existing;
-        debug('Registered invoice is canceled or gone; creating a new supplier invoice', {
-          conversationId,
-          replacedInvoice: existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid,
-        });
-      }
-      if (existing && editability && !registeredInvoiceWasRemoved) {
-        const hasNewerInformation =
-          clusterReceivedAt == null ||
-          existing.lastProcessedReceivedAt == null ||
-          clusterReceivedAt > existing.lastProcessedReceivedAt;
-        if (!hasNewerInformation) {
-          const processingTime = Date.now() - startTime;
-          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
-          debug('Skipping resend: no documents or messages newer than the last processing', {
+        if (!hasNewerFile) {
+          debug('Registered invoice is canceled or gone and has no newer document; not replacing', {
             conversationId,
             invoiceLabel,
           });
-          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
-            ...sharedSlackDetails,
-            invoiceWID: existing.workdayInvoiceWid,
-            invoiceNumber: existing.workdayInvoiceNumber,
-            skipped: true,
-            skipReason: `No documents or messages newer than the last processing of ${invoiceLabel}.`,
-          }, conversationId, intercomAppId));
+          await skipResend(`Invoice ${invoiceLabel} was canceled and no newer document for it arrived, so no replacement was created.`);
+          return;
+        }
+        replacedInvoice = existing;
+        debug('Registered invoice is canceled or gone; creating a new supplier invoice', {
+          conversationId,
+          replacedInvoice: invoiceLabel,
+        });
+      }
+      if (existing && editability && !registeredInvoiceWasRemoved) {
+        if (!hasNewerInformation) {
+          debug('Skipping resend: nothing newer for this invoice since the last processing', {
+            conversationId,
+            invoiceLabel,
+          });
+          await skipResend(`No documents or messages for ${invoiceLabel} newer than the last processing.`);
           return;
         }
         if (!editability.editable) {
-          const processingTime = Date.now() - startTime;
-          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
           const reason = `Invoice ${invoiceLabel} is ${editability.status ?? 'not editable'}${editability.isPaid ? ' (paid)' : ''}${editability.isPartiallyPaid ? ' (partially paid)' : ''}; re-sent documents need manual review.`;
           debug('Skipping resend update: invoice is not editable', {
             conversationId,
             invoiceLabel,
             editability,
           });
-          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+          await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
             ...sharedSlackDetails,
             invoiceWID: existing.workdayInvoiceWid,
             invoiceNumber: existing.workdayInvoiceNumber,
@@ -813,7 +874,6 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         }
         // Submit_Supplier_Invoice replaces Attachment_Data with what each call sends, so the update
         // resends every cluster document plus a fresh transcript; newFiles only feeds notes and Slack.
-        const watermark = existing.lastProcessedReceivedAt;
         const newFiles = watermark == null
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
@@ -873,14 +933,25 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const replacedInvoiceLabel = replacedInvoice
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
+    const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
+    // The default-supplier retry also rescues a wrong supplier match, so it stays; when the registry is
+    // on, a retry caused by "invoice number already in use" is flagged as a possible duplicate instead.
+    const isPossibleDuplicate = (
+      appliedFallbacks: AppliedFallback[],
+      priorFailures: SupplierInvoiceSubmitPriorFailure[] = []
+    ) => trackResends
+      && appliedFallbacks.some((fallback) => fallback.field === 'supplier' && fallback.dueToValidationError)
+      && priorFailures.some((failure) => isDuplicateSuppliersInvoiceNumberMessage(failure.message));
+    const resolvedSupplierLabel = result.supplier.resolvedSupplier?.supplierName ?? 'the matched supplier';
+    const possibleDuplicateNote = `Possible duplicate: Workday reported supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}, so this invoice was created under the default supplier. Check for an existing invoice before approving.`;
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
       companyReferenceType,
-      buildNotes: replacedInvoiceLabel
-        ? (appliedFallbacks: AppliedFallback[]) =>
-          `${buildNotes(appliedFallbacks)}\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.`
-        : buildNotes,
+      buildNotes: (appliedFallbacks, priorFailures) =>
+        buildNotes(appliedFallbacks) +
+        (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : '') +
+        (isPossibleDuplicate(appliedFallbacks, priorFailures) ? `\n\n${possibleDuplicateNote}` : ''),
       memo,
       invoiceDate: extractedInvoiceDate,
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
@@ -900,8 +971,9 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const processingTime = Date.now() - startTime;
 
+    const possibleDuplicate = isPossibleDuplicate(createOutcome.appliedFallbacks, createOutcome.priorFailures);
     let registrySyncFailed = false;
-    if (clusteringEnabled && conversationId && registryNumber) {
+    if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
         registrySyncFailed = true;
       } else {
@@ -909,7 +981,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: resolvedSupplierWID ?? null,
+            supplierWid: possibleDuplicate ? null : resolvedSupplierWID ?? null,
             workdayInvoiceWid: createOutcome.invoiceWID,
             workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
             lastProcessedReceivedAt: clusterReceivedAt ?? null,
@@ -926,6 +998,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
       ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),
+      ...(possibleDuplicate ? { possibleDuplicate: possibleDuplicateNote } : {}),
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,

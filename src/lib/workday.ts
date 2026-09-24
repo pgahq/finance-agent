@@ -1337,6 +1337,11 @@ export type SupplierInvoiceSubmitPriorFailure = {
   message: string;
 };
 
+/** Workday rejects a supplier invoice number already used on another invoice for the same supplier. */
+export function isDuplicateSuppliersInvoiceNumberMessage(message: string | undefined): boolean {
+  return /supplier'?s invoice number.*already in use/i.test(message ?? '');
+}
+
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   Validation_Fault?: unknown;
@@ -1367,7 +1372,7 @@ interface SubmitSupplierInvoiceWithRepairOptions {
   invoiceWorkdayID: string | undefined;
   currentInvoice: any;
   buildOptions: buildSubmitInvoiceDataOptions;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   operationName: string;
   submitLogMessage: string;
   requestDebugLabel?: string;
@@ -1596,7 +1601,7 @@ async function submitSupplierInvoiceWithRepair({
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
     );
-    const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks) };
+    const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks, [...priorFailures]) };
     const invoiceData = buildSubmitInvoiceData(optionsWithNotes) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
 
@@ -2026,7 +2031,7 @@ export async function getWorkQueueTagWIDs(
 export interface SubmitSupplierInvoiceUpdateParams {
   invoiceWorkdayID: string;
   supplierWID?: string;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
   companyWID?: string;
@@ -2145,7 +2150,7 @@ export interface SubmitNewSupplierInvoiceParams {
   companyWID: string;
   companyReferenceType?: string;
   currencyWID?: string;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
   invoiceReceivedDate?: string;

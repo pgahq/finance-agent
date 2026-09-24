@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isDuplicateSuppliersInvoiceNumberMessage, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -1147,10 +1147,18 @@ describe('Workday utilities', () => {
       });
 
       process.env.FALLBACK_PAYMENT_TERMS_ID = 'fallback-payment-terms-id';
+      const buildNotes = jest.fn().mockReturnValue('');
 
       const result = await submitSupplierInvoiceUpdateForTest({
-        invoiceDate: '2025-02-15'
+        invoiceDate: '2025-02-15',
+        buildNotes,
       });
+
+      expect(buildNotes).toHaveBeenCalledTimes(2);
+      expect(buildNotes.mock.calls[0][1]).toEqual([]);
+      expect(buildNotes.mock.calls[1][1]).toEqual([
+        expect.objectContaining({ attempt: 1, message: 'Validation_Fault: payment terms are invalid' }),
+      ]);
 
       expect(result.success).toBe(true);
       expect(result.priorFailures).toEqual([
@@ -4174,6 +4182,16 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Purchase_Order_Reference).toBeUndefined();
     });
 
+  });
+
+  describe('isDuplicateSuppliersInvoiceNumberMessage', () => {
+    it('recognizes the Workday duplicate supplier invoice number fault only', () => {
+      expect(isDuplicateSuppliersInvoiceNumberMessage(
+        "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
+      )).toBe(true);
+      expect(isDuplicateSuppliersInvoiceNumberMessage("You can't select this supplier to invoice this purchase order.")).toBe(false);
+      expect(isDuplicateSuppliersInvoiceNumberMessage(undefined)).toBe(false);
+    });
   });
 
   describe('submitNewSupplierInvoice', () => {
