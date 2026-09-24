@@ -51,6 +51,8 @@ export interface InvoiceData {
     emailFrom?: string;
     subject?: string;
     plainTextBody?: string;
+    /** Intercom internal notes only (teammate-authored); never the external sender's email. */
+    internalNotes?: string;
   };
 }
 

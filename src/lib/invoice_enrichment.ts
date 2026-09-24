@@ -2,7 +2,13 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
-import { extractSupplierNoteHints, formatSupplierNoteHintContext } from './supplier_note_hints.js';
+import {
+  extractSupplierNoteHints,
+  formatSupplierNoteHintContext,
+  hasSupplierNoteHints,
+  resolveSupplierIdHints,
+  type ResolvedSupplierHint,
+} from './supplier_note_hints.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { withComposedLineDescriptions } from './invoice_lines.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
@@ -37,6 +43,28 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   }
 
   return parts;
+}
+
+async function buildSupplierHintText(internalNotes: string | undefined): Promise<string> {
+  const hints = extractSupplierNoteHints(internalNotes);
+  if (!hasSupplierNoteHints(hints)) return '';
+
+  let resolved: ResolvedSupplierHint[] | undefined = [];
+  if (hints.supplierIds.length > 0) {
+    try {
+      const db = await getDatabaseConnection(process.env);
+      resolved = await resolveSupplierIdHints(db, hints.supplierIds);
+    } catch (error) {
+      debug('Failed to resolve supplier ID hints from internal notes:', error);
+      resolved = undefined;
+    }
+  }
+  debug('Supplier hints from internal notes', {
+    supplierIds: hints.supplierIds,
+    supplierNames: hints.supplierNames,
+    resolvedWorkdayIds: resolved?.map((hint) => hint.workdayId),
+  });
+  return formatSupplierNoteHintContext(hints, resolved);
 }
 
 export async function enrichInvoiceFromAttachments(
@@ -89,9 +117,7 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
-    const supplierHintText = formatSupplierNoteHintContext(
-      extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody)
-    );
+    const supplierHintText = await buildSupplierHintText(emailContext?.internalNotes);
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`

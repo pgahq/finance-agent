@@ -246,6 +246,7 @@ describe('intercom', () => {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',
             plainTextBody: mergedPlainTextBody,
+            internalNotes: noteBody,
           },
         }],
       });

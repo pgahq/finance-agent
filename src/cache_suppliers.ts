@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
 import { createSupplierContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
+import { isWorkdayWid, textFromWqlValue } from './lib/workday_reference_id.js';
 
 const QUERY = `
   SELECT
@@ -22,18 +23,14 @@ export const handler = withQueryHandler(QUERY)({
   pageSize: null // Processor executes query directly
 });
 
-function textFromWqlField(value: unknown): string | undefined {
-  if (typeof value === 'string') return value.trim() || undefined;
-  if (typeof value !== 'object' || value == null) return undefined;
-  const record = value as { descriptor?: unknown; id?: unknown };
-  for (const candidate of [record.descriptor, record.id]) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-  }
-  return undefined;
+function supplierIdFromWql(value: unknown): string | undefined {
+  const text = textFromWqlValue(value);
+  return text && !isWorkdayWid(text) ? text : undefined;
 }
 
 // Processor function - invoked by query function or refresh
-export const processor = withProcessorHandler(async (context, suppliers, _event) => {  if (!suppliers || suppliers.length === 0) {
+export const processor = withProcessorHandler(async (context, suppliers, _event) => {
+  if (!suppliers || suppliers.length === 0) {
     debug('No supplier data received - skipping sync');
     return;
   }
@@ -49,7 +46,7 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       {
         workdayId: supplier.supplier.id,
         supplierName: supplier.supplier.descriptor,
-        supplierId: textFromWqlField(supplier.supplierID),
+        supplierId: supplierIdFromWql(supplier.supplierID),
         lastUpdatedDateTime: supplier.lastUpdatedDateTime,
         allPhoneNumbers: supplier.allPhoneNumbers?.length > 0
           ? supplier.allPhoneNumbers.map((p: any) => p.descriptor)
@@ -79,9 +76,12 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       ...(supplier.supplierId ? { supplierId: supplier.supplierId } : {}),
       lastUpdatedDateTime: supplier.lastUpdatedDateTime,
     }),
-    isUpdated: (existingMetadata, supplier) =>
+    isUpdated: (
+      existingMetadata: { lastUpdatedDateTime?: string; supplierId?: string } | undefined,
+      supplier
+    ) =>
       existingMetadata?.lastUpdatedDateTime !== supplier.lastUpdatedDateTime
-      || (supplier.supplierId != null && existingMetadata?.supplierId !== supplier.supplierId),
+      || existingMetadata?.supplierId !== supplier.supplierId,
     notifyLabel: 'cache_suppliers',
     itemLabel: 'suppliers',
   });

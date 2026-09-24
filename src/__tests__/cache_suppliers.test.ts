@@ -214,6 +214,60 @@ describe('cache_suppliers', () => {
     );
   });
 
+  describe('supplier ID backfill on existing rows', () => {
+    const activeSupplier = (supplierID: unknown) => ({
+      supplier: { descriptor: 'ID Supplier', id: 'supplier-with-id' },
+      supplierID,
+      lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+      supplierStatus: { descriptor: 'Active', id: 'status-1' },
+    });
+
+    it('updates a cached supplier that is missing its supplier ID', async () => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      getDocumentsByType.mockResolvedValueOnce([{
+        workday_id: 'supplier-with-id',
+        content: 'old content',
+        metadata: { workdayId: 'supplier-with-id', lastUpdatedDateTime: '2024-01-01T00:00:00Z' },
+      }]);
+
+      await processor({ data: [activeSupplier('S-001234')] });
+
+      expect(bulkUpdateDocuments).toHaveBeenCalledWith(
+        expect.anything(),
+        [expect.objectContaining({
+          workdayId: 'supplier-with-id',
+          metadata: expect.objectContaining({ supplierId: 'S-001234' }),
+        })]
+      );
+    });
+
+    it('leaves a cached supplier alone when its supplier ID is unchanged', async () => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      getDocumentsByType.mockResolvedValueOnce([{
+        workday_id: 'supplier-with-id',
+        content: 'Supplier content',
+        metadata: {
+          workdayId: 'supplier-with-id',
+          supplierId: 'S-001234',
+          lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+        },
+      }]);
+
+      await processor({ data: [activeSupplier({ descriptor: 'S-001234' })] });
+
+      expect(bulkUpdateDocuments).not.toHaveBeenCalled();
+    });
+
+    it('never stores a Workday WID as the supplier ID', async () => {
+      await processor({ data: [activeSupplier('0627e00a601c1001085f64bd33e20000')] });
+
+      const { createSupplierContent } = require('../lib/rag.js');
+      expect(createSupplierContent).toHaveBeenCalledWith(
+        expect.objectContaining({ supplierId: undefined })
+      );
+    });
+  });
+
   it('should handle null/undefined data gracefully', async () => {
     await expect(processor({ data: null })).resolves.not.toThrow();
 
