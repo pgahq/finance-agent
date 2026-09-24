@@ -316,6 +316,27 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
   }
 }
 
+function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
+  const lines: string[] = [];
+  const clusters = Array.isArray(details.clusters) ? details.clusters as Array<Record<string, unknown>> : [];
+  clusters.forEach((cluster, index) => {
+    const fallback = cluster.fallback === true ? ' _(no invoice found; best guess)_' : '';
+    lines.push(`*Invoice ${index + 1}:* ${String(cluster.invoice)}${fallback}`);
+    if (Array.isArray(cluster.supporting)) {
+      for (const file of cluster.supporting) lines.push(`    ↳ ${String(file)}`);
+    }
+  });
+  if (Array.isArray(details.unrelated) && details.unrelated.length) {
+    lines.push(`*Not attached:* ${details.unrelated.map(String).join(', ')}`);
+  }
+  if (lines.length) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: truncateSlackText(lines.join('\n')) } });
+  }
+  if (typeof details.note === 'string') {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: details.note }] });
+  }
+}
+
 /**
  * Send notification for any Lambda operation result
  */
@@ -342,8 +363,13 @@ export async function notifyResult(
   const skippedInvoice = createdInvoiceNumber && details?.skipped === true;
   const needsManualReview = skippedInvoice && details?.needsManualReview === true;
 
+  const shadowPlan = lambdaName === 'create_invoice_shadow' && status === 'success'
+    && typeof details?.wouldCreateInvoices === 'number';
+
   // Build the main message
-  let mainMessage = needsManualReview
+  let mainMessage = shadowPlan
+    ? `👀 *${lambdaName}* would create ${details.wouldCreateInvoices} invoice${details.wouldCreateInvoices === 1 ? '' : 's'} from ${Array.isArray(details.attachments) ? details.attachments.length : 0} PDF${Array.isArray(details.attachments) && details.attachments.length === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
+    : needsManualReview
     ? `⚠️ *${lambdaName}* needs manual review for \`${createdInvoiceNumber}\` (resend not applied) in ${timeText}`
     : skippedInvoice
       ? `⏭️ *${lambdaName}* skipped resend for \`${createdInvoiceNumber}\` (nothing new) in ${timeText}`
@@ -369,6 +395,8 @@ export async function notifyResult(
 
   if (error) {
     appendErrorBlocks(blocks, error, details);
+  } else if (shadowPlan) {
+    appendShadowClusteringBlocks(blocks, details as Record<string, unknown>);
   } else if (lambdaName === 'create_invoice' && details && typeof details === 'object') {
     appendCreateInvoiceSuccessBlocks(blocks, details as Record<string, unknown>);
   } else if (details) {
