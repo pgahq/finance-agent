@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, withQueryHandler } from './lib/handlers.js';
+import { getDocumentsByType } from './lib/database.js';
 import { createSupplierContent } from './lib/rag.js';
 import { syncDataSource } from './lib/sync.js';
 import { isWorkdayWid, textFromWqlValue } from './lib/workday_reference_id.js';
@@ -40,13 +41,20 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
   const activeSuppliers = suppliers.filter((supplier: any) => supplier.supplierStatus.descriptor === 'Active');
   debug(`Filtered to ${activeSuppliers.length} Active suppliers (${((activeSuppliers.length / suppliers.length) * 100).toFixed(1)}% of total)`);
 
+  const existing = await getDocumentsByType(context.dbConnection, 'supplier');
+  const storedSupplierIds = new Map(
+    existing
+      .filter((document) => typeof document.metadata?.supplierId === 'string' && document.metadata.supplierId)
+      .map((document) => [document.workday_id, document.metadata.supplierId as string])
+  );
+
   const items = new Map(
     activeSuppliers.map((supplier: any) => [
       supplier.supplier.id,
       {
         workdayId: supplier.supplier.id,
         supplierName: supplier.supplier.descriptor,
-        supplierId: supplierIdFromWql(supplier.supplierID),
+        supplierId: supplierIdFromWql(supplier.supplierID) ?? storedSupplierIds.get(supplier.supplier.id),
         lastUpdatedDateTime: supplier.lastUpdatedDateTime,
         allPhoneNumbers: supplier.allPhoneNumbers?.length > 0
           ? supplier.allPhoneNumbers.map((p: any) => p.descriptor)

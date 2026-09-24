@@ -118,6 +118,17 @@ describe('supplier_note_hints', () => {
       expect(text).not.toContain('exact cached Supplier ID match');
     });
 
+    it('does not treat one exact match as authoritative when another hinted ID is unresolved', () => {
+      const text = formatSupplierNoteHintContext(
+        { supplierIds: ['S-001234', 'S-000404'], supplierNames: ['Globex'] },
+        [acme]
+      );
+      expect(text).not.toContain('exact cached Supplier ID match');
+      expect(text).toContain('incomplete');
+      expect(text).toContain('S-000404, which is not in the supplier cache');
+      expect(text).toContain('"Globex"');
+    });
+
     it('does not treat an ID missing from the cache as a match', () => {
       const text = formatSupplierNoteHintContext({ supplierIds: ['S-000404'], supplierNames: [] }, []);
       expect(text).toContain('not in the supplier cache');

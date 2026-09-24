@@ -57,6 +57,7 @@ jest.mock('@aws-sdk/client-lambda', () => ({
 describe('cache_suppliers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    require('../lib/database.js').getDocumentsByType.mockResolvedValue([]);
   });
 
   it('should process supplier cache with new format', async () => {
@@ -221,10 +222,20 @@ describe('cache_suppliers', () => {
       lastUpdatedDateTime: '2024-01-01T00:00:00Z',
       supplierStatus: { descriptor: 'Active', id: 'status-1' },
     });
+    const storedRow = (metadata: Record<string, string> = {}) => ({
+      workday_id: 'supplier-with-id',
+      content: 'Supplier content',
+      metadata: {
+        workdayId: 'supplier-with-id',
+        supplierId: 'S-001234',
+        lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+        ...metadata,
+      },
+    });
 
     it('updates a cached supplier that is missing its supplier ID', async () => {
       const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
-      getDocumentsByType.mockResolvedValueOnce([{
+      getDocumentsByType.mockResolvedValue([{
         workday_id: 'supplier-with-id',
         content: 'old content',
         metadata: { workdayId: 'supplier-with-id', lastUpdatedDateTime: '2024-01-01T00:00:00Z' },
@@ -243,19 +254,37 @@ describe('cache_suppliers', () => {
 
     it('leaves a cached supplier alone when its supplier ID is unchanged', async () => {
       const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
-      getDocumentsByType.mockResolvedValueOnce([{
-        workday_id: 'supplier-with-id',
-        content: 'Supplier content',
-        metadata: {
-          workdayId: 'supplier-with-id',
-          supplierId: 'S-001234',
-          lastUpdatedDateTime: '2024-01-01T00:00:00Z',
-        },
-      }]);
+      getDocumentsByType.mockResolvedValue([storedRow()]);
 
       await processor({ data: [activeSupplier({ descriptor: 'S-001234' })] });
 
       expect(bulkUpdateDocuments).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['WID-shaped', '0627e00a601c1001085f64bd33e20000'],
+    ])('keeps a stored supplier ID when the incoming value is %s', async (_label, supplierID) => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      getDocumentsByType.mockResolvedValue([storedRow()]);
+
+      await processor({ data: [activeSupplier(supplierID)] });
+
+      expect(bulkUpdateDocuments).not.toHaveBeenCalled();
+    });
+
+    it('keeps a stored supplier ID on a timestamp-only update without an incoming ID', async () => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      getDocumentsByType.mockResolvedValue([storedRow({ lastUpdatedDateTime: '2023-12-01T00:00:00Z' })]);
+
+      await processor({ data: [activeSupplier(undefined)] });
+
+      expect(bulkUpdateDocuments).toHaveBeenCalledWith(
+        expect.anything(),
+        [expect.objectContaining({
+          metadata: expect.objectContaining({ supplierId: 'S-001234', lastUpdatedDateTime: '2024-01-01T00:00:00Z' }),
+        })]
+      );
     });
 
     it('never stores a Workday WID as the supplier ID', async () => {

@@ -112,25 +112,29 @@ export function formatSupplierNoteHintContext(
   const lines: string[] = [];
   const resolvedIds = new Set((resolved ?? []).map((hint) => hint.supplierId));
   const distinctSuppliers = new Map((resolved ?? []).map((hint) => [hint.workdayId, hint]));
+  const unresolvedIds = hints.supplierIds.filter((id) => !resolvedIds.has(id));
+  const describe = (hint: ResolvedSupplierHint) =>
+    `${hint.supplierId}${hint.supplierName ? ` (${hint.supplierName})` : ''}, workdayId ${hint.workdayId}`;
+  const authoritative = distinctSuppliers.size === 1 && unresolvedIds.length === 0;
 
-  if (distinctSuppliers.size === 1) {
+  if (authoritative) {
     const [hint] = [...distinctSuppliers.values()];
-    lines.push(`AP names Workday supplier ${hint.supplierId}${hint.supplierName ? ` (${hint.supplierName})` : ''}, workdayId ${hint.workdayId}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
+    lines.push(`AP names Workday supplier ${describe(hint)}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
+  } else if (distinctSuppliers.size === 1) {
+    const [hint] = [...distinctSuppliers.values()];
+    lines.push(`AP notes name Workday supplier ${describe(hint)}, but also mention Supplier IDs that did not resolve. The notes are incomplete: do not override the invoice document; treat this supplier as a findSuppliers candidate only.`);
   } else if (distinctSuppliers.size > 1) {
-    const names = [...distinctSuppliers.values()]
-      .map((hint) => `${hint.supplierId}${hint.supplierName ? ` (${hint.supplierName})` : ''}, workdayId ${hint.workdayId}`)
-      .join('; ');
+    const names = [...distinctSuppliers.values()].map(describe).join('; ');
     lines.push(`AP notes name more than one Workday supplier: ${names}. Do not override the invoice document with one of them; report the supplier as ambiguous (or uncertain when verifying) and explain the conflict.`);
   }
 
-  const unresolvedIds = hints.supplierIds.filter((id) => !resolvedIds.has(id));
   if (unresolvedIds.length > 0) {
     lines.push(resolved === undefined
       ? `AP notes mention Supplier ID ${unresolvedIds.join(', ')}, which could not be verified. Call findSuppliers with it and accept a result only when its Supplier ID matches exactly.`
       : `AP notes mention Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
   }
 
-  const nameHints = distinctSuppliers.size === 1 ? [] : hints.supplierNames;
+  const nameHints = authoritative ? [] : hints.supplierNames;
   for (const name of nameHints) {
     lines.push(`AP notes name the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
   }
