@@ -310,7 +310,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         assigneeEmail: attachment.assigneeEmail ?? assigneeEmail,
         conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
         conversationPdf,
-        startTime,
+        startTime: Date.now(),
         clustered: false,
       });
     }
@@ -701,10 +701,18 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     // so the newest message counts as new information alongside the newest document.
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
 
+    // The default supplier means "not resolved", not a different supplier: a resend often moves
+    // resolution between default and real (for example once a W-9 arrives), which must still update.
+    const isRealSupplier = (wid?: string | null): wid is string => Boolean(wid) && wid !== DEFAULT_SUPPLIER_WID;
+    const resolvedSupplierWID = isRealSupplier(result.supplier.resolvedSupplier?.workdayId)
+      ? result.supplier.resolvedSupplier.workdayId
+      : undefined;
+
     if (clusteringEnabled && conversationId && registryNumber) {
       const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
+      const registeredSupplierWID = isRealSupplier(existing?.supplierWid) ? existing.supplierWid : undefined;
       const supplierChanged = Boolean(
-        existing?.supplierWid && targetSupplierWID && existing.supplierWid !== targetSupplierWID
+        registeredSupplierWID && resolvedSupplierWID && registeredSupplierWID !== resolvedSupplierWID
       );
       if (existing && !supplierChanged) {
         const hasNewerInformation =
@@ -744,6 +752,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             invoiceWID: existing.workdayInvoiceWid,
             invoiceNumber: existing.workdayInvoiceNumber,
             skipped: true,
+            needsManualReview: true,
             skipReason: reason,
           }, conversationId, intercomAppId));
           return;
@@ -760,7 +769,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: targetSupplierWID,
+          supplierWID: resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
@@ -783,7 +792,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: targetSupplierWID ?? existing.supplierWid,
+            supplierWid: resolvedSupplierWID ?? registeredSupplierWID ?? null,
             workdayInvoiceWid: existing.workdayInvoiceWid,
             workdayInvoiceNumber: existing.workdayInvoiceNumber,
             lastProcessedReceivedAt: clusterReceivedAt ?? existing.lastProcessedReceivedAt,
@@ -840,7 +849,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: targetSupplierWID ?? null,
+            supplierWid: resolvedSupplierWID ?? null,
             workdayInvoiceWid: createOutcome.invoiceWID,
             workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
             lastProcessedReceivedAt: clusterReceivedAt ?? null,

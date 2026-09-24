@@ -1971,8 +1971,62 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({
           skipped: true,
+          needsManualReview: true,
           skipReason: expect.stringContaining('manual review'),
         }),
+      );
+    });
+
+    it('updates instead of duplicating when supplier resolution moves from default to real', async () => {
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ supplierWid: null }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/w9.pdf', 'w9.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].supplierWID).toBe('supplier-wid-1');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ supplierWid: 'supplier-wid-1' })
+      );
+    });
+
+    it('keeps the registered real supplier when a resend only resolves to the default supplier', async () => {
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        supplier: { ...baseEnrichmentResult.supplier, status: 'not_found', resolvedSupplier: null },
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].supplierWID).toBe('supplier-wid-1');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ supplierWid: 'supplier-wid-1' })
       );
     });
 

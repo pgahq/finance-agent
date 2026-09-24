@@ -160,6 +160,16 @@ describe('clusterClassifiedAttachments', () => {
     expect(clustering.unrelated).toHaveLength(0);
   });
 
+  it('prefers a supporting document over a confidently unrelated one in the fallback cluster', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'marketing.pdf', kind: 'unrelated', confidence: 0.99 }),
+      classified({ fileName: 'statement.pdf', kind: 'supporting', confidence: 0.6 }),
+    ]);
+
+    expect(clustering.clusters[0].fallback).toBe(true);
+    expect(clustering.clusters[0].primary.fileName).toBe('statement.pdf');
+  });
+
   it('still creates from unrelated-only attachments instead of dropping the conversation', () => {
     const clustering = clusterClassifiedAttachments([
       classified({ fileName: 'a.pdf', kind: 'unrelated', confidence: 0.4 }),

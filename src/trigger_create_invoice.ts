@@ -16,6 +16,7 @@ import {
   type IntercomAttachment,
 } from './lib/intercom.js';
 import { renderConversationTranscriptPdf } from './lib/conversation_transcript.js';
+import { isInvoiceAttachmentClusteringEnabled } from './lib/invoice_attachment_clustering_flag.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
@@ -256,7 +257,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
-    const clusteringEnabled = process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED === 'true';
+    const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
     if (clusteringEnabled) {
       const shared = {
