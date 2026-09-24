@@ -67,7 +67,7 @@ Globals:
         FALLBACK_PAYMENT_TERMS_ID: !Ref FallbackPaymentTermsId
         FALLBACK_COST_CENTER_ID: !Ref FallbackCostCenterId
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
-        # Read at cold start. `shadow` = report-only clustering; anything else or missing leaves it off.
+        # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId

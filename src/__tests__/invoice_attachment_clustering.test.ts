@@ -1,6 +1,8 @@
 import {
   clusterClassifiedAttachments,
+  clusterMaxReceivedAt,
   invoiceAttachmentClusteringMode,
+  isInvoiceAttachmentClusteringEnabled,
   joinClassifications,
   normalizeClusterInvoiceNumber,
   supplierNamesAgree,
@@ -19,17 +21,29 @@ function classified(
   };
 }
 
+describe('isInvoiceAttachmentClusteringEnabled', () => {
+  it('is off unless explicitly true', () => {
+    expect(isInvoiceAttachmentClusteringEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: undefined } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: '' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'ssm:/finance-agent/invoice-attachment-clustering-enabled',
+    } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'false' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+  });
+});
+
 describe('invoiceAttachmentClusteringMode', () => {
-  it('is shadow only for the exact value shadow and off otherwise, including true', () => {
+  it('maps true to on, shadow to shadow, and everything else to off', () => {
     const mode = (value?: string) =>
       invoiceAttachmentClusteringMode({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: value } as NodeJS.ProcessEnv);
+    expect(mode('true')).toBe('on');
     expect(mode('shadow')).toBe('shadow');
     expect(mode(undefined)).toBe('off');
-    expect(mode('')).toBe('off');
     expect(mode('false')).toBe('off');
-    expect(mode('true')).toBe('off');
     expect(mode('SHADOW')).toBe('off');
-    expect(mode('ssm:/finance-agent/invoice-attachment-clustering-enabled')).toBe('off');
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' } as NodeJS.ProcessEnv)).toBe(false);
   });
 });
 
@@ -199,6 +213,14 @@ describe('clusterClassifiedAttachments', () => {
     ]);
 
     expect(clustering.clusters[0].primary.fileName).toBe('new.pdf');
+  });
+});
+
+describe('clusterMaxReceivedAt', () => {
+  it('returns the newest receivedAt and undefined when no file has one', () => {
+    expect(clusterMaxReceivedAt([{ receivedAt: 100 }, {}, { receivedAt: 300 }])).toBe(300);
+    expect(clusterMaxReceivedAt([{}, {}])).toBeUndefined();
+    expect(clusterMaxReceivedAt([])).toBeUndefined();
   });
 });
 

@@ -15,6 +15,7 @@ export type { InvoiceAttachmentKind, SupportingDocumentKind };
 export {
   INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR,
   invoiceAttachmentClusteringMode,
+  isInvoiceAttachmentClusteringEnabled,
   type InvoiceAttachmentClusteringMode,
 } from './invoice_attachment_clustering_flag.js';
 
@@ -137,6 +138,14 @@ function supportingTargetCluster(
   );
   if (bySupplier.length === 1) return bySupplier[0];
   return bySupplier[0] ?? candidates[0];
+}
+
+export function clusterMaxReceivedAt(files: Array<{ receivedAt?: number }>): number | undefined {
+  let max: number | undefined;
+  for (const file of files) {
+    if (file.receivedAt != null && (max == null || file.receivedAt > max)) max = file.receivedAt;
+  }
+  return max;
 }
 
 export function clusterClassifiedAttachments(classified: ClassifiedAttachment[]): InvoiceAttachmentClustering {
