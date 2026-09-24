@@ -20,6 +20,27 @@ is exactly `true`. That env var resolves at runtime from SSM
 or off without a release. A missing parameter leaves it off. Enrich-invoice is
 unchanged.
 
+## Modes (`invoiceAttachmentClusteringMode`)
+
+| SSM value | Mode | Behavior |
+| --- | --- | --- |
+| `true` | `on` | Everything below: cluster, one invoice per cluster, resend dedupe. |
+| `shadow` | `shadow` | Invoices are created one per PDF exactly as when off. The trigger also sends one extra grouped invoke with `shadow: true`; the processor classifies and clusters it and posts a `create_invoice_shadow` Slack message with the plan (would-create count, each cluster's invoice and supporting files, unrelated files). |
+| anything else or missing | `off` | One invoice per PDF. |
+
+Shadow exists to prove the classifier on real traffic with no write risk:
+
+- A `shadow: true` record never enriches, never writes to Workday or the
+  registry, and never fans out. The processor keys off the record, not its own
+  flag, so containers with a different cached flag value still stay read-only.
+- The trigger sends the per-PDF invokes first; a failed shadow invoke is only
+  logged and never fails the 202.
+- A shadow classification failure Slacks as `create_invoice_shadow` error and
+  throws; the per-PDF invoices run in their own invocations and are unaffected.
+- Shadow does not read or write the registry, so it reports clustering only,
+  not resend decisions (the registry is only populated in `on`).
+- Cost: one extra classification LLM call per triggered conversation.
+
 ## Flow
 
 1. `TriggerCreateInvoice` (30s timeout) downloads, uploads to S3, and — when
@@ -126,8 +147,9 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   conversation transcript that records the back-and-forth with the supplier.
   Never send only the new files on an update. Work queue notes and Slack
   (`newAttachments`) name the files received since the last processing. Not
-  editable or missing in Workday → skip with a `*Skipped*` note naming manual
-  review, `needsManualReview: true`, and a "needs manual review" headline.
+  editable for another reason (approved, paid, partially paid, unknown state)
+  → skip with a `*Skipped*` note naming manual review,
+  `needsManualReview: true`, and a "needs manual review" headline.
   Status-check errors fail closed (Slack error, throw).
 - No extracted invoice number: the registry cannot key the invoice, so always
   create (current behavior).
@@ -139,7 +161,7 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 ## Flag discipline
 
 - The toggle is a plain String SSM parameter created by hand in each account
-  (`true` to enable). Do not add it to `template.yml` as an
+  (`true` to enable, `shadow` for report-only). Do not add it to `template.yml` as an
   `AWS::SSM::Parameter` or pass it through CircleCI; a template-owned value
   would be reset by deploys. `@pga/lambda-env` resolves every `ssm:` env value
   in one `GetParameters` call (AWS limit: 10 names), so keep Global plus
@@ -150,7 +172,8 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   with the flag off handles the clustered `attachments` payload one PDF at a
   time.
 - Read `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` inside the handler after
-  `loadEnv()`, via `isInvoiceAttachmentClusteringEnabled` — never as a
+  `loadEnv()`, via `invoiceAttachmentClusteringMode` or
+  `isInvoiceAttachmentClusteringEnabled` (true only for `on`) — never as a
   module-level constant or an inline string compare. The helper lives in
   `src/lib/invoice_attachment_clustering_flag.ts` so the trigger can use it
   without importing the AI/RAG clustering module.

@@ -1770,6 +1770,96 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('shadow mode', () => {
+    const invoiceFile = {
+      s3Key: 'new-invoices/req-1/1-invoice.pdf',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      kind: 'supplier_invoice',
+      invoiceNumber: 'INV-100',
+      confidence: 0.95,
+    };
+    const packingSlip = {
+      s3Key: 'new-invoices/req-1/2-packing.pdf',
+      fileName: 'packing.pdf',
+      contentType: 'application/pdf',
+      kind: 'supporting',
+      supportingKind: 'packing_slip',
+      confidence: 0.8,
+    };
+
+    it.each(['shadow', 'true', undefined])(
+      'reports the clustering plan and writes nothing for a shadow record (flag %s)',
+      async (flag) => {
+        const { processor, workday, slack, invoiceEnrichment, clustering, registry, lambda, loadEnv } = freshRequire();
+        loadEnv.mockResolvedValue(flag ? { INVOICE_ATTACHMENT_CLUSTERING_ENABLED: flag } : {});
+        clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+          classified: [invoiceFile, packingSlip],
+          clustering: {
+            clusters: [{ primary: invoiceFile, supporting: [packingSlip], fallback: false }],
+            unrelated: [],
+          },
+        });
+
+        await processor({
+          data: [{ conversationId: '1234567890', shadow: true, attachments: [invoiceFile, packingSlip] }],
+        } as any);
+
+        expect(clustering.parseAndClusterInvoiceAttachments).toHaveBeenCalledTimes(1);
+        expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+        expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+        expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
+        expect(lambda.InvokeCommand).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice_shadow',
+          'success',
+          expect.any(Number),
+          expect.objectContaining({
+            mode: 'shadow',
+            wouldCreateInvoices: 1,
+            clusters: [{
+              invoice: 'invoice.pdf (supplier_invoice, #INV-100)',
+              supporting: ['packing.pdf (supporting: packing_slip)'],
+            }],
+          }),
+        );
+      }
+    );
+
+    it('Slacks and rethrows when shadow classification fails, without writing', async () => {
+      const { processor, workday, slack, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      clustering.parseAndClusterInvoiceAttachments.mockRejectedValue(new Error('classify boom'));
+
+      await expect(processor({
+        data: [{ conversationId: '1234567890', shadow: true, attachments: [invoiceFile] }],
+      } as any)).rejects.toThrow('classify boom');
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice_shadow', 'error', expect.any(Number), expect.anything(), expect.any(Error)
+      );
+    });
+
+    it('creates the per-PDF invoice as usual without touching the registry when the flag is shadow', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, registry, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({
+        data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+      expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+      expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
+    });
+  });
+
   describe('conversation resend', () => {
     const wid = 'b'.repeat(32);
 

@@ -12,7 +12,12 @@ import { sanitizeSuppliersInvoiceNumber } from './invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './purchase_order.js';
 
 export type { InvoiceAttachmentKind, SupportingDocumentKind };
-export { INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR, isInvoiceAttachmentClusteringEnabled } from './invoice_attachment_clustering_flag.js';
+export {
+  INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR,
+  invoiceAttachmentClusteringMode,
+  isInvoiceAttachmentClusteringEnabled,
+  type InvoiceAttachmentClusteringMode,
+} from './invoice_attachment_clustering_flag.js';
 
 export interface ClusterableAttachment {
   s3Key: string;

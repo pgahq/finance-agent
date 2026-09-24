@@ -16,7 +16,7 @@ import {
   type IntercomAttachment,
 } from './lib/intercom.js';
 import { renderConversationTranscriptPdf } from './lib/conversation_transcript.js';
-import { isInvoiceAttachmentClusteringEnabled } from './lib/invoice_attachment_clustering_flag.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
@@ -257,27 +257,30 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
-    const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
+    const clusteringMode = invoiceAttachmentClusteringMode();
+    const sendGroupedInvoke = (extra: Record<string, unknown> = {}) => lambda.send(new InvokeCommand({
+      FunctionName: processorFunctionName,
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          conversationId,
+          ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
+          ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+          ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
+          ...(conversationData.conversationCreatedAt
+            ? { conversationCreatedAt: conversationData.conversationCreatedAt }
+            : {}),
+          conversationPdf,
+          attachments: uploadedAttachments,
+          ...extra,
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    }));
 
-    if (clusteringEnabled) {
-      const shared = {
-        conversationId,
-        ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
-        ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
-        ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
-        ...(conversationData.conversationCreatedAt
-          ? { conversationCreatedAt: conversationData.conversationCreatedAt }
-          : {}),
-      };
-      await lambda.send(new InvokeCommand({
-        FunctionName: processorFunctionName,
-        InvocationType: 'Event',
-        Payload: JSON.stringify({
-          data: [{ ...shared, conversationPdf, attachments: uploadedAttachments }],
-          page: 1,
-          totalPages: 1,
-        }),
-      }));
+    if (clusteringMode === 'on') {
+      await sendGroupedInvoke();
     } else {
       await Promise.all(uploadedAttachments.map((attachment) =>
         lambda.send(new InvokeCommand({
@@ -293,6 +296,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
           }),
         }))
       ));
+      // Shadow reporting is best-effort and must never block the real per-PDF invoices above.
+      if (clusteringMode === 'shadow') {
+        try {
+          await sendGroupedInvoke({ shadow: true });
+        } catch (error) {
+          debug('Failed to invoke shadow attachment clustering', { error: formatError(error), conversationId });
+        }
+      }
     }
 
     return jsonResponse(202, {

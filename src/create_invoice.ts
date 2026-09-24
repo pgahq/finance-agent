@@ -146,6 +146,7 @@ export interface CreateInvoiceRequest {
   contentType?: string;
   attachments?: CreateInvoiceAttachment[];
   clustered?: boolean;
+  shadow?: boolean;
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
@@ -207,7 +208,47 @@ async function fanOutCluster(
   }));
 }
 
+async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+  const startTime = Date.now();
+  const attachments = request.attachments ?? [];
+  const details = { mode: 'shadow', attachments: requestFilenames(request) };
+  try {
+    const { clustering } = await parseAndClusterInvoiceAttachments(
+      attachments,
+      (key) => getBinaryFromS3(context.s3Config, key)
+    );
+    const describe = (file: ClassifiedAttachment) =>
+      `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
+    await notifyResult('create_invoice_shadow', 'success', Date.now() - startTime, slackInvoiceDetails({
+      ...details,
+      wouldCreateInvoices: clustering.clusters.length,
+      clusters: clustering.clusters.map((cluster) => ({
+        invoice: describe(cluster.primary),
+        ...(cluster.supporting.length ? { supporting: cluster.supporting.map(describe) } : {}),
+        ...(cluster.fallback ? { fallback: true } : {}),
+      })),
+      ...(clustering.unrelated.length ? { unrelated: clustering.unrelated.map(describe) } : {}),
+      note: 'Shadow mode: invoices were created one per PDF as usual; nothing was written from this plan.',
+    }, request.conversationId, request.intercomAppId));
+  } catch (error) {
+    debug('Shadow attachment clustering failed:', error);
+    await notifyResult(
+      'create_invoice_shadow',
+      'error',
+      Date.now() - startTime,
+      slackInvoiceDetails(details, request.conversationId, request.intercomAppId),
+      error
+    );
+    throw error;
+  }
+}
+
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+  if (request.shadow) {
+    // A shadow record never writes to Workday or the registry, whatever this container's flag says.
+    await reportShadowClustering(context, request);
+    return;
+  }
   const startTime = Date.now();
   const {
     s3Key,
