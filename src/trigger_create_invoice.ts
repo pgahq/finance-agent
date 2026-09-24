@@ -212,13 +212,11 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         buffer: transcriptBuffer,
         payloadField: 'conversationPdf',
       },
-      clusteringMode !== 'off'
+      clusteringMode === 'shadow'
         ? {
-          shadow: clusteringMode === 'shadow',
           sharedFields: {
             conversationId,
-            ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
-            ...conversationFields,
+            ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
           },
         }
         : undefined,

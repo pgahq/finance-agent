@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -613,97 +613,6 @@ describe('Workday utilities', () => {
     });
   });
 
-  describe('getSupplierInvoiceEditability', () => {
-    const mockContext = {
-      workdayConfig: {
-        domain: 'test.workday.com',
-        tenant: 'test-tenant',
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret',
-        refreshToken: 'test-refresh-token'
-      }
-    };
-    const wid = 'a'.repeat(32);
-
-    function mockWqlRows(rows: unknown[]) {
-      (global.fetch as jest.Mock)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: jest.fn().mockResolvedValue({ access_token: 'mock-access-token' })
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: jest.fn().mockResolvedValue({ total: rows.length, data: rows })
-        });
-    }
-
-    it('is editable for Draft, unpaid, uncancelled invoices', async () => {
-      mockWqlRows([{
-        workdayID: wid,
-        invoiceStatusAsText: 'Draft',
-        isCanceled: false,
-        invoiceIsPaid: false,
-        invoiceIsPartiallyPaid: false,
-      }]);
-
-      await expect(getSupplierInvoiceEditability(mockContext, wid)).resolves.toEqual({
-        found: true,
-        editable: true,
-        status: 'Draft',
-        isCanceled: false,
-        isPaid: false,
-        isPartiallyPaid: false,
-      });
-      const wqlUrl = decodeURIComponent((global.fetch as jest.Mock).mock.calls[1][0] as string)
-        .replace(/\+/g, ' ');
-      expect(wqlUrl).toContain(`workdayID = '${wid}'`);
-    });
-
-    it.each([
-      [{ invoiceStatusAsText: 'Approved', isCanceled: false, invoiceIsPaid: false, invoiceIsPartiallyPaid: false }],
-      [{ invoiceStatusAsText: 'Draft', isCanceled: false, invoiceIsPaid: true, invoiceIsPartiallyPaid: false }],
-      [{ invoiceStatusAsText: 'Draft', isCanceled: false, invoiceIsPaid: false, invoiceIsPartiallyPaid: true }],
-      [{ invoiceStatusAsText: 'Draft', isCanceled: true, invoiceIsPaid: false, invoiceIsPartiallyPaid: false }],
-    ])('is not editable when %j', async (flags) => {
-      mockWqlRows([{ workdayID: wid, ...flags }]);
-
-      const result = await getSupplierInvoiceEditability(mockContext, wid);
-      expect(result.found).toBe(true);
-      expect(result.editable).toBe(false);
-    });
-
-    it('fails closed when paid/canceled flags come back as strings or are missing', async () => {
-      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft', isCanceled: '0', invoiceIsPaid: '1', invoiceIsPartiallyPaid: '0' }]);
-      const paid = await getSupplierInvoiceEditability(mockContext, wid);
-      expect(paid.editable).toBe(false);
-      expect(paid.isPaid).toBe(true);
-
-      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft' }]);
-      const unknown = await getSupplierInvoiceEditability(mockContext, wid);
-      expect(unknown.editable).toBe(false);
-
-      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft', isCanceled: 'false', invoiceIsPaid: '0', invoiceIsPartiallyPaid: 0 }]);
-      const draft = await getSupplierInvoiceEditability(mockContext, wid);
-      expect(draft.editable).toBe(true);
-    });
-
-    it('reports not found when Workday has no such invoice', async () => {
-      mockWqlRows([]);
-
-      await expect(getSupplierInvoiceEditability(mockContext, wid)).resolves.toEqual({
-        found: false,
-        editable: false,
-      });
-    });
-
-    it('rejects malformed invoice IDs instead of querying', async () => {
-      await expect(getSupplierInvoiceEditability(mockContext, "abc' OR '1'='1")).rejects.toThrow(
-        'Invalid invoice Workday ID'
-      );
-      expect(global.fetch).not.toHaveBeenCalled();
-    });
-  });
-
   describe('submitSupplierInvoiceUpdate', () => {
     const mockContext = {
       workdayConfig: {
@@ -817,66 +726,6 @@ describe('Workday utilities', () => {
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       expect(proposeWorkdaySubmitRepair).not.toHaveBeenCalled();
-    });
-
-    it('should embed resend attachments and company reference on update', async () => {
-      const mockClient = {
-        setSecurity: jest.fn(),
-        setEndpoint: jest.fn(),
-        Get_Supplier_Invoices: jest.fn(),
-        Submit_Supplier_Invoice: jest.fn()
-      };
-
-      const { soap } = require('strong-soap');
-      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
-        callback(null, mockClient);
-      });
-
-      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
-        callback(null, {
-          Response_Data: {
-            Supplier_Invoice: {
-              Supplier_Invoice_Data: {
-                Invoice_Number: 'SUPIN-1',
-                Company_Reference: { ID: 'company-wid' },
-                Currency_Reference: { ID: 'USD' },
-                Invoice_Date: '2024-01-01',
-                Control_Amount_Total: '100.00'
-              }
-            }
-          }
-        });
-      });
-
-      let capturedRequest: any;
-      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
-        capturedRequest = request;
-        callback(null, {});
-      });
-
-      await submitSupplierInvoiceUpdateForTest({
-        companyWID: 'Default_OCR_Company',
-        companyReferenceType: 'Company_Reference_ID',
-        attachments: [
-          { fileName: 'v2.pdf', contentType: 'application/pdf', base64Content: 'djI=' },
-          { fileName: 'w9.pdf', contentType: 'application/pdf', base64Content: 'dzk=' },
-        ],
-      });
-
-      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(data.Company_Reference).toEqual({
-        ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: 'Default_OCR_Company' }]
-      });
-      expect(data.Attachment_Data).toEqual([
-        {
-          $attributes: { Content_Type: 'application/pdf', Filename: 'v2.pdf' },
-          File_Content: 'djI=',
-        },
-        {
-          $attributes: { Content_Type: 'application/pdf', Filename: 'w9.pdf' },
-          File_Content: 'dzk=',
-        },
-      ]);
     });
 
     it('should retry invoice date validation faults with the default invoice date', async () => {
@@ -4331,7 +4180,7 @@ describe('Workday utilities', () => {
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
     });
 
-    it('embeds the vendor PDF, supporting docs, and conversation transcript as Attachment_Data', async () => {
+    it('embeds the vendor PDF and conversation transcript as Attachment_Data', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -4342,8 +4191,11 @@ describe('Workday utilities', () => {
 
       await submitNewSupplierInvoiceForTest({
         attachments: [
-          { fileName: 'invoice.pdf', contentType: 'application/pdf', base64Content: 'aW52b2ljZQ==' },
-          { fileName: 'packing-slip.pdf', contentType: 'application/pdf', base64Content: 'cGFja2luZw==' },
+          {
+            fileName: 'invoice.pdf',
+            contentType: 'application/pdf',
+            base64Content: 'aW52b2ljZQ==',
+          },
           {
             fileName: 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
             contentType: 'application/pdf',
@@ -4356,10 +4208,6 @@ describe('Workday utilities', () => {
         {
           $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
           File_Content: 'aW52b2ljZQ==',
-        },
-        {
-          $attributes: { Content_Type: 'application/pdf', Filename: 'packing-slip.pdf' },
-          File_Content: 'cGFja2luZw==',
         },
         {
           $attributes: {
