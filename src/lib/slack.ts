@@ -363,12 +363,18 @@ export async function notifyResult(
   const skippedInvoice = createdInvoiceNumber && details?.skipped === true;
   const needsManualReview = skippedInvoice && details?.needsManualReview === true;
 
-  const shadowPlan = lambdaName === 'create_invoice_shadow' && status === 'success'
-    && typeof details?.wouldCreateInvoices === 'number';
+  const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
+    ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
+    : undefined;
+  const shadowInvoiceCount = typeof shadowDetails?.wouldCreateInvoices === 'number'
+    ? shadowDetails.wouldCreateInvoices
+    : undefined;
+  const shadowPlan = shadowInvoiceCount !== undefined;
+  const shadowPdfCount = Array.isArray(shadowDetails?.attachments) ? shadowDetails.attachments.length : 0;
 
   // Build the main message
   let mainMessage = shadowPlan
-    ? `👀 *${lambdaName}* would create ${details.wouldCreateInvoices} invoice${details.wouldCreateInvoices === 1 ? '' : 's'} from ${Array.isArray(details.attachments) ? details.attachments.length : 0} PDF${Array.isArray(details.attachments) && details.attachments.length === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
+    ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
     : needsManualReview
     ? `⚠️ *${lambdaName}* needs manual review for \`${createdInvoiceNumber}\` (resend not applied) in ${timeText}`
     : skippedInvoice
