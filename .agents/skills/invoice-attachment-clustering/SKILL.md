@@ -15,8 +15,10 @@ An Intercom conversation can hold several PDFs: the supplier invoice, backup
 (packing slip, W-9, statement), and unrelated files. Without clustering, every
 PDF becomes its own Workday supplier invoice. Clustering runs only on the
 **create-invoice** path and only when `INVOICE_ATTACHMENT_CLUSTERING_ENABLED`
-is `true` (`InvoiceAttachmentClusteringEnabled` CFT parameter: `"true"` on
-`deploy-to-dev`, `"false"` on `deploy-to-prod`). Enrich-invoice is unchanged.
+is exactly `true`. That env var resolves at runtime from SSM
+`/finance-agent/invoice-attachment-clustering-enabled`, so AP can turn it on
+or off without a release. A missing parameter leaves it off. Enrich-invoice is
+unchanged.
 
 ## Flow
 
@@ -117,6 +119,17 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 
 ## Flag discipline
 
+- The toggle is a plain String SSM parameter created by hand in each account
+  (`true` to enable). Do not add it to `template.yml` as an
+  `AWS::SSM::Parameter` or pass it through CircleCI; a template-owned value
+  would be reset by deploys. `@pga/lambda-env` resolves every `ssm:` env value
+  in one `GetParameters` call (AWS limit: 10 names), so keep Global plus
+  per-function SSM references at or under 10 (`template.test.ts` guards this).
+- `lambda-env` caches values per container. A flip applies as new containers
+  start; to apply immediately, update the functions' configuration. While
+  containers disagree, the trigger and processor stay compatible: a processor
+  with the flag off handles the clustered `attachments` payload one PDF at a
+  time.
 - Read `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` inside the handler after
   `loadEnv()`, via `isInvoiceAttachmentClusteringEnabled` — never as a
   module-level constant.

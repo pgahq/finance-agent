@@ -23,6 +23,11 @@ function classified(
 describe('isInvoiceAttachmentClusteringEnabled', () => {
   it('is off unless explicitly true', () => {
     expect(isInvoiceAttachmentClusteringEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: undefined } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: '' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isInvoiceAttachmentClusteringEnabled({
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'ssm:/finance-agent/invoice-attachment-clustering-enabled',
+    } as NodeJS.ProcessEnv)).toBe(false);
     expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'false' } as NodeJS.ProcessEnv)).toBe(false);
     expect(isInvoiceAttachmentClusteringEnabled({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' } as NodeJS.ProcessEnv)).toBe(true);
   });

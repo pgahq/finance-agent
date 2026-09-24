@@ -18,12 +18,18 @@ describe('SAM template', () => {
     expect(circleci).toMatch(/INTERCOM_APP_ID:\s*jyi16dpc/);
   });
 
-  it('wires INVOICE_ATTACHMENT_CLUSTERING_ENABLED from the InvoiceAttachmentClusteringEnabled parameter', () => {
-    expect(globals).toMatch(/InvoiceAttachmentClusteringEnabled:/);
-    expect(globals).toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED:\s*!Ref InvoiceAttachmentClusteringEnabled/);
-    expect(circleci).toMatch(/InvoiceAttachmentClusteringEnabled=\$INVOICE_ATTACHMENT_CLUSTERING_ENABLED/);
-    expect(circleci).toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED:\s*"true"/);
-    expect(circleci).toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED:\s*"false"/);
+  it('reads INVOICE_ATTACHMENT_CLUSTERING_ENABLED from SSM at runtime, not a deploy parameter', () => {
+    expect(globals).toMatch(
+      /INVOICE_ATTACHMENT_CLUSTERING_ENABLED:\s*ssm:\/finance-agent\/invoice-attachment-clustering-enabled/
+    );
+    expect(globals).not.toMatch(/InvoiceAttachmentClusteringEnabled/);
+    expect(circleci).not.toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED|InvoiceAttachmentClusteringEnabled/);
+  });
+
+  it('keeps Global SSM references low enough for a single GetParameters call', () => {
+    const globalSsmRefs = globals.match(/:\s*ssm:\//g) ?? [];
+    const maxFunctionSsmRefs = 2;
+    expect(globalSsmRefs.length + maxFunctionSsmRefs).toBeLessThanOrEqual(10);
   });
 
   it('wires WORKDAY_UI_BASE_URL from the WorkdayUiBaseUrl parameter', () => {

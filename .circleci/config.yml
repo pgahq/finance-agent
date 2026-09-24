@@ -53,7 +53,6 @@ references:
             FallbackPaymentTermsId=$FALLBACK_PAYMENT_TERMS_ID
             FallbackCostCenterId=$FALLBACK_COST_CENTER_ID
             InvoiceModEnabled=$INVOICE_MOD_ENABLED
-            InvoiceAttachmentClusteringEnabled=$INVOICE_ATTACHMENT_CLUSTERING_ENABLED
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             FallbackLineOfBusinessId=$FALLBACK_LOB_ID
             IntercomAppId=$INTERCOM_APP_ID
@@ -115,7 +114,6 @@ jobs:
       FALLBACK_PAYMENT_TERMS_ID: FALLBACK_PAYMENT_TERMS
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
-      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: "true"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: c722leqk
@@ -131,7 +129,6 @@ jobs:
       FALLBACK_PAYMENT_TERMS_ID: FALLBACK_PAYMENT_TERMS
       FALLBACK_COST_CENTER_ID: CC0000
       INVOICE_MOD_ENABLED: "true"
-      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: "false"
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: jyi16dpc
