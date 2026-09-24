@@ -51,8 +51,8 @@ export interface InvoiceData {
     emailFrom?: string;
     subject?: string;
     plainTextBody?: string;
-    /** Intercom internal `note` parts only; never the external sender's email or customer replies. */
-    internalNotes?: string;
+    /** Every non-empty Intercom `conversation_parts` body (notes and comments); never the source email. */
+    conversationParts?: string;
   };
 }
 

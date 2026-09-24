@@ -45,8 +45,8 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   return parts;
 }
 
-async function buildSupplierHintText(internalNotes: string | undefined): Promise<string> {
-  const hints = extractSupplierNoteHints(internalNotes);
+async function buildSupplierHintText(conversationParts: string | undefined): Promise<string> {
+  const hints = extractSupplierNoteHints(conversationParts);
   if (!hasSupplierNoteHints(hints)) return '';
 
   let resolved: ResolvedSupplierHint[] | undefined = [];
@@ -55,11 +55,11 @@ async function buildSupplierHintText(internalNotes: string | undefined): Promise
       const db = await getDatabaseConnection(process.env);
       resolved = await resolveSupplierIdHints(db, hints.supplierIds);
     } catch (error) {
-      debug('Failed to resolve supplier ID hints from internal notes:', error);
+      debug('Failed to resolve supplier ID hints from conversation parts:', error);
       resolved = undefined;
     }
   }
-  debug('Supplier hints from internal notes', {
+  debug('Supplier hints from conversation parts', {
     supplierIds: hints.supplierIds,
     supplierNames: hints.supplierNames,
     resolvedWorkdayIds: resolved?.map((hint) => hint.workdayId),
@@ -117,7 +117,7 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
-    const supplierHintText = await buildSupplierHintText(emailContext?.internalNotes);
+    const supplierHintText = await buildSupplierHintText(emailContext?.conversationParts);
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`

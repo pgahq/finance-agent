@@ -1,12 +1,12 @@
 import type { DatabaseConnection } from './database.js';
 
 /**
- * Supplier hints from Intercom internal notes.
+ * Supplier hints from the Intercom conversation thread.
  *
- * AP staff add notes naming the supplier explicitly (a name and/or a Workday
- * Supplier ID like S-001234). Only internal notes are scanned — never the
- * external sender's email — and only IDs that exact-match the supplier cache
- * are presented to the model as authoritative.
+ * Notes and replies often name the supplier explicitly (a name and/or a
+ * Workday Supplier ID like S-001234). Every conversation part is scanned, but
+ * not the source email, and only IDs that exact-match the supplier cache are
+ * presented to the model as authoritative.
  */
 
 export interface SupplierNoteHints {
@@ -119,25 +119,25 @@ export function formatSupplierNoteHintContext(
 
   if (authoritative) {
     const [hint] = [...distinctSuppliers.values()];
-    lines.push(`AP names Workday supplier ${describe(hint)}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
+    lines.push(`The conversation names Workday supplier ${describe(hint)}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
   } else if (distinctSuppliers.size === 1) {
     const [hint] = [...distinctSuppliers.values()];
-    lines.push(`AP notes name Workday supplier ${describe(hint)}, but also mention Supplier IDs that did not resolve. The notes are incomplete: do not override the invoice document; treat this supplier as a findSuppliers candidate only.`);
+    lines.push(`The conversation names Workday supplier ${describe(hint)}, but also mention Supplier IDs that did not resolve. The hints are incomplete: do not override the invoice document; treat this supplier as a findSuppliers candidate only.`);
   } else if (distinctSuppliers.size > 1) {
     const names = [...distinctSuppliers.values()].map(describe).join('; ');
-    lines.push(`AP notes name more than one Workday supplier: ${names}. Do not override the invoice document with one of them; report the supplier as ambiguous (or uncertain when verifying) and explain the conflict.`);
+    lines.push(`The conversation names more than one Workday supplier: ${names}. Do not override the invoice document with one of them; report the supplier as ambiguous (or uncertain when verifying) and explain the conflict.`);
   }
 
   if (unresolvedIds.length > 0) {
     lines.push(resolved === undefined
-      ? `AP notes mention Supplier ID ${unresolvedIds.join(', ')}, which could not be verified. Call findSuppliers with it and accept a result only when its Supplier ID matches exactly.`
-      : `AP notes mention Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
+      ? `The conversation mentions Supplier ID ${unresolvedIds.join(', ')}, which could not be verified. Call findSuppliers with it and accept a result only when its Supplier ID matches exactly.`
+      : `The conversation mentions Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
   }
 
   const nameHints = authoritative ? [] : hints.supplierNames;
   for (const name of nameHints) {
-    lines.push(`AP notes name the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
+    lines.push(`The conversation names the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
   }
 
-  return `\n\nSupplier hints from AP internal notes on this conversation:\n${lines.map((line) => `- ${line}`).join('\n')}`;
+  return `\n\nSupplier hints from the conversation thread:\n${lines.map((line) => `- ${line}`).join('\n')}`;
 }

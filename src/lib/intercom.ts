@@ -171,25 +171,23 @@ export function buildIntercomPlainTextBody(conversation: IntercomConversationRes
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
-/** Bodies of internal `note` parts only, in API order; customer-visible parts and the source email are excluded. */
-export function buildIntercomInternalNotes(conversation: IntercomConversationResponse): string | undefined {
+/** Every non-empty `conversation_parts` body (notes, comments, any author), in API order; excludes the source email. */
+export function buildIntercomConversationPartsText(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    if (part.part_type === 'note') {
-      appendBodySegment(segments, part.body);
-    }
+    appendBodySegment(segments, part.body);
   }
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const plainTextBody = buildIntercomPlainTextBody(conversation);
-  const internalNotes = buildIntercomInternalNotes(conversation);
+  const conversationParts = buildIntercomConversationPartsText(conversation);
   const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
     plainTextBody,
-    ...(internalNotes ? { internalNotes } : {}),
+    ...(conversationParts ? { conversationParts } : {}),
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -210,7 +208,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
         plainTextBody,
-        ...(internalNotes ? { internalNotes } : {}),
+        ...(conversationParts ? { conversationParts } : {}),
       })
     ),
   ];

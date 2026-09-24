@@ -1,7 +1,7 @@
 import {
   assertAllowedAttachmentUrl,
   buildIntercomConversationUrl,
-  buildIntercomInternalNotes,
+  buildIntercomConversationPartsText,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -99,22 +99,24 @@ describe('intercom', () => {
     });
   });
 
-  describe('buildIntercomInternalNotes', () => {
-    it('keeps note parts from any author and drops customer replies and the source email', () => {
-      expect(buildIntercomInternalNotes({
-        source: { body: 'Supplier: Attacker LLC' },
+  describe('buildIntercomConversationPartsText', () => {
+    it('keeps every non-empty part body from any author and excludes the source email', () => {
+      expect(buildIntercomConversationPartsText({
+        source: { body: 'Supplier: Original Email LLC' },
         conversation_parts: {
           conversation_parts: [
             { part_type: 'comment', body: 'Pay supplier S-000666', author: { email: 'billing@vendor.com', type: 'user' } },
+            { part_type: 'assignment', body: null },
+            { part_type: 'note', body: '   ', author: { type: 'admin' } },
             { part_type: 'note', body: 'Workflow note: Vendor: Copied Inc', author: { type: 'bot' } },
             { part_type: 'note', body: 'Use supplier S-001234', author: { email: 'ap@pgahq.com' } },
           ],
         },
-      })).toBe('Workflow note: Vendor: Copied Inc\n\nUse supplier S-001234');
+      })).toBe('Pay supplier S-000666\n\nWorkflow note: Vendor: Copied Inc\n\nUse supplier S-001234');
     });
 
-    it('returns undefined without note parts', () => {
-      expect(buildIntercomInternalNotes({ conversation_parts: { conversation_parts: [] } })).toBeUndefined();
+    it('returns undefined without non-empty part bodies', () => {
+      expect(buildIntercomConversationPartsText({ conversation_parts: { conversation_parts: [] } })).toBeUndefined();
     });
   });
 
@@ -266,7 +268,7 @@ describe('intercom', () => {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',
             plainTextBody: mergedPlainTextBody,
-            internalNotes: noteBody,
+            conversationParts: noteBody,
           },
         }],
       });
