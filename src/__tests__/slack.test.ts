@@ -187,6 +187,18 @@ describe('notifyResult', () => {
     expect(texts).toContain('re-sent documents need manual review.');
   });
 
+  it('names the canceled invoice a new create replaces', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412728',
+      replacesCanceledInvoice: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412728`');
+    expect(texts).toContain('"replacesCanceledInvoice": "SUPIN-412727"');
+  });
+
   it('surfaces registry sync failures on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

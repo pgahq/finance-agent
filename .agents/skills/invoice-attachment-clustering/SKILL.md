@@ -104,14 +104,21 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   with no new PDF, so a newer message alone is enough to reprocess. Because
   `latestMessageAt` is conversation-level, a new message reprocesses every
   registered invoice in that conversation.
+- On every registry hit (same real supplier or unresolved), check the
+  registered invoice's status via WQL (`getSupplierInvoiceEditability`) first.
+  If AP **canceled** it or it is **no longer in Workday**, the new trigger
+  creates a fresh supplier invoice (regardless of the watermark), repoints the
+  registry row at it, and notes "Replaces canceled invoice X" in the work
+  queue notes and Slack (`replacesCanceledInvoice`).
 - Registry hit with **no documents or messages newer** than the watermark:
   skip with a Slack `*Skipped*` note and a "skipped resend" headline (never
   "created"). No Workday write.
-- Registry hit with newer documents: check editability via WQL
-  (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
-  canceled, not paid/partially paid). Only explicit false values (`false`,
-  `'false'`, `0`, `'0'`) count as not canceled or paid; missing or unexpected
-  encodings fail closed as not editable. Editable → `submitSupplierInvoiceUpdate`
+- Registry hit with newer documents: editability uses the same guards as
+  enrich (Draft, not canceled, not paid/partially paid). Only explicit false
+  values (`false`, `'false'`, `0`, `'0'`) count as not canceled or paid;
+  missing or unexpected encodings fail closed as not editable, so an
+  unrecognized canceled value goes to manual review rather than creating a
+  duplicate. Editable → `submitSupplierInvoiceUpdate`
   with the latest cluster (lines, memo, company; assignee is left untouched)
   and bump the watermark. Each `Submit_Supplier_Invoice` call sets the
   invoice's full `Attachment_Data` — anything left out is dropped — so the

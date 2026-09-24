@@ -1856,6 +1856,7 @@ describe('create_invoice', () => {
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
       registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
 
       await processor({
         data: [{
@@ -1867,12 +1868,46 @@ describe('create_invoice', () => {
 
       expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
       expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
-      expect(workday.getSupplierInvoiceEditability).not.toHaveBeenCalled();
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
         'success',
         expect.any(Number),
         expect.objectContaining({ skipped: true, invoiceNumber: 'SUPIN-1' }),
+      );
+    });
+
+    it.each([
+      ['canceled', { found: true, editable: false, status: 'Canceled', isCanceled: true }],
+      ['deleted from Workday', { found: false, editable: false }],
+    ])('creates a new invoice when the registered invoice was %s, even with nothing newer', async (_label, editability) => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue(editability);
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(createArgs.buildNotes([])).toContain('Replaces canceled invoice SUPIN-1 from the same conversation.');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ workdayInvoiceWid: 'new-invoice-wid', workdayInvoiceNumber: 'SUPIN-412727' })
+      );
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ invoiceNumber: 'SUPIN-412727', replacesCanceledInvoice: 'SUPIN-1' }),
       );
     });
 
