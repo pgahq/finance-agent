@@ -1,4 +1,3 @@
-import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
@@ -16,21 +15,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
-  type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
-import {
-  clusterMaxReceivedAt,
-  isInvoiceAttachmentClusteringEnabled,
-  normalizeClusterInvoiceNumber,
-  parseAndClusterInvoiceAttachments,
-  type ClassifiedAttachment,
-  type ClusterableAttachment,
-} from './lib/invoice_attachment_clustering.js';
-import {
-  getConversationSupplierInvoice,
-  upsertConversationSupplierInvoice,
-  type ConversationSupplierInvoice,
-} from './lib/conversation_invoices.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
@@ -54,6 +39,11 @@ import {
   normalizePurchaseOrderNumber,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
+import {
+  parseAndClusterInvoiceAttachments,
+  type ClassifiedAttachment,
+  type ClusterableAttachment,
+} from './lib/invoice_attachment_clustering.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
@@ -63,7 +53,7 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { getSupplierInvoiceEditability, loadPurchaseOrder, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
+import { loadPurchaseOrder, submitNewSupplierInvoice, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(
   purchaseOrder: ParsedPurchaseOrder
@@ -129,30 +119,15 @@ function enrichmentStubCompany(parsedPo?: ParsedPurchaseOrder) {
   return { descriptor: fallback.descriptor, id: fallback.id };
 }
 
-export interface CreateInvoiceAttachment extends ClusterableAttachment {
-  kind?: ClassifiedAttachment['kind'];
-  supportingKind?: ClassifiedAttachment['supportingKind'];
-  supplierName?: ClassifiedAttachment['supplierName'];
-  invoiceNumber?: ClassifiedAttachment['invoiceNumber'];
-  purchaseOrderNumber?: ClassifiedAttachment['purchaseOrderNumber'];
-  invoiceDate?: ClassifiedAttachment['invoiceDate'];
-  amountDue?: ClassifiedAttachment['amountDue'];
-  confidence?: number;
-}
-
 export interface CreateInvoiceRequest {
-  s3Key?: string;
-  fileName?: string;
-  contentType?: string;
-  attachments?: CreateInvoiceAttachment[];
-  clustered?: boolean;
-  shadow?: boolean;
+  s3Key: string;
+  fileName: string;
+  contentType: string;
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
-  latestMessageAt?: number;
   conversationPdf?: {
     s3Key: string;
     fileName: string;
@@ -174,47 +149,31 @@ function slackInvoiceDetails(
   };
 }
 
+/** Report-only record sent by the trigger in shadow mode; never creates or changes an invoice. */
+export interface ShadowClusteringRequest {
+  shadow: true;
+  attachments: ClusterableAttachment[];
+  conversationId?: string;
+  intercomAppId?: string;
+}
+
 // Processor function - invoked by trigger_create_invoice
 export const processor = withProcessorHandler(async (context, requests) => {
   for (const request of requests) {
+    if ((request as Partial<ShadowClusteringRequest>).shadow === true) {
+      await reportShadowClustering(context, request as ShadowClusteringRequest);
+      continue;
+    }
     await processNewInvoice(context, request as CreateInvoiceRequest);
   }
 });
 
-function requestFilenames(request: CreateInvoiceRequest): string[] {
-  if (request.attachments?.length) return request.attachments.map((attachment) => attachment.fileName);
-  return request.fileName ? [request.fileName] : [];
-}
-
-async function fanOutCluster(
-  clusterFiles: CreateInvoiceAttachment[],
-  shared: Pick<
-    CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt'
-  >
-): Promise<void> {
-  if (!process.env.AWS_STACK_NAME) {
-    throw new Error('AWS_STACK_NAME is required to fan out invoice clusters');
-  }
-  const lambda = new LambdaClient({ region: process.env.AWS_REGION });
-  await lambda.send(new InvokeCommand({
-    FunctionName: `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`,
-    InvocationType: 'Event',
-    Payload: JSON.stringify({
-      data: [{ ...shared, attachments: clusterFiles, clustered: true }],
-      page: 1,
-      totalPages: 1,
-    }),
-  }));
-}
-
-async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function reportShadowClustering(context: ProcessingContext, request: ShadowClusteringRequest): Promise<void> {
   const startTime = Date.now();
-  const attachments = request.attachments ?? [];
-  const details = { mode: 'shadow', attachments: requestFilenames(request) };
+  const details = { mode: 'shadow', attachments: request.attachments.map((attachment) => attachment.fileName) };
   try {
     const { clustering } = await parseAndClusterInvoiceAttachments(
-      attachments,
+      request.attachments,
       (key) => getBinaryFromS3(context.s3Config, key)
     );
     const describe = (file: ClassifiedAttachment) =>
@@ -244,235 +203,49 @@ async function reportShadowClustering(context: ProcessingContext, request: Creat
 }
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
-  if (request.shadow) {
-    // A shadow record never writes to Workday or the registry, whatever this container's flag says.
-    await reportShadowClustering(context, request);
-    return;
-  }
   const startTime = Date.now();
   const {
     s3Key,
     fileName,
     contentType,
-    attachments,
-    clustered,
     emailContext,
     conversationId,
     intercomAppId,
     assigneeEmail,
     conversationCreatedAt,
     conversationPdf,
-    latestMessageAt,
   } = request;
-  const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
   if (!INVOICE_MOD_ENABLED) {
-    debug('Invoice modification is disabled - skipping new invoice creation', { s3Key, fileName });
+    debug('Invoice modification is disabled - skipping new invoice creation', { s3Key });
     await notifyResult(
       'create_invoice',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails({ s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) }, conversationId, intercomAppId),
+      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     return;
   }
 
-  if (clusteringEnabled && attachments?.length && !clustered) {
-    let firstCluster;
-    let unrelated: ClassifiedAttachment[] = [];
-    try {
-      const { clustering } = await parseAndClusterInvoiceAttachments(
-        attachments,
-        (key) => getBinaryFromS3(context.s3Config, key)
-      );
-      if (clustering.clusters.length === 0) {
-        throw new Error('Invoice attachment clustering returned no clusters');
-      }
-      const [first, ...rest] = clustering.clusters;
-      firstCluster = first;
-      unrelated = clustering.unrelated;
-      const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf, latestMessageAt };
-      await Promise.all(
-        rest.map((cluster) => fanOutCluster([cluster.primary, ...cluster.supporting], shared))
-      );
-    } catch (error) {
-      const processingTime = Date.now() - startTime;
-      debug('Error clustering invoice attachments:', error);
-      await notifyResult(
-        'create_invoice',
-        'error',
-        processingTime,
-        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId),
-        error
-      );
-      throw error;
-    }
-    await createInvoiceFromCluster(context, {
-      files: [firstCluster.primary, ...firstCluster.supporting],
-      unrelated,
-      emailContext,
-      conversationId,
-      intercomAppId,
-      assigneeEmail,
-      conversationCreatedAt,
-      conversationPdf,
-      latestMessageAt,
-      startTime,
-      clustered: true,
-    });
-    return;
-  }
-
-  if (attachments?.length && (clustered || clusteringEnabled)) {
-    await createInvoiceFromCluster(context, {
-      files: attachments,
-      unrelated: [],
-      emailContext,
-      conversationId,
-      intercomAppId,
-      assigneeEmail,
-      conversationCreatedAt,
-      conversationPdf,
-      latestMessageAt,
-      startTime,
-      clustered: true,
-    });
-    return;
-  }
-
-  if (attachments?.length) {
-    for (const attachment of attachments) {
-      await createInvoiceFromCluster(context, {
-        files: [attachment],
-        unrelated: [],
-        emailContext: attachment.emailContext ?? emailContext,
-        conversationId: attachment.conversationId ?? conversationId,
-        intercomAppId: attachment.intercomAppId ?? intercomAppId,
-        assigneeEmail: attachment.assigneeEmail ?? assigneeEmail,
-        conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
-        conversationPdf,
-        startTime: Date.now(),
-        clustered: false,
-      });
-    }
-    return;
-  }
-
-  if (!s3Key || !fileName || !contentType) {
-    throw new Error('CreateInvoice request has no attachment');
-  }
-  await createInvoiceFromCluster(context, {
-    files: [{
-      s3Key,
+  try {
+    debug(`Processing new invoice from S3: ${s3Key}`);
+    const [buffer, presignedUrl, conversationPdfBuffer] = await Promise.all([
+      getBinaryFromS3(context.s3Config, s3Key),
+      getPresignedUrl(context.s3Config, s3Key),
+      conversationPdf
+        ? getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
+        : Promise.resolve(undefined),
+    ]);
+    const attachment = {
+      id: s3Key,
       fileName,
       contentType,
-      ...(emailContext ? { emailContext } : {}),
-    }],
-    unrelated: [],
-    emailContext,
-    conversationId,
-    intercomAppId,
-    assigneeEmail,
-    conversationCreatedAt,
-    conversationPdf,
-    startTime,
-    clustered: false,
-  });
-}
-
-interface ClusterInvoiceInput {
-  files: CreateInvoiceAttachment[];
-  unrelated: ClassifiedAttachment[];
-  emailContext?: InvoiceData['emailContext'];
-  conversationId?: string;
-  intercomAppId?: string;
-  assigneeEmail?: string;
-  conversationCreatedAt?: string;
-  conversationPdf?: {
-    s3Key: string;
-    fileName: string;
-  };
-  latestMessageAt?: number;
-  startTime: number;
-  clustered: boolean;
-}
-
-interface LoadedClusterFile extends CreateInvoiceAttachment {
-  buffer: Buffer;
-  presignedUrl: string;
-}
-
-function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<string, unknown>> {
-  return files.map((file, index) => ({
-    fileName: file.fileName,
-    contentType: file.contentType,
-    sizeBytes: file.buffer.length,
-    role: index === 0 ? 'invoice' : 'supporting',
-    ...(file.kind ? { kind: file.kind } : {}),
-    ...(file.supportingKind ? { supportingKind: file.supportingKind } : {}),
-    includedInline: true,
-  }));
-}
-
-async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
-  const {
-    files,
-    unrelated,
-    emailContext: requestEmailContext,
-    conversationId,
-    intercomAppId,
-    assigneeEmail,
-    conversationCreatedAt,
-    conversationPdf,
-    latestMessageAt,
-    startTime,
-    clustered,
-  } = input;
-  const [primary] = files;
-  const { s3Key, fileName, contentType } = primary;
-  const emailContext = requestEmailContext ?? primary.emailContext;
-
-  try {
-    debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
-    const loaded: LoadedClusterFile[] = await Promise.all(files.map(async (file) => {
-      const [buffer, presignedUrl] = await Promise.all([
-        getBinaryFromS3(context.s3Config, file.s3Key),
-        getPresignedUrl(context.s3Config, file.s3Key),
-      ]);
-      return { ...file, buffer, presignedUrl };
-    }));
-    const conversationPdfBuffer = conversationPdf
-      ? await getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
-      : undefined;
-    const toSubmitAttachment = (file: LoadedClusterFile) => ({
-      fileName: file.fileName,
-      contentType: file.contentType,
-      base64Content: file.buffer.toString('base64'),
-    });
-    const transcriptAttachments = conversationPdf && conversationPdfBuffer ? [{
-      fileName: conversationPdf.fileName,
-      contentType: 'application/pdf',
-      base64Content: conversationPdfBuffer.toString('base64'),
-    }] : [];
-    const submitAttachments = [...loaded.map(toSubmitAttachment), ...transcriptAttachments];
-    const buffer = loaded[0].buffer;
-    const processedAttachments = loaded.map((file) => ({
-      id: file.s3Key,
-      fileName: file.fileName,
-      contentType: file.contentType,
-      presignedUrl: file.presignedUrl,
+      presignedUrl,
       expiresAt: new Date(Date.now() + 3600 * 1000),
-      s3Key: file.s3Key,
-      buffer: file.buffer,
-    }));
-    const attachmentRoles: InvoiceAttachmentRole[] | undefined =
-      clustered && loaded.length > 1
-        ? loaded.map((file, index) => ({
-          fileName: file.fileName,
-          role: index === 0 ? 'invoice' as const : 'supporting' as const,
-        }))
-        : undefined;
+      s3Key,
+      buffer,
+    };
 
     // There's no existing Workday invoice yet, so enrich against a stub with no
     // existing supplier. Prefer the PO company when a matching PO is found;
@@ -483,12 +256,11 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const result = await enrichInvoiceFromAttachments(
       stubInvoice,
-      processedAttachments,
+      [attachment],
       undefined,
       stubCompany,
       emailContext,
-      parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
-      attachmentRoles
+      parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined
     );
     debug('Enrichment result:', result);
 
@@ -681,6 +453,41 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
+    const createOutcome = await submitNewSupplierInvoice(context, {
+      supplierWID: targetSupplierWID,
+      companyWID,
+      companyReferenceType,
+      buildNotes,
+      memo,
+      invoiceDate: extractedInvoiceDate,
+      ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
+      extractedAmountDue,
+      suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+      extractedFreightAmount,
+      extractedTaxAmount,
+      finalLines,
+      invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
+      relatedLobByCostCenter,
+      resolveCostCenterWorkdayIds: (costCenterIds) =>
+        getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+      paymentTermsId,
+      attachments: [
+        {
+          fileName,
+          contentType,
+          base64Content: buffer.toString('base64'),
+        },
+        ...(conversationPdf && conversationPdfBuffer ? [{
+          fileName: conversationPdf.fileName,
+          contentType: 'application/pdf',
+          base64Content: conversationPdfBuffer.toString('base64'),
+        }] : []),
+      ],
+      ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
+    });
+
+    const processingTime = Date.now() - startTime;
+
     const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
       status: 'email_resolved',
       appliedFrom: 'email',
@@ -708,15 +515,15 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       appliedId: companyWID,
     };
 
-    const sharedSlackDetails = {
+    await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
+      invoiceWID: createOutcome.invoiceWID,
+      invoiceNumber: createOutcome.invoiceNumber,
       attachment: {
         fileName,
         contentType,
         sizeBytes: buffer.length,
         includedInline: true,
       },
-      ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
-      ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: {
         status: result.supplier.status,
@@ -733,199 +540,6 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
-    };
-
-    const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
-    const registryNumber = extractedSuppliersInvoiceNumber
-      ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
-      : undefined;
-    // A supplier can answer AP's request for missing info in the email body with no new PDF,
-    // so the newest message counts as new information alongside the newest document.
-    const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
-
-    // The default supplier means "not resolved", not a different supplier: a resend often moves
-    // resolution between default and real (for example once a W-9 arrives), which must still update.
-    const isRealSupplier = (wid?: string | null): wid is string => Boolean(wid) && wid !== DEFAULT_SUPPLIER_WID;
-    const resolvedSupplierWID = isRealSupplier(result.supplier.resolvedSupplier?.workdayId)
-      ? result.supplier.resolvedSupplier.workdayId
-      : undefined;
-    let replacedInvoice: ConversationSupplierInvoice | undefined;
-
-    if (clusteringEnabled && conversationId && registryNumber) {
-      const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
-      const registeredSupplierWID = isRealSupplier(existing?.supplierWid) ? existing.supplierWid : undefined;
-      const supplierChanged = Boolean(
-        registeredSupplierWID && resolvedSupplierWID && registeredSupplierWID !== resolvedSupplierWID
-      );
-      const editability = existing && !supplierChanged
-        ? await getSupplierInvoiceEditability(context, existing.workdayInvoiceWid)
-        : undefined;
-      // AP canceled (or deleted) the registered invoice, so a new trigger creates a fresh one.
-      const registeredInvoiceWasRemoved = Boolean(
-        editability && (!editability.found || editability.isCanceled || editability.status === 'Canceled')
-      );
-      if (existing && registeredInvoiceWasRemoved) {
-        replacedInvoice = existing;
-        debug('Registered invoice is canceled or gone; creating a new supplier invoice', {
-          conversationId,
-          replacedInvoice: existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid,
-        });
-      }
-      if (existing && editability && !registeredInvoiceWasRemoved) {
-        const hasNewerInformation =
-          clusterReceivedAt == null ||
-          existing.lastProcessedReceivedAt == null ||
-          clusterReceivedAt > existing.lastProcessedReceivedAt;
-        if (!hasNewerInformation) {
-          const processingTime = Date.now() - startTime;
-          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
-          debug('Skipping resend: no documents or messages newer than the last processing', {
-            conversationId,
-            invoiceLabel,
-          });
-          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
-            ...sharedSlackDetails,
-            invoiceWID: existing.workdayInvoiceWid,
-            invoiceNumber: existing.workdayInvoiceNumber,
-            skipped: true,
-            skipReason: `No documents or messages newer than the last processing of ${invoiceLabel}.`,
-          }, conversationId, intercomAppId));
-          return;
-        }
-        if (!editability.editable) {
-          const processingTime = Date.now() - startTime;
-          const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
-          const reason = `Invoice ${invoiceLabel} is ${editability.status ?? 'not editable'}${editability.isPaid ? ' (paid)' : ''}${editability.isPartiallyPaid ? ' (partially paid)' : ''}; re-sent documents need manual review.`;
-          debug('Skipping resend update: invoice is not editable', {
-            conversationId,
-            invoiceLabel,
-            editability,
-          });
-          await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
-            ...sharedSlackDetails,
-            invoiceWID: existing.workdayInvoiceWid,
-            invoiceNumber: existing.workdayInvoiceNumber,
-            skipped: true,
-            needsManualReview: true,
-            skipReason: reason,
-          }, conversationId, intercomAppId));
-          return;
-        }
-        // Submit_Supplier_Invoice replaces Attachment_Data with what each call sends, so the update
-        // resends every cluster document plus a fresh transcript; newFiles only feeds notes and Slack.
-        const watermark = existing.lastProcessedReceivedAt;
-        const newFiles = watermark == null
-          ? loaded
-          : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
-        const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) =>
-          `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
-          (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
-          (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
-        const updateOutcome = await submitSupplierInvoiceUpdate(context, {
-          invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
-          buildNotes: buildUpdateNotes,
-          memo,
-          invoiceDate: extractedInvoiceDate,
-          companyWID,
-          companyReferenceType,
-          extractedAmountDue,
-          suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-          extractedFreightAmount,
-          extractedTaxAmount,
-          finalLines,
-          invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
-          relatedLobByCostCenter,
-          resolveCostCenterWorkdayIds: (costCenterIds) =>
-            getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
-          paymentTermsId,
-          attachments: submitAttachments,
-        });
-        let updateRegistrySyncFailed = false;
-        try {
-          await upsertConversationSupplierInvoice(context.dbConnection, {
-            conversationId,
-            supplierInvoiceNumber: registryNumber,
-            supplierWid: resolvedSupplierWID ?? registeredSupplierWID ?? null,
-            workdayInvoiceWid: existing.workdayInvoiceWid,
-            workdayInvoiceNumber: existing.workdayInvoiceNumber,
-            lastProcessedReceivedAt: clusterReceivedAt ?? existing.lastProcessedReceivedAt,
-          });
-        } catch (error) {
-          debug('Failed to update conversation invoice registry after update:', error);
-          updateRegistrySyncFailed = true;
-        }
-        const processingTime = Date.now() - startTime;
-        await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
-          ...sharedSlackDetails,
-          updated: true,
-          newAttachments: newFiles.map((file) => file.fileName),
-          invoiceWID: existing.workdayInvoiceWid,
-          invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),
-          ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
-          ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
-        }, conversationId, intercomAppId));
-        return;
-      }
-    }
-
-    const replacedInvoiceLabel = replacedInvoice
-      ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
-      : undefined;
-    const createOutcome = await submitNewSupplierInvoice(context, {
-      supplierWID: targetSupplierWID,
-      companyWID,
-      companyReferenceType,
-      buildNotes: replacedInvoiceLabel
-        ? (appliedFallbacks: AppliedFallback[]) =>
-          `${buildNotes(appliedFallbacks)}\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.`
-        : buildNotes,
-      memo,
-      invoiceDate: extractedInvoiceDate,
-      ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
-      extractedAmountDue,
-      suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-      extractedFreightAmount,
-      extractedTaxAmount,
-      finalLines,
-      invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
-      relatedLobByCostCenter,
-      resolveCostCenterWorkdayIds: (costCenterIds) =>
-        getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
-      paymentTermsId,
-      attachments: submitAttachments,
-      ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
-    });
-
-    const processingTime = Date.now() - startTime;
-
-    let registrySyncFailed = false;
-    if (clusteringEnabled && conversationId && registryNumber) {
-      if (!createOutcome.invoiceWID) {
-        registrySyncFailed = true;
-      } else {
-        try {
-          await upsertConversationSupplierInvoice(context.dbConnection, {
-            conversationId,
-            supplierInvoiceNumber: registryNumber,
-            supplierWid: resolvedSupplierWID ?? null,
-            workdayInvoiceWid: createOutcome.invoiceWID,
-            workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
-            lastProcessedReceivedAt: clusterReceivedAt ?? null,
-          });
-        } catch (error) {
-          debug('Failed to record conversation invoice registry after create:', error);
-          registrySyncFailed = true;
-        }
-      }
-    }
-
-    await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
-      ...sharedSlackDetails,
-      invoiceWID: createOutcome.invoiceWID,
-      invoiceNumber: createOutcome.invoiceNumber,
-      ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,
@@ -933,7 +547,6 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
-      ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));
   } catch (error) {
     const processingTime = Date.now() - startTime;
@@ -942,12 +555,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       'create_invoice',
       'error',
       processingTime,
-      slackInvoiceDetails({
-        s3Key,
-        fileName,
-        ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
-        ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
-      }, conversationId, intercomAppId),
+      slackInvoiceDetails({ s3Key, fileName }, conversationId, intercomAppId),
       error
     );
     throw error;
