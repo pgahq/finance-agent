@@ -140,6 +140,20 @@ Status: Active`);
 Status: Inactive`);
     });
 
+    it('should include the Workday supplier ID when present', () => {
+      const supplier = {
+        supplierName: 'Acme Corp',
+        supplierId: 'S-001234',
+        supplierStatus: 'Active'
+      };
+
+      const result = createSupplierContent(supplier);
+
+      expect(result).toBe(`Company Name: Acme Corp
+Supplier ID: S-001234
+Status: Active`);
+    });
+
     it('should filter out null/undefined values', () => {
       const supplier = {
         supplierName: 'Test Corp',
