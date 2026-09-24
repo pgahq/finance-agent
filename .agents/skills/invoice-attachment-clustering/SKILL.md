@@ -125,13 +125,15 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   never searches Workday for a matching supplier and invoice number.
 - "Newer for this invoice" means one of:
   - a file in **this cluster** is newer than the watermark, or
-  - `latestMessageAt` is newer **and** no file in another cluster of the
-    conversation is newer (`otherClustersLatestReceivedAt`, computed at parse
-    time and passed to every fanned-out cluster). A supplier can answer AP's
-    request in the email body with no new PDF, so a text-only reply counts;
-    a reply that brought another invoice is about that invoice, so it does not
-    reprocess this one. Unrelated files do not block. When no `receivedAt`
-    is known at all, treat it as newer.
+  - `latestMessageAt` is newer **and** the newest message is not the one
+    that brought a file for another cluster (`otherClustersLatestReceivedAt`,
+    computed at parse time and passed to every fanned-out cluster, is older
+    than `latestMessageAt`). A supplier reply or an AP note (for example coding
+    instructions, which enrichment reads from the thread) can change the
+    invoice with no new PDF, so it triggers a full update. A reply that brought
+    another invoice is about that invoice, so it does not reprocess this one,
+    but anything after it still counts. Unrelated files do not block. When no
+    `receivedAt` is known at all, treat it as newer.
 - On every registry hit (same real supplier or unresolved), check the
   registered invoice's status via WQL (`getSupplierInvoiceEditability`) first.
   If AP **canceled** it or it is **no longer in Workday**, create a fresh

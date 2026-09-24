@@ -788,13 +788,16 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       const watermark = existing?.lastProcessedReceivedAt ?? undefined;
       const hasNewerFile = watermark == null
         || (clusterFilesReceivedAt != null && clusterFilesReceivedAt > watermark);
-      // A supplier can answer AP's request for missing info in the email body with no new PDF, so a
-      // newer message counts too — unless it brought a file for another invoice in this conversation,
-      // in which case that message is about the other invoice.
+      // A supplier reply or an AP note (for example coding instructions) can change the invoice with no
+      // new PDF, so a newer message counts too — unless the newest message is the one that brought a file
+      // for another invoice in this conversation, in which case it is about that invoice.
+      const newestMessageBroughtOtherInvoice = otherClustersLatestReceivedAt != null
+        && latestMessageAt != null
+        && otherClustersLatestReceivedAt >= latestMessageAt;
       const hasNewerMessage = watermark != null
         && latestMessageAt != null
         && latestMessageAt > watermark
-        && !(otherClustersLatestReceivedAt != null && otherClustersLatestReceivedAt > watermark);
+        && !newestMessageBroughtOtherInvoice;
       const receivedAtUnknown = clusterFilesReceivedAt == null && latestMessageAt == null;
       const hasNewerInformation = receivedAtUnknown || hasNewerFile || hasNewerMessage;
       const invoiceLabel = existing ? existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid : undefined;

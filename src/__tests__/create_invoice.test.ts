@@ -2145,6 +2145,31 @@ describe('create_invoice', () => {
       );
     });
 
+    it('updates when an AP note arrived after the unrelated invoice, before the same trigger', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          latestMessageAt: 400,
+          otherClustersLatestReceivedAt: 300,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitSupplierInvoiceUpdate).toHaveBeenCalledTimes(1);
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ lastProcessedReceivedAt: 400 })
+      );
+    });
+
     it('does not advance the watermark when a skip has nothing newer at all', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
