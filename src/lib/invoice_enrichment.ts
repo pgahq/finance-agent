@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
+import { extractSupplierNoteHints, formatSupplierNoteHintContext } from './supplier_note_hints.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { withComposedLineDescriptions } from './invoice_lines.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
@@ -88,6 +89,9 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
+    const supplierHintText = formatSupplierNoteHintContext(
+      extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody)
+    );
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`
@@ -124,7 +128,7 @@ export async function enrichInvoiceFromAttachments(
           content: [
             {
               type: 'text',
-              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${purchaseOrderText}`
+              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${supplierHintText}${purchaseOrderText}`
             },
             ...attachmentContentParts(processedAttachments)
           ]

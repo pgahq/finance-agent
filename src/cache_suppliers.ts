@@ -6,6 +6,7 @@ import { syncDataSource } from './lib/sync.js';
 const QUERY = `
   SELECT
     supplier,
+    supplierID,
     lastUpdatedDateTime,
     supplierStatus,
     allPhoneNumbers,
@@ -21,9 +22,18 @@ export const handler = withQueryHandler(QUERY)({
   pageSize: null // Processor executes query directly
 });
 
+function textFromWqlField(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (typeof value !== 'object' || value == null) return undefined;
+  const record = value as { descriptor?: unknown; id?: unknown };
+  for (const candidate of [record.descriptor, record.id]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
 // Processor function - invoked by query function or refresh
-export const processor = withProcessorHandler(async (context, suppliers, _event) => {
-  if (!suppliers || suppliers.length === 0) {
+export const processor = withProcessorHandler(async (context, suppliers, _event) => {  if (!suppliers || suppliers.length === 0) {
     debug('No supplier data received - skipping sync');
     return;
   }
@@ -39,6 +49,7 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       {
         workdayId: supplier.supplier.id,
         supplierName: supplier.supplier.descriptor,
+        supplierId: textFromWqlField(supplier.supplierID),
         lastUpdatedDateTime: supplier.lastUpdatedDateTime,
         allPhoneNumbers: supplier.allPhoneNumbers?.length > 0
           ? supplier.allPhoneNumbers.map((p: any) => p.descriptor)
@@ -65,10 +76,12 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
     createMetadata: (supplier) => ({
       workdayId: supplier.workdayId,
       supplierName: supplier.supplierName,
+      ...(supplier.supplierId ? { supplierId: supplier.supplierId } : {}),
       lastUpdatedDateTime: supplier.lastUpdatedDateTime,
     }),
     isUpdated: (existingMetadata, supplier) =>
-      existingMetadata?.lastUpdatedDateTime !== supplier.lastUpdatedDateTime,
+      existingMetadata?.lastUpdatedDateTime !== supplier.lastUpdatedDateTime
+      || (supplier.supplierId != null && existingMetadata?.supplierId !== supplier.supplierId),
     notifyLabel: 'cache_suppliers',
     itemLabel: 'suppliers',
   });

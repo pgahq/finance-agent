@@ -245,6 +245,34 @@ describe('enrich_invoice', () => {
     expect(messageContent.some((part: { type: string }) => part.type === 'image')).toBe(false);
   });
 
+  it('should pass conversation supplier hints to the AI as authoritative context', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        },
+        emailContext: {
+          emailFrom: 'ap@pgahq.com',
+          subject: 'Invoice for review',
+          plainTextBody: 'Please process the attached invoice.\n\nSupplier: Acme Corp\nUse supplier S-001234',
+        },
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    const aiCall = getAiResponse.mock.calls[0][0];
+    const textPart = aiCall.messages[0].content.find((part: { type: string }) => part.type === 'text');
+    expect(textPart.text).toContain('Supplier ID: S-001234');
+    expect(textPart.text).toContain('Supplier name: Acme Corp');
+    expect(textPart.text).toContain('findSuppliers');
+  });
+
   it('should skip processing when supplier already exists', async () => {
     const { executeWorkdayQuery } = require('../lib/workday.js');
     executeWorkdayQuery.mockResolvedValue({
