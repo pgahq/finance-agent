@@ -498,6 +498,102 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('forwards receivedAt from Intercom attachments to the processor payload', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      attachments: [{
+        ...conversationInvoiceData.attachments[0],
+        receivedAt: 1704153600,
+      }],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    await handler(buildEvent());
+
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: invoiceEmailContext,
+          conversationId: '1234567890',
+          receivedAt: 1704153600,
+          intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+  });
+
+  it('invokes the processor once with all attachments when clustering is enabled', async () => {
+    const loadEnv = jest.requireMock('@pga/lambda-env').default;
+    loadEnv.mockResolvedValueOnce({
+      ENRICH_INVOICE_API_TOKEN: 'expected-token',
+      INTERCOM_ACCESS_TOKEN: 'intercom-token',
+      AWS_STACK_NAME: 'finance-agent',
+      AWS_REGION: 'us-east-1',
+      S3_BUCKET_NAME: 'test-bucket',
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true',
+    });
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      latestMessageAt: 1704153600,
+    });
+
+    const response = await handler(buildEvent());
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(InvokeCommand).toHaveBeenCalledTimes(1);
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          conversationId: '1234567890',
+          latestMessageAt: 1704153600,
+          intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
+          attachments: [
+            {
+              s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+              fileName: 'invoice.pdf',
+              contentType: 'application/pdf',
+              emailContext: invoiceEmailContext,
+              conversationId: '1234567890',
+              intercomAppId: 'sandbox-app',
+              conversationCreatedAt: '2024-01-01',
+            },
+            {
+              s3Key: 'new-invoices/fixed-request-id/2-support.pdf',
+              fileName: 'support.pdf',
+              contentType: 'application/pdf',
+              emailContext: supportEmailContext,
+              conversationId: '1234567890',
+              intercomAppId: 'sandbox-app',
+              conversationCreatedAt: '2024-01-01',
+            },
+          ],
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 500 and does not create invoices when the transcript is missing', async () => {
     mockFetchConversationInvoiceData.mockResolvedValue({
       ...conversationInvoiceData,

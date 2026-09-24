@@ -11,7 +11,12 @@ export interface CreateInvoiceIngestAttachment {
   contentType: string;
   buffer: Buffer;
   emailContext?: InvoiceData['emailContext'];
-  processorFields?: Record<string, string>;
+  processorFields?: Record<string, string | number>;
+}
+
+/** Send every attachment to CreateInvoiceProcessor in one record so it can classify and cluster them. */
+export interface CreateInvoiceGroupedInvoke {
+  sharedFields: Record<string, string | number>;
 }
 
 export interface CreateInvoiceSharedFile {
@@ -26,6 +31,7 @@ export async function ingestCreateInvoiceAttachments(
   attachments: CreateInvoiceIngestAttachment[],
   s3Metadata: Record<string, string>,
   sharedFile?: CreateInvoiceSharedFile,
+  groupedInvoke?: CreateInvoiceGroupedInvoke,
 ): Promise<{ requestId: string; attachmentCount: number; totalBytes: number }> {
   const s3Config = getS3Config(env);
   const requestId = randomUUID();
@@ -74,17 +80,29 @@ export async function ingestCreateInvoiceAttachments(
   const processorFunctionName = `${env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
   const lambda = new LambdaClient({ region: env.AWS_REGION });
 
-  await Promise.all(processorRecords.map((attachment) =>
-    lambda.send(new InvokeCommand({
+  if (groupedInvoke) {
+    await lambda.send(new InvokeCommand({
       FunctionName: processorFunctionName,
       InvocationType: 'Event',
       Payload: JSON.stringify({
-        data: [attachment],
+        data: [{ ...groupedInvoke.sharedFields, ...sharedPayload, attachments: uploadedAttachments }],
         page: 1,
         totalPages: 1,
       }),
-    }))
-  ));
+    }));
+  } else {
+    await Promise.all(processorRecords.map((attachment) =>
+      lambda.send(new InvokeCommand({
+        FunctionName: processorFunctionName,
+        InvocationType: 'Event',
+        Payload: JSON.stringify({
+          data: [attachment],
+          page: 1,
+          totalPages: 1,
+        }),
+      }))
+    ));
+  }
 
   return {
     requestId,

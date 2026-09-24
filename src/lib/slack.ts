@@ -171,14 +171,36 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
+  if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Skipped*\n${details.skipReason}`) }
+    });
+  }
+
   const attachment = details.attachment as { fileName?: string } | undefined;
+  const clusterFiles = Array.isArray(details.attachments)
+    ? (details.attachments as Array<{ fileName?: string; kind?: string }>)
+      .map((file) => (file.kind ? `${file.fileName} (${file.kind})` : file.fileName))
+      .filter((name): name is string => Boolean(name))
+    : [];
+  const unrelatedFiles = Array.isArray(details.unrelatedAttachments)
+    ? (details.unrelatedAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
+    : [];
   const slackDetails: Record<string, unknown> = {
     ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
+    ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
+    ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
     ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
       ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
       : {}),
+    ...(details.updated === true && Array.isArray(details.newAttachments)
+      ? { newAttachments: (details.newAttachments as unknown[]).filter((name): name is string => typeof name === 'string') }
+      : {}),
+    ...(details.skipped === true ? { skipped: true } : {}),
+    ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
@@ -312,11 +334,14 @@ export async function notifyResult(
     && details.invoiceNumber
     ? details.invoiceNumber
     : undefined;
+  const updatedInvoice = createdInvoiceNumber && details?.updated === true;
 
   // Build the main message
-  let mainMessage = createdInvoiceNumber
-    ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
-    : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = updatedInvoice
+    ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
+    : createdInvoiceNumber
+      ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+      : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;

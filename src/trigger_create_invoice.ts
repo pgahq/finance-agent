@@ -183,6 +183,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     const transcript = conversationData.transcript;
     const transcriptBuffer = await renderConversationTranscriptPdf(transcript);
+    const conversationFields = {
+      ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+      ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
+      ...(conversationData.conversationCreatedAt
+        ? { conversationCreatedAt: conversationData.conversationCreatedAt }
+        : {}),
+    };
+    const clusteringEnabled = process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED === 'true';
     const ingested = await ingestCreateInvoiceAttachments(
       process.env,
       attachments.map((attachment, index) => ({
@@ -192,11 +200,8 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         emailContext: attachment.emailContext,
         processorFields: {
           conversationId,
-          ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
-          ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
-          ...(conversationData.conversationCreatedAt
-            ? { conversationCreatedAt: conversationData.conversationCreatedAt }
-            : {}),
+          ...(attachment.receivedAt != null ? { receivedAt: attachment.receivedAt } : {}),
+          ...conversationFields,
         },
       })),
       { 'intercom-conversation-id': conversationId },
@@ -206,6 +211,15 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         buffer: transcriptBuffer,
         payloadField: 'conversationPdf',
       },
+      clusteringEnabled
+        ? {
+          sharedFields: {
+            conversationId,
+            ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
+            ...conversationFields,
+          },
+        }
+        : undefined,
     );
 
     return jsonResponse(202, {
