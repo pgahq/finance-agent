@@ -5,8 +5,8 @@ import type { DatabaseConnection } from './database.js';
  * conversation part).
  *
  * Emails, notes, and replies often name the supplier explicitly (a name and/or
- * a Workday Supplier ID like S-001234). Only IDs that exact-match the supplier
- * cache are presented to the model as authoritative.
+ * a Workday Supplier ID like S-001234). Only an exact supplier-cache match from
+ * an Intercom conversation part is presented to the model as authoritative.
  */
 
 export interface SupplierNoteHints {
@@ -102,41 +102,48 @@ export async function resolveSupplierIdHints(
 /**
  * Prompt block appended after the email context. Empty when there are no hints.
  * Pass `resolved: undefined` when the cache lookup failed, so IDs are not reported as missing.
+ * Only a match whose ID appears in `trustedSupplierIds` (Intercom conversation parts) may
+ * override the invoice document; IDs seen only in the source or inbound email are candidates.
  */
 export function formatSupplierNoteHintContext(
   hints: SupplierNoteHints,
-  resolved: ResolvedSupplierHint[] | undefined
+  resolved: ResolvedSupplierHint[] | undefined,
+  trustedSupplierIds: readonly string[] = []
 ): string {
   if (!hasSupplierNoteHints(hints)) return '';
 
   const lines: string[] = [];
   const resolvedIds = new Set((resolved ?? []).map((hint) => hint.supplierId));
+  const trustedIds = new Set(trustedSupplierIds.map((id) => id.toUpperCase()));
   const distinctSuppliers = new Map((resolved ?? []).map((hint) => [hint.workdayId, hint]));
   const unresolvedIds = hints.supplierIds.filter((id) => !resolvedIds.has(id));
   const describe = (hint: ResolvedSupplierHint) =>
     `${hint.supplierId}${hint.supplierName ? ` (${hint.supplierName})` : ''}, workdayId ${hint.workdayId}`;
-  const authoritative = distinctSuppliers.size === 1 && unresolvedIds.length === 0;
+  const [singleMatch] = distinctSuppliers.size === 1 ? [...distinctSuppliers.values()] : [];
+  const authoritative = Boolean(singleMatch)
+    && unresolvedIds.length === 0
+    && trustedIds.has(singleMatch.supplierId);
 
   if (authoritative) {
-    const [hint] = [...distinctSuppliers.values()];
-    lines.push(`The conversation names Workday supplier ${describe(hint)}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
-  } else if (distinctSuppliers.size === 1) {
-    const [hint] = [...distinctSuppliers.values()];
-    lines.push(`The conversation names Workday supplier ${describe(hint)}, but also mention Supplier IDs that did not resolve. The hints are incomplete: do not override the invoice document; treat this supplier as a findSuppliers candidate only.`);
+    lines.push(`An Intercom conversation note or reply names Workday supplier ${describe(singleMatch)}. This is an exact cached Supplier ID match: use this supplier as resolvedSupplier even when the invoice document suggests a different supplier.`);
+  } else if (singleMatch && unresolvedIds.length > 0) {
+    lines.push(`The email context names Workday supplier ${describe(singleMatch)}, but also mentions Supplier IDs that did not resolve. The hints are incomplete: do not override the invoice document; treat this supplier as a findSuppliers candidate only.`);
+  } else if (singleMatch) {
+    lines.push(`The inbound email names Workday supplier ${describe(singleMatch)}. The sender's own text is not authoritative: treat this supplier as a findSuppliers candidate only and do not override the invoice document.`);
   } else if (distinctSuppliers.size > 1) {
     const names = [...distinctSuppliers.values()].map(describe).join('; ');
-    lines.push(`The conversation names more than one Workday supplier: ${names}. Do not override the invoice document with one of them; report the supplier as ambiguous (or uncertain when verifying) and explain the conflict.`);
+    lines.push(`The email context names more than one Workday supplier: ${names}. Do not override the invoice document with one of them; report the supplier as ambiguous (or uncertain when verifying) and explain the conflict.`);
   }
 
   if (unresolvedIds.length > 0) {
     lines.push(resolved === undefined
-      ? `The conversation mentions Supplier ID ${unresolvedIds.join(', ')}, which could not be verified. Call findSuppliers with it and accept a result only when its Supplier ID matches exactly.`
-      : `The conversation mentions Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
+      ? `The email context mentions Supplier ID ${unresolvedIds.join(', ')}, which could not be verified. Call findSuppliers with it and accept a result only when its Supplier ID matches exactly.`
+      : `The email context mentions Supplier ID ${unresolvedIds.join(', ')}, which is not in the supplier cache. Do not treat it as a match.`);
   }
 
   const nameHints = authoritative ? [] : hints.supplierNames;
   for (const name of nameHints) {
-    lines.push(`The conversation names the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
+    lines.push(`The email context names the supplier "${name}". Call findSuppliers with this name first and prefer a result whose name matches it.`);
   }
 
   return `\n\nSupplier hints from the email and conversation:\n${lines.map((line) => `- ${line}`).join('\n')}`;

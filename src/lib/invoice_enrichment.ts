@@ -59,12 +59,14 @@ async function buildSupplierHintText(emailContext: InvoiceData['emailContext']):
       resolved = undefined;
     }
   }
+  const trustedSupplierIds = extractSupplierNoteHints(emailContext?.conversationParts).supplierIds;
   debug('Supplier hints from email context', {
     supplierIds: hints.supplierIds,
+    trustedSupplierIds,
     supplierNames: hints.supplierNames,
     resolvedWorkdayIds: resolved?.map((hint) => hint.workdayId),
   });
-  return formatSupplierNoteHintContext(hints, resolved);
+  return formatSupplierNoteHintContext(hints, resolved, trustedSupplierIds);
 }
 
 export async function enrichInvoiceFromAttachments(

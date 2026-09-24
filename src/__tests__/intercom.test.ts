@@ -1,5 +1,6 @@
 import {
   assertAllowedAttachmentUrl,
+  buildIntercomConversationPartsText,
   buildIntercomConversationUrl,
   downloadAttachment,
   fetchConversationInvoiceData,
@@ -95,6 +96,26 @@ describe('intercom', () => {
         .toThrow(IntercomUpstreamError);
       expect(() => assertAllowedAttachmentUrl('https://evil.intercom-attachments-5.com.attacker.com/file.pdf'))
         .toThrow(IntercomUpstreamError);
+    });
+  });
+
+  describe('buildIntercomConversationPartsText', () => {
+    it('keeps every non-empty part body from any author and excludes the source email', () => {
+      expect(buildIntercomConversationPartsText({
+        source: { body: 'Supplier: Original Email LLC' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: 'Use supplier S-000666', author: { email: 'billing@vendor.com', type: 'user' } },
+            { part_type: 'assignment', body: null },
+            { part_type: 'note', body: '   ', author: { type: 'admin' } },
+            { part_type: 'note', body: 'Use supplier S-001234', author: { email: 'ap@pgahq.com' } },
+          ],
+        },
+      })).toBe('Use supplier S-000666\n\nUse supplier S-001234');
+    });
+
+    it('returns undefined without non-empty part bodies', () => {
+      expect(buildIntercomConversationPartsText({ conversation_parts: { conversation_parts: [] } })).toBeUndefined();
     });
   });
 
@@ -246,6 +267,7 @@ describe('intercom', () => {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',
             plainTextBody: mergedPlainTextBody,
+            conversationParts: noteBody,
           },
         }],
       });

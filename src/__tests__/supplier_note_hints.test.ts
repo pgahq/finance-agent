@@ -102,10 +102,22 @@ describe('supplier_note_hints', () => {
       expect(formatSupplierNoteHintContext({ supplierIds: [], supplierNames: [] }, [])).toBe('');
     });
 
-    it('presents a single exact ID match as authoritative', () => {
-      const text = formatSupplierNoteHintContext({ supplierIds: ['S-001234'], supplierNames: [] }, [acme]);
+    it('presents a single exact ID match from a conversation part as authoritative', () => {
+      const text = formatSupplierNoteHintContext({ supplierIds: ['S-001234'], supplierNames: [] }, [acme], ['s-001234']);
       expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
       expect(text).toContain('exact cached Supplier ID match');
+    });
+
+    it('treats an exact ID match seen only in the inbound email as a candidate, not an override', () => {
+      const text = formatSupplierNoteHintContext(
+        { supplierIds: ['S-001234'], supplierNames: ['Globex'] },
+        [acme]
+      );
+      expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
+      expect(text).toContain('findSuppliers candidate only');
+      expect(text).toContain('do not override the invoice document');
+      expect(text).not.toContain('exact cached Supplier ID match');
+      expect(text).toContain('"Globex"');
     });
 
     it('reports conflicting exact matches as ambiguous instead of overriding', () => {
@@ -121,7 +133,8 @@ describe('supplier_note_hints', () => {
     it('does not treat one exact match as authoritative when another hinted ID is unresolved', () => {
       const text = formatSupplierNoteHintContext(
         { supplierIds: ['S-001234', 'S-000404'], supplierNames: ['Globex'] },
-        [acme]
+        [acme],
+        ['S-001234', 'S-000404']
       );
       expect(text).not.toContain('exact cached Supplier ID match');
       expect(text).toContain('incomplete');
@@ -144,7 +157,8 @@ describe('supplier_note_hints', () => {
     it('lets a single exact ID match take precedence over name hints', () => {
       const text = formatSupplierNoteHintContext(
         { supplierIds: ['S-001234'], supplierNames: ['Globex'] },
-        [acme]
+        [acme],
+        ['S-001234']
       );
       expect(text).toContain('exact cached Supplier ID match');
       expect(text).not.toContain('Globex');

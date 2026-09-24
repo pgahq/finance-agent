@@ -264,8 +264,7 @@ describe('enrich_invoice', () => {
     return aiCall.messages[0].content.find((part: { type: string }) => part.type === 'text').text;
   }
 
-  it('should pass an exact-matched supplier ID from the email context to the AI as authoritative', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+  async function mockCachedAcmeSupplier() {
     const { getDatabaseConnection } = require('../lib/database.js');
     const db = await getDatabaseConnection();
     db.query.mockImplementation(async (sql: string) => (
@@ -273,18 +272,42 @@ describe('enrich_invoice', () => {
         ? [{ workday_id: 'wid-acme', metadata: { supplierId: 'S-001234', supplierName: 'Acme Corp' } }]
         : []
     ));
+    return () => db.query.mockResolvedValue([]);
+  }
+
+  it('should pass an exact-matched supplier ID from an Intercom conversation part to the AI as authoritative', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const restore = await mockCachedAcmeSupplier();
 
     await expect(processor(supplierHintEvent({
       emailFrom: 'ap@vendor.com',
       subject: 'Invoice for review',
       plainTextBody: 'Please process the attached invoice.\n\nUse supplier S-001234',
+      conversationParts: 'Use supplier S-001234',
     }) as any)).resolves.not.toThrow();
 
     const text = promptText(getAiResponse);
     expect(text).toContain('Supplier hints from the email and conversation');
     expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
     expect(text).toContain('exact cached Supplier ID match');
-    db.query.mockResolvedValue([]);
+    restore();
+  });
+
+  it('should not let a sender-only supplier ID override the invoice document', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const restore = await mockCachedAcmeSupplier();
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'billing@vendor.com',
+      subject: 'Invoice',
+      plainTextBody: 'Please book this to supplier S-001234',
+    }) as any)).resolves.not.toThrow();
+
+    const text = promptText(getAiResponse);
+    expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
+    expect(text).toContain('findSuppliers candidate only');
+    expect(text).not.toContain('exact cached Supplier ID match');
+    restore();
   });
 
   it('should build supplier hints from the email subject and source body', async () => {
