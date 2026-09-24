@@ -39,6 +39,11 @@ import {
   normalizePurchaseOrderNumber,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
+import {
+  parseAndClusterInvoiceAttachments,
+  type ClassifiedAttachment,
+  type ClusterableAttachment,
+} from './lib/invoice_attachment_clustering.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
@@ -144,12 +149,58 @@ function slackInvoiceDetails(
   };
 }
 
+/** Report-only record sent by the trigger in shadow mode; never creates or changes an invoice. */
+export interface ShadowClusteringRequest {
+  shadow: true;
+  attachments: ClusterableAttachment[];
+  conversationId?: string;
+  intercomAppId?: string;
+}
+
 // Processor function - invoked by trigger_create_invoice
 export const processor = withProcessorHandler(async (context, requests) => {
   for (const request of requests) {
+    if ((request as Partial<ShadowClusteringRequest>).shadow === true) {
+      await reportShadowClustering(context, request as ShadowClusteringRequest);
+      continue;
+    }
     await processNewInvoice(context, request as CreateInvoiceRequest);
   }
 });
+
+async function reportShadowClustering(context: ProcessingContext, request: ShadowClusteringRequest): Promise<void> {
+  const startTime = Date.now();
+  const details = { mode: 'shadow', attachments: request.attachments.map((attachment) => attachment.fileName) };
+  try {
+    const { clustering } = await parseAndClusterInvoiceAttachments(
+      request.attachments,
+      (key) => getBinaryFromS3(context.s3Config, key)
+    );
+    const describe = (file: ClassifiedAttachment) =>
+      `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
+    await notifyResult('create_invoice_shadow', 'success', Date.now() - startTime, slackInvoiceDetails({
+      ...details,
+      wouldCreateInvoices: clustering.clusters.length,
+      clusters: clustering.clusters.map((cluster) => ({
+        invoice: describe(cluster.primary),
+        ...(cluster.supporting.length ? { supporting: cluster.supporting.map(describe) } : {}),
+        ...(cluster.fallback ? { fallback: true } : {}),
+      })),
+      ...(clustering.unrelated.length ? { unrelated: clustering.unrelated.map(describe) } : {}),
+      note: 'Shadow mode: invoices were created one per PDF as usual; nothing was written from this plan.',
+    }, request.conversationId, request.intercomAppId));
+  } catch (error) {
+    debug('Shadow attachment clustering failed:', error);
+    await notifyResult(
+      'create_invoice_shadow',
+      'error',
+      Date.now() - startTime,
+      slackInvoiceDetails(details, request.conversationId, request.intercomAppId),
+      error
+    );
+    throw error;
+  }
+}
 
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();

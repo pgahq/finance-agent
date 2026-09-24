@@ -291,6 +291,27 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
   }
 }
 
+function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
+  const lines: string[] = [];
+  const clusters = Array.isArray(details.clusters) ? details.clusters as Array<Record<string, unknown>> : [];
+  clusters.forEach((cluster, index) => {
+    const fallback = cluster.fallback === true ? ' _(no invoice found; best guess)_' : '';
+    lines.push(`*Invoice ${index + 1}:* ${String(cluster.invoice)}${fallback}`);
+    if (Array.isArray(cluster.supporting)) {
+      for (const file of cluster.supporting) lines.push(`    ↳ ${String(file)}`);
+    }
+  });
+  if (Array.isArray(details.unrelated) && details.unrelated.length) {
+    lines.push(`*Not attached:* ${details.unrelated.map(String).join(', ')}`);
+  }
+  if (lines.length) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: truncateSlackText(lines.join('\n')) } });
+  }
+  if (typeof details.note === 'string') {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: details.note }] });
+  }
+}
+
 /**
  * Send notification for any Lambda operation result
  */
@@ -314,10 +335,21 @@ export async function notifyResult(
     ? details.invoiceNumber
     : undefined;
 
+  const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
+    ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
+    : undefined;
+  const shadowInvoiceCount = typeof shadowDetails?.wouldCreateInvoices === 'number'
+    ? shadowDetails.wouldCreateInvoices
+    : undefined;
+  const shadowPlan = shadowInvoiceCount !== undefined;
+  const shadowPdfCount = Array.isArray(shadowDetails?.attachments) ? shadowDetails.attachments.length : 0;
+
   // Build the main message
-  let mainMessage = createdInvoiceNumber
-    ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
-    : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = shadowPlan
+    ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
+    : createdInvoiceNumber
+      ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+      : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;
@@ -335,6 +367,8 @@ export async function notifyResult(
 
   if (error) {
     appendErrorBlocks(blocks, error, details);
+  } else if (shadowPlan) {
+    appendShadowClusteringBlocks(blocks, details as Record<string, unknown>);
   } else if (lambdaName === 'create_invoice' && details && typeof details === 'object') {
     appendCreateInvoiceSuccessBlocks(blocks, details as Record<string, unknown>);
   } else if (details) {

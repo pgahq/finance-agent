@@ -88,6 +88,10 @@ jest.mock('../lib/invoice_lines.js', () => {
   };
 });
 
+jest.mock('../lib/invoice_attachment_clustering.js', () => ({
+  parseAndClusterInvoiceAttachments: jest.fn(),
+}));
+
 const baseEnrichmentResult = {
   supplier: {
     status: 'found',
@@ -149,6 +153,7 @@ function freshRequire() {
     invoiceEnrichment: require('../lib/invoice_enrichment.js'),
     invoiceLines: require('../lib/invoice_lines.js'),
     database: require('../lib/database.js'),
+    clustering: require('../lib/invoice_attachment_clustering.js'),
     loadEnv: require('@pga/lambda-env').default,
   };
 }
@@ -178,6 +183,91 @@ describe('create_invoice', () => {
     delete process.env.FALLBACK_SPEND_CATEGORY_ID;
     delete process.env.FALLBACK_LOB_ID;
   });
+  describe('shadow clustering record', () => {
+    const invoiceFile = {
+      s3Key: 'new-invoices/req-1/1-invoice.pdf',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      kind: 'supplier_invoice',
+      invoiceNumber: 'INV-100',
+      confidence: 0.95,
+    };
+    const packingSlip = {
+      s3Key: 'new-invoices/req-1/2-packing.pdf',
+      fileName: 'packing.pdf',
+      contentType: 'application/pdf',
+      kind: 'supporting',
+      supportingKind: 'packing_slip',
+      confidence: 0.8,
+    };
+
+    it.each(['shadow', 'true', undefined])(
+      'Slacks the clustering plan and writes nothing (flag %s)',
+      async (flag) => {
+        const { processor, workday, slack, invoiceEnrichment, clustering, loadEnv } = freshRequire();
+        loadEnv.mockResolvedValue(flag ? { INVOICE_ATTACHMENT_CLUSTERING_ENABLED: flag } : {});
+        clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+          classified: [invoiceFile, packingSlip],
+          clustering: {
+            clusters: [{ primary: invoiceFile, supporting: [packingSlip], fallback: false }],
+            unrelated: [],
+          },
+        });
+
+        await processor({
+          data: [{ shadow: true, conversationId: '1234567890', attachments: [invoiceFile, packingSlip] }],
+        } as any);
+
+        expect(clustering.parseAndClusterInvoiceAttachments).toHaveBeenCalledTimes(1);
+        expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice_shadow',
+          'success',
+          expect.any(Number),
+          expect.objectContaining({
+            mode: 'shadow',
+            attachments: ['invoice.pdf', 'packing.pdf'],
+            wouldCreateInvoices: 1,
+            clusters: [{
+              invoice: 'invoice.pdf (supplier_invoice, #INV-100)',
+              supporting: ['packing.pdf (supporting: packing_slip)'],
+            }],
+            conversationId: '1234567890',
+          }),
+        );
+      }
+    );
+
+    it('Slacks and rethrows when classification fails, without writing', async () => {
+      const { processor, workday, slack, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      clustering.parseAndClusterInvoiceAttachments.mockRejectedValue(new Error('classify boom'));
+
+      await expect(processor({
+        data: [{ shadow: true, conversationId: '1234567890', attachments: [invoiceFile] }],
+      } as any)).rejects.toThrow('classify boom');
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice_shadow', 'error', expect.any(Number), expect.anything(), expect.any(Error)
+      );
+    });
+
+    it('never classifies a normal per-PDF record, even with the flag on shadow', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+    });
+  });
+
 
   it('passes assigneeWID when the AP agent employee cache matches assigneeEmail', async () => {
     process.env.INVOICE_MOD_ENABLED = 'true';

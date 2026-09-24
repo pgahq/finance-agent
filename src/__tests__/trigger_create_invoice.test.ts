@@ -480,6 +480,109 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
+  it('forwards receivedAt from Intercom attachments to the processor payload', async () => {
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      attachments: [{
+        ...conversationInvoiceData.attachments[0],
+        receivedAt: 1704153600,
+      }],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('invoice-content'));
+
+    await handler(buildEvent());
+
+    expect(InvokeCommand).toHaveBeenCalledWith({
+      FunctionName: 'finance-agent-CreateInvoiceProcessor',
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf',
+          fileName: 'invoice.pdf',
+          contentType: 'application/pdf',
+          emailContext: invoiceEmailContext,
+          conversationId: '1234567890',
+          receivedAt: 1704153600,
+          intercomAppId: 'sandbox-app',
+          conversationCreatedAt: '2024-01-01',
+          conversationPdf: {
+            s3Key: 'new-invoices/fixed-request-id/pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+            fileName: 'pga_corp_accounts_payable_2026_09_21_1234567890.pdf',
+          },
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    });
+  });
+
+  it('keeps one invoke per PDF with no shadow record when the flag is true', async () => {
+    jest.requireMock('@pga/lambda-env').default.mockResolvedValueOnce({
+      ENRICH_INVOICE_API_TOKEN: 'expected-token',
+      INTERCOM_ACCESS_TOKEN: 'intercom-token',
+      AWS_STACK_NAME: 'finance-agent',
+      AWS_REGION: 'us-east-1',
+      S3_BUCKET_NAME: 'test-bucket',
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true',
+    });
+
+    const response = await handler(buildEvent());
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    const sent = (InvokeCommand as unknown as jest.Mock).mock.calls.map(
+      ([input]) => JSON.parse(input.Payload).data[0]
+    );
+    expect(sent).toHaveLength(2);
+    expect(sent.every((record: { shadow?: boolean; attachments?: unknown }) =>
+      record.shadow === undefined && record.attachments === undefined)).toBe(true);
+  });
+
+  describe('shadow mode', () => {
+    const shadowEnv = {
+      ENRICH_INVOICE_API_TOKEN: 'expected-token',
+      INTERCOM_ACCESS_TOKEN: 'intercom-token',
+      AWS_STACK_NAME: 'finance-agent',
+      AWS_REGION: 'us-east-1',
+      S3_BUCKET_NAME: 'test-bucket',
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow',
+    };
+
+    function payloads() {
+      return (InvokeCommand as unknown as jest.Mock).mock.calls.map(
+        ([input]) => JSON.parse(input.Payload).data[0]
+      );
+    }
+
+    it('keeps one invoke per PDF and adds one shadow-flagged grouped invoke last', async () => {
+      jest.requireMock('@pga/lambda-env').default.mockResolvedValueOnce(shadowEnv);
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ statusCode: 202 });
+      const sent = payloads();
+      expect(sent).toHaveLength(3);
+      expect(sent[0]).toMatchObject({ s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf' });
+      expect(sent[0].shadow).toBeUndefined();
+      expect(sent[1]).toMatchObject({ s3Key: 'new-invoices/fixed-request-id/2-support.pdf' });
+      expect(sent[2].shadow).toBe(true);
+      expect(sent[2].attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['invoice.pdf', 'support.pdf']);
+    });
+
+    it('still returns 202 when the shadow invoke fails', async () => {
+      jest.requireMock('@pga/lambda-env').default.mockResolvedValueOnce(shadowEnv);
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error('invoke throttled'));
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ statusCode: 202 });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('returns 500 and does not create invoices when the transcript is missing', async () => {
     mockFetchConversationInvoiceData.mockResolvedValue({
       ...conversationInvoiceData,
