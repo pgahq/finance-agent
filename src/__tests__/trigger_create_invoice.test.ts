@@ -594,6 +594,52 @@ describe('trigger_create_invoice handler', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
+  describe('shadow mode', () => {
+    const shadowEnv = {
+      ENRICH_INVOICE_API_TOKEN: 'expected-token',
+      INTERCOM_ACCESS_TOKEN: 'intercom-token',
+      AWS_STACK_NAME: 'finance-agent',
+      AWS_REGION: 'us-east-1',
+      S3_BUCKET_NAME: 'test-bucket',
+      INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow',
+    };
+
+    function payloads() {
+      return (InvokeCommand as unknown as jest.Mock).mock.calls.map(
+        ([input]) => JSON.parse(input.Payload).data[0]
+      );
+    }
+
+    it('keeps one invoke per PDF and adds one shadow-flagged grouped invoke last', async () => {
+      jest.requireMock('@pga/lambda-env').default.mockResolvedValueOnce(shadowEnv);
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ statusCode: 202 });
+      const sent = payloads();
+      expect(sent).toHaveLength(3);
+      expect(sent[0]).toMatchObject({ s3Key: 'new-invoices/fixed-request-id/1-invoice.pdf' });
+      expect(sent[0].shadow).toBeUndefined();
+      expect(sent[1]).toMatchObject({ s3Key: 'new-invoices/fixed-request-id/2-support.pdf' });
+      expect(sent[2].shadow).toBe(true);
+      expect(sent[2].attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['invoice.pdf', 'support.pdf']);
+    });
+
+    it('still returns 202 when the shadow invoke fails', async () => {
+      jest.requireMock('@pga/lambda-env').default.mockResolvedValueOnce(shadowEnv);
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error('invoke throttled'));
+
+      const response = await handler(buildEvent());
+
+      expect(response).toMatchObject({ statusCode: 202 });
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('returns 500 and does not create invoices when the transcript is missing', async () => {
     mockFetchConversationInvoiceData.mockResolvedValue({
       ...conversationInvoiceData,

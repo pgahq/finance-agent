@@ -199,6 +199,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ...(details.updated === true && Array.isArray(details.newAttachments)
       ? { newAttachments: (details.newAttachments as unknown[]).filter((name): name is string => typeof name === 'string') }
       : {}),
+    ...(typeof details.replacesCanceledInvoice === 'string' && details.replacesCanceledInvoice
+      ? { replacesCanceledInvoice: details.replacesCanceledInvoice }
+      : {}),
     ...(details.skipped === true ? { skipped: true } : {}),
     ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
@@ -335,13 +338,19 @@ export async function notifyResult(
     ? details.invoiceNumber
     : undefined;
   const updatedInvoice = createdInvoiceNumber && details?.updated === true;
+  const skippedInvoice = createdInvoiceNumber && details?.skipped === true;
+  const needsManualReview = skippedInvoice && details?.needsManualReview === true;
 
   // Build the main message
-  let mainMessage = updatedInvoice
-    ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
-    : createdInvoiceNumber
-      ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
-      : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+  let mainMessage = needsManualReview
+    ? `⚠️ *${lambdaName}* needs manual review for \`${createdInvoiceNumber}\` (resend not applied) in ${timeText}`
+    : skippedInvoice
+      ? `⏭️ *${lambdaName}* skipped resend for \`${createdInvoiceNumber}\` (nothing new) in ${timeText}`
+      : updatedInvoice
+        ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
+        : createdInvoiceNumber
+          ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+          : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;

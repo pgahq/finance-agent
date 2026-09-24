@@ -1770,6 +1770,96 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('shadow mode', () => {
+    const invoiceFile = {
+      s3Key: 'new-invoices/req-1/1-invoice.pdf',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      kind: 'supplier_invoice',
+      invoiceNumber: 'INV-100',
+      confidence: 0.95,
+    };
+    const packingSlip = {
+      s3Key: 'new-invoices/req-1/2-packing.pdf',
+      fileName: 'packing.pdf',
+      contentType: 'application/pdf',
+      kind: 'supporting',
+      supportingKind: 'packing_slip',
+      confidence: 0.8,
+    };
+
+    it.each(['shadow', 'true', undefined])(
+      'reports the clustering plan and writes nothing for a shadow record (flag %s)',
+      async (flag) => {
+        const { processor, workday, slack, invoiceEnrichment, clustering, registry, lambda, loadEnv } = freshRequire();
+        loadEnv.mockResolvedValue(flag ? { INVOICE_ATTACHMENT_CLUSTERING_ENABLED: flag } : {});
+        clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+          classified: [invoiceFile, packingSlip],
+          clustering: {
+            clusters: [{ primary: invoiceFile, supporting: [packingSlip], fallback: false }],
+            unrelated: [],
+          },
+        });
+
+        await processor({
+          data: [{ conversationId: '1234567890', shadow: true, attachments: [invoiceFile, packingSlip] }],
+        } as any);
+
+        expect(clustering.parseAndClusterInvoiceAttachments).toHaveBeenCalledTimes(1);
+        expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+        expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+        expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
+        expect(lambda.InvokeCommand).not.toHaveBeenCalled();
+        expect(slack.notifyResult).toHaveBeenCalledWith(
+          'create_invoice_shadow',
+          'success',
+          expect.any(Number),
+          expect.objectContaining({
+            mode: 'shadow',
+            wouldCreateInvoices: 1,
+            clusters: [{
+              invoice: 'invoice.pdf (supplier_invoice, #INV-100)',
+              supporting: ['packing.pdf (supporting: packing_slip)'],
+            }],
+          }),
+        );
+      }
+    );
+
+    it('Slacks and rethrows when shadow classification fails, without writing', async () => {
+      const { processor, workday, slack, clustering, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      clustering.parseAndClusterInvoiceAttachments.mockRejectedValue(new Error('classify boom'));
+
+      await expect(processor({
+        data: [{ conversationId: '1234567890', shadow: true, attachments: [invoiceFile] }],
+      } as any)).rejects.toThrow('classify boom');
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice_shadow', 'error', expect.any(Number), expect.anything(), expect.any(Error)
+      );
+    });
+
+    it('creates the per-PDF invoice as usual without touching the registry when the flag is shadow', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, registry, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'shadow' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({
+        data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+      expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+      expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
+    });
+  });
+
   describe('conversation resend', () => {
     const wid = 'b'.repeat(32);
 
@@ -1856,6 +1946,7 @@ describe('create_invoice', () => {
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
       registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
 
       await processor({
         data: [{
@@ -1867,12 +1958,46 @@ describe('create_invoice', () => {
 
       expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
       expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
-      expect(workday.getSupplierInvoiceEditability).not.toHaveBeenCalled();
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
         'success',
         expect.any(Number),
         expect.objectContaining({ skipped: true, invoiceNumber: 'SUPIN-1' }),
+      );
+    });
+
+    it.each([
+      ['canceled', { found: true, editable: false, status: 'Canceled', isCanceled: true }],
+      ['deleted from Workday', { found: false, editable: false }],
+    ])('creates a new invoice when the registered invoice was %s, even with nothing newer', async (_label, editability) => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue(editability);
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(createArgs.buildNotes([])).toContain('Replaces canceled invoice SUPIN-1 from the same conversation.');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ workdayInvoiceWid: 'new-invoice-wid', workdayInvoiceNumber: 'SUPIN-412727' })
+      );
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ invoiceNumber: 'SUPIN-412727', replacesCanceledInvoice: 'SUPIN-1' }),
       );
     });
 
@@ -1971,8 +2096,62 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({
           skipped: true,
+          needsManualReview: true,
           skipReason: expect.stringContaining('manual review'),
         }),
+      );
+    });
+
+    it('updates instead of duplicating when supplier resolution moves from default to real', async () => {
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ supplierWid: null }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/w9.pdf', 'w9.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].supplierWID).toBe('supplier-wid-1');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ supplierWid: 'supplier-wid-1' })
+      );
+    });
+
+    it('keeps the registered real supplier when a resend only resolves to the default supplier', async () => {
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        supplier: { ...baseEnrichmentResult.supplier, status: 'not_found', resolvedSupplier: null },
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].supplierWID).toBe('supplier-wid-1');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ supplierWid: 'supplier-wid-1' })
       );
     });
 

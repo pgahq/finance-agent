@@ -672,6 +672,21 @@ describe('Workday utilities', () => {
       expect(result.editable).toBe(false);
     });
 
+    it('fails closed when paid/canceled flags come back as strings or are missing', async () => {
+      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft', isCanceled: '0', invoiceIsPaid: '1', invoiceIsPartiallyPaid: '0' }]);
+      const paid = await getSupplierInvoiceEditability(mockContext, wid);
+      expect(paid.editable).toBe(false);
+      expect(paid.isPaid).toBe(true);
+
+      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft' }]);
+      const unknown = await getSupplierInvoiceEditability(mockContext, wid);
+      expect(unknown.editable).toBe(false);
+
+      mockWqlRows([{ workdayID: wid, invoiceStatusAsText: 'Draft', isCanceled: 'false', invoiceIsPaid: '0', invoiceIsPartiallyPaid: 0 }]);
+      const draft = await getSupplierInvoiceEditability(mockContext, wid);
+      expect(draft.editable).toBe(true);
+    });
+
     it('reports not found when Workday has no such invoice', async () => {
       mockWqlRows([]);
 

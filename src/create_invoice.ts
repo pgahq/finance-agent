@@ -29,6 +29,7 @@ import {
 import {
   getConversationSupplierInvoice,
   upsertConversationSupplierInvoice,
+  type ConversationSupplierInvoice,
 } from './lib/conversation_invoices.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
@@ -145,6 +146,7 @@ export interface CreateInvoiceRequest {
   contentType?: string;
   attachments?: CreateInvoiceAttachment[];
   clustered?: boolean;
+  shadow?: boolean;
   emailContext?: InvoiceData['emailContext'];
   conversationId?: string;
   intercomAppId?: string;
@@ -206,7 +208,47 @@ async function fanOutCluster(
   }));
 }
 
+async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+  const startTime = Date.now();
+  const attachments = request.attachments ?? [];
+  const details = { mode: 'shadow', attachments: requestFilenames(request) };
+  try {
+    const { clustering } = await parseAndClusterInvoiceAttachments(
+      attachments,
+      (key) => getBinaryFromS3(context.s3Config, key)
+    );
+    const describe = (file: ClassifiedAttachment) =>
+      `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
+    await notifyResult('create_invoice_shadow', 'success', Date.now() - startTime, slackInvoiceDetails({
+      ...details,
+      wouldCreateInvoices: clustering.clusters.length,
+      clusters: clustering.clusters.map((cluster) => ({
+        invoice: describe(cluster.primary),
+        ...(cluster.supporting.length ? { supporting: cluster.supporting.map(describe) } : {}),
+        ...(cluster.fallback ? { fallback: true } : {}),
+      })),
+      ...(clustering.unrelated.length ? { unrelated: clustering.unrelated.map(describe) } : {}),
+      note: 'Shadow mode: invoices were created one per PDF as usual; nothing was written from this plan.',
+    }, request.conversationId, request.intercomAppId));
+  } catch (error) {
+    debug('Shadow attachment clustering failed:', error);
+    await notifyResult(
+      'create_invoice_shadow',
+      'error',
+      Date.now() - startTime,
+      slackInvoiceDetails(details, request.conversationId, request.intercomAppId),
+      error
+    );
+    throw error;
+  }
+}
+
 async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+  if (request.shadow) {
+    // A shadow record never writes to Workday or the registry, whatever this container's flag says.
+    await reportShadowClustering(context, request);
+    return;
+  }
   const startTime = Date.now();
   const {
     s3Key,
@@ -310,7 +352,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         assigneeEmail: attachment.assigneeEmail ?? assigneeEmail,
         conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
         conversationPdf,
-        startTime,
+        startTime: Date.now(),
         clustered: false,
       });
     }
@@ -701,12 +743,35 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     // so the newest message counts as new information alongside the newest document.
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
 
+    // The default supplier means "not resolved", not a different supplier: a resend often moves
+    // resolution between default and real (for example once a W-9 arrives), which must still update.
+    const isRealSupplier = (wid?: string | null): wid is string => Boolean(wid) && wid !== DEFAULT_SUPPLIER_WID;
+    const resolvedSupplierWID = isRealSupplier(result.supplier.resolvedSupplier?.workdayId)
+      ? result.supplier.resolvedSupplier.workdayId
+      : undefined;
+    let replacedInvoice: ConversationSupplierInvoice | undefined;
+
     if (clusteringEnabled && conversationId && registryNumber) {
       const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
+      const registeredSupplierWID = isRealSupplier(existing?.supplierWid) ? existing.supplierWid : undefined;
       const supplierChanged = Boolean(
-        existing?.supplierWid && targetSupplierWID && existing.supplierWid !== targetSupplierWID
+        registeredSupplierWID && resolvedSupplierWID && registeredSupplierWID !== resolvedSupplierWID
       );
-      if (existing && !supplierChanged) {
+      const editability = existing && !supplierChanged
+        ? await getSupplierInvoiceEditability(context, existing.workdayInvoiceWid)
+        : undefined;
+      // AP canceled (or deleted) the registered invoice, so a new trigger creates a fresh one.
+      const registeredInvoiceWasRemoved = Boolean(
+        editability && (!editability.found || editability.isCanceled || editability.status === 'Canceled')
+      );
+      if (existing && registeredInvoiceWasRemoved) {
+        replacedInvoice = existing;
+        debug('Registered invoice is canceled or gone; creating a new supplier invoice', {
+          conversationId,
+          replacedInvoice: existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid,
+        });
+      }
+      if (existing && editability && !registeredInvoiceWasRemoved) {
         const hasNewerInformation =
           clusterReceivedAt == null ||
           existing.lastProcessedReceivedAt == null ||
@@ -727,13 +792,10 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           }, conversationId, intercomAppId));
           return;
         }
-        const editability = await getSupplierInvoiceEditability(context, existing.workdayInvoiceWid);
         if (!editability.editable) {
           const processingTime = Date.now() - startTime;
           const invoiceLabel = existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid;
-          const reason = !editability.found
-            ? `Invoice ${invoiceLabel} is no longer in Workday; re-sent documents need manual review.`
-            : `Invoice ${invoiceLabel} is ${editability.status ?? 'not editable'}${editability.isPaid ? ' (paid)' : ''}${editability.isPartiallyPaid ? ' (partially paid)' : ''}${editability.isCanceled ? ' (canceled)' : ''}; re-sent documents need manual review.`;
+          const reason = `Invoice ${invoiceLabel} is ${editability.status ?? 'not editable'}${editability.isPaid ? ' (paid)' : ''}${editability.isPartiallyPaid ? ' (partially paid)' : ''}; re-sent documents need manual review.`;
           debug('Skipping resend update: invoice is not editable', {
             conversationId,
             invoiceLabel,
@@ -744,6 +806,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             invoiceWID: existing.workdayInvoiceWid,
             invoiceNumber: existing.workdayInvoiceNumber,
             skipped: true,
+            needsManualReview: true,
             skipReason: reason,
           }, conversationId, intercomAppId));
           return;
@@ -760,7 +823,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: targetSupplierWID,
+          supplierWID: resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
@@ -783,7 +846,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: targetSupplierWID ?? existing.supplierWid,
+            supplierWid: resolvedSupplierWID ?? registeredSupplierWID ?? null,
             workdayInvoiceWid: existing.workdayInvoiceWid,
             workdayInvoiceNumber: existing.workdayInvoiceNumber,
             lastProcessedReceivedAt: clusterReceivedAt ?? existing.lastProcessedReceivedAt,
@@ -807,11 +870,17 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       }
     }
 
+    const replacedInvoiceLabel = replacedInvoice
+      ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
+      : undefined;
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
       companyReferenceType,
-      buildNotes,
+      buildNotes: replacedInvoiceLabel
+        ? (appliedFallbacks: AppliedFallback[]) =>
+          `${buildNotes(appliedFallbacks)}\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.`
+        : buildNotes,
       memo,
       invoiceDate: extractedInvoiceDate,
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
@@ -840,7 +909,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: targetSupplierWID ?? null,
+            supplierWid: resolvedSupplierWID ?? null,
             workdayInvoiceWid: createOutcome.invoiceWID,
             workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
             lastProcessedReceivedAt: clusterReceivedAt ?? null,
@@ -856,6 +925,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       ...sharedSlackDetails,
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
+      ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,

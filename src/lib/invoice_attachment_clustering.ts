@@ -12,12 +12,12 @@ import { sanitizeSuppliersInvoiceNumber } from './invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './purchase_order.js';
 
 export type { InvoiceAttachmentKind, SupportingDocumentKind };
-
-export const INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR = 'INVOICE_ATTACHMENT_CLUSTERING_ENABLED';
-
-export function isInvoiceAttachmentClusteringEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR] === 'true';
-}
+export {
+  INVOICE_ATTACHMENT_CLUSTERING_ENV_VAR,
+  invoiceAttachmentClusteringMode,
+  isInvoiceAttachmentClusteringEnabled,
+  type InvoiceAttachmentClusteringMode,
+} from './invoice_attachment_clustering_flag.js';
 
 export interface ClusterableAttachment {
   s3Key: string;
@@ -155,11 +155,12 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
 
   if (invoices.length === 0) {
     if (classified.length === 0) return { clusters: [], unrelated: [] };
+    // Confidence is confidence in the kind, so a confident "unrelated" file must not outrank a supporting one.
     const ranked = [...classified].sort((a, b) => {
-      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
       const aSupporting = a.kind === 'supporting' ? 0 : 1;
       const bSupporting = b.kind === 'supporting' ? 0 : 1;
-      return aSupporting - bSupporting;
+      if (aSupporting !== bSupporting) return aSupporting - bSupporting;
+      return b.confidence - a.confidence;
     });
     const [primary, ...rest] = ranked;
     return {

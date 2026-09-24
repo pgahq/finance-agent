@@ -165,9 +165,38 @@ describe('notifyResult', () => {
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend for `SUPIN-412727`');
+    expect(texts).not.toContain('created `SUPIN-412727`');
     expect(texts).toContain('*Skipped*');
     expect(texts).toContain('No documents newer than the last processing of SUPIN-412727.');
     expect(texts).toContain('"skipped": true');
+  });
+
+  it('flags resends that need manual review in the headline instead of saying created', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      skipped: true,
+      needsManualReview: true,
+      skipReason: 'Invoice SUPIN-412727 is Approved (paid); re-sent documents need manual review.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('needs manual review for `SUPIN-412727`');
+    expect(texts).not.toContain('created `SUPIN-412727`');
+    expect(texts).toContain('re-sent documents need manual review.');
+  });
+
+  it('names the canceled invoice a new create replaces', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412728',
+      replacesCanceledInvoice: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412728`');
+    expect(texts).toContain('"replacesCanceledInvoice": "SUPIN-412727"');
   });
 
   it('surfaces registry sync failures on create success', async () => {

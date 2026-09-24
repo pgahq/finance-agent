@@ -20,6 +20,27 @@ is exactly `true`. That env var resolves at runtime from SSM
 or off without a release. A missing parameter leaves it off. Enrich-invoice is
 unchanged.
 
+## Modes (`invoiceAttachmentClusteringMode`)
+
+| SSM value | Mode | Behavior |
+| --- | --- | --- |
+| `true` | `on` | Everything below: cluster, one invoice per cluster, resend dedupe. |
+| `shadow` | `shadow` | Invoices are created one per PDF exactly as when off. The trigger also sends one extra grouped invoke with `shadow: true`; the processor classifies and clusters it and posts a `create_invoice_shadow` Slack message with the plan (would-create count, each cluster's invoice and supporting files, unrelated files). |
+| anything else or missing | `off` | One invoice per PDF. |
+
+Shadow exists to prove the classifier on real traffic with no write risk:
+
+- A `shadow: true` record never enriches, never writes to Workday or the
+  registry, and never fans out. The processor keys off the record, not its own
+  flag, so containers with a different cached flag value still stay read-only.
+- The trigger sends the per-PDF invokes first; a failed shadow invoke is only
+  logged and never fails the 202.
+- A shadow classification failure Slacks as `create_invoice_shadow` error and
+  throws; the per-PDF invoices run in their own invocations and are unaffected.
+- Shadow does not read or write the registry, so it reports clustering only,
+  not resend decisions (the registry is only populated in `on`).
+- Cost: one extra classification LLM call per triggered conversation.
+
 ## Flow
 
 1. `TriggerCreateInvoice` (30s timeout) downloads, uploads to S3, and — when
@@ -73,9 +94,11 @@ so a dropped classification never creates an extra supplier invoice.
   cluster it attaches there. With several clusters and no key match it falls
   back to the first candidate cluster.
 - `unrelated` stays off invoice clusters and is listed in Slack. When no
-  `supplier_invoice` exists, fall back to **one** cluster from the
-  highest-confidence file (supporting preferred on ties) and attach the rest —
-  never drop the conversation.
+  `supplier_invoice` exists, fall back to **one** cluster whose primary is a
+  supporting file when there is one (highest confidence among those), else the
+  most confident file, and attach the rest — never drop the conversation.
+  Confidence is confidence in the kind, so a confidently `unrelated` file never
+  outranks a supporting one.
 - Parser throw: Slack-then-throw like other processor failures. Async retries
   stay off (`MaximumRetryAttempts: 0`).
 
@@ -86,9 +109,15 @@ missing documents. The processor keeps a Postgres registry
 (`conversation_supplier_invoices`, keyed by conversation plus normalized
 supplier invoice number) so a resend never creates a second supplier invoice:
 
-- Registry miss (or same number resolving to a **different** supplier):
+- Registry miss (or same number resolving to a **different** real supplier):
   create as usual, then upsert the registry row with the Workday WID/number,
-  supplier WID, and the cluster's max `receivedAt` watermark.
+  the resolved supplier WID, and the cluster's max `receivedAt` watermark.
+- The configured default supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) means
+  "not resolved", never "a different supplier". The registry stores only a
+  real resolved supplier (null otherwise), and a supplier change counts only
+  when both the registered and the newly resolved supplier are real and differ.
+  A resend that moves resolution between default and real (for example once a
+  W-9 arrives) updates the existing invoice, keeping the real supplier.
 - The watermark is the newest of the cluster's `receivedAt` values and the
   conversation's `latestMessageAt` (newest source/part with a body or
   attachment; body-less assignments and custom actions do not count). A
@@ -96,20 +125,32 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   with no new PDF, so a newer message alone is enough to reprocess. Because
   `latestMessageAt` is conversation-level, a new message reprocesses every
   registered invoice in that conversation.
+- On every registry hit (same real supplier or unresolved), check the
+  registered invoice's status via WQL (`getSupplierInvoiceEditability`) first.
+  If AP **canceled** it or it is **no longer in Workday**, the new trigger
+  creates a fresh supplier invoice (regardless of the watermark), repoints the
+  registry row at it, and notes "Replaces canceled invoice X" in the work
+  queue notes and Slack (`replacesCanceledInvoice`).
 - Registry hit with **no documents or messages newer** than the watermark:
-  skip with a Slack `*Skipped*` note. No Workday write.
-- Registry hit with newer documents: check editability via WQL
-  (`getSupplierInvoiceEditability`, same guards as enrich: Draft, not
-  canceled, not paid/partially paid). Editable → `submitSupplierInvoiceUpdate`
+  skip with a Slack `*Skipped*` note and a "skipped resend" headline (never
+  "created"). No Workday write.
+- Registry hit with newer documents: editability uses the same guards as
+  enrich (Draft, not canceled, not paid/partially paid). Only explicit false
+  values (`false`, `'false'`, `0`, `'0'`) count as not canceled or paid;
+  missing or unexpected encodings fail closed as not editable, so an
+  unrecognized canceled value goes to manual review rather than creating a
+  duplicate. Editable → `submitSupplierInvoiceUpdate`
   with the latest cluster (lines, memo, company; assignee is left untouched)
   and bump the watermark. Each `Submit_Supplier_Invoice` call sets the
   invoice's full `Attachment_Data` — anything left out is dropped — so the
   update resends every cluster PDF (latest invoice version first) plus a fresh
   conversation transcript that records the back-and-forth with the supplier.
   Never send only the new files on an update. Work queue notes and Slack
-  (`newAttachments`) name the files received since the last processing. Not editable or missing in Workday →
-  skip with a `*Skipped*` note naming manual review. Status-check errors fail
-  closed (Slack error, throw).
+  (`newAttachments`) name the files received since the last processing. Not
+  editable for another reason (approved, paid, partially paid, unknown state)
+  → skip with a `*Skipped*` note naming manual review,
+  `needsManualReview: true`, and a "needs manual review" headline.
+  Status-check errors fail closed (Slack error, throw).
 - No extracted invoice number: the registry cannot key the invoice, so always
   create (current behavior).
 - Registry writes never fail the invoice: a failed upsert after a successful
@@ -120,7 +161,7 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 ## Flag discipline
 
 - The toggle is a plain String SSM parameter created by hand in each account
-  (`true` to enable). Do not add it to `template.yml` as an
+  (`true` to enable, `shadow` for report-only). Do not add it to `template.yml` as an
   `AWS::SSM::Parameter` or pass it through CircleCI; a template-owned value
   would be reset by deploys. `@pga/lambda-env` resolves every `ssm:` env value
   in one `GetParameters` call (AWS limit: 10 names), so keep Global plus
@@ -131,8 +172,11 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   with the flag off handles the clustered `attachments` payload one PDF at a
   time.
 - Read `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` inside the handler after
-  `loadEnv()`, via `isInvoiceAttachmentClusteringEnabled` — never as a
-  module-level constant.
+  `loadEnv()`, via `invoiceAttachmentClusteringMode` or
+  `isInvoiceAttachmentClusteringEnabled` (true only for `on`) — never as a
+  module-level constant or an inline string compare. The helper lives in
+  `src/lib/invoice_attachment_clustering_flag.ts` so the trigger can use it
+  without importing the AI/RAG clustering module.
 - Gate the whole path: trigger invoke shape, parse/cluster/fan-out,
   multi-file `Attachment_Data`, Slack cluster details, and tests for both
   states. The legacy single-`s3Key` request shape keeps working as a one-file

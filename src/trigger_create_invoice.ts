@@ -16,6 +16,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   type IntercomAttachment,
 } from './lib/intercom.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 
 interface TriggerCreateInvoiceRequest {
   conversationId?: string;
@@ -190,7 +191,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         ? { conversationCreatedAt: conversationData.conversationCreatedAt }
         : {}),
     };
-    const clusteringEnabled = process.env.INVOICE_ATTACHMENT_CLUSTERING_ENABLED === 'true';
+    const clusteringMode = invoiceAttachmentClusteringMode();
     const ingested = await ingestCreateInvoiceAttachments(
       process.env,
       attachments.map((attachment, index) => ({
@@ -211,8 +212,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         buffer: transcriptBuffer,
         payloadField: 'conversationPdf',
       },
-      clusteringEnabled
+      clusteringMode !== 'off'
         ? {
+          shadow: clusteringMode === 'shadow',
           sharedFields: {
             conversationId,
             ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),

@@ -88,10 +88,6 @@ export const CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE = `
   );
 `;
 
-export const CREATE_CONVERSATION_SUPPLIER_INVOICES_INDEXES = [
-  `CREATE INDEX IF NOT EXISTS idx_conversation_supplier_invoices_lookup ON conversation_supplier_invoices(conversation_id, supplier_invoice_number);`,
-];
-
 export async function migrateDocumentsTypeCheck(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
 ): Promise<void> {
@@ -201,11 +197,8 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
 
-      // Conversation invoice registry (create-invoice resend dedupe)
+      // Conversation invoice registry (create-invoice resend dedupe); its UNIQUE key is the lookup index
       await pool.query(CREATE_CONVERSATION_SUPPLIER_INVOICES_TABLE);
-      for (const indexSql of CREATE_CONVERSATION_SUPPLIER_INVOICES_INDEXES) {
-        await pool.query(indexSql);
-      }
 
       const migrationClient = await pool.connect();
       try {

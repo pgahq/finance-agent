@@ -1889,13 +1889,19 @@ export async function getSupplierInvoiceEditability(
   );
   const row = (result.data as Array<Record<string, unknown>> | undefined)?.[0];
   if (!row) return { found: false, editable: false };
+  // Only an explicit false counts as "not canceled/paid"; missing or unexpected encodings fail closed.
+  const isExplicitlyFalse = (value: unknown) => value === false || value === 'false' || value === 0 || value === '0';
+  const isTrue = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1';
   const status = typeof row.invoiceStatusAsText === 'string' ? row.invoiceStatusAsText : undefined;
-  const isCanceled = row.isCanceled === true;
-  const isPaid = row.invoiceIsPaid === true;
-  const isPartiallyPaid = row.invoiceIsPartiallyPaid === true;
+  const isCanceled = isTrue(row.isCanceled);
+  const isPaid = isTrue(row.invoiceIsPaid);
+  const isPartiallyPaid = isTrue(row.invoiceIsPartiallyPaid);
   return {
     found: true,
-    editable: status === 'Draft' && !isCanceled && !isPaid && !isPartiallyPaid,
+    editable: status === 'Draft'
+      && isExplicitlyFalse(row.isCanceled)
+      && isExplicitlyFalse(row.invoiceIsPaid)
+      && isExplicitlyFalse(row.invoiceIsPartiallyPaid),
     ...(status ? { status } : {}),
     isCanceled,
     isPaid,

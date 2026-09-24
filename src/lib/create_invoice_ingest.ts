@@ -14,9 +14,14 @@ export interface CreateInvoiceIngestAttachment {
   processorFields?: Record<string, string | number>;
 }
 
-/** Send every attachment to CreateInvoiceProcessor in one record so it can classify and cluster them. */
+/**
+ * Send every attachment to CreateInvoiceProcessor in one record so it can classify and cluster them.
+ * With `shadow`, the per-attachment invokes still run first and the grouped record is a best-effort,
+ * report-only extra marked `shadow: true`.
+ */
 export interface CreateInvoiceGroupedInvoke {
   sharedFields: Record<string, string | number>;
+  shadow?: boolean;
 }
 
 export interface CreateInvoiceSharedFile {
@@ -80,16 +85,23 @@ export async function ingestCreateInvoiceAttachments(
   const processorFunctionName = `${env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
   const lambda = new LambdaClient({ region: env.AWS_REGION });
 
-  if (groupedInvoke) {
-    await lambda.send(new InvokeCommand({
-      FunctionName: processorFunctionName,
-      InvocationType: 'Event',
-      Payload: JSON.stringify({
-        data: [{ ...groupedInvoke.sharedFields, ...sharedPayload, attachments: uploadedAttachments }],
-        page: 1,
-        totalPages: 1,
-      }),
-    }));
+  const sendGroupedInvoke = (grouped: CreateInvoiceGroupedInvoke) => lambda.send(new InvokeCommand({
+    FunctionName: processorFunctionName,
+    InvocationType: 'Event',
+    Payload: JSON.stringify({
+      data: [{
+        ...grouped.sharedFields,
+        ...sharedPayload,
+        attachments: uploadedAttachments,
+        ...(grouped.shadow ? { shadow: true } : {}),
+      }],
+      page: 1,
+      totalPages: 1,
+    }),
+  }));
+
+  if (groupedInvoke && !groupedInvoke.shadow) {
+    await sendGroupedInvoke(groupedInvoke);
   } else {
     await Promise.all(processorRecords.map((attachment) =>
       lambda.send(new InvokeCommand({
@@ -102,6 +114,14 @@ export async function ingestCreateInvoiceAttachments(
         }),
       }))
     ));
+    // Shadow reporting is best-effort and must never block the real per-attachment invoices above.
+    if (groupedInvoke?.shadow) {
+      try {
+        await sendGroupedInvoke(groupedInvoke);
+      } catch (error) {
+        debug('Failed to invoke shadow attachment clustering', { error, ...s3Metadata });
+      }
+    }
   }
 
   return {
