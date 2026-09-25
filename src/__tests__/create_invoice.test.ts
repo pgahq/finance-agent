@@ -1113,8 +1113,9 @@ describe('create_invoice', () => {
     }));
 
     const closedNote = 'PO PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
-    expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
-      .toContain(closedNote);
+    const closedNotes = submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
+    expect(closedNotes).toContain(closedNote);
+    expect(closedNotes).not.toContain('omitted PO line reference');
     expect(submitArgs.buildNotes([])).not.toContain('Closed or Pending Close');
     expect(slack.notifyResult.mock.calls[0][3].appliedFallbacks).toEqual([closedNote]);
   });

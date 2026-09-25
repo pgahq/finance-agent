@@ -454,11 +454,8 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
 }
 
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {
-  const validationText = asValidationText(text);
-  return (
-    /PO that is Closed or Pending Close/i.test(validationText)
-    || /Invoice_Line_Replacement_Data\[\d+\]\/(?:\w+:)?Purchase_Order_Line_Reference/i.test(validationText)
-  );
+  // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
+  return /PO that is Closed or Pending Close/i.test(asValidationText(text));
 }
 
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
