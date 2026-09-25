@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -527,10 +527,12 @@ interface buildSubmitInvoiceDataOptions {
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
   omitPurchaseOrderLineReference?: boolean;
+  conversationUrl?: string;
+  omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
@@ -600,6 +602,9 @@ function createReference(type: string, value: string): { ID: Array<{ $attributes
 
 export const USA_TAXABLE_APPLICABILITY_ID = 'TAX_APPLICABILITY-3-2';
 
+// Supplier invoice Additional Field labeled "Zendesk URL"; holds the Intercom conversation URL.
+export const ZENDESK_URL_ATTRIBUTE_ID = 'Configurable Text Attribute 01';
+
 function soapAmount(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
   if (typeof value === 'string') return parseExtractedAmount(value);
@@ -630,6 +635,10 @@ function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoi
     buildSubmitInvoiceData({ ...options, omitPurchaseOrderLineReference: false }).Invoice_Line_Replacement_Data ?? []
   );
   return lines.some((line: any) => line.Purchase_Order_Line_Reference);
+}
+
+function submittedConversationUrlField(options: buildSubmitInvoiceDataOptions): boolean {
+  return Boolean(options.conversationUrl && !options.omitConversationUrlField);
 }
 
 function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
@@ -705,6 +714,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
     fallbacks.push({ field: 'purchaseOrderLine', label: OMITTED_PO_LINE_REFERENCE_LABEL });
+  }
+
+  if (options.omitConversationUrlField) {
+    fallbacks.push({ field: 'conversationUrl', label: 'omitted Intercom URL field' });
   }
 
   return fallbacks;
@@ -879,6 +892,11 @@ async function getValidationFallbackField(
     return 'taxApplicability';
   }
 
+  if (submittedConversationUrlField(options) && isConfigurableAttributeValidationError(validationText)) {
+    debug('Validation references configurable attributes; retrying without Additional_Fields_Data_Reference');
+    return 'conversationUrl';
+  }
+
   if (isQuantityUnitExtendedMismatchError(validationText)) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
       debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
@@ -1048,6 +1066,13 @@ function getFallbackRetryBuildOptions(
     return {
       buildOptions: { ...options, omitPurchaseOrderLineReference: true },
       fallbackLabel: OMITTED_PO_LINE_REFERENCE_LABEL,
+    };
+  }
+
+  if (field === 'conversationUrl' && submittedConversationUrlField(options)) {
+    return {
+      buildOptions: { ...options, omitConversationUrlField: true },
+      fallbackLabel: 'omitted Intercom URL field',
     };
   }
 
@@ -1324,6 +1349,13 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     // and sending this block causes Workday to validate Ledger_Currency against the company
     // setup, which fails for placeholder companies like Default_OCR_Company.
     ...(currentInvoice.Currency_Rate_Data?.Rate_Override === true && { Currency_Rate_Data: currentInvoice.Currency_Rate_Data }),
+
+    ...(submittedConversationUrlField(options) && {
+      Additional_Fields_Data_Reference: [{
+        Configurable_Attribute_Reference: createReference('Configurable_Attribute_ID', ZENDESK_URL_ATTRIBUTE_ID),
+        Attribute_Value: options.conversationUrl,
+      }],
+    }),
 
     ...(attachments?.length ? {
       Attachment_Data: attachments.map((file) => ({
@@ -2145,6 +2177,7 @@ export interface SubmitNewSupplierInvoiceParams {
   attachments: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
   omitPurchaseOrderLineReference?: boolean;
+  conversationUrl?: string;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -2171,6 +2204,7 @@ export async function submitNewSupplierInvoice(
     attachments,
     assigneeWID,
     omitPurchaseOrderLineReference,
+    conversationUrl,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -2220,6 +2254,7 @@ export async function submitNewSupplierInvoice(
       attachments,
       assigneeWID,
       omitPurchaseOrderLineReference,
+      conversationUrl,
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',

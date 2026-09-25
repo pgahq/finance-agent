@@ -134,14 +134,18 @@ export interface CreateInvoiceRequest {
   };
 }
 
+function intercomConversationUrl(conversationId?: string, intercomAppId?: string): string | undefined {
+  return conversationId
+    ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID || intercomAppId)
+    : undefined;
+}
+
 function slackInvoiceDetails(
   details: Record<string, unknown>,
   conversationId?: string,
   intercomAppId?: string
 ): Record<string, unknown> {
-  const conversationUrl = conversationId
-    ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID || intercomAppId)
-    : undefined;
+  const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
   return {
     ...details,
     ...(conversationId ? { conversationId } : {}),
@@ -460,6 +464,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     };
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
+    const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
 
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
@@ -493,6 +498,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       ],
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
       ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(conversationUrl ? { conversationUrl } : {}),
     });
 
     const processingTime = Date.now() - startTime;

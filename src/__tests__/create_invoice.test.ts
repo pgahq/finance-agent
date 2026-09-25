@@ -884,6 +884,21 @@ describe('create_invoice', () => {
         ],
       })
     );
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.conversationUrl).toBe('https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890');
+    expect(submitArgs.conversationUrl).toBe(slack.notifyResult.mock.calls[0][3].conversationUrl);
+  });
+
+  it('does not pass a conversation URL to Workday without a conversationId', async () => {
+    process.env.INTERCOM_APP_ID = 'c722leqk';
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({ data: [attachmentRequest('new-invoices/req-no-conv/invoice.pdf')] } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs).not.toHaveProperty('conversationUrl');
   });
 
   it('forwards conversationCreatedAt as invoiceReceivedDate to Workday submit', async () => {
