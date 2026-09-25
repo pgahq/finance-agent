@@ -345,7 +345,7 @@ describe('notifyEnrichmentResult', () => {
   });
 
   it('lists the closed-PO line note under Fallbacks Applied', async () => {
-    const closedNote = 'PO PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    const closedNote = 'PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
     await notifyEnrichmentResult({
       processingTime: 1500,
       invoiceNumber: 'INV-1',
