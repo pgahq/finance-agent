@@ -324,6 +324,21 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
   });
 
+  it('lists the closed-PO line note under Fallbacks Applied', async () => {
+    const closedNote = 'PO PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: { purchaseOrderNumber: 'PO-413898' },
+      fallbacks: { defaultSupplier: false, closedPurchaseOrderLines: closedNote },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(`*Fallbacks Applied*\n• ${closedNote}`);
+  });
+
   it('omits the Workday invoice number when Invoice_Number is missing', async () => {
     await notifyEnrichmentResult({
       processingTime: 1500,
