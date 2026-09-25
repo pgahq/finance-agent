@@ -2,6 +2,13 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { getDatabaseConnection } from './database.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
+import {
+  extractSupplierNoteHints,
+  formatSupplierNoteHintContext,
+  hasSupplierNoteHints,
+  resolveSupplierIdHints,
+  type ResolvedSupplierHint,
+} from './supplier_note_hints.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { withComposedLineDescriptions } from './invoice_lines.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
@@ -36,6 +43,30 @@ function attachmentContentParts(processedAttachments: PresignedAttachment[]): Ar
   }
 
   return parts;
+}
+
+async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
+  const hints = extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody);
+  if (!hasSupplierNoteHints(hints)) return '';
+
+  let resolved: ResolvedSupplierHint[] | undefined = [];
+  if (hints.supplierIds.length > 0) {
+    try {
+      const db = await getDatabaseConnection(process.env);
+      resolved = await resolveSupplierIdHints(db, hints.supplierIds);
+    } catch (error) {
+      debug('Failed to resolve supplier ID hints from email context:', error);
+      resolved = undefined;
+    }
+  }
+  const trustedSupplierIds = extractSupplierNoteHints(emailContext?.conversationParts).supplierIds;
+  debug('Supplier hints from email context', {
+    supplierIds: hints.supplierIds,
+    trustedSupplierIds,
+    supplierNames: hints.supplierNames,
+    resolvedWorkdayIds: resolved?.map((hint) => hint.workdayId),
+  });
+  return formatSupplierNoteHintContext(hints, resolved, trustedSupplierIds);
 }
 
 export async function enrichInvoiceFromAttachments(
@@ -88,6 +119,7 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
+    const supplierHintText = await buildSupplierHintText(emailContext);
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`
@@ -124,7 +156,7 @@ export async function enrichInvoiceFromAttachments(
           content: [
             {
               type: 'text',
-              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${purchaseOrderText}`
+              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${emailContextText}${supplierHintText}${purchaseOrderText}`
             },
             ...attachmentContentParts(processedAttachments)
           ]
