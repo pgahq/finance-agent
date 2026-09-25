@@ -453,6 +453,14 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+export function isClosedPurchaseOrderLineError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return (
+    /PO that is Closed or Pending Close/i.test(validationText)
+    || /Invoice_Line_Replacement_Data\[\d+\]\/(?:\w+:)?Purchase_Order_Line_Reference/i.test(validationText)
+  );
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

@@ -53,7 +53,7 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { loadPurchaseOrder, submitNewSupplierInvoice, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
+import { closedPurchaseOrderLineNote, isPurchaseOrderClosedForInvoicing, loadPurchaseOrder, OMITTED_PO_LINE_REFERENCE_LABEL, submitNewSupplierInvoice, type AppliedFallback, type ParsedPurchaseOrder } from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(
   purchaseOrder: ParsedPurchaseOrder
@@ -303,6 +303,10 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
     const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    if (poClosedForInvoicing) {
+      debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+    }
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -448,6 +452,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
+        + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
+          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+          : '')
         + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -484,6 +491,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         }] : []),
       ],
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
+      ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
     });
 
     const processingTime = Date.now() - startTime;
@@ -545,7 +553,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
+      appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
+        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber) : f.label
+      ),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
     }, conversationId, intercomAppId));
   } catch (error) {

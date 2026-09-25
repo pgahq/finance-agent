@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -2906,6 +2906,133 @@ describe('Workday utilities', () => {
         });
       });
 
+      describe('closed PO line references', () => {
+        const closedPoFault = {
+          Validation_Fault: {
+            Validation_Error: {
+              Message: 'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Purchase_Order_Line_Reference[1]'
+            }
+          }
+        };
+        const poCodedLine = {
+          lineOrder: 1,
+          description: 'Consulting Services',
+          quantity: 1,
+          unitCost: 500,
+          extendedAmount: 500,
+          purchaseOrderLineId: 'POL-001',
+          fundId: 'FUND-PO',
+          costCenterId: 'CC-PO',
+          spendCategoryId: 'SC-PO',
+          supplierInvoiceSplitLineData: [
+            { extendedAmount: 300, worktagReference: [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-A' }] }] },
+            { extendedAmount: 200, worktagReference: [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-B' }] }] },
+          ],
+        };
+
+        it('drops Purchase_Order_Line_Reference but keeps splits and spend category when omitPurchaseOrderLineReference is set', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          expect(line.Spend_Category_Reference).toEqual({ ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-PO' }] });
+          expect(result.appliedFallbacks).toEqual(
+            expect.arrayContaining([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }])
+          );
+        });
+
+        it('keeps worktags on unsplit PO-coded lines when omitting the PO line reference', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, supplierInvoiceSplitLineData: undefined }],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          const worktagValues = line.Worktags_Reference.flatMap((tag: any) =>
+            tag.ID.map((id: any) => `${id.$attributes.type}:${id.$value}`)
+          );
+          expect(worktagValues).toEqual(expect.arrayContaining(['Fund_ID:FUND-PO', 'Cost_Center_Reference_ID:CC-PO']));
+        });
+
+        it('does not report the omit fallback when no line carried a PO line reference', async () => {
+          setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, purchaseOrderLineId: null }],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          expect(result.appliedFallbacks.some(f => f.field === 'purchaseOrderLine')).toBe(false);
+        });
+
+        it('retries once without Purchase_Order_Line_Reference on the closed-PO fault', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback(closedPoFault, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            buildNotes: (fallbacks) => fallbacks.map(f => f.label).join('; '),
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          const [first, retry] = capturedRequests.map(r => r.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data);
+          expect(first.Invoice_Line_Replacement_Data[0].Purchase_Order_Line_Reference).toBeDefined();
+          expect(retry.Invoice_Line_Replacement_Data[0].Purchase_Order_Line_Reference).toBeUndefined();
+          expect(retry.Invoice_Line_Replacement_Data[0].Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          expect(retry.Invoice_Line_Replacement_Data[0].Spend_Category_Reference).toBeDefined();
+          expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }),
+          ]));
+          expect(result.priorFailures).toEqual([
+            { attempt: 1, message: 'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.' },
+          ]);
+        });
+
+        it('does not loop when the closed-PO fault repeats after omitting the reference', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback(closedPoFault, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+          })).rejects.toThrow('The Purchase Order Line referenced is from a PO that is Closed or Pending Close.');
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        });
+
+        it('does not retry the closed-PO fault when no line carries a PO line reference', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback(closedPoFault, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            omitPurchaseOrderLineReference: true,
+          })).rejects.toThrow('Closed or Pending Close');
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        });
+      });
+
       describe('line Tax_Applicability_Reference', () => {
         const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
@@ -5083,6 +5210,51 @@ describe('Workday utilities', () => {
           })
         ]
       });
+    });
+
+    const purchaseOrderWithStatus = (status?: Record<string, unknown>) => parsePurchaseOrder({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-414498',
+            ...(status ? { Purchase_Order_Document_Status_Reference: status } : {}),
+            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'POL-1', Description: 'Summit ENG' }
+          }
+        }
+      }
+    });
+
+    it.each([
+      ['Issued', 'ISSUED', false],
+      ['Closed', 'CLOSED', true],
+      ['Pending Close', 'PENDING_CLOSE', true],
+    ])('should parse %s document status', (descriptor, id, closed) => {
+      const parsed = purchaseOrderWithStatus({
+        descriptor,
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${id}` },
+          { $attributes: { type: 'Document_Status_ID' }, $value: id }
+        ]
+      });
+
+      expect(parsed?.documentStatus).toEqual({ id, descriptor });
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(closed);
+    });
+
+    it('should treat a closed descriptor as closed when the status ID is opaque', () => {
+      const parsed = purchaseOrderWithStatus({
+        $attributes: { Descriptor: 'Pending Close' },
+        ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'DOCUMENT_STATUS-6-7' }]
+      });
+
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(true);
+    });
+
+    it('should read a missing document status as open', () => {
+      const parsed = purchaseOrderWithStatus();
+
+      expect(parsed?.documentStatus).toBeUndefined();
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(false);
     });
 
     it('should return undefined when Document_Number is missing', () => {

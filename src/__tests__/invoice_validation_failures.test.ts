@@ -2,6 +2,7 @@ import {
   collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
   humanWorkdayValidationMessage,
+  isClosedPurchaseOrderLineError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isQuantityUnitExtendedMismatchError,
@@ -13,6 +14,21 @@ import {
 } from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
+  it('detects the closed or pending close PO line fault', () => {
+    expect(isClosedPurchaseOrderLineError(
+      'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.'
+    )).toBe(true);
+    expect(isClosedPurchaseOrderLineError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Validation error occurred.',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Purchase_Order_Line_Reference[1]'
+        }
+      }
+    })).toBe(true);
+    expect(isClosedPurchaseOrderLineError('Spend Category is required')).toBe(false);
+  });
+
   it('detects related-worktag faults that require Line of Business', () => {
     expect(isRequiredLineOfBusinessWorktagError(
       'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business'
