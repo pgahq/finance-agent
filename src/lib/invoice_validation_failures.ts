@@ -464,6 +464,15 @@ export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));
 }
 
+export function isConfigurableAttributeValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return (
+    /Additional_Fields_Data_Reference/i.test(validationText)
+    || /Configurable_Attribute/i.test(validationText)
+    || /configurable attribute/i.test(validationText)
+  );
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

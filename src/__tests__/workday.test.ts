@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -4391,6 +4391,95 @@ describe('Workday utilities', () => {
       expect(result.appliedFallbacks).toEqual(
         expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
       );
+    });
+
+    describe('Zendesk URL additional field', () => {
+      const conversationUrl = 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890';
+      const newInvoiceResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };
+
+      it('sets Additional_Fields_Data_Reference to the Intercom conversation URL', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ conversationUrl });
+
+        expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toEqual([{
+          Configurable_Attribute_Reference: { ID: [{ $attributes: { type: 'Configurable_Attribute_ID' }, $value: ZENDESK_URL_ATTRIBUTE_ID }] },
+          Attribute_Value: conversationUrl,
+        }]);
+        expect(result.appliedFallbacks).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: 'conversationUrl' })])
+        );
+      });
+
+      it('omits Additional_Fields_Data_Reference without a conversation URL', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+
+        await submitNewSupplierInvoiceForTest();
+
+        expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeUndefined();
+      });
+
+      it('retries once without the field when Workday rejects the configurable attribute', async () => {
+        const mockClient = mockSoapClient();
+        const attributeFault = Object.assign(new Error('Validation error occurred.'), {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: `Invalid ID value. '${ZENDESK_URL_ATTRIBUTE_ID}' is not a valid ID value for type = 'Configurable_Attribute_ID'`,
+                Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Additional_Fields_Data_Reference[1]/wd:Configurable_Attribute_Reference[1]',
+              },
+            },
+          },
+        });
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback(attributeFault, null);
+            return;
+          }
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ conversationUrl });
+
+        expect(result.success).toBe(true);
+        expect(capturedRequests).toHaveLength(2);
+        expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeDefined();
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: 'conversationUrl', label: 'omitted Intercom URL field' })])
+        );
+      });
+
+      it('does not retry the field omission a second time', async () => {
+        const mockClient = mockSoapClient();
+        const attributeFault = Object.assign(new Error('Validation error occurred.'), {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'The configurable attribute is not part of the configurable attribute template for this company.',
+              },
+            },
+          },
+        });
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(attributeFault, null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({ conversationUrl })).rejects.toBeDefined();
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      });
     });
 
     it('omits invoiceNumber when Get Invoice_Number fails after create', async () => {
