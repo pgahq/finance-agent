@@ -594,7 +594,7 @@ function createReference(type: string, value: string): { ID: Array<{ $attributes
 export const USA_TAXABLE_APPLICABILITY_ID = 'TAX_APPLICABILITY-3-2';
 
 // Supplier invoice Additional Field labeled "Zendesk URL"; holds the Intercom conversation URL.
-export const ZENDESK_URL_ATTRIBUTE_ID = 'PLACEHOLDER_ZENDESK_URL_ATTRIBUTE_ID';
+export const ZENDESK_URL_ATTRIBUTE_ID = 'Configurable Text Attribute 01';
 
 function soapAmount(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value * 100) / 100;
