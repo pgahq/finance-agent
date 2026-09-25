@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -480,9 +480,15 @@ export interface PurchaseOrderCompany {
   descriptor: string;
 }
 
+export interface PurchaseOrderDocumentStatus {
+  id?: string;
+  descriptor?: string;
+}
+
 export interface ParsedPurchaseOrder {
   documentNumber: string;
   company?: PurchaseOrderCompany;
+  documentStatus?: PurchaseOrderDocumentStatus;
   lines: PurchaseOrderLine[];
 }
 
@@ -520,10 +526,13 @@ interface buildSubmitInvoiceDataOptions {
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
+  omitPurchaseOrderLineReference?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine'>;
+
+export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -616,6 +625,13 @@ function submittedLinesCarryTaxApplicability(options: buildSubmitInvoiceDataOpti
   return lines.some((line: any) => line.Tax_Applicability_Reference);
 }
 
+function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
+  const lines = ([] as any[]).concat(
+    buildSubmitInvoiceData({ ...options, omitPurchaseOrderLineReference: false }).Invoice_Line_Replacement_Data ?? []
+  );
+  return lines.some((line: any) => line.Purchase_Order_Line_Reference);
+}
+
 function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_Reference?: unknown } | undefined): string | null {
   if (line?.costCenterId) return line.costCenterId;
   for (const worktag of ([] as any[]).concat(line?.Worktags_Reference ?? [])) {
@@ -685,6 +701,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitTaxApplicability) {
     fallbacks.push({ field: 'taxApplicability', label: 'omitted line tax applicability' });
+  }
+
+  if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
+    fallbacks.push({ field: 'purchaseOrderLine', label: OMITTED_PO_LINE_REFERENCE_LABEL });
   }
 
   return fallbacks;
@@ -847,6 +867,11 @@ async function getValidationFallbackField(
   if (options.assigneeWID && isAssigneeValidationError(validationText)) {
     debug('Validation references assignee; retrying without Assignee_Reference');
     return 'assignee';
+  }
+
+  if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {
+    debug('Validation references a Closed or Pending Close PO line; retrying without Purchase_Order_Line_Reference');
+    return 'purchaseOrderLine';
   }
 
   if (isTaxApplicabilityValidationError(validationText) && submittedLinesCarryTaxApplicability(options)) {
@@ -1019,11 +1044,18 @@ function getFallbackRetryBuildOptions(
     };
   }
 
+  if (field === 'purchaseOrderLine' && !options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
+    return {
+      buildOptions: { ...options, omitPurchaseOrderLineReference: true },
+      fallbackLabel: OMITTED_PO_LINE_REFERENCE_LABEL,
+    };
+  }
+
   return undefined;
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1192,13 +1224,15 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
       }),
       ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-      ...(!isDiscountOverride && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
       ...(line.memo && { Memo: line.memo }),
     };
   });
 
   const mappedMerchandiseOcrLines = merchandiseOcrLines
-    ?.map(({ Tax_Data: _Tax_Data, ...line }: any) => {
+    ?.map(({ Tax_Data: _Tax_Data, ...ocrLine }: any) => {
+      const { Purchase_Order_Line_Reference: _poLineRef, ...ocrLineWithoutPoRef } = ocrLine;
+      const line = omitPurchaseOrderLineReference ? ocrLineWithoutPoRef : ocrLine;
       const defaultSpendCategoryId = process.env.FALLBACK_SPEND_CATEGORY_ID;
       const applySpendCategory = defaultSpendCategoryId && (
         applySpendCategoryFallback
@@ -1992,6 +2026,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
+  omitPurchaseOrderLineReference?: boolean;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -2011,7 +2046,8 @@ export async function submitSupplierInvoiceUpdate(
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
-    paymentTermsId
+    paymentTermsId,
+    omitPurchaseOrderLineReference,
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{
   success: boolean;
@@ -2069,7 +2105,8 @@ export async function submitSupplierInvoiceUpdate(
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
       paymentTermsWID: paymentTermsId,
-      filterInvoiceLines: true
+      filterInvoiceLines: true,
+      omitPurchaseOrderLineReference,
     },
     buildNotes,
     operationName: 'submitSupplierInvoiceUpdate',
@@ -2107,6 +2144,7 @@ export interface SubmitNewSupplierInvoiceParams {
   paymentTermsId?: string;
   attachments: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
+  omitPurchaseOrderLineReference?: boolean;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -2132,6 +2170,7 @@ export async function submitNewSupplierInvoice(
     paymentTermsId,
     attachments,
     assigneeWID,
+    omitPurchaseOrderLineReference,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -2180,6 +2219,7 @@ export async function submitNewSupplierInvoice(
       paymentTermsWID: paymentTermsId,
       attachments,
       assigneeWID,
+      omitPurchaseOrderLineReference,
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',
@@ -2291,14 +2331,50 @@ function parsePurchaseOrderCompany(poData: any): PurchaseOrderCompany | undefine
   return { workdayId, descriptor };
 }
 
+function parsePurchaseOrderDocumentStatus(poData: any): PurchaseOrderDocumentStatus | undefined {
+  const ref = ([] as any[]).concat(poData?.Purchase_Order_Document_Status_Reference ?? [])[0];
+  if (!ref) return undefined;
+  const ids = ([] as any[]).concat(ref.ID ?? []);
+  const id = ids.find((entry: any) => entry.$attributes?.type === 'Document_Status_ID')?.$value;
+  const descriptor = ref.descriptor ?? ref.$attributes?.Descriptor;
+  if (!id && !descriptor) return undefined;
+  return {
+    ...(id ? { id: String(id) } : {}),
+    ...(descriptor ? { descriptor: String(descriptor) } : {}),
+  };
+}
+
 export function parsePurchaseOrder(poResponse: any): ParsedPurchaseOrder | undefined {
   const poData = getPurchaseOrderData(poResponse);
   if (!poData?.Document_Number) return undefined;
+  const documentStatus = parsePurchaseOrderDocumentStatus(poData);
   return {
     documentNumber: poData.Document_Number,
     company: parsePurchaseOrderCompany(poData),
+    ...(documentStatus ? { documentStatus } : {}),
     lines: parsePurchaseOrderLines(poResponse),
   };
+}
+
+const CLOSED_FOR_INVOICING_STATUSES = new Set(['closed', 'pendingclose']);
+
+function normalizeDocumentStatus(value: string | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z]/g, '');
+}
+
+// Workday rejects invoice lines that reference PO lines on Closed or Pending Close POs.
+// Document_Status_ID values vary by tenant, so the descriptor is checked too. A missing
+// status reads as open; the submit retry covers that case.
+export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 'documentStatus'> | undefined): boolean {
+  const status = po?.documentStatus;
+  if (!status) return false;
+  return CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.id))
+    || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
+}
+
+export function closedPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
+  const po = purchaseOrderNumber || 'The PO';
+  return `${po} is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.`;
 }
 
 export async function loadPurchaseOrder(

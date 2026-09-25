@@ -459,6 +459,11 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+export function isClosedPurchaseOrderLineError(text: unknown): boolean {
+  // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
+  return /PO that is Closed or Pending Close/i.test(asValidationText(text));
+}
+
 export function isWorkdayTaskNotAuthorizedError(error: unknown): boolean {
   return /the task submitted is not authorized/i.test(asValidationText(error));
 }

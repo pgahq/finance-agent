@@ -394,6 +394,7 @@ export interface EnrichmentNotification {
     fallbackCostCenter?: string;
     fallbackLineOfBusiness?: string;
     fallbackPaymentTerms?: boolean;
+    closedPurchaseOrderLines?: string;
   };
 }
 
@@ -481,6 +482,9 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
   if (canModify && fallbacks.fallbackPaymentTerms) {
     fallbackLines.push(`Fallback payment terms applied`);
+  }
+  if (canModify && fallbacks.closedPurchaseOrderLines) {
+    fallbackLines.push(fallbacks.closedPurchaseOrderLines);
   }
 
   if (!canModify) {
