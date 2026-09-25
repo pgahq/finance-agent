@@ -2,6 +2,7 @@ import {
   collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
   humanWorkdayValidationMessage,
+  isConfigurableAttributeValidationError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isQuantityUnitExtendedMismatchError,
@@ -31,6 +32,23 @@ describe('invoice_validation_failures', () => {
       'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.'
     )).toBe(true);
     expect(isQuantityUnitExtendedMismatchError('Spend Category is required')).toBe(false);
+  });
+
+  it('detects configurable attribute (Additional Fields) faults', () => {
+    expect(isConfigurableAttributeValidationError({
+      detail: {
+        Validation_Fault: {
+          Validation_Error: {
+            Message: "Invalid ID value. 'BAD_ID' is not a valid ID value for type = 'Configurable_Attribute_ID'",
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Additional_Fields_Data_Reference[1]/wd:Configurable_Attribute_Reference[1]',
+          },
+        },
+      },
+    })).toBe(true);
+    expect(isConfigurableAttributeValidationError(
+      'The configurable attribute is not part of the configurable attribute template for this company.'
+    )).toBe(true);
+    expect(isConfigurableAttributeValidationError('Spend Category is required')).toBe(false);
   });
 
   it('detects a required Line of Business rule in a multi-error SOAP fault', () => {
