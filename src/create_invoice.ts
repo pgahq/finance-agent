@@ -395,6 +395,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
+      const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
@@ -404,7 +405,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
           ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
           : '')
-        + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+        + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;

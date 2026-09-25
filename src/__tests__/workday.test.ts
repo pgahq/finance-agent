@@ -2964,6 +2964,56 @@ describe('Workday utilities', () => {
           expect(worktagValues).toEqual(expect.arrayContaining(['Fund_ID:FUND-PO', 'Cost_Center_Reference_ID:CC-PO']));
         });
 
+        it('drops Purchase_Order_Line_Reference from OCR passthrough lines on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [{
+                      Supplier_Invoice_Line_ID: 'LINE-1',
+                      Item_Description: 'Consulting Services',
+                      Extended_Amount: '500',
+                      Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] },
+                    }]
+                  }
+                }
+              }
+            });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({ omitPurchaseOrderLineReference: true });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Supplier_Invoice_Line_ID).toBe('LINE-1');
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(result.appliedFallbacks.some(f => f.field === 'purchaseOrderLine')).toBe(true);
+        });
+
+        it('does not unlink PO lines on other Purchase_Order_Line_Reference faults', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Purchase Order Line Number PO-414498-1 cannot be used because it has been canceled.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Purchase_Order_Line_Reference[1]'
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+          })).rejects.toThrow('has been canceled');
+          const submitted = mockClient.Submit_Supplier_Invoice.mock.calls.map(([request]: any[]) =>
+            request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]
+          );
+          expect(submitted.every((line: any) => line.Purchase_Order_Line_Reference)).toBe(true);
+        });
+
         it('does not report the omit fallback when no line carried a PO line reference', async () => {
           setupMockClient();
 
