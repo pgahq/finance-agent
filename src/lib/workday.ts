@@ -2373,7 +2373,7 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
 }
 
 export function closedPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
-  const po = purchaseOrderNumber ? `PO ${purchaseOrderNumber}` : 'The PO';
+  const po = purchaseOrderNumber || 'The PO';
   return `${po} is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.`;
 }
 

@@ -1060,7 +1060,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.omitPurchaseOrderLineReference).toBe(true);
     expect(params.finalLines[0]).toEqual(expect.objectContaining({ purchaseOrderLineId: 'POL-1', costCenterId: 'CC-PO' }));
-    const closedNote = 'PO PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    const closedNote = 'PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
     expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain(closedNote);
     expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.closedPurchaseOrderLines).toBe(closedNote);

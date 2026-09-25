@@ -1022,7 +1022,7 @@ describe('create_invoice', () => {
       spendCategoryId: 'SC-PO',
     }));
 
-    const closedNote = 'PO PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    const closedNote = 'PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
     const closedNotes = submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
     expect(closedNotes).toContain(closedNote);
     expect(closedNotes).not.toContain('omitted PO line reference');
