@@ -58,6 +58,31 @@ export function sanitizeSuppliersInvoiceNumber(value?: string | null): string | 
   return sanitized || undefined;
 }
 
+const CENTRAL_TIME_ZONE = 'America/Chicago';
+const MONTH_ABBREVIATIONS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'] as const;
+
+export function suppliersInvoiceNumberDateSuffix(now: Date = new Date()): string | undefined {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CENTRAL_TIME_ZONE,
+    year: '2-digit',
+    month: 'numeric',
+    day: '2-digit',
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
+  const month = MONTH_ABBREVIATIONS[Number(value('month')) - 1];
+  const day = value('day');
+  const year = value('year');
+  if (!month || day.length !== 2 || year.length !== 2) return undefined;
+  return `${month}${day}${year}`;
+}
+
+export function suffixDuplicateSuppliersInvoiceNumber(value?: string | null, now: Date = new Date()): string | undefined {
+  const base = sanitizeSuppliersInvoiceNumber(value);
+  const suffix = suppliersInvoiceNumberDateSuffix(now);
+  if (!base || !suffix) return undefined;
+  return sanitizeSuppliersInvoiceNumber(`${base}-${suffix}`);
+}
+
 function sanitizeMemoFragment(value: string | null): string | null {
   if (!value) return null;
   const sanitized = sanitizeMemoText(value);

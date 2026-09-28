@@ -6,6 +6,8 @@ import {
   memoIdentifiersFromEnrichment,
   sanitizeMemoText,
   sanitizeSuppliersInvoiceNumber,
+  suffixDuplicateSuppliersInvoiceNumber,
+  suppliersInvoiceNumberDateSuffix,
 } from '../lib/invoice_memo.js';
 import { formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
 import type { FinalInvoiceLine } from '../lib/invoice_lines.js';
@@ -167,6 +169,30 @@ describe('sanitizeSuppliersInvoiceNumber', () => {
   it('replaces pipes and other unsafe characters with a hyphen', () => {
     expect(sanitizeSuppliersInvoiceNumber('INV|001>>>')).toBe('INV-001');
     expect(sanitizeSuppliersInvoiceNumber('INV 001')).toBe('INV-001');
+  });
+});
+
+describe('suffixDuplicateSuppliersInvoiceNumber', () => {
+  it('appends the Central month, day, and year', () => {
+    const sep28 = new Date('2026-09-28T17:00:00.000Z');
+    expect(suppliersInvoiceNumberDateSuffix(sep28)).toBe('SEP2826');
+    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', sep28)).toBe('20-1183-01-SEP2826');
+  });
+
+  it('uses America/Chicago when UTC has already moved to the next day', () => {
+    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', new Date('2026-09-29T04:30:00.000Z')))
+      .toBe('20-1183-01-SEP2826');
+    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', new Date('2026-09-29T05:00:00.000Z')))
+      .toBe('20-1183-01-SEP2926');
+  });
+
+  it('zero-pads the day', () => {
+    expect(suffixDuplicateSuppliersInvoiceNumber('INV-1', new Date('2026-01-05T18:00:00.000Z'))).toBe('INV-1-JAN0526');
+  });
+
+  it('returns undefined when there is no invoice number', () => {
+    expect(suffixDuplicateSuppliersInvoiceNumber(null, new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
+    expect(suffixDuplicateSuppliersInvoiceNumber('   ', new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
   });
 });
 
