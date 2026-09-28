@@ -2,6 +2,8 @@ import {
   collectWorkdayValidationErrorText,
   getInvoiceValidationFailuresConfig,
   humanWorkdayValidationMessage,
+  isClosedPurchaseOrderLineError,
+  isConfigurableAttributeValidationError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isQuantityUnitExtendedMismatchError,
@@ -13,6 +15,32 @@ import {
 } from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
+  it('detects the closed or pending close PO line fault', () => {
+    expect(isClosedPurchaseOrderLineError(
+      'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.'
+    )).toBe(true);
+    expect(isClosedPurchaseOrderLineError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Purchase_Order_Line_Reference[1]'
+        }
+      }
+    })).toBe(true);
+    expect(isClosedPurchaseOrderLineError('Spend Category is required')).toBe(false);
+  });
+
+  it('does not treat other Purchase_Order_Line_Reference faults as a closed PO', () => {
+    expect(isClosedPurchaseOrderLineError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Purchase Order Line Number PO-414498-1 cannot be used because it has been canceled.',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Purchase_Order_Line_Reference[1]'
+        }
+      }
+    })).toBe(false);
+  });
+
   it('detects related-worktag faults that require Line of Business', () => {
     expect(isRequiredLineOfBusinessWorktagError(
       'When "Cost Center: CC-Enterprise Technology" is entered then these worktag types must also have a value: Line of Business'
@@ -31,6 +59,23 @@ describe('invoice_validation_failures', () => {
       'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.'
     )).toBe(true);
     expect(isQuantityUnitExtendedMismatchError('Spend Category is required')).toBe(false);
+  });
+
+  it('detects configurable attribute (Additional Fields) faults', () => {
+    expect(isConfigurableAttributeValidationError({
+      detail: {
+        Validation_Fault: {
+          Validation_Error: {
+            Message: "Invalid ID value. 'BAD_ID' is not a valid ID value for type = 'Configurable_Attribute_ID'",
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Additional_Fields_Data_Reference[1]/wd:Configurable_Attribute_Reference[1]',
+          },
+        },
+      },
+    })).toBe(true);
+    expect(isConfigurableAttributeValidationError(
+      'The configurable attribute is not part of the configurable attribute template for this company.'
+    )).toBe(true);
+    expect(isConfigurableAttributeValidationError('Spend Category is required')).toBe(false);
   });
 
   it('detects a required Line of Business rule in a multi-error SOAP fault', () => {

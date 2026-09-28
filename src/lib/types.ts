@@ -51,6 +51,8 @@ export interface InvoiceData {
     emailFrom?: string;
     subject?: string;
     plainTextBody?: string;
+    /** Intercom conversation part bodies only (no source email); the only text whose Supplier IDs may override the invoice. */
+    conversationParts?: string;
   };
 }
 
