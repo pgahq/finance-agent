@@ -212,14 +212,24 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         buffer: transcriptBuffer,
         payloadField: 'conversationPdf',
       },
-      clusteringMode === 'shadow'
+      clusteringMode === 'on'
         ? {
+          mode: 'grouped',
           sharedFields: {
             conversationId,
-            ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+            ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
+            ...conversationFields,
           },
         }
-        : undefined,
+        : clusteringMode === 'shadow'
+          ? {
+            mode: 'shadow',
+            sharedFields: {
+              conversationId,
+              ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+            },
+          }
+          : undefined,
     );
 
     return jsonResponse(202, {

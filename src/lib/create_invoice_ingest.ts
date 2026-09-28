@@ -15,10 +15,12 @@ export interface CreateInvoiceIngestAttachment {
 }
 
 /**
- * Report-only shadow record: sent after the per-attachment invokes, best-effort, marked `shadow: true`,
- * so the processor can classify and cluster every attachment without creating anything.
+ * One record per conversation carrying every attachment so the processor can classify and cluster them.
+ * - `grouped`: replaces the per-attachment invokes (attachment clustering on).
+ * - `shadow`: sent after the per-attachment invokes, best-effort, marked `shadow: true`; report-only.
  */
-export interface CreateInvoiceShadowInvoke {
+export interface CreateInvoiceGroupedInvoke {
+  mode: 'grouped' | 'shadow';
   sharedFields: Record<string, string | number>;
 }
 
@@ -34,7 +36,7 @@ export async function ingestCreateInvoiceAttachments(
   attachments: CreateInvoiceIngestAttachment[],
   s3Metadata: Record<string, string>,
   sharedFile?: CreateInvoiceSharedFile,
-  shadowInvoke?: CreateInvoiceShadowInvoke,
+  groupedInvoke?: CreateInvoiceGroupedInvoke,
 ): Promise<{ requestId: string; attachmentCount: number; totalBytes: number }> {
   const s3Config = getS3Config(env);
   const requestId = randomUUID();
@@ -83,32 +85,42 @@ export async function ingestCreateInvoiceAttachments(
   const processorFunctionName = `${env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
   const lambda = new LambdaClient({ region: env.AWS_REGION });
 
-  await Promise.all(processorRecords.map((attachment) =>
-    lambda.send(new InvokeCommand({
-      FunctionName: processorFunctionName,
-      InvocationType: 'Event',
-      Payload: JSON.stringify({
-        data: [attachment],
-        page: 1,
-        totalPages: 1,
-      }),
-    }))
-  ));
+  const sendGroupedInvoke = (grouped: CreateInvoiceGroupedInvoke) => lambda.send(new InvokeCommand({
+    FunctionName: processorFunctionName,
+    InvocationType: 'Event',
+    Payload: JSON.stringify({
+      data: [{
+        ...(grouped.mode === 'shadow' ? { shadow: true } : {}),
+        ...grouped.sharedFields,
+        ...sharedPayload,
+        attachments: uploadedAttachments,
+      }],
+      page: 1,
+      totalPages: 1,
+    }),
+  }));
 
-  // Shadow reporting is best-effort and must never block the real per-attachment invoices above.
-  if (shadowInvoke) {
-    try {
-      await lambda.send(new InvokeCommand({
+  if (groupedInvoke?.mode === 'grouped') {
+    await sendGroupedInvoke(groupedInvoke);
+  } else {
+    await Promise.all(processorRecords.map((attachment) =>
+      lambda.send(new InvokeCommand({
         FunctionName: processorFunctionName,
         InvocationType: 'Event',
         Payload: JSON.stringify({
-          data: [{ shadow: true, ...shadowInvoke.sharedFields, attachments: uploadedAttachments }],
+          data: [attachment],
           page: 1,
           totalPages: 1,
         }),
-      }));
-    } catch (error) {
-      debug('Failed to invoke shadow attachment clustering', { error, ...s3Metadata });
+      }))
+    ));
+    // Shadow reporting is best-effort and must never block the real per-attachment invoices above.
+    if (groupedInvoke?.mode === 'shadow') {
+      try {
+        await sendGroupedInvoke(groupedInvoke);
+      } catch (error) {
+        debug('Failed to invoke shadow attachment clustering', { error, ...s3Metadata });
+      }
     }
   }
 
