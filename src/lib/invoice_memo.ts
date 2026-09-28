@@ -58,29 +58,58 @@ export function sanitizeSuppliersInvoiceNumber(value?: string | null): string | 
   return sanitized || undefined;
 }
 
-const CENTRAL_TIME_ZONE = 'America/Chicago';
 const MONTH_ABBREVIATIONS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'] as const;
 
-export function suppliersInvoiceNumberDateSuffix(now: Date = new Date()): string | undefined {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: CENTRAL_TIME_ZONE,
-    year: '2-digit',
-    month: 'numeric',
-    day: '2-digit',
-  }).formatToParts(now);
-  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
-  const month = MONTH_ABBREVIATIONS[Number(value('month')) - 1];
-  const day = value('day');
-  const year = value('year');
-  if (!month || day.length !== 2 || year.length !== 2) return undefined;
-  return `${month}${day}${year}`;
+export interface SuppliersInvoiceNumberInput {
+  invoiceNumber?: string | null;
+  accountNumber?: string | null;
+  invoiceDate?: string | null;
+  supplierName?: string | null;
 }
 
-export function suffixDuplicateSuppliersInvoiceNumber(value?: string | null, now: Date = new Date()): string | undefined {
-  const base = sanitizeSuppliersInvoiceNumber(value);
-  const suffix = suppliersInvoiceNumberDateSuffix(now);
-  if (!base || !suffix) return undefined;
-  return sanitizeSuppliersInvoiceNumber(`${base}-${suffix}`);
+function parseInvoiceCalendarDate(value?: string | null): { month: number; day: number; year: number } | undefined {
+  const match = value?.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) return undefined;
+  return { month, day, year };
+}
+
+function supplierNamePrefix(name?: string | null): string | undefined {
+  const letters = name?.toUpperCase().replace(/[^A-Z]/g, '') ?? '';
+  return letters ? letters.slice(0, 4) : undefined;
+}
+
+/**
+ * HQ supplier invoice number: a distinct printed number as-is; otherwise the
+ * account number plus MMMYY; otherwise the first four letters of the supplier
+ * plus MMDDYY. Generated numbers use the document invoice date and stay unset
+ * when that date is missing.
+ */
+export function composeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInput): string | undefined {
+  const invoiceNumber = sanitizeSuppliersInvoiceNumber(input.invoiceNumber);
+  const accountNumber = sanitizeSuppliersInvoiceNumber(input.accountNumber);
+  const sameAsAccount = Boolean(
+    invoiceNumber && accountNumber && comparableId(invoiceNumber) === comparableId(accountNumber)
+  );
+  if (invoiceNumber && !sameAsAccount) return invoiceNumber;
+
+  const date = parseInvoiceCalendarDate(input.invoiceDate);
+  if (!date) return undefined;
+
+  const year = String(date.year).slice(-2);
+  if (accountNumber) {
+    return sanitizeSuppliersInvoiceNumber(`${accountNumber}${MONTH_ABBREVIATIONS[date.month - 1]}${year}`);
+  }
+
+  const prefix = supplierNamePrefix(input.supplierName);
+  if (!prefix) return undefined;
+  const month = String(date.month).padStart(2, '0');
+  const day = String(date.day).padStart(2, '0');
+  return sanitizeSuppliersInvoiceNumber(`${prefix}${month}${day}${year}`);
 }
 
 function sanitizeMemoFragment(value: string | null): string | null {

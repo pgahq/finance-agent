@@ -19,8 +19,8 @@ import {
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
+  composeSuppliersInvoiceNumber,
   memoIdentifiersFromEnrichment,
-  sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
@@ -233,7 +233,13 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       emailCompany: result.emailWorktags?.company,
     });
 
-    const extractedSuppliersInvoiceNumber = sanitizeSuppliersInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+      invoiceNumber: result.extractedSuppliersInvoiceNumber,
+      accountNumber: result.extractedAccountNumber,
+      invoiceDate: extractedInvoiceDate,
+      supplierName: result.supplier.extractedInformation?.supplierName
+        || result.supplier.resolvedSupplier?.supplierName,
+    });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);

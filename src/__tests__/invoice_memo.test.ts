@@ -5,9 +5,8 @@ import {
   INVOICE_MEMO_MAX_LENGTH,
   memoIdentifiersFromEnrichment,
   sanitizeMemoText,
+  composeSuppliersInvoiceNumber,
   sanitizeSuppliersInvoiceNumber,
-  suffixDuplicateSuppliersInvoiceNumber,
-  suppliersInvoiceNumberDateSuffix,
 } from '../lib/invoice_memo.js';
 import { formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
 import type { FinalInvoiceLine } from '../lib/invoice_lines.js';
@@ -172,27 +171,61 @@ describe('sanitizeSuppliersInvoiceNumber', () => {
   });
 });
 
-describe('suffixDuplicateSuppliersInvoiceNumber', () => {
-  it('appends the Central month, day, and year', () => {
-    const sep28 = new Date('2026-09-28T17:00:00.000Z');
-    expect(suppliersInvoiceNumberDateSuffix(sep28)).toBe('SEP2826');
-    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', sep28)).toBe('20-1183-01-SEP2826');
+describe('composeSuppliersInvoiceNumber', () => {
+  it('keeps a printed invoice number that is not the account number', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: 'INV|001>>>',
+      accountNumber: '1033562',
+      invoiceDate: '2026-09-15',
+      supplierName: 'Test Supplier',
+    })).toBe('INV-001');
   });
 
-  it('uses America/Chicago when UTC has already moved to the next day', () => {
-    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', new Date('2026-09-29T04:30:00.000Z')))
-      .toBe('20-1183-01-SEP2826');
-    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01', new Date('2026-09-29T05:00:00.000Z')))
-      .toBe('20-1183-01-SEP2926');
+  it('appends MMMYY to the account number when the invoice number is the account number', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: '20-1183-01',
+      accountNumber: '20 1183 01',
+      invoiceDate: '2026-09-15',
+      supplierName: 'City of Frisco Texas',
+    })).toBe('20-1183-01SEP26');
   });
 
-  it('zero-pads the day', () => {
-    expect(suffixDuplicateSuppliersInvoiceNumber('INV-1', new Date('2026-01-05T18:00:00.000Z'))).toBe('INV-1-JAN0526');
+  it('appends MMMYY when there is an account number and no invoice number', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: null,
+      accountNumber: '54875-48235',
+      invoiceDate: '2022-04-01',
+      supplierName: 'Comcast',
+    })).toBe('54875-48235APR22');
   });
 
-  it('returns undefined when there is no invoice number', () => {
-    expect(suffixDuplicateSuppliersInvoiceNumber(null, new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
-    expect(suffixDuplicateSuppliersInvoiceNumber('   ', new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
+  it('uses the first four letters of the supplier and MMDDYY when neither number is present', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: null,
+      accountNumber: null,
+      invoiceDate: '2022-04-01',
+      supplierName: 'Safari',
+    })).toBe('SAFA040122');
+    expect(composeSuppliersInvoiceNumber({
+      invoiceDate: '2022-04-08',
+      supplierName: 'A&B',
+    })).toBe('AB040822');
+  });
+
+  it('leaves a generated number unset when the document has no invoice date', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: '20-1183-01',
+      accountNumber: '20-1183-01',
+      supplierName: 'City of Frisco Texas',
+    })).toBeUndefined();
+    expect(composeSuppliersInvoiceNumber({
+      supplierName: 'Safari',
+      invoiceDate: 'not-a-date',
+    })).toBeUndefined();
+    expect(composeSuppliersInvoiceNumber({
+      invoiceDate: '2022-02-31',
+      supplierName: 'Safari',
+    })).toBeUndefined();
   });
 });
 

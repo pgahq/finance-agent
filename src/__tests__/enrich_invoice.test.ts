@@ -591,10 +591,11 @@ describe('enrich_invoice', () => {
         invoiceDate: '2026-04-15',
         companyWID: undefined,
         extractedAmountDue: undefined,
-        suppliersInvoiceNumber: undefined,
+        suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
         finalLines: undefined,
+        invoiceLineQuantityDisplayed: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
         paymentTermsId: undefined,
@@ -1246,6 +1247,53 @@ describe('enrich_invoice', () => {
       }),
     ]);
     expect(params.buildNotes([])).toContain('Account Number (from document): 1033562');
+  });
+
+  it('submits an account number plus MMMYY when the printed invoice number is the account number', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'City of Frisco Texas',
+          memo: 'Utility bill'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: '20-1183-01',
+      extractedAccountNumber: '20-1183-01',
+      extractedInvoiceDate: '2026-09-15',
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.suppliersInvoiceNumber).toBe('20-1183-01SEP26');
+    expect(params.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
   });
 
   it('does not pass a header memo when enrichment has a description but no identifiers', async () => {

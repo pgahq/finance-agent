@@ -1642,4 +1642,30 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).toContain('Customer ID (from document): CU0122145');
     expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
   });
+
+  it('submits an account number plus MMMYY when the printed invoice number is the account number', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: '20-1183-01',
+      extractedAccountNumber: '20-1183-01',
+      extractedInvoiceDate: '2026-09-15',
+      supplier: {
+        ...baseEnrichmentResult.supplier,
+        extractedInformation: {
+          supplierName: 'City of Frisco Texas',
+          memo: 'Utility bill',
+        },
+      },
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-frisco/UtilityBill.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.suppliersInvoiceNumber).toBe('20-1183-01SEP26');
+    expect(submitArgs.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
+  });
 });
