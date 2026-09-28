@@ -15,6 +15,8 @@ export interface PurchaseOrderLineSplit {
 export interface OrgPassthroughContext {
   relatedLob?: RelatedLob | null;
   lineOfBusinessId?: string | null;
+  /** When true, keep a fallback cost center instead of letting PO passthrough restore a rejected one. */
+  lockFallbackCostCenter?: boolean;
 }
 
 const ORG_WORKTAG_ID_TYPES = new Set([
@@ -133,6 +135,50 @@ function isFallbackCostCenterTag(tag: any): boolean {
     primaryWorktagType(tag) === 'Cost_Center_Reference_ID' &&
     isFallbackCostCenterValue(primaryWorktagValue(tag))
   );
+}
+
+function isCostCenterWorktag(tag: any): boolean {
+  return primaryWorktagType(tag) === 'Cost_Center_Reference_ID';
+}
+
+export function replaceWorktagsOfType(
+  worktags: any[] | undefined,
+  type: string,
+  replacement: any | null
+): any[] {
+  const remaining = (worktags ?? []).filter(tag => primaryWorktagType(tag) !== type);
+  if (!replacement) return remaining;
+  return [...remaining, replacement];
+}
+
+/** Put exactly one fallback cost center on the document line: splits if they already carry CC, otherwise the parent. */
+export function replaceCostCenterWorktagsWithFallback(
+  parentWorktags: any[],
+  splits: any[] | undefined,
+  fallbackRef: any
+): { worktags: any[]; supplierInvoiceSplitLineData: any[] | undefined } {
+  const nextSplits = splits?.map(split => {
+    const current = ([] as any[]).concat(split?.Worktag_Reference ?? []);
+    const hadCostCenter = current.some(isCostCenterWorktag);
+    if (!hadCostCenter) return split;
+    return {
+      ...split,
+      Worktag_Reference: replaceWorktagsOfType(current, 'Cost_Center_Reference_ID', fallbackRef),
+    };
+  });
+  const splitsHaveCostCenter = Boolean(
+    nextSplits?.some(split =>
+      ([] as any[]).concat(split.Worktag_Reference ?? []).some(isCostCenterWorktag)
+    )
+  );
+  return {
+    worktags: replaceWorktagsOfType(
+      parentWorktags,
+      'Cost_Center_Reference_ID',
+      splitsHaveCostCenter ? null : fallbackRef
+    ),
+    supplierInvoiceSplitLineData: nextSplits,
+  };
 }
 
 function isFallbackLobTag(
@@ -282,11 +328,12 @@ export function mergePassthroughWorktagReferences(
   if (!passthrough?.length) return base;
   const relatedLob = context?.relatedLob;
   const lineOfBusinessId = context?.lineOfBusinessId;
+  const lockFallbackCostCenter = Boolean(context?.lockFallbackCostCenter);
 
   const baseHasRealFund = base.some(
     tag => primaryWorktagType(tag) === 'Fund_ID' && !isFallbackFundValue(primaryWorktagValue(tag))
   );
-  const baseHasRealCostCenter = base.some(
+  const baseHasRealCostCenter = lockFallbackCostCenter || base.some(
     tag =>
       primaryWorktagType(tag) === 'Cost_Center_Reference_ID' &&
       !isFallbackCostCenterValue(primaryWorktagValue(tag))
@@ -368,6 +415,7 @@ export function mergePassthroughWorktagReferences(
       additions.push(tag);
       continue;
     }
+    if (type === 'Cost_Center_Reference_ID' && lockFallbackCostCenter) continue;
     if (seenTypes.has(type)) continue;
     seenTypes.add(type);
     const identity = worktagIdentity(tag);

@@ -3504,6 +3504,166 @@ describe('Workday utilities', () => {
         ]);
       });
 
+      it('should not restore a rejected PO passthrough cost center on fallback retry', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-2025 Ryder Cup Nextgengolf Inc',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const poCostCenter = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-cc-ryder' },
+            { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-2025 Ryder Cup Nextgengolf Inc' },
+          ],
+        };
+        const venue = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-venue' },
+            { $attributes: { type: 'Custom_Worktag_01_ID' }, $value: 'VENUE-A' },
+          ],
+        };
+
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            {
+              lineOrder: 1,
+              description: 'Container rental',
+              quantity: 1,
+              unitCost: 140,
+              extendedAmount: 140,
+              fundId: 'FUND-General_Fund_Unrestricted',
+              costCenterId: 'CC-2025 Ryder Cup Nextgengolf Inc',
+              poPassthroughWorktagsReference: [poCostCenter, venue],
+            }
+          ]
+        });
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+
+        const costCenterValues = (line: any) =>
+          (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+            ([] as any[]).concat(tag.ID ?? [])
+              .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+              .map((id: any) => id.$value)
+          );
+
+        expect(costCenterValues(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]))
+          .toEqual(['CC-2025 Ryder Cup Nextgengolf Inc']);
+        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        expect(costCenterValues(retryLine)).toEqual(['CC0000']);
+        expect(JSON.stringify(retryLine.Worktags_Reference)).toContain('VENUE-A');
+        expect(JSON.stringify(retryLine.Worktags_Reference)).not.toContain('CC-2025 Ryder Cup Nextgengolf Inc');
+      });
+
+      it('should replace split-line cost centers with fallback on a cost-center availability fault', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-SPLIT',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const poCostCenter = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-cc-split' },
+            { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-SPLIT' },
+          ],
+        };
+
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const result = await submitSupplierInvoiceUpdateForTest({
+          finalLines: [
+            {
+              lineOrder: 1,
+              description: 'Split PO line',
+              quantity: 1,
+              unitCost: 100,
+              extendedAmount: 100,
+              costCenterId: 'CC-SPLIT',
+              poPassthroughWorktagsReference: [poCostCenter],
+              supplierInvoiceSplitLineData: [
+                { extendedAmount: 60, worktagReference: [poCostCenter] },
+                { extendedAmount: 40, worktagReference: [poCostCenter] },
+              ],
+            }
+          ]
+        });
+        delete process.env.FALLBACK_COST_CENTER_ID;
+
+        expect(result.success).toBe(true);
+        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+        const parentCc = (retryLine.Worktags_Reference ?? []).flatMap((tag: any) =>
+          ([] as any[]).concat(tag.ID ?? [])
+            .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+            .map((id: any) => id.$value)
+        );
+        expect(parentCc).toEqual([]);
+        expect(retryLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+        for (const split of retryLine.Supplier_Invoice_Split_Line_Data) {
+          const splitCc = (split.Worktag_Reference ?? []).flatMap((tag: any) =>
+            ([] as any[]).concat(tag.ID ?? [])
+              .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+              .map((id: any) => id.$value)
+          );
+          expect(splitCc).toEqual(['CC0000']);
+        }
+        expect(JSON.stringify(retryLine)).not.toContain('CC-SPLIT');
+      });
+
       it('should apply fallback Line of Business when a cost center requires LOB', async () => {
         const mockClient = {
           setSecurity: jest.fn(),

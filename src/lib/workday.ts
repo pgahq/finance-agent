@@ -22,6 +22,7 @@ import {
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
   passthroughWorktagsForSplitInvoiceLine,
+  replaceCostCenterWorktagsWithFallback,
   type PurchaseOrderLineSplit,
 } from './po_worktags.js';
 
@@ -1212,19 +1213,23 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     const orgPassthroughContext = {
       relatedLob: relatedLobByCostCenter?.get(line.costCenterId ?? ''),
       lineOfBusinessId: line.lineOfBusinessId ?? null,
+      lockFallbackCostCenter: Boolean(applyCostCenterFallback),
     };
     const passthrough = passthroughWorktagsForSplitInvoiceLine(
       line.poPassthroughWorktagsReference,
       line.supplierInvoiceSplitLineData,
       orgPassthroughContext
     );
-    const worktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
-    const supplierInvoiceSplitLineData = mapPoSplitsToSupplierInvoiceSplitLineData(
+    const mergedWorktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
+    const mappedSplits = mapPoSplitsToSupplierInvoiceSplitLineData(
       line.supplierInvoiceSplitLineData,
       extendedAmountForSoap ?? line.extendedAmount,
       passthrough,
       orgPassthroughContext
     );
+    const { worktags, supplierInvoiceSplitLineData } = applyCostCenterFallback && fallbackCostCenterRef
+      ? replaceCostCenterWorktagsWithFallback(mergedWorktags, mappedSplits, fallbackCostCenterRef)
+      : { worktags: mergedWorktags, supplierInvoiceSplitLineData: mappedSplits };
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
