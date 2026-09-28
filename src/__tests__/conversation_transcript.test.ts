@@ -1,9 +1,20 @@
 import PDFDocument from 'pdfkit';
 import {
   buildConversationTranscript,
+  isIntercomMessageDeliveryFailedBody,
   renderConversationTranscriptPdf,
   type ConversationTranscriptInput,
 } from '../lib/conversation_transcript.js';
+
+describe('isIntercomMessageDeliveryFailedBody', () => {
+  it('matches Intercom bounce cards and SMTP diagnostics', () => {
+    expect(isIntercomMessageDeliveryFailedBody('Message delivery failed')).toBe(true);
+    expect(isIntercomMessageDeliveryFailedBody('<p>Message delivery failed</p>')).toBe(true);
+    expect(isIntercomMessageDeliveryFailedBody('smtp;550 5.7.129 RecipientAddressRejected')).toBe(true);
+    expect(isIntercomMessageDeliveryFailedBody('Thank you for contacting the Corporate Accounts Payable Team.')).toBe(false);
+    expect(isIntercomMessageDeliveryFailedBody('Use company 550')).toBe(false);
+  });
+});
 
 const sampleConversation: ConversationTranscriptInput = {
   id: '215476033237026',
@@ -129,6 +140,40 @@ describe('buildConversationTranscript', () => {
 
     expect(transcript.title).toBe('Invoice E54219 from Safari Solutions');
     expect(transcript.messages[0].meta).toBe('Safari');
+  });
+
+  it('omits Intercom message delivery failed bounce notes', () => {
+    const transcript = buildConversationTranscript({
+      ...sampleConversation,
+      conversation_parts: {
+        conversation_parts: [
+          {
+            part_type: 'comment',
+            body: 'Thank you for contacting the Corporate Accounts Payable Team.',
+            created_at: 1790013756,
+            author: { name: 'PGA Support' },
+          },
+          {
+            part_type: 'note',
+            body: 'Message delivery failed\nsmtp;550 5.7.129 RecipientAddressRejected',
+            created_at: 1790013800,
+            author: { name: 'Intercom' },
+          },
+          {
+            part_type: 'note',
+            body: 'SUPIN-460853 submitted',
+            created_at: 1790022411,
+            author: { name: 'Lauren Schilling' },
+          },
+        ],
+      },
+    }, { conversationId: '215476033237026' });
+
+    expect(transcript.messages.map((message) => message.body)).toEqual([
+      'Invoice E54219 from Safari Solutions\n\nSafari Telecom, LLC Invoice Due:Wed, 10/21/2026 E54219 Amount Due: $489.08 Thank you for partnering with Safari Solutions.',
+      'Thank you for contacting the Corporate Accounts Payable Team.',
+      'SUPIN-460853 submitted',
+    ]);
   });
 
   it('keeps a long unclosed tag prefix', () => {

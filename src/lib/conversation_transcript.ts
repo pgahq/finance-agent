@@ -171,6 +171,18 @@ function stripHtml(value: string | null | undefined): string {
     .trim();
 }
 
+const MESSAGE_DELIVERY_FAILED_PHRASE = /message delivery failed/i;
+const SMTP_BOUNCE_DIAGNOSTIC = /\bsmtp;\s*[45]\d{2}\b/i;
+
+/** Intercom bounce cards (note or comment) whose body is a delivery-failed notice or SMTP diagnostic. */
+export function isIntercomMessageDeliveryFailedBody(body: string | null | undefined): boolean {
+  const text = stripHtml(body);
+  if (!text) {
+    return false;
+  }
+  return MESSAGE_DELIVERY_FAILED_PHRASE.test(text) || SMTP_BOUNCE_DIAGNOSTIC.test(text);
+}
+
 const WIN_ANSI_EXTRA = new Set([
   338, 339, 352, 353, 376, 381, 382, 402, 710, 732, 8211, 8212, 8216, 8217, 8218,
   8220, 8221, 8222, 8224, 8225, 8226, 8230, 8240, 8249, 8250, 8364, 8482,
@@ -283,7 +295,7 @@ export function buildConversationTranscript(
       continue;
     }
     const body = stripHtml(part.body);
-    if (!body) {
+    if (!body || isIntercomMessageDeliveryFailedBody(part.body)) {
       continue;
     }
     const author = authorLabel(part.author, false);
