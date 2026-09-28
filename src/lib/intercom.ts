@@ -1,6 +1,10 @@
 import { debug } from '@pga/logger';
 import { z } from 'zod';
-import { buildConversationTranscript, type ConversationTranscript } from './conversation_transcript.js';
+import {
+  buildConversationTranscript,
+  isIntercomMessageDeliveryFailedBody,
+  type ConversationTranscript,
+} from './conversation_transcript.js';
 import type { InvoiceData } from './types.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.intercom.io';
@@ -161,12 +165,19 @@ function appendBodySegment(segments: string[], body: string | null | undefined):
   }
 }
 
+function appendConversationPartBody(segments: string[], body: string | null | undefined): void {
+  if (isIntercomMessageDeliveryFailedBody(body)) {
+    return;
+  }
+  appendBodySegment(segments, body);
+}
+
 /** Source email body plus non-empty conversation part bodies, in API order. */
 export function buildIntercomPlainTextBody(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   appendBodySegment(segments, conversation.source?.body);
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    appendBodySegment(segments, part.body);
+    appendConversationPartBody(segments, part.body);
   }
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
@@ -175,7 +186,7 @@ export function buildIntercomPlainTextBody(conversation: IntercomConversationRes
 export function buildIntercomConversationPartsText(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    appendBodySegment(segments, part.body);
+    appendConversationPartBody(segments, part.body);
   }
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
