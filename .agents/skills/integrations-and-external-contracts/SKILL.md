@@ -125,7 +125,7 @@ Create-invoice Slack **errors** show the Workday `Message` plus prior submit att
 - A generated number with no document invoice date is left unset. Wire, individual, and SIR expense-report formats are not applied; enrichment has no payment-type or person signal for them.
 - The Workday note still records the document value (`Supplier Invoice Number (from document)`). Slack `*Supplier Invoice #*` is the number submitted to Workday.
 
-When Workday says the supplier's invoice number is already in use (`Enter a Supplier's Invoice Number that isn't already in use`, XPath `Suppliers_Invoice_Number`), submit does not retry and does not replace the supplier with the default supplier. Create and enrich Slack show that duplicate-invoice-number message.
+When Workday says the supplier's invoice number is already in use (`Enter a Supplier's Invoice Number that isn't already in use`, XPath `Suppliers_Invoice_Number`), submit retries once on the same supplier. It appends `-<YYYYMMDDHHmmssSSS>` in UTC to the number already submitted (`12345` at 2026-09-28 17:00:00.000Z → `12345-20260928170000000`). It does not replace the supplier with the default supplier. The document number stays in the Workday note. Slack and the note list `supplier invoice number suffixed with -20260928170000000`. A second "already in use" fault after that suffix stops. Create and enrich Slack still show that duplicate-invoice-number message.
 
 ## Workday SOAP authentication
 
