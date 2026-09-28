@@ -64,9 +64,12 @@ import {
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
 import {
+  closedPurchaseOrderLineNote,
   getSupplierInvoiceEditability,
   isDuplicateSuppliersInvoiceNumberMessage,
+  isPurchaseOrderClosedForInvoicing,
   loadPurchaseOrder,
+  OMITTED_PO_LINE_REFERENCE_LABEL,
   submitNewSupplierInvoice,
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
@@ -170,14 +173,18 @@ export interface CreateInvoiceRequest {
   };
 }
 
+function intercomConversationUrl(conversationId?: string, intercomAppId?: string): string | undefined {
+  return conversationId
+    ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID || intercomAppId)
+    : undefined;
+}
+
 function slackInvoiceDetails(
   details: Record<string, unknown>,
   conversationId?: string,
   intercomAppId?: string
 ): Record<string, unknown> {
-  const conversationUrl = conversationId
-    ? buildIntercomConversationUrl(conversationId, INTERCOM_APP_ID || intercomAppId)
-    : undefined;
+  const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
   return {
     ...details,
     ...(conversationId ? { conversationId } : {}),
@@ -557,6 +564,10 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
     const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    if (poClosedForInvoicing) {
+      debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+    }
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -696,16 +707,21 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
+      const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
-        + (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+        + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
+          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+          : '')
+        + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
     const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
+    const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
 
     const companyNotification = selectedCompany.source === 'email' && emailCompany ? {
       status: 'email_resolved',
@@ -880,10 +896,15 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         const newFiles = watermark == null
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
-        const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) =>
-          `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
-          (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
-          (appliedFallbacks.length ? `\n\nFallback values applied: ${appliedFallbacks.map(f => f.label).join('; ')}` : '');
+        const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
+          const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+          return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
+            (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
+            (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
+              ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+              : '') +
+            (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
+        };
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
           supplierWID: resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
@@ -903,6 +924,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
           attachments: submitAttachments,
+          ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
         });
         let updateRegistrySyncFailed = false;
         try {
@@ -970,6 +992,8 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
+      ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(conversationUrl ? { conversationUrl } : {}),
     });
 
     const processingTime = Date.now() - startTime;
@@ -1007,7 +1031,9 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f => f.label),
+      appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
+        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber) : f.label
+      ),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));

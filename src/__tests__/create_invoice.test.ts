@@ -27,6 +27,9 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
   parsePurchaseOrder: jest.fn(),
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
+  isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
+  closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
+  OMITTED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').OMITTED_PO_LINE_REFERENCE_LABEL,
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
   getSupplierInvoiceEditability: jest.fn(),
@@ -825,6 +828,21 @@ describe('create_invoice', () => {
         ],
       })
     );
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.conversationUrl).toBe('https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890');
+    expect(submitArgs.conversationUrl).toBe(slack.notifyResult.mock.calls[0][3].conversationUrl);
+  });
+
+  it('does not pass a conversation URL to Workday without a conversationId', async () => {
+    process.env.INTERCOM_APP_ID = 'c722leqk';
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({ data: [attachmentRequest('new-invoices/req-no-conv/invoice.pdf')] } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs).not.toHaveProperty('conversationUrl');
   });
 
   it('forwards conversationCreatedAt as invoiceReceivedDate to Workday submit', async () => {
@@ -1000,6 +1018,65 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  it('should keep PO company, memo, and line coding but omit PO line refs for a Closed PO', async () => {
+    const parsedPo = {
+      documentNumber: 'PO-414498',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      documentStatus: { id: 'CLOSED', descriptor: 'Closed' },
+      lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-1', purchaseOrderDocumentNumber: 'PO-414498', description: 'Summit ENG' }]
+    };
+    const poCodedLines = [{
+      lineOrder: 1,
+      description: 'Summit ENG',
+      quantity: 1,
+      unitCost: 100,
+      extendedAmount: 100,
+      purchaseOrderLineId: 'POL-1',
+      costCenterId: 'CC-PO',
+      spendCategoryId: 'SC-PO',
+    }];
+
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockResolvedValue(parsedPo);
+    workday.submitNewSupplierInvoice.mockResolvedValue({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }],
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-414498'
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({ lines: poCodedLines, appliedFallbacks: {}, relatedLobByCostCenter: new Map() });
+
+    await processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-closed-po/invoice.pdf'),
+        emailContext: { plainTextBody: 'Please process PO-414498' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(parsedPo.lines);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('pga-company-wid');
+    expect(submitArgs.memo).toContain('PO-414498');
+    expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
+    expect(submitArgs.finalLines[0]).toEqual(expect.objectContaining({
+      purchaseOrderLineId: 'POL-1',
+      costCenterId: 'CC-PO',
+      spendCategoryId: 'SC-PO',
+    }));
+
+    const closedNote = 'PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    const closedNotes = submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
+    expect(closedNotes).toContain(closedNote);
+    expect(closedNotes).not.toContain('omitted PO line reference');
+    expect(submitArgs.buildNotes([])).not.toContain('Closed or Pending Close');
+    expect(slack.notifyResult.mock.calls[0][3].appliedFallbacks).toEqual([closedNote]);
   });
 
   it('should keep the PO company over a recommended PDF company', async () => {
@@ -2168,6 +2245,50 @@ describe('create_invoice', () => {
         expect.anything(),
         expect.objectContaining({ lastProcessedReceivedAt: 400 })
       );
+    });
+
+    it.each([
+      ['create', undefined],
+      ['update', registeredInvoice({ lastProcessedReceivedAt: 100 })],
+    ])('carries the closed-PO line omission (and the Intercom URL on create) into the clustered %s', async (path, existing) => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414498',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        documentStatus: { id: 'CLOSED', descriptor: 'Closed' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-1', purchaseOrderDocumentNumber: 'PO-414498', description: 'Summit ENG' }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-414498',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: 'Summit ENG', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'POL-1' }],
+        appliedFallbacks: {},
+        relatedLobByCostCenter: new Map(),
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(existing);
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          intercomAppId: 'sandbox-app',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      if (path === 'create') {
+        const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(createArgs.omitPurchaseOrderLineReference).toBe(true);
+        expect(createArgs.conversationUrl).toEqual(expect.stringContaining('/conversation/1234567890'));
+      } else {
+        expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+        const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+        expect(updateArgs.omitPurchaseOrderLineReference).toBe(true);
+      }
     });
 
     it('does not advance the watermark when a skip has nothing newer at all', async () => {

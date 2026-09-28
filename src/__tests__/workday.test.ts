@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isDuplicateSuppliersInvoiceNumberMessage, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isDuplicateSuppliersInvoiceNumberMessage, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -3065,6 +3065,183 @@ describe('Workday utilities', () => {
         });
       });
 
+      describe('closed PO line references', () => {
+        const closedPoFault = {
+          Validation_Fault: {
+            Validation_Error: {
+              Message: 'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Purchase_Order_Line_Reference[1]'
+            }
+          }
+        };
+        const poCodedLine = {
+          lineOrder: 1,
+          description: 'Consulting Services',
+          quantity: 1,
+          unitCost: 500,
+          extendedAmount: 500,
+          purchaseOrderLineId: 'POL-001',
+          fundId: 'FUND-PO',
+          costCenterId: 'CC-PO',
+          spendCategoryId: 'SC-PO',
+          supplierInvoiceSplitLineData: [
+            { extendedAmount: 300, worktagReference: [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-A' }] }] },
+            { extendedAmount: 200, worktagReference: [{ ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-B' }] }] },
+          ],
+        };
+
+        it('drops Purchase_Order_Line_Reference but keeps splits and spend category when omitPurchaseOrderLineReference is set', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          expect(line.Spend_Category_Reference).toEqual({ ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-PO' }] });
+          expect(result.appliedFallbacks).toEqual(
+            expect.arrayContaining([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }])
+          );
+        });
+
+        it('keeps worktags on unsplit PO-coded lines when omitting the PO line reference', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, supplierInvoiceSplitLineData: undefined }],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          const worktagValues = line.Worktags_Reference.flatMap((tag: any) =>
+            tag.ID.map((id: any) => `${id.$attributes.type}:${id.$value}`)
+          );
+          expect(worktagValues).toEqual(expect.arrayContaining(['Fund_ID:FUND-PO', 'Cost_Center_Reference_ID:CC-PO']));
+        });
+
+        it('drops Purchase_Order_Line_Reference from OCR passthrough lines on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [{
+                      Supplier_Invoice_Line_ID: 'LINE-1',
+                      Item_Description: 'Consulting Services',
+                      Extended_Amount: '500',
+                      Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] },
+                    }]
+                  }
+                }
+              }
+            });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({ omitPurchaseOrderLineReference: true });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Supplier_Invoice_Line_ID).toBe('LINE-1');
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(result.appliedFallbacks.some(f => f.field === 'purchaseOrderLine')).toBe(true);
+        });
+
+        it('does not unlink PO lines on other Purchase_Order_Line_Reference faults', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Purchase Order Line Number PO-414498-1 cannot be used because it has been canceled.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Purchase_Order_Line_Reference[1]'
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+          })).rejects.toThrow('has been canceled');
+          const submitted = mockClient.Submit_Supplier_Invoice.mock.calls.map(([request]: any[]) =>
+            request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]
+          );
+          expect(submitted.every((line: any) => line.Purchase_Order_Line_Reference)).toBe(true);
+        });
+
+        it('does not report the omit fallback when no line carried a PO line reference', async () => {
+          setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, purchaseOrderLineId: null }],
+            omitPurchaseOrderLineReference: true,
+          });
+
+          expect(result.appliedFallbacks.some(f => f.field === 'purchaseOrderLine')).toBe(false);
+        });
+
+        it('retries once without Purchase_Order_Line_Reference on the closed-PO fault', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback(closedPoFault, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            buildNotes: (fallbacks) => fallbacks.map(f => f.label).join('; '),
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          const [first, retry] = capturedRequests.map(r => r.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data);
+          expect(first.Invoice_Line_Replacement_Data[0].Purchase_Order_Line_Reference).toBeDefined();
+          expect(retry.Invoice_Line_Replacement_Data[0].Purchase_Order_Line_Reference).toBeUndefined();
+          expect(retry.Invoice_Line_Replacement_Data[0].Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          expect(retry.Invoice_Line_Replacement_Data[0].Spend_Category_Reference).toBeDefined();
+          expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }),
+          ]));
+          expect(result.priorFailures).toEqual([
+            { attempt: 1, message: 'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.' },
+          ]);
+        });
+
+        it('does not loop when the closed-PO fault repeats after omitting the reference', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback(closedPoFault, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+          })).rejects.toThrow('The Purchase Order Line referenced is from a PO that is Closed or Pending Close.');
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        });
+
+        it('does not retry the closed-PO fault when no line carries a PO line reference', async () => {
+          const { mockClient } = setupMockClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback(closedPoFault, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            finalLines: [poCodedLine],
+            omitPurchaseOrderLineReference: true,
+          })).rejects.toThrow('Closed or Pending Close');
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        });
+      });
+
       describe('line Tax_Applicability_Reference', () => {
         const usaTaxableRef = { ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] };
 
@@ -3484,6 +3661,176 @@ describe('Workday utilities', () => {
           { ID: [{ $attributes: { type: 'Fund_ID' }, $value: 'FUND-General_Fund_Unrestricted' }] },
           { ID: [{ $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'fallback-cc-id' }] }
         ]);
+      });
+
+      it('should not restore a rejected PO passthrough cost center on fallback retry', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-2025 Ryder Cup Nextgengolf Inc',
+                  Detail_Message: 'Worktags_for_Procurement_Webservices--IS Restricted by Supplier Invoice Line Replacement Data',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const poCostCenter = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-cc-ryder' },
+            { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-2025 Ryder Cup Nextgengolf Inc' },
+          ],
+        };
+        const venue = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-venue' },
+            { $attributes: { type: 'Custom_Worktag_01_ID' }, $value: 'VENUE-A' },
+          ],
+        };
+
+        const previousFallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        try {
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              {
+                lineOrder: 1,
+                description: 'Container rental',
+                quantity: 1,
+                unitCost: 140,
+                extendedAmount: 140,
+                fundId: 'FUND-General_Fund_Unrestricted',
+                costCenterId: 'CC-2025 Ryder Cup Nextgengolf Inc',
+                poPassthroughWorktagsReference: [poCostCenter, venue],
+              }
+            ]
+          });
+
+          expect(result.success).toBe(true);
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+
+          const costCenterValues = (line: any) =>
+            (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+              ([] as any[]).concat(tag.ID ?? [])
+                .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+                .map((id: any) => id.$value)
+            );
+
+          expect(costCenterValues(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]))
+            .toEqual(['CC-2025 Ryder Cup Nextgengolf Inc']);
+          const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(costCenterValues(retryLine)).toEqual(['CC0000']);
+          expect(JSON.stringify(retryLine.Worktags_Reference)).toContain('VENUE-A');
+          expect(JSON.stringify(retryLine.Worktags_Reference)).not.toContain('CC-2025 Ryder Cup Nextgengolf Inc');
+        } finally {
+          if (previousFallbackCostCenterId === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+          else process.env.FALLBACK_COST_CENTER_ID = previousFallbackCostCenterId;
+        }
+      });
+
+      it('should replace split-line cost centers with fallback on a cost-center availability fault', async () => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn(),
+          Submit_Supplier_Invoice: jest.fn()
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+          callback(null, mockClient);
+        });
+        mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+          callback(null, mockBaseGetResponse);
+        });
+
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is/are not available for use with the company/s: CC-SPLIT',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+            return;
+          }
+          callback(null, { Response_Data: { success: true } });
+        });
+
+        const poCostCenter = {
+          ID: [
+            { $attributes: { type: 'WID' }, $value: 'wid-cc-split' },
+            { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: 'CC-SPLIT' },
+          ],
+        };
+
+        const previousFallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        try {
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              {
+                lineOrder: 1,
+                description: 'Split PO line',
+                quantity: 1,
+                unitCost: 100,
+                extendedAmount: 100,
+                costCenterId: 'CC-SPLIT',
+                poPassthroughWorktagsReference: [poCostCenter],
+                supplierInvoiceSplitLineData: [
+                  { extendedAmount: 60, worktagReference: [poCostCenter] },
+                  { extendedAmount: 40, worktagReference: [poCostCenter] },
+                ],
+              }
+            ]
+          });
+
+          expect(result.success).toBe(true);
+          const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          const parentCc = (retryLine.Worktags_Reference ?? []).flatMap((tag: any) =>
+            ([] as any[]).concat(tag.ID ?? [])
+              .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+              .map((id: any) => id.$value)
+          );
+          expect(parentCc).toEqual([]);
+          expect(retryLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          for (const split of retryLine.Supplier_Invoice_Split_Line_Data) {
+            const splitCc = (split.Worktag_Reference ?? []).flatMap((tag: any) =>
+              ([] as any[]).concat(tag.ID ?? [])
+                .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+                .map((id: any) => id.$value)
+            );
+            expect(splitCc).toEqual(['CC0000']);
+          }
+          expect(JSON.stringify(retryLine)).not.toContain('CC-SPLIT');
+        } finally {
+          if (previousFallbackCostCenterId === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+          else process.env.FALLBACK_COST_CENTER_ID = previousFallbackCostCenterId;
+        }
       });
 
       it('should apply fallback Line of Business when a cost center requires LOB', async () => {
@@ -4383,6 +4730,95 @@ describe('Workday utilities', () => {
       expect(result.appliedFallbacks).toEqual(
         expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
       );
+    });
+
+    describe('Zendesk URL additional field', () => {
+      const conversationUrl = 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890';
+      const newInvoiceResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };
+
+      it('sets Additional_Fields_Data_Reference to the Intercom conversation URL', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ conversationUrl });
+
+        expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toEqual([{
+          Configurable_Attribute_Reference: { ID: [{ $attributes: { type: 'Configurable_Attribute_ID' }, $value: ZENDESK_URL_ATTRIBUTE_ID }] },
+          Attribute_Value: conversationUrl,
+        }]);
+        expect(result.appliedFallbacks).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: 'conversationUrl' })])
+        );
+      });
+
+      it('omits Additional_Fields_Data_Reference without a conversation URL', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+
+        await submitNewSupplierInvoiceForTest();
+
+        expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeUndefined();
+      });
+
+      it('retries once without the field when Workday rejects the configurable attribute', async () => {
+        const mockClient = mockSoapClient();
+        const attributeFault = Object.assign(new Error('Validation error occurred.'), {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: `Invalid ID value. '${ZENDESK_URL_ATTRIBUTE_ID}' is not a valid ID value for type = 'Configurable_Attribute_ID'`,
+                Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Additional_Fields_Data_Reference[1]/wd:Configurable_Attribute_Reference[1]',
+              },
+            },
+          },
+        });
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequests.push(request);
+          if (capturedRequests.length === 1) {
+            callback(attributeFault, null);
+            return;
+          }
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ conversationUrl });
+
+        expect(result.success).toBe(true);
+        expect(capturedRequests).toHaveLength(2);
+        expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeDefined();
+        expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Additional_Fields_Data_Reference).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(
+          expect.arrayContaining([expect.objectContaining({ field: 'conversationUrl', label: 'omitted Intercom URL field' })])
+        );
+      });
+
+      it('does not retry the field omission a second time', async () => {
+        const mockClient = mockSoapClient();
+        const attributeFault = Object.assign(new Error('Validation error occurred.'), {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'The configurable attribute is not part of the configurable attribute template for this company.',
+              },
+            },
+          },
+        });
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(attributeFault, null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({ conversationUrl })).rejects.toBeDefined();
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      });
     });
 
     it('omits invoiceNumber when Get Invoice_Number fails after create', async () => {
@@ -5349,6 +5785,51 @@ describe('Workday utilities', () => {
           })
         ]
       });
+    });
+
+    const purchaseOrderWithStatus = (status?: Record<string, unknown>) => parsePurchaseOrder({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-414498',
+            ...(status ? { Purchase_Order_Document_Status_Reference: status } : {}),
+            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'POL-1', Description: 'Summit ENG' }
+          }
+        }
+      }
+    });
+
+    it.each([
+      ['Issued', 'ISSUED', false],
+      ['Closed', 'CLOSED', true],
+      ['Pending Close', 'PENDING_CLOSE', true],
+    ])('should parse %s document status', (descriptor, id, closed) => {
+      const parsed = purchaseOrderWithStatus({
+        descriptor,
+        ID: [
+          { $attributes: { type: 'WID' }, $value: `wid-${id}` },
+          { $attributes: { type: 'Document_Status_ID' }, $value: id }
+        ]
+      });
+
+      expect(parsed?.documentStatus).toEqual({ id, descriptor });
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(closed);
+    });
+
+    it('should treat a closed descriptor as closed when the status ID is opaque', () => {
+      const parsed = purchaseOrderWithStatus({
+        $attributes: { Descriptor: 'Pending Close' },
+        ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'DOCUMENT_STATUS-6-7' }]
+      });
+
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(true);
+    });
+
+    it('should read a missing document status as open', () => {
+      const parsed = purchaseOrderWithStatus();
+
+      expect(parsed?.documentStatus).toBeUndefined();
+      expect(isPurchaseOrderClosedForInvoicing(parsed)).toBe(false);
     });
 
     it('should return undefined when Document_Number is missing', () => {

@@ -7,6 +7,7 @@ import {
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
   passthroughWorktagsForSplitInvoiceLine,
+  replaceCostCenterWorktagsWithFallback,
 } from '../lib/po_worktags.js';
 
 const makeWorktag = (type: string, value: string) => ({
@@ -151,6 +152,90 @@ describe('po_worktags', () => {
     const sameEvent = makeOrgWorktag('2026-PGA_Championship', 'event-wid-1');
     const merged = mergePassthroughWorktagReferences(base, [sameEvent]);
     expect(merged).toEqual(base);
+  });
+
+  it('mergePassthroughWorktagReferences lets PO cost center replace fallback cost center', () => {
+    const prev = process.env.FALLBACK_COST_CENTER_ID;
+    process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+    try {
+      const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+      const poCc = makeWorktag('Cost_Center_Reference_ID', 'CC-2025 Ryder Cup Nextgengolf Inc');
+      expect(mergePassthroughWorktagReferences([fallback], [poCc])).toEqual([poCc]);
+
+      const real = makeWorktag('Cost_Center_Reference_ID', 'CC-EMAIL');
+      expect(mergePassthroughWorktagReferences([real], [poCc])).toEqual([real]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+      else process.env.FALLBACK_COST_CENTER_ID = prev;
+    }
+  });
+
+  it('mergePassthroughWorktagReferences keeps fallback cost center when locked', () => {
+    const prev = process.env.FALLBACK_COST_CENTER_ID;
+    process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+    try {
+      const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+      const poCc = makeWorktag('Cost_Center_Reference_ID', 'CC-2025 Ryder Cup Nextgengolf Inc');
+      const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+      const merged = mergePassthroughWorktagReferences([fallback], [poCc, venue], {
+        lockFallbackCostCenter: true,
+      });
+      expect(merged).toEqual([fallback, venue]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+      else process.env.FALLBACK_COST_CENTER_ID = prev;
+    }
+  });
+
+  it('replaceCostCenterWorktagsWithFallback leaves a single fallback cost center on the parent', () => {
+    const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+    const original = makeWorktag('Cost_Center_Reference_ID', 'CC-PO');
+    const fund = makeWorktag('Fund_ID', 'FUND-A');
+    const { worktags, supplierInvoiceSplitLineData } = replaceCostCenterWorktagsWithFallback(
+      [fund, original, fallback],
+      undefined,
+      fallback
+    );
+    expect(worktags).toEqual([fund, fallback]);
+    expect(supplierInvoiceSplitLineData).toBeUndefined();
+  });
+
+  it('replaceCostCenterWorktagsWithFallback moves fallback cost center onto splits and strips the parent', () => {
+    const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+    const original = makeWorktag('Cost_Center_Reference_ID', 'CC-PO');
+    const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+    const { worktags, supplierInvoiceSplitLineData } = replaceCostCenterWorktagsWithFallback(
+      [original, venue],
+      [
+        { Extended_Amount: 60, Worktag_Reference: [original] },
+        { Extended_Amount: 40, Worktag_Reference: [original] },
+      ],
+      fallback
+    );
+    expect(worktags).toEqual([venue]);
+    expect(supplierInvoiceSplitLineData).toEqual([
+      { Extended_Amount: 60, Worktag_Reference: [fallback] },
+      { Extended_Amount: 40, Worktag_Reference: [fallback] },
+    ]);
+  });
+
+  it('replaceCostCenterWorktagsWithFallback puts fallback on every split when only some already have a cost center', () => {
+    const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+    const original = makeWorktag('Cost_Center_Reference_ID', 'CC-PO');
+    const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+    const { worktags, supplierInvoiceSplitLineData } = replaceCostCenterWorktagsWithFallback(
+      [original, venue],
+      [
+        { Extended_Amount: 60, Worktag_Reference: [original] },
+        { Extended_Amount: 40, Worktag_Reference: [venue] },
+      ],
+      fallback
+    );
+    expect(worktags).toEqual([venue]);
+    expect(supplierInvoiceSplitLineData).toEqual([
+      { Extended_Amount: 60, Worktag_Reference: [fallback] },
+      { Extended_Amount: 40, Worktag_Reference: [venue, fallback] },
+    ]);
   });
 
   it('mergePassthroughWorktagReferences lets PO fund replace fallback fund', () => {

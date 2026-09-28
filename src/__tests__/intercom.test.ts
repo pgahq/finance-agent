@@ -1,6 +1,8 @@
 import {
   assertAllowedAttachmentUrl,
+  buildIntercomConversationPartsText,
   buildIntercomConversationUrl,
+  buildIntercomPlainTextBody,
   downloadAttachment,
   fetchConversationInvoiceData,
   getIntercomConfig,
@@ -127,6 +129,75 @@ describe('intercom', () => {
         .toThrow(IntercomUpstreamError);
       expect(() => assertAllowedAttachmentUrl('https://evil.intercom-attachments-5.com.attacker.com/file.pdf'))
         .toThrow(IntercomUpstreamError);
+    });
+  });
+
+  describe('buildIntercomConversationPartsText', () => {
+    it('keeps every non-empty part body from any author and excludes the source email', () => {
+      expect(buildIntercomConversationPartsText({
+        source: { body: 'Supplier: Original Email LLC' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: 'Use supplier S-000666', author: { email: 'billing@vendor.com', type: 'user' } },
+            { part_type: 'assignment', body: null },
+            { part_type: 'note', body: '   ', author: { type: 'admin' } },
+            { part_type: 'note', body: 'Use supplier S-001234', author: { email: 'ap@pgahq.com' } },
+          ],
+        },
+      })).toBe('Use supplier S-000666\n\nUse supplier S-001234');
+    });
+
+    it('returns undefined without non-empty part bodies', () => {
+      expect(buildIntercomConversationPartsText({ conversation_parts: { conversation_parts: [] } })).toBeUndefined();
+    });
+
+    it('omits Intercom message delivery failed bounce notes so SMTP codes are not treated as coding', () => {
+      const bounceBody = [
+        'Message delivery failed',
+        "We couldn't deliver your message. This is the email response we received from their server:",
+        'smtp;550 5.7.129 RecipientAddressRejected; Recipient not found',
+      ].join('\n');
+      const autoReply = 'Thank you for contacting the Corporate Accounts Payable Team.';
+      const humanNote = 'Use company 410';
+
+      expect(buildIntercomConversationPartsText({
+        source: { body: 'Please process this invoice' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: autoReply, author: { email: 'pgaaccountspayable@pgahq.com' } },
+            { part_type: 'note', body: bounceBody },
+            { part_type: 'note', body: humanNote, author: { email: 'ap@pgahq.com' } },
+          ],
+        },
+      })).toBe(`${autoReply}\n\n${humanNote}`);
+    });
+
+    it('omits HTML bounce cards and SMTP-only diagnostic parts', () => {
+      expect(buildIntercomConversationPartsText({
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'note', body: '<h2>Message delivery failed</h2><p>smtp;550 5.7.129</p>' },
+            { part_type: 'note', body: 'smtp;554 5.1.1 mailbox unavailable' },
+            { part_type: 'note', body: 'Follow up with the vendor' },
+          ],
+        },
+      })).toBe('Follow up with the vendor');
+    });
+  });
+
+  describe('buildIntercomPlainTextBody', () => {
+    it('joins the source email with conversation parts and omits delivery-failed bounce notes', () => {
+      const sourceBody = 'United Rentals invoice attached';
+      const bounceBody = 'Message delivery failed\nsmtp;550 5.7.129 RecipientAddressRejected';
+      expect(buildIntercomPlainTextBody({
+        source: { body: sourceBody },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: 'Thank you for contacting the Corporate Accounts Payable Team.' },
+            { part_type: 'note', body: bounceBody },
+          ],
+        },
+      })).toBe(`${sourceBody}\n\nThank you for contacting the Corporate Accounts Payable Team.`);
     });
   });
 
@@ -282,6 +353,7 @@ describe('intercom', () => {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',
             plainTextBody: mergedPlainTextBody,
+            conversationParts: noteBody,
           },
         }],
       });
@@ -316,6 +388,54 @@ describe('intercom', () => {
       await expect(fetchConversationInvoiceData(config, '123')).resolves.toMatchObject({
         assigneeEmail: 'jcarey@pgahq.com',
       });
+    });
+
+    it('omits message delivery failed bounce notes from emailContext and the transcript', async () => {
+      const sourceBody = 'Please process the attached United Rentals invoice.';
+      const autoReply = 'Thank you for contacting the Corporate Accounts Payable Team.';
+      const bounceBody = [
+        'Message delivery failed',
+        "We couldn't deliver your message. This is the email response we received from their server:",
+        'smtp;550 5.7.129 RecipientAddressRejected; Recipient not found',
+      ].join('\n');
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '215476113065729',
+          app_id: 'sandbox-app',
+          created_at: 1704067200,
+          source: {
+            subject: 'Invoice',
+            body: sourceBody,
+            author: { email: 'ap@unitedrentals.com' },
+            attachments: [{
+              name: 'invoice.pdf',
+              url: 'https://downloads.intercomcdn.com/invoice.pdf',
+              content_type: 'application/pdf',
+            }],
+          },
+          conversation_parts: {
+            conversation_parts: [
+              { part_type: 'comment', body: autoReply, author: { email: 'pgaaccountspayable@pgahq.com' } },
+              { part_type: 'note', body: bounceBody },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      const result = await fetchConversationInvoiceData(config, '215476113065729');
+      expect(result.attachments[0].emailContext).toEqual({
+        emailFrom: 'ap@unitedrentals.com',
+        subject: 'Invoice',
+        plainTextBody: `${sourceBody}\n\n${autoReply}`,
+        conversationParts: autoReply,
+      });
+      expect(result.attachments[0].emailContext.plainTextBody).not.toContain('550');
+      expect(result.transcript.messages.map((message) => message.body)).toEqual([
+        `Invoice\n\n${sourceBody}`,
+        autoReply,
+      ]);
     });
 
     it('ignores conversation parts with null or whitespace-only bodies', async () => {

@@ -41,7 +41,7 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, parsePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, closedPurchaseOrderLineNote, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -188,19 +188,24 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     let extractedPurchaseOrderNumber: string | undefined = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
       ? normalizedPurchaseOrderNumber
       : undefined;
-    let poLines: Awaited<ReturnType<typeof parsePurchaseOrderLines>> | undefined;
+    let poLines: PurchaseOrderLine[] | undefined;
+    let poClosedForInvoicing = false;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
       try {
         const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
         debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
-        poLines = parsePurchaseOrderLines(poResponse);
+        const parsedPo = parsePurchaseOrder(poResponse);
+        poLines = parsedPo?.lines ?? [];
         debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
         const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
         if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
           debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
           poLines = undefined;
           extractedPurchaseOrderNumber = undefined;
+        } else if (isPurchaseOrderClosedForInvoicing(parsedPo)) {
+          poClosedForInvoicing = true;
+          debug(`PO ${extractedPurchaseOrderNumber} is ${parsedPo?.documentStatus?.descriptor ?? parsedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
         }
       } catch (poError) {
         debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
@@ -272,8 +277,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
-    const buildNotes = (submissionFallbacks: AppliedFallback[]) =>
-      baseNotes + formatFallbackNotes(mergeFallbacks(upfrontFallbacks, submissionFallbacks));
+    const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
+      const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
+      return baseNotes
+        + (merged.purchaseOrderLineOmitted
+          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+          : '')
+        + formatFallbackNotes(merged);
+    };
 
     let fallbacks: Fallbacks;
     let priorFailures: Array<{ attempt: number; fallback?: string; message: string }> | undefined;
@@ -298,7 +309,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         relatedLobByCostCenter,
         resolveCostCenterWorkdayIds: (costCenterIds) =>
           getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
-        paymentTermsId
+        paymentTermsId,
+        ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -359,6 +371,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
         fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
+        closedPurchaseOrderLines: fallbacks.purchaseOrderLineOmitted
+          ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)
+          : undefined,
       },
       ...(priorFailures?.length ? { priorFailures } : {}),
     });
@@ -406,6 +421,7 @@ interface UpfrontFallbacks {
 
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
+  purchaseOrderLineOmitted: boolean;
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
@@ -426,6 +442,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     lineOfBusiness: upfront.lineOfBusiness || submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.includes('fallback')),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
+    purchaseOrderLineOmitted: submissionFallbacks.some(f => f.field === 'purchaseOrderLine'),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };

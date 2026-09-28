@@ -40,7 +40,11 @@ jest.mock('../lib/workday.js', () => ({
     }]
   }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
-  annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined)
+  annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
+  getPurchaseOrder: jest.fn().mockResolvedValue(undefined),
+  parsePurchaseOrder: jest.requireActual('../lib/workday.js').parsePurchaseOrder,
+  isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
+  closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -243,6 +247,98 @@ describe('enrich_invoice', () => {
       })
     ]));
     expect(messageContent.some((part: { type: string }) => part.type === 'image')).toBe(false);
+  });
+
+  function supplierHintEvent(emailContext: Record<string, string>) {
+    return {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: {
+          descriptor: '24953$4729',
+          id: '0627e00a601c1001085f64bd33e20000'
+        },
+        emailContext,
+      }]
+    };
+  }
+
+  function promptText(getAiResponse: jest.Mock): string {
+    const aiCall = getAiResponse.mock.calls[0][0];
+    return aiCall.messages[0].content.find((part: { type: string }) => part.type === 'text').text;
+  }
+
+  async function mockCachedAcmeSupplier() {
+    const { getDatabaseConnection } = require('../lib/database.js');
+    const db = await getDatabaseConnection();
+    db.query.mockImplementation(async (sql: string) => (
+      sql.includes("metadata->>'supplierId'")
+        ? [{ workday_id: 'wid-acme', metadata: { supplierId: 'S-001234', supplierName: 'Acme Corp' } }]
+        : []
+    ));
+    return () => db.query.mockResolvedValue([]);
+  }
+
+  it('should pass an exact-matched supplier ID from an Intercom conversation part to the AI as authoritative', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const restore = await mockCachedAcmeSupplier();
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'ap@vendor.com',
+      subject: 'Invoice for review',
+      plainTextBody: 'Please process the attached invoice.\n\nUse supplier S-001234',
+      conversationParts: 'Use supplier S-001234',
+    }) as any)).resolves.not.toThrow();
+
+    const text = promptText(getAiResponse);
+    expect(text).toContain('Supplier hints from the email and conversation');
+    expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
+    expect(text).toContain('exact cached Supplier ID match');
+    restore();
+  });
+
+  it('should not let a sender-only supplier ID override the invoice document', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const restore = await mockCachedAcmeSupplier();
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'billing@vendor.com',
+      subject: 'Invoice',
+      plainTextBody: 'Please book this to supplier S-001234',
+    }) as any)).resolves.not.toThrow();
+
+    const text = promptText(getAiResponse);
+    expect(text).toContain('S-001234 (Acme Corp), workdayId wid-acme');
+    expect(text).toContain('findSuppliers candidate only');
+    expect(text).not.toContain('exact cached Supplier ID match');
+    restore();
+  });
+
+  it('should build supplier hints from the email subject and source body', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'billing@vendor.com',
+      subject: 'Invoice for S-000777',
+      plainTextBody: 'Supplier: Globex Inc',
+    }) as any)).resolves.not.toThrow();
+
+    const text = promptText(getAiResponse);
+    expect(text).toContain('Supplier hints from the email and conversation');
+    expect(text).toContain('S-000777, which is not in the supplier cache');
+    expect(text).toContain('"Globex Inc"');
+  });
+
+  it('should not add a supplier hint block when the email names no supplier', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await expect(processor(supplierHintEvent({
+      emailFrom: 'billing@vendor.com',
+      subject: 'Invoice',
+      plainTextBody: 'Please process the attached invoice.',
+    }) as any)).resolves.not.toThrow();
+
+    expect(promptText(getAiResponse)).not.toContain('Supplier hints from the email and conversation');
   });
 
   it('should skip processing when supplier already exists', async () => {
@@ -895,6 +991,79 @@ describe('enrich_invoice', () => {
     expect(params.finalLines[0].memo).toBe(
       'PO-413898. Service Period 9/7/26 - 9/13/26. Project management services for Ryan Poland'
     );
+  });
+
+  it('omits PO line refs but keeps PO line coding when the PO is Pending Close', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-413898',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Pending Close',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'PENDING_CLOSE' }]
+            },
+            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'POL-1', Description: 'Project Management' }
+          }
+        }
+      }
+    });
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-413898',
+      extractedInvoiceLines: [
+        { description: 'Project Management', quantity: 1, unitCost: '155.00', totalPrice: '155.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValueOnce({
+      lines: [{ lineOrder: 1, description: 'Project Management', quantity: 1, unitCost: 155, extendedAmount: 155, purchaseOrderLineId: 'POL-1', costCenterId: 'CC-PO' }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+    (submitSupplierInvoiceUpdate as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ purchaseOrderLineId: 'POL-1' })
+    ]);
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.omitPurchaseOrderLineReference).toBe(true);
+    expect(params.finalLines[0]).toEqual(expect.objectContaining({ purchaseOrderLineId: 'POL-1', costCenterId: 'CC-PO' }));
+    const closedNote = 'PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
+    expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
+      .toContain(closedNote);
+    expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.closedPurchaseOrderLines).toBe(closedNote);
   });
 
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {

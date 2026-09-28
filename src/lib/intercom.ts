@@ -1,6 +1,10 @@
 import { debug } from '@pga/logger';
 import { z } from 'zod';
-import { buildConversationTranscript, type ConversationTranscript } from './conversation_transcript.js';
+import {
+  buildConversationTranscript,
+  isIntercomMessageDeliveryFailedBody,
+  type ConversationTranscript,
+} from './conversation_transcript.js';
 import type { InvoiceData } from './types.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.intercom.io';
@@ -163,12 +167,28 @@ function appendBodySegment(segments: string[], body: string | null | undefined):
   }
 }
 
+function appendConversationPartBody(segments: string[], body: string | null | undefined): void {
+  if (isIntercomMessageDeliveryFailedBody(body)) {
+    return;
+  }
+  appendBodySegment(segments, body);
+}
+
 /** Source email body plus non-empty conversation part bodies, in API order. */
 export function buildIntercomPlainTextBody(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   appendBodySegment(segments, conversation.source?.body);
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    appendBodySegment(segments, part.body);
+    appendConversationPartBody(segments, part.body);
+  }
+  return segments.length > 0 ? segments.join('\n\n') : undefined;
+}
+
+/** Non-empty conversation part bodies only (notes and comments, any author), in API order; excludes the source email. */
+export function buildIntercomConversationPartsText(conversation: IntercomConversationResponse): string | undefined {
+  const segments: string[] = [];
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    appendConversationPartBody(segments, part.body);
   }
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
@@ -192,10 +212,12 @@ export function latestIntercomMessageAt(conversation: IntercomConversationRespon
 
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const plainTextBody = buildIntercomPlainTextBody(conversation);
+  const conversationParts = buildIntercomConversationPartsText(conversation);
   const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
     plainTextBody,
+    ...(conversationParts ? { conversationParts } : {}),
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -218,6 +240,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
         plainTextBody,
+        ...(conversationParts ? { conversationParts } : {}),
       }, part.created_at ?? conversation.created_at)
     ),
   ];
