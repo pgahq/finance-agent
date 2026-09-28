@@ -151,31 +151,31 @@ export function replaceWorktagsOfType(
   return [...remaining, replacement];
 }
 
-/** Put exactly one fallback cost center on the document line: splits if they already carry CC, otherwise the parent. */
+/** Put exactly one fallback cost center on the line: every split when any split carries CC, otherwise the parent. */
 export function replaceCostCenterWorktagsWithFallback(
   parentWorktags: any[],
   splits: any[] | undefined,
   fallbackRef: any
 ): { worktags: any[]; supplierInvoiceSplitLineData: any[] | undefined } {
-  const nextSplits = splits?.map(split => {
-    const current = ([] as any[]).concat(split?.Worktag_Reference ?? []);
-    const hadCostCenter = current.some(isCostCenterWorktag);
-    if (!hadCostCenter) return split;
-    return {
-      ...split,
-      Worktag_Reference: replaceWorktagsOfType(current, 'Cost_Center_Reference_ID', fallbackRef),
-    };
-  });
-  const splitsHaveCostCenter = Boolean(
-    nextSplits?.some(split =>
-      ([] as any[]).concat(split.Worktag_Reference ?? []).some(isCostCenterWorktag)
-    )
+  const splitList = splits ?? [];
+  const anySplitHasCostCenter = splitList.some(split =>
+    ([] as any[]).concat(split?.Worktag_Reference ?? []).some(isCostCenterWorktag)
   );
+  const nextSplits = anySplitHasCostCenter
+    ? splitList.map(split => ({
+      ...split,
+      Worktag_Reference: replaceWorktagsOfType(
+        ([] as any[]).concat(split?.Worktag_Reference ?? []),
+        'Cost_Center_Reference_ID',
+        fallbackRef
+      ),
+    }))
+    : splits;
   return {
     worktags: replaceWorktagsOfType(
       parentWorktags,
       'Cost_Center_Reference_ID',
-      splitsHaveCostCenter ? null : fallbackRef
+      anySplitHasCostCenter ? null : fallbackRef
     ),
     supplierInvoiceSplitLineData: nextSplits,
   };

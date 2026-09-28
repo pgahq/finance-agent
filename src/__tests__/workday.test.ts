@@ -3550,39 +3550,44 @@ describe('Workday utilities', () => {
           ],
         };
 
+        const previousFallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
         process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
-        const result = await submitSupplierInvoiceUpdateForTest({
-          finalLines: [
-            {
-              lineOrder: 1,
-              description: 'Container rental',
-              quantity: 1,
-              unitCost: 140,
-              extendedAmount: 140,
-              fundId: 'FUND-General_Fund_Unrestricted',
-              costCenterId: 'CC-2025 Ryder Cup Nextgengolf Inc',
-              poPassthroughWorktagsReference: [poCostCenter, venue],
-            }
-          ]
-        });
-        delete process.env.FALLBACK_COST_CENTER_ID;
+        try {
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              {
+                lineOrder: 1,
+                description: 'Container rental',
+                quantity: 1,
+                unitCost: 140,
+                extendedAmount: 140,
+                fundId: 'FUND-General_Fund_Unrestricted',
+                costCenterId: 'CC-2025 Ryder Cup Nextgengolf Inc',
+                poPassthroughWorktagsReference: [poCostCenter, venue],
+              }
+            ]
+          });
 
-        expect(result.success).toBe(true);
-        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+          expect(result.success).toBe(true);
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
 
-        const costCenterValues = (line: any) =>
-          (line.Worktags_Reference ?? []).flatMap((tag: any) =>
-            ([] as any[]).concat(tag.ID ?? [])
-              .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
-              .map((id: any) => id.$value)
-          );
+          const costCenterValues = (line: any) =>
+            (line.Worktags_Reference ?? []).flatMap((tag: any) =>
+              ([] as any[]).concat(tag.ID ?? [])
+                .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+                .map((id: any) => id.$value)
+            );
 
-        expect(costCenterValues(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]))
-          .toEqual(['CC-2025 Ryder Cup Nextgengolf Inc']);
-        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-        expect(costCenterValues(retryLine)).toEqual(['CC0000']);
-        expect(JSON.stringify(retryLine.Worktags_Reference)).toContain('VENUE-A');
-        expect(JSON.stringify(retryLine.Worktags_Reference)).not.toContain('CC-2025 Ryder Cup Nextgengolf Inc');
+          expect(costCenterValues(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]))
+            .toEqual(['CC-2025 Ryder Cup Nextgengolf Inc']);
+          const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(costCenterValues(retryLine)).toEqual(['CC0000']);
+          expect(JSON.stringify(retryLine.Worktags_Reference)).toContain('VENUE-A');
+          expect(JSON.stringify(retryLine.Worktags_Reference)).not.toContain('CC-2025 Ryder Cup Nextgengolf Inc');
+        } finally {
+          if (previousFallbackCostCenterId === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+          else process.env.FALLBACK_COST_CENTER_ID = previousFallbackCostCenterId;
+        }
       });
 
       it('should replace split-line cost centers with fallback on a cost-center availability fault', async () => {
@@ -3624,44 +3629,49 @@ describe('Workday utilities', () => {
           ],
         };
 
+        const previousFallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;
         process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
-        const result = await submitSupplierInvoiceUpdateForTest({
-          finalLines: [
-            {
-              lineOrder: 1,
-              description: 'Split PO line',
-              quantity: 1,
-              unitCost: 100,
-              extendedAmount: 100,
-              costCenterId: 'CC-SPLIT',
-              poPassthroughWorktagsReference: [poCostCenter],
-              supplierInvoiceSplitLineData: [
-                { extendedAmount: 60, worktagReference: [poCostCenter] },
-                { extendedAmount: 40, worktagReference: [poCostCenter] },
-              ],
-            }
-          ]
-        });
-        delete process.env.FALLBACK_COST_CENTER_ID;
+        try {
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              {
+                lineOrder: 1,
+                description: 'Split PO line',
+                quantity: 1,
+                unitCost: 100,
+                extendedAmount: 100,
+                costCenterId: 'CC-SPLIT',
+                poPassthroughWorktagsReference: [poCostCenter],
+                supplierInvoiceSplitLineData: [
+                  { extendedAmount: 60, worktagReference: [poCostCenter] },
+                  { extendedAmount: 40, worktagReference: [poCostCenter] },
+                ],
+              }
+            ]
+          });
 
-        expect(result.success).toBe(true);
-        const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
-        const parentCc = (retryLine.Worktags_Reference ?? []).flatMap((tag: any) =>
-          ([] as any[]).concat(tag.ID ?? [])
-            .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
-            .map((id: any) => id.$value)
-        );
-        expect(parentCc).toEqual([]);
-        expect(retryLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
-        for (const split of retryLine.Supplier_Invoice_Split_Line_Data) {
-          const splitCc = (split.Worktag_Reference ?? []).flatMap((tag: any) =>
+          expect(result.success).toBe(true);
+          const retryLine = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          const parentCc = (retryLine.Worktags_Reference ?? []).flatMap((tag: any) =>
             ([] as any[]).concat(tag.ID ?? [])
               .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
               .map((id: any) => id.$value)
           );
-          expect(splitCc).toEqual(['CC0000']);
+          expect(parentCc).toEqual([]);
+          expect(retryLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          for (const split of retryLine.Supplier_Invoice_Split_Line_Data) {
+            const splitCc = (split.Worktag_Reference ?? []).flatMap((tag: any) =>
+              ([] as any[]).concat(tag.ID ?? [])
+                .filter((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+                .map((id: any) => id.$value)
+            );
+            expect(splitCc).toEqual(['CC0000']);
+          }
+          expect(JSON.stringify(retryLine)).not.toContain('CC-SPLIT');
+        } finally {
+          if (previousFallbackCostCenterId === undefined) delete process.env.FALLBACK_COST_CENTER_ID;
+          else process.env.FALLBACK_COST_CENTER_ID = previousFallbackCostCenterId;
         }
-        expect(JSON.stringify(retryLine)).not.toContain('CC-SPLIT');
       });
 
       it('should apply fallback Line of Business when a cost center requires LOB', async () => {

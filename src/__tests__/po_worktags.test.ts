@@ -219,6 +219,25 @@ describe('po_worktags', () => {
     ]);
   });
 
+  it('replaceCostCenterWorktagsWithFallback puts fallback on every split when only some already have a cost center', () => {
+    const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+    const original = makeWorktag('Cost_Center_Reference_ID', 'CC-PO');
+    const venue = makeWorktag('Custom_Worktag_01_ID', 'VENUE-A');
+    const { worktags, supplierInvoiceSplitLineData } = replaceCostCenterWorktagsWithFallback(
+      [original, venue],
+      [
+        { Extended_Amount: 60, Worktag_Reference: [original] },
+        { Extended_Amount: 40, Worktag_Reference: [venue] },
+      ],
+      fallback
+    );
+    expect(worktags).toEqual([venue]);
+    expect(supplierInvoiceSplitLineData).toEqual([
+      { Extended_Amount: 60, Worktag_Reference: [fallback] },
+      { Extended_Amount: 40, Worktag_Reference: [venue, fallback] },
+    ]);
+  });
+
   it('mergePassthroughWorktagReferences lets PO fund replace fallback fund', () => {
     const prev = process.env.FALLBACK_FUND_ID;
     process.env.FALLBACK_FUND_ID = 'FUND-FALLBACK';
