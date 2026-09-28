@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { openai } from '@ai-sdk/openai';
-import { ToolLoopAgent, stepCountIs, tool } from 'ai';
+import { ToolLoopAgent, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { WorkdayValidationDetails } from './invoice_validation_failures.js';
 
@@ -23,17 +23,18 @@ export interface WorkdayValidationFieldInput {
   allowedRetryFields: WorkdayValidationRetryField[];
 }
 
-function getValidationFieldModel(): string {
-  return process.env.WORKDAY_VALIDATION_FIELD_MODEL
+function getValidationFieldModel(): LanguageModel {
+  return openai(process.env.WORKDAY_VALIDATION_FIELD_MODEL
     || process.env.WORKDAY_SUBMIT_REPAIR_MODEL
-    || 'gpt-5.4-mini';
+    || 'gpt-5.4-mini');
 }
 
 export async function classifyWorkdayValidationField(
-  input: WorkdayValidationFieldInput
+  input: WorkdayValidationFieldInput,
+  { model = getValidationFieldModel() }: { model?: LanguageModel } = {}
 ): Promise<WorkdayValidationFieldDecision> {
   const agent = new ToolLoopAgent({
-    model: openai(getValidationFieldModel()),
+    model,
     instructions: `You classify Workday Supplier Invoice validation faults.
 
 Use only the validation message, detail message, and XPath returned by inspectValidationError.
