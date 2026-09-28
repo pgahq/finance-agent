@@ -71,6 +71,26 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Full error*');
   });
 
+  it('renders the shadow clustering plan as readable lines instead of JSON', async () => {
+    await notifyResult('create_invoice_shadow', 'success', 2000, {
+      mode: 'shadow',
+      attachments: ['invoice.pdf', 'packing.pdf', 'flyer.pdf'],
+      wouldCreateInvoices: 1,
+      clusters: [{ invoice: 'invoice.pdf (supplier_invoice, #INV-1)', supporting: ['packing.pdf (supporting: packing_slip)'] }],
+      unrelated: ['flyer.pdf (unrelated)'],
+      note: 'Shadow mode: nothing was written.',
+      conversationUrl: 'https://app.intercom.com/a/inbox/abc/inbox/conversation/123',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('would create 1 invoice from 3 PDFs (shadow: nothing written)');
+    expect(texts).toContain('*Invoice 1:* invoice.pdf (supplier_invoice, #INV-1)');
+    expect(texts).toContain('↳ packing.pdf (supporting: packing_slip)');
+    expect(texts).toContain('*Not attached:* flyer.pdf (unrelated)');
+    expect(texts).toContain('Shadow mode: nothing was written.');
+    expect(texts).not.toContain('"clusters"');
+  });
+
   it('omits priorFailures when the error has none', async () => {
     await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, new Error('Create failed'));
 

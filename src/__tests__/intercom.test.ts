@@ -192,6 +192,7 @@ describe('intercom', () => {
           conversation_parts: {
             conversation_parts: [{
               body: 'Use cost center 72200',
+              created_at: 1704153600,
               author: { email: 'approver@pgahq.com' },
               attachments: [
                 {
@@ -225,6 +226,7 @@ describe('intercom', () => {
             name: 'support.pdf',
             url: 'https://downloads.intercomcdn.com/support.pdf',
             contentType: 'application/pdf',
+            receivedAt: 1704067200,
             emailContext: {
               emailFrom: 'ap@vendor.com',
               subject: 'Invoice',
@@ -235,6 +237,7 @@ describe('intercom', () => {
             name: 'invoice.pdf',
             url: 'https://downloads.intercomcdn.com/invoice.pdf',
             contentType: 'application/pdf',
+            receivedAt: 1704153600,
             emailContext: {
               emailFrom: 'approver@pgahq.com',
               subject: 'Invoice',
@@ -313,6 +316,7 @@ describe('intercom', () => {
           name: 'PGA Invoice.pdf',
           url: 'https://downloads.intercomcdn.com/invoice.pdf',
           contentType: 'application/pdf',
+          receivedAt: 1704067200,
           emailContext: {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',

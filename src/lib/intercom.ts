@@ -22,6 +22,7 @@ export interface IntercomAttachment {
   url: string;
   contentType: string;
   emailContext: EmailContext;
+  receivedAt?: number;
 }
 
 export interface IntercomConversationInvoiceData {
@@ -202,7 +203,8 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
-    emailContext: EmailContext
+    emailContext: EmailContext,
+    receivedAt?: number
   ): IntercomAttachment[] => attachments
     .filter((attachment): attachment is IntercomPartAttachment & { url: string } => Boolean(attachment.url))
     .map((attachment) => ({
@@ -210,17 +212,18 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
       url: attachment.url,
       contentType: attachment.content_type || 'application/octet-stream',
       emailContext,
+      ...(receivedAt != null ? { receivedAt } : {}),
     }));
 
   return [
-    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext),
+    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext, conversation.created_at),
     ...(conversation.conversation_parts?.conversation_parts ?? []).flatMap((part) =>
       mapAttachments(part.attachments ?? [], {
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
         plainTextBody,
         ...(conversationParts ? { conversationParts } : {}),
-      })
+      }, part.created_at ?? conversation.created_at)
     ),
   ];
 }

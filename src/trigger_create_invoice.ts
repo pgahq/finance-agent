@@ -16,6 +16,7 @@ import {
   type IntercomAttachment,
 } from './lib/intercom.js';
 import { renderConversationTranscriptPdf } from './lib/conversation_transcript.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { getS3Config, putBinaryToS3 } from './lib/s3.js';
 
 interface TriggerCreateInvoiceRequest {
@@ -222,6 +223,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         contentType: attachment.contentType,
         emailContext: attachment.emailContext,
         conversationId,
+        ...(attachment.receivedAt != null ? { receivedAt: attachment.receivedAt } : {}),
         ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
         ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
         ...(conversationData.conversationCreatedAt
@@ -270,6 +272,28 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         }),
       }))
     ));
+
+    // Shadow reporting is best-effort and must never block the real per-PDF invoices above.
+    if (invoiceAttachmentClusteringMode() === 'shadow') {
+      try {
+        await lambda.send(new InvokeCommand({
+          FunctionName: processorFunctionName,
+          InvocationType: 'Event',
+          Payload: JSON.stringify({
+            data: [{
+              shadow: true,
+              conversationId,
+              ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+              attachments: uploadedAttachments,
+            }],
+            page: 1,
+            totalPages: 1,
+          }),
+        }));
+      } catch (error) {
+        debug('Failed to invoke shadow attachment clustering', { error: formatError(error), conversationId });
+      }
+    }
 
     return jsonResponse(202, {
       status: 'accepted',
