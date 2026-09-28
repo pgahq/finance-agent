@@ -4,6 +4,7 @@ import {
   humanWorkdayValidationMessage,
   isClosedPurchaseOrderLineError,
   isConfigurableAttributeValidationError,
+  isDuplicateSuppliersInvoiceNumberError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
   isQuantityUnitExtendedMismatchError,
@@ -15,6 +16,30 @@ import {
 } from '../lib/invoice_validation_failures.js';
 
 describe('invoice_validation_failures', () => {
+  it('detects a duplicate supplier invoice number and ignores supplier-only faults', () => {
+    const duplicate = {
+      Message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+      Detail_Message: "The supplier's invoice number entered is already in use.",
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]',
+    };
+    expect(isDuplicateSuppliersInvoiceNumberError(duplicate)).toBe(true);
+    expect(isDuplicateSuppliersInvoiceNumberError(
+      "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
+    )).toBe(true);
+    expect(isDuplicateSuppliersInvoiceNumberError({
+      message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+      xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]',
+    })).toBe(true);
+    expect(isDuplicateSuppliersInvoiceNumberError(
+      "You can't select this supplier to invoice this purchase order."
+    )).toBe(false);
+    expect(isDuplicateSuppliersInvoiceNumberError('Validation_Fault: supplier is invalid')).toBe(false);
+    expect(isDuplicateSuppliersInvoiceNumberError({
+      Message: 'Invalid format',
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]',
+    })).toBe(false);
+  });
+
   it('detects the closed or pending close PO line fault', () => {
     expect(isClosedPurchaseOrderLineError(
       'The Purchase Order Line referenced is from a PO that is Closed or Pending Close.'

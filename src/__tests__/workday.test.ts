@@ -5087,17 +5087,63 @@ describe('Workday utilities', () => {
       }));
     });
 
-    it('should attach priorFailures when a fallback retry still fails', async () => {
+    it('does not apply the default supplier when the supplier invoice number is already in use', async () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
 
-      const duplicateInvoiceNumber = Object.assign(
-        new Error("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"),
+      const duplicateInvoiceNumber = new Error(
+        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
+      );
+      const supplierNotValidForPo = Object.assign(
+        new Error("You can't select this supplier to invoice this purchase order."),
         {
           detail: {
             Validation_Fault: {
               Validation_Error: {
-                Message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+                Message: "You can't select this supplier to invoice this purchase order.",
+              },
+            },
+          },
+        }
+      );
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(duplicateInvoiceNumber, null);
+        })
+        .mockImplementationOnce((_request: any, callback: any) => {
+          callback(supplierNotValidForPo, null);
+        });
+
+      const rejected = submitNewSupplierInvoiceForTest({
+        suppliersInvoiceNumber: '20-1183-01',
+      });
+      await expect(rejected).rejects.toMatchObject({
+        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+      });
+      await expect(rejected).rejects.not.toHaveProperty('priorFailures');
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
+        .toBe(mockSupplierID);
+      expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
+        .toBe('20-1183-01');
+    });
+
+    it('should attach priorFailures when a fallback retry still fails', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+
+      const invalidSupplier = Object.assign(
+        new Error('Validation_Fault: supplier is invalid'),
+        {
+          detail: {
+            Validation_Fault: {
+              Validation_Error: {
+                Message: 'Validation_Fault: supplier is invalid',
               },
             },
           },
@@ -5118,7 +5164,7 @@ describe('Workday utilities', () => {
 
       mockClient.Submit_Supplier_Invoice
         .mockImplementationOnce((_request: any, callback: any) => {
-          callback(duplicateInvoiceNumber, null);
+          callback(invalidSupplier, null);
         })
         .mockImplementationOnce((_request: any, callback: any) => {
           callback(supplierNotValidForPo, null);
@@ -5129,7 +5175,7 @@ describe('Workday utilities', () => {
         priorFailures: [
           {
             attempt: 1,
-            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+            message: 'Validation_Fault: supplier is invalid',
           },
           {
             attempt: 2,
@@ -5145,13 +5191,13 @@ describe('Workday utilities', () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
 
-      const duplicateInvoiceNumber = Object.assign(
-        new Error("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"),
+      const invalidSupplier = Object.assign(
+        new Error('Validation_Fault: supplier is invalid'),
         {
           detail: {
             Validation_Fault: {
               Validation_Error: {
-                Message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+                Message: 'Validation_Fault: supplier is invalid',
               },
             },
           },
@@ -5164,7 +5210,7 @@ describe('Workday utilities', () => {
 
       mockClient.Submit_Supplier_Invoice
         .mockImplementationOnce((_request: any, callback: any) => {
-          callback(duplicateInvoiceNumber, null);
+          callback(invalidSupplier, null);
         })
         .mockImplementationOnce((_request: any, callback: any) => {
           callback(transportError, null);
@@ -5176,7 +5222,7 @@ describe('Workday utilities', () => {
         priorFailures: [
           {
             attempt: 1,
-            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+            message: 'Validation_Fault: supplier is invalid',
           },
           {
             attempt: 2,

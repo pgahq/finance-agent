@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -877,6 +877,11 @@ async function getValidationFallbackField(
   options: buildSubmitInvoiceDataOptions
 ): Promise<FallbackField | undefined> {
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
+
+  if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
+    debug('Validation is a duplicate supplier invoice number; skipping fallback retry', { validationError });
+    return undefined;
+  }
 
   if (options.assigneeWID && isAssigneeValidationError(validationText)) {
     debug('Validation references assignee; retrying without Assignee_Reference');
