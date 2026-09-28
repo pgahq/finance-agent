@@ -724,7 +724,7 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
   }
 
   if (options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber) {
-    const suffix = options.suppliersInvoiceNumber.match(/-(\d{17})$/)?.[1];
+    const suffix = options.suppliersInvoiceNumber.match(/-(\d{14})$/)?.[1];
     fallbacks.push({
       field: 'suppliersInvoiceNumber',
       label: suffix
@@ -982,7 +982,7 @@ function getDuplicateSuppliersInvoiceNumberRetryBuildOptions(
   if (options.suppliersInvoiceNumberSuffixed) return undefined;
   const suffixed = suffixDuplicateSuppliersInvoiceNumber(options.suppliersInvoiceNumber);
   if (!suffixed || suffixed === options.suppliersInvoiceNumber) return undefined;
-  const suffix = suffixed.match(/-(\d{17})$/)?.[1];
+  const suffix = suffixed.match(/-(\d{14})$/)?.[1];
   if (!suffix) return undefined;
   return {
     buildOptions: {

@@ -5127,7 +5127,7 @@ describe('Workday utilities', () => {
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
           expect.objectContaining({
             field: 'suppliersInvoiceNumber',
-            label: 'supplier invoice number suffixed with -20260928170000000',
+            label: 'supplier invoice number suffixed with -20260928170000',
           }),
         ]));
         expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
@@ -5139,7 +5139,7 @@ describe('Workday utilities', () => {
         expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
           .toBe('12345');
         expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
-          .toBe('12345-20260928170000000');
+          .toBe('12345-20260928170000');
       } finally {
         jest.useRealTimers();
       }
@@ -5194,7 +5194,7 @@ describe('Workday utilities', () => {
             },
             {
               attempt: 2,
-              fallback: 'supplier invoice number suffixed with -20260928170000000',
+              fallback: 'supplier invoice number suffixed with -20260928170000',
               message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
             },
           ],
@@ -5204,7 +5204,7 @@ describe('Workday utilities', () => {
         expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
           .toBe(mockSupplierID);
         expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
-          .toBe('12345-20260928170000000');
+          .toBe('12345-20260928170000');
       } finally {
         jest.useRealTimers();
       }

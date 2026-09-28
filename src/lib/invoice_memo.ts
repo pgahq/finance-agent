@@ -121,7 +121,6 @@ export function suppliersInvoiceNumberTimestamp(now: Date = new Date()): string 
     pad(now.getUTCHours()),
     pad(now.getUTCMinutes()),
     pad(now.getUTCSeconds()),
-    pad(now.getUTCMilliseconds(), 3),
   ].join('');
 }
 

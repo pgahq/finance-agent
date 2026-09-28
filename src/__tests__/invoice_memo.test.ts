@@ -176,9 +176,9 @@ describe('sanitizeSuppliersInvoiceNumber', () => {
 describe('suffixDuplicateSuppliersInvoiceNumber', () => {
   it('appends a UTC timestamp', () => {
     const now = new Date('2026-09-28T17:00:00.000Z');
-    expect(suppliersInvoiceNumberTimestamp(now)).toBe('20260928170000000');
-    expect(suffixDuplicateSuppliersInvoiceNumber('12345', now)).toBe('12345-20260928170000000');
-    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01SEP26', now)).toBe('20-1183-01SEP26-20260928170000000');
+    expect(suppliersInvoiceNumberTimestamp(now)).toBe('20260928170000');
+    expect(suffixDuplicateSuppliersInvoiceNumber('12345', now)).toBe('12345-20260928170000');
+    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01SEP26', now)).toBe('20-1183-01SEP26-20260928170000');
   });
 
   it('returns undefined when there is no invoice number', () => {
