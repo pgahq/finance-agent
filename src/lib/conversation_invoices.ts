@@ -59,7 +59,7 @@ export async function upsertConversationSupplierInvoice(
      DO UPDATE SET supplier_wid = EXCLUDED.supplier_wid,
                    workday_invoice_wid = EXCLUDED.workday_invoice_wid,
                    workday_invoice_number = EXCLUDED.workday_invoice_number,
-                   last_processed_received_at = EXCLUDED.last_processed_received_at,
+                   last_processed_received_at = GREATEST(conversation_supplier_invoices.last_processed_received_at, EXCLUDED.last_processed_received_at),
                    updated_at = CURRENT_TIMESTAMP`,
     [
       invoice.conversationId,
@@ -69,5 +69,46 @@ export async function upsertConversationSupplierInvoice(
       invoice.workdayInvoiceNumber,
       invoice.lastProcessedReceivedAt,
     ]
+  );
+}
+
+/**
+ * Longer than the CreateInvoiceProcessor Lambda timeout (300s, guarded by template.test.ts), so a claim
+ * can only be taken over after its owner was stopped and can no longer write.
+ */
+export const CONVERSATION_INVOICE_CLAIM_TTL_MINUTES = 15;
+
+/**
+ * Claims a conversation invoice before any Workday create or update. Returns false when another run
+ * holds a live claim; a claim older than the TTL is taken over.
+ */
+export async function acquireConversationInvoiceClaim(
+  db: DatabaseConnection,
+  conversationId: string,
+  supplierInvoiceNumber: string,
+  claimToken: string
+): Promise<boolean> {
+  const rows = await db.query(
+    `INSERT INTO conversation_invoice_claims (conversation_id, supplier_invoice_number, claim_token, claimed_at)
+     VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+     ON CONFLICT (conversation_id, supplier_invoice_number)
+     DO UPDATE SET claim_token = EXCLUDED.claim_token, claimed_at = CURRENT_TIMESTAMP
+      WHERE conversation_invoice_claims.claimed_at < CURRENT_TIMESTAMP - make_interval(mins => $4)
+     RETURNING claim_token`,
+    [conversationId, supplierInvoiceNumber, claimToken, CONVERSATION_INVOICE_CLAIM_TTL_MINUTES]
+  );
+  return rows.length > 0;
+}
+
+export async function releaseConversationInvoiceClaim(
+  db: DatabaseConnection,
+  conversationId: string,
+  supplierInvoiceNumber: string,
+  claimToken: string
+): Promise<void> {
+  await db.query(
+    `DELETE FROM conversation_invoice_claims
+      WHERE conversation_id = $1 AND supplier_invoice_number = $2 AND claim_token = $3`,
+    [conversationId, supplierInvoiceNumber, claimToken]
   );
 }

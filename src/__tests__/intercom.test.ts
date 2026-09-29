@@ -40,6 +40,18 @@ describe('intercom', () => {
       })).toBe(300);
     });
 
+    it('ignores Intercom delivery-failed bounce notes', () => {
+      expect(latestIntercomMessageAt({
+        created_at: 100,
+        source: { body: 'Invoice attached' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'note', body: '<h2>Message delivery failed</h2><p>smtp;550 5.7.129</p>', created_at: 400 },
+          ],
+        },
+      })).toBe(100);
+    });
+
     it('ignores body-less parts such as assignments and custom actions', () => {
       expect(latestIntercomMessageAt({
         created_at: 100,

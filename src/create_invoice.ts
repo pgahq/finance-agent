@@ -1,4 +1,5 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
@@ -27,7 +28,9 @@ import {
   type ClusterableAttachment,
 } from './lib/invoice_attachment_clustering.js';
 import {
+  acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
+  releaseConversationInvoiceClaim,
   upsertConversationSupplierInvoice,
   type ConversationSupplierInvoice,
 } from './lib/conversation_invoices.js';
@@ -63,6 +66,13 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
+import {
+  claimInvoiceCluster,
+  createInvoiceClusterPlan,
+  finishInvoiceCluster,
+  markInvoiceClusterUndispatched,
+  releaseInvoiceCluster,
+} from './lib/invoice_cluster_plans.js';
 import {
   closedPurchaseOrderLineNote,
   getSupplierInvoiceEditability,
@@ -167,6 +177,9 @@ export interface CreateInvoiceRequest {
   latestMessageAt?: number;
   /** Newest `receivedAt` among files grouped into the conversation's other invoice clusters. */
   otherClustersLatestReceivedAt?: number;
+  /** Cluster plan row this fanned-out record processes (`invoice_cluster_plans`). */
+  planId?: string;
+  clusterIndex?: number;
   conversationPdf?: {
     s3Key: string;
     fileName: string;
@@ -208,7 +221,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'planId' | 'clusterIndex'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -282,6 +295,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    planId: requestPlanId,
+    clusterIndex: requestClusterIndex,
   } = request;
   const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
@@ -298,13 +313,21 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
   }
 
   if (clusteringEnabled && attachments?.length && !clustered) {
-    let firstCluster;
+    let firstClusterFiles: CreateInvoiceAttachment[] = [];
     let firstOtherClustersLatestReceivedAt: number | undefined;
     let unrelated: ClassifiedAttachment[] = [];
+    const preloadedBuffers = new Map<string, Buffer>();
+    const planId = randomUUID();
+    let clusterCount = 0;
+    const undispatched: Array<{ clusterIndex: number; files: CreateInvoiceAttachment[] }> = [];
     try {
       const { clustering } = await parseAndClusterInvoiceAttachments(
         attachments,
-        (key) => getBinaryFromS3(context.s3Config, key)
+        async (key) => {
+          const buffer = await getBinaryFromS3(context.s3Config, key);
+          preloadedBuffers.set(key, buffer);
+          return buffer;
+        }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -312,19 +335,37 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       const clusterFiles = clustering.clusters.map((cluster) => [cluster.primary, ...cluster.supporting]);
       const othersLatest = (index: number) =>
         clusterMaxReceivedAt(clusterFiles.filter((_, other) => other !== index).flat());
-      firstCluster = clustering.clusters[0];
+      firstClusterFiles = clusterFiles[0];
       firstOtherClustersLatestReceivedAt = othersLatest(0);
       unrelated = clustering.unrelated;
+      clusterCount = clusterFiles.length;
+      // Every cluster is recorded before anything is dispatched or written, so each one runs once and a
+      // cluster that never ran stays visible.
+      await createInvoiceClusterPlan(
+        context.dbConnection,
+        planId,
+        conversationId,
+        clusterFiles.map((files) => files.map((file) => file.fileName))
+      );
       const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf, latestMessageAt };
-      await Promise.all(
+      const dispatches = await Promise.allSettled(
         clusterFiles.slice(1).map((files, offset) => {
           const otherLatest = othersLatest(offset + 1);
           return fanOutCluster(files, {
             ...shared,
+            planId,
+            clusterIndex: offset + 1,
             ...(otherLatest != null ? { otherClustersLatestReceivedAt: otherLatest } : {}),
           });
         })
       );
+      dispatches.forEach((dispatch, offset) => {
+        if (dispatch.status === 'rejected') {
+          const reason: unknown = dispatch.reason;
+          debug('Failed to dispatch invoice cluster', { planId, clusterIndex: offset + 1, error: reason });
+          undispatched.push({ clusterIndex: offset + 1, files: clusterFiles[offset + 1] });
+        }
+      });
     } catch (error) {
       const processingTime = Date.now() - startTime;
       debug('Error clustering invoice attachments:', error);
@@ -337,24 +378,51 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       );
       throw error;
     }
-    await createInvoiceFromCluster(context, {
-      files: [firstCluster.primary, ...firstCluster.supporting],
-      unrelated,
-      emailContext,
-      conversationId,
-      intercomAppId,
-      assigneeEmail,
-      conversationCreatedAt,
-      conversationPdf,
-      latestMessageAt,
-      otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
-      startTime,
-      clustered: true,
-    });
+    for (const { clusterIndex } of undispatched) {
+      await markInvoiceClusterUndispatched(context.dbConnection, planId, clusterIndex).catch((error: unknown) => {
+        debug('Failed to mark undispatched invoice cluster', { planId, clusterIndex, error });
+      });
+    }
+    try {
+      await createInvoiceFromCluster(context, {
+        files: firstClusterFiles,
+        unrelated,
+        emailContext,
+        conversationId,
+        intercomAppId,
+        assigneeEmail,
+        conversationCreatedAt,
+        conversationPdf,
+        latestMessageAt,
+        otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
+        preloadedBuffers,
+        plan: { planId, clusterIndex: 0 },
+        startTime,
+        clustered: true,
+      });
+    } finally {
+      if (undispatched.length) {
+        await notifyResult(
+          'create_invoice',
+          'error',
+          Date.now() - startTime,
+          slackInvoiceDetails({
+            planId,
+            undispatchedClusters: undispatched.map(({ files }) => files.map((file) => file.fileName)),
+          }, conversationId, intercomAppId),
+          new Error(
+            `${undispatched.length} of ${clusterCount} invoice clusters could not be dispatched and were not processed. ` +
+            'Re-trigger the conversation to process them; invoices already created for this conversation are not duplicated.'
+          )
+        );
+      }
+    }
     return;
   }
 
-  if (attachments?.length && (clustered || clusteringEnabled)) {
+  // A processor whose cached flag is off never groups, even for a clustered fan-out record, so a
+  // flag flip mid-flight falls back to one invoice per PDF rather than a cluster the registry skips.
+  if (attachments?.length && clusteringEnabled) {
     await createInvoiceFromCluster(context, {
       files: attachments,
       unrelated: [],
@@ -366,6 +434,9 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       conversationPdf,
       latestMessageAt,
       otherClustersLatestReceivedAt,
+      ...(clustered && requestPlanId && requestClusterIndex != null
+        ? { plan: { planId: requestPlanId, clusterIndex: requestClusterIndex } }
+        : {}),
       startTime,
       clustered: true,
     });
@@ -426,8 +497,20 @@ interface ClusterInvoiceInput {
   };
   latestMessageAt?: number;
   otherClustersLatestReceivedAt?: number;
+  /** Buffers already downloaded for classification in this invocation, keyed by S3 key. */
+  preloadedBuffers?: Map<string, Buffer>;
+  /** Cluster plan row this run owns; claimed before any work so a duplicate delivery does nothing. */
+  plan?: { planId: string; clusterIndex: number };
   startTime: number;
   clustered: boolean;
+}
+
+/** Set while processing a cluster so the wrapper can finish the plan row and release the invoice claim. */
+interface ClusterRunState {
+  invoiceClaim?: { conversationId: string; supplierInvoiceNumber: string; claimToken: string };
+  /** Another run held the invoice claim, so this run did no Workday or registry work. */
+  invoiceClaimContended?: boolean;
+  workdayInvoiceWid?: string;
 }
 
 interface LoadedClusterFile extends CreateInvoiceAttachment {
@@ -448,6 +531,70 @@ function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<strin
 }
 
 async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
+  const { plan } = input;
+  if (plan && !(await claimInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex))) {
+    debug('Invoice cluster already done or being processed by another run; skipping', plan);
+    return;
+  }
+  const run: ClusterRunState = {};
+  try {
+    await processInvoiceCluster(context, input, run);
+    if (plan && run.invoiceClaimContended) {
+      await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
+        .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
+    } else if (plan) {
+      await markInvoiceClusterDone(context, input, plan, run.workdayInvoiceWid);
+    }
+  } catch (error) {
+    if (plan) {
+      // Once Workday accepted the invoice, a later failure must not make the cluster retryable.
+      if (run.workdayInvoiceWid) {
+        await markInvoiceClusterDone(context, input, plan, run.workdayInvoiceWid);
+      } else {
+        await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'failed')
+          .catch((finishError: unknown) => debug('Failed to mark invoice cluster failed', { ...plan, error: finishError }));
+      }
+    }
+    throw error;
+  } finally {
+    const claim = run.invoiceClaim;
+    if (claim) {
+      await releaseConversationInvoiceClaim(context.dbConnection, claim.conversationId, claim.supplierInvoiceNumber, claim.claimToken)
+        .catch((error: unknown) => debug('Failed to release conversation invoice claim', { ...claim, error }));
+    }
+  }
+}
+
+async function markInvoiceClusterDone(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  plan: { planId: string; clusterIndex: number },
+  workdayInvoiceWid: string | undefined
+): Promise<void> {
+  try {
+    await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'done', workdayInvoiceWid);
+  } catch (error) {
+    // The row stays processing and becomes claimable after the TTL, so AP must know it may be reprocessed.
+    debug('Failed to mark invoice cluster done', { ...plan, error });
+    await notifyResult(
+      'create_invoice',
+      'error',
+      Date.now() - input.startTime,
+      slackInvoiceDetails({
+        ...plan,
+        ...(workdayInvoiceWid ? { invoiceWID: workdayInvoiceWid } : {}),
+        attachments: input.files.map((file) => file.fileName),
+      }, input.conversationId, input.intercomAppId),
+      new Error('The invoice was processed but its cluster plan row could not be marked done; a later retry of this cluster could process it again.')
+    );
+  }
+}
+
+async function processInvoiceCluster(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  run: ClusterRunState
+): Promise<void> {
   const {
     files,
     unrelated,
@@ -459,6 +606,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    preloadedBuffers,
     startTime,
     clustered,
   } = input;
@@ -470,7 +618,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
     const loaded: LoadedClusterFile[] = await Promise.all(files.map(async (file) => {
       const [buffer, presignedUrl] = await Promise.all([
-        getBinaryFromS3(context.s3Config, file.s3Key),
+        preloadedBuffers?.get(file.s3Key) ?? getBinaryFromS3(context.s3Config, file.s3Key),
         getPresignedUrl(context.s3Config, file.s3Key),
       ]);
       return { ...file, buffer, presignedUrl };
@@ -490,9 +638,14 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     }] : [];
     const submitAttachments = [...loaded.map(toSubmitAttachment), ...transcriptAttachments];
     const buffer = loaded[0].buffer;
-    const processedAttachments = loaded.map((file) => ({
+    // Resends often reuse one name (for example two `Invoice.pdf` versions in one cluster), so enrichment
+    // sees numbered names, matching classification, to tell the invoice from its backup.
+    const numberFileNames = clustered && loaded.length > 1;
+    const enrichmentFileName = (file: LoadedClusterFile, index: number) =>
+      numberFileNames ? `${index + 1}-${file.fileName}` : file.fileName;
+    const processedAttachments = loaded.map((file, index) => ({
       id: file.s3Key,
-      fileName: file.fileName,
+      fileName: enrichmentFileName(file, index),
       contentType: file.contentType,
       presignedUrl: file.presignedUrl,
       expiresAt: new Date(Date.now() + 3600 * 1000),
@@ -500,15 +653,15 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       buffer: file.buffer,
     }));
     const attachmentRoles: InvoiceAttachmentRole[] | undefined =
-      clustered && loaded.length > 1
+      numberFileNames
         ? loaded.map((file, index) => ({
-          fileName: file.fileName,
+          fileName: enrichmentFileName(file, index),
           role: index === 0 ? 'invoice' as const : 'supporting' as const,
         }))
         : undefined;
 
-    // There's no existing Workday invoice yet, so enrich against a stub with no
-    // existing supplier. Prefer the PO company when a matching PO is found;
+    // Enrich against a stub with no existing supplier, even on a resend update, so the latest documents
+    // decide the supplier. Prefer the PO company when a matching PO is found;
     // otherwise use Default OCR Company.
     const stubInvoice: WorkdayInvoice = {};
     const parsedPo = await resolvePurchaseOrder(context, fileName, emailContext);
@@ -793,6 +946,20 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     let replacedInvoice: ConversationSupplierInvoice | undefined;
 
     if (clusteringEnabled && conversationId && registryNumber) {
+      // Claim before reading the registry, so two racing triggers cannot both decide to create or update.
+      const claimToken = randomUUID();
+      if (!(await acquireConversationInvoiceClaim(context.dbConnection, conversationId, registryNumber, claimToken))) {
+        debug('Another run holds the claim for this conversation invoice; skipping', { conversationId, registryNumber });
+        run.invoiceClaimContended = true;
+        await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
+          ...sharedSlackDetails,
+          skipped: true,
+          inProgressElsewhere: true,
+          skipReason: `Another run is already processing supplier invoice ${extractedSuppliersInvoiceNumber} for this conversation; skipped to avoid a duplicate.`,
+        }, conversationId, intercomAppId));
+        return;
+      }
+      run.invoiceClaim = { conversationId, supplierInvoiceNumber: registryNumber, claimToken };
       const existing = await getConversationSupplierInvoice(context.dbConnection, conversationId, registryNumber);
       const registeredSupplierWID = isRealSupplier(existing?.supplierWid) ? existing.supplierWid : undefined;
       const supplierChanged = Boolean(
@@ -819,6 +986,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       const invoiceLabel = existing ? existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid : undefined;
 
       const skipResend = async (skipReason: string, extra: Record<string, unknown> = {}) => {
+        let skipRegistrySyncFailed = false;
         if (existing && clusterReceivedAt != null && (watermark == null || clusterReceivedAt > watermark)) {
           // Everything up to now has been seen and judged not new for this invoice, so a later
           // text-only reply about it still counts as new.
@@ -833,6 +1001,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             });
           } catch (error) {
             debug('Failed to advance conversation invoice registry watermark after skip:', error);
+            skipRegistrySyncFailed = true;
           }
         }
         await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
@@ -842,6 +1011,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           skipped: true,
           skipReason,
           ...extra,
+          ...(skipRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
       };
 
@@ -856,7 +1026,10 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             conversationId,
             invoiceLabel,
           });
-          await skipResend(`Invoice ${invoiceLabel} was canceled and no newer document for it arrived, so no replacement was created.`);
+          await skipResend(
+            `Invoice ${invoiceLabel} was canceled and no newer document for it arrived, so no replacement was created.`,
+            { canceledNotReplaced: true },
+          );
           return;
         }
         replacedInvoice = existing;
@@ -926,6 +1099,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           attachments: submitAttachments,
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
         });
+        run.workdayInvoiceWid = existing.workdayInvoiceWid;
         let updateRegistrySyncFailed = false;
         try {
           await upsertConversationSupplierInvoice(context.dbConnection, {
@@ -998,6 +1172,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
 
     const processingTime = Date.now() - startTime;
 
+    run.workdayInvoiceWid = createOutcome.invoiceWID;
     const possibleDuplicate = isPossibleDuplicate(createOutcome.appliedFallbacks, createOutcome.priorFailures);
     let registrySyncFailed = false;
     if (trackResends && conversationId && registryNumber) {

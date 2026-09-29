@@ -196,7 +196,7 @@ export function buildIntercomConversationPartsText(conversation: IntercomConvers
 /** Newest Unix-seconds timestamp among the source email and conversation parts that carry a body or attachments. */
 export function latestIntercomMessageAt(conversation: IntercomConversationResponse): number | undefined {
   const hasContent = (body: string | null | undefined, attachments: unknown[] | undefined) =>
-    Boolean(body?.trim()) || Boolean(attachments?.length);
+    !isIntercomMessageDeliveryFailedBody(body) && (Boolean(body?.trim()) || Boolean(attachments?.length));
   let latest: number | undefined;
   const consider = (at: number | undefined) => {
     if (at != null && Number.isFinite(at) && (latest == null || at > latest)) latest = at;

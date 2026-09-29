@@ -207,6 +207,43 @@ describe('notifyResult', () => {
     expect(texts).toContain('re-sent documents need manual review.');
   });
 
+  it('keeps resend headlines when Workday returned only a WID', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'b'.repeat(32),
+      skipped: true,
+      skipReason: 'No documents or messages newer than the last processing.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(`skipped resend for \`${'b'.repeat(32)}\` (nothing new)`);
+    expect(texts).not.toContain('function ran');
+  });
+
+  it('labels a canceled invoice that was not replaced instead of saying nothing new', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-1',
+      skipped: true,
+      canceledNotReplaced: true,
+      skipReason: 'Invoice SUPIN-1 was canceled and no newer document for it arrived, so no replacement was created.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend for `SUPIN-1` (canceled; not replaced)');
+    expect(texts).not.toContain('nothing new');
+  });
+
+  it('says another run is processing when a claim was already held', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      skipped: true,
+      inProgressElsewhere: true,
+      skipReason: 'Another run is already processing supplier invoice INV-1 for this conversation; skipped to avoid a duplicate.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend (another run is processing it)');
+  });
+
   it('warns in the headline and body when a create may be a duplicate', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

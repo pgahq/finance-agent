@@ -30,12 +30,22 @@ changes must go through the migration helper.
 plus normalized supplier invoice number → Workday invoice WID/number,
 real resolved supplier WID (null when only the default supplier resolved),
 `last_processed_received_at` watermark — newest document or conversation
-message already processed) is created the same way in `getDatabaseConnection`.
+message time already considered for that invoice, whether it was applied or
+judged not new; it only moves forward) is created the same way in `getDatabaseConnection`.
 Its `UNIQUE (conversation_id, supplier_invoice_number)` constraint is the
 lookup index; do not add a second index on those columns. Reads/writes go through
 `src/lib/conversation_invoices.ts`, keyed by `normalizeClusterInvoiceNumber`.
-Concurrent double-fires can race lookup-then-create; the unique key keeps one
-row per conversation and number.
+Concurrent runs are serialized by `conversation_invoice_claims` (primary key
+conversation plus number, `claim_token`, `claimed_at`; a claim older than 15
+minutes can be taken over), claimed before the registry read and released by
+token afterwards.
+
+`invoice_cluster_plans` (primary key `plan_id` plus `cluster_index`;
+`conversation_id`, `file_names` JSONB, `status` pending/processing/done/failed,
+`workday_invoice_wid`, `claimed_at`) records each grouped create-invoice
+request's clusters before dispatch; each cluster run claims its row before any
+work. Both tables are created at cold start next to the registry; rows are not
+pruned yet.
 
 ## Shared pool lifetime
 

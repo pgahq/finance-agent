@@ -165,6 +165,8 @@ describe('Database Library', () => {
       expect(mockRelease).toHaveBeenCalledTimes(1);
       const initSql = mockQuery.mock.calls.map(([sql]) => String(sql));
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_supplier_invoices'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_invoice_claims'))).toBe(true);
+      expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS invoice_cluster_plans'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('UNIQUE (conversation_id, supplier_invoice_number)'))).toBe(true);
     });
 
