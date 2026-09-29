@@ -22,11 +22,13 @@ export interface IntercomAttachment {
   url: string;
   contentType: string;
   emailContext: EmailContext;
+  receivedAt?: number;
 }
 
 export interface IntercomConversationInvoiceData {
   attachments: IntercomAttachment[];
   transcript: ConversationTranscript;
+  latestMessageAt?: number;
   appId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
@@ -191,6 +193,23 @@ export function buildIntercomConversationPartsText(conversation: IntercomConvers
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
+/** Newest Unix-seconds timestamp among the source email and conversation parts that carry a body or attachments. */
+export function latestIntercomMessageAt(conversation: IntercomConversationResponse): number | undefined {
+  const hasContent = (body: string | null | undefined, attachments: unknown[] | undefined) =>
+    !isIntercomMessageDeliveryFailedBody(body) && (Boolean(body?.trim()) || Boolean(attachments?.length));
+  let latest: number | undefined;
+  const consider = (at: number | undefined) => {
+    if (at != null && Number.isFinite(at) && (latest == null || at > latest)) latest = at;
+  };
+  if (hasContent(conversation.source?.body, conversation.source?.attachments)) {
+    consider(conversation.created_at);
+  }
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    if (hasContent(part.body, part.attachments)) consider(part.created_at ?? conversation.created_at);
+  }
+  return latest;
+}
+
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const plainTextBody = buildIntercomPlainTextBody(conversation);
   const conversationParts = buildIntercomConversationPartsText(conversation);
@@ -202,7 +221,8 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
-    emailContext: EmailContext
+    emailContext: EmailContext,
+    receivedAt?: number
   ): IntercomAttachment[] => attachments
     .filter((attachment): attachment is IntercomPartAttachment & { url: string } => Boolean(attachment.url))
     .map((attachment) => ({
@@ -210,17 +230,18 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
       url: attachment.url,
       contentType: attachment.content_type || 'application/octet-stream',
       emailContext,
+      ...(receivedAt != null ? { receivedAt } : {}),
     }));
 
   return [
-    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext),
+    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext, conversation.created_at),
     ...(conversation.conversation_parts?.conversation_parts ?? []).flatMap((part) =>
       mapAttachments(part.attachments ?? [], {
         emailFrom: part.author?.email || sourceContext.emailFrom,
         subject: sourceContext.subject,
         plainTextBody,
         ...(conversationParts ? { conversationParts } : {}),
-      })
+      }, part.created_at ?? conversation.created_at)
     ),
   ];
 }
@@ -330,6 +351,7 @@ export async function fetchConversationInvoiceData(
     ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
     : undefined;
   const transcript = buildConversationTranscript(conversation, { conversationId });
+  const latestMessageAt = latestIntercomMessageAt(conversation);
 
   return {
     attachments: invoiceAttachments.map((attachment) => ({
@@ -337,6 +359,7 @@ export async function fetchConversationInvoiceData(
       name: sanitizeFileName(attachment.name),
     })),
     transcript,
+    ...(latestMessageAt != null ? { latestMessageAt } : {}),
     ...(conversation.app_id?.trim() ? { appId: conversation.app_id.trim() } : {}),
     ...(assigneeEmail ? { assigneeEmail } : {}),
     ...(conversationCreatedAt ? { conversationCreatedAt } : {}),

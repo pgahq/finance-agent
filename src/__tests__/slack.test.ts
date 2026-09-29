@@ -71,6 +71,26 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Full error*');
   });
 
+  it('renders the shadow clustering plan as readable lines instead of JSON', async () => {
+    await notifyResult('create_invoice_shadow', 'success', 2000, {
+      mode: 'shadow',
+      attachments: ['invoice.pdf', 'packing.pdf', 'flyer.pdf'],
+      wouldCreateInvoices: 1,
+      clusters: [{ invoice: 'invoice.pdf (supplier_invoice, #INV-1)', supporting: ['packing.pdf (supporting: packing_slip)'] }],
+      unrelated: ['flyer.pdf (unrelated)'],
+      note: 'Shadow mode: nothing was written.',
+      conversationUrl: 'https://app.intercom.com/a/inbox/abc/inbox/conversation/123',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('would create 1 invoice from 3 PDFs (shadow: nothing written)');
+    expect(texts).toContain('*Invoice 1:* invoice.pdf (supplier_invoice, #INV-1)');
+    expect(texts).toContain('↳ packing.pdf (supporting: packing_slip)');
+    expect(texts).toContain('*Not attached:* flyer.pdf (unrelated)');
+    expect(texts).toContain('Shadow mode: nothing was written.');
+    expect(texts).not.toContain('"clusters"');
+  });
+
   it('omits priorFailures when the error has none', async () => {
     await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, new Error('Create failed'));
 
@@ -121,6 +141,143 @@ describe('notifyResult', () => {
     expect(texts).toContain('"conversationId": "1234567890"');
     expect(texts).not.toContain('"resolvedName"');
     expect(texts).not.toContain('conversationUrl');
+  });
+
+  it('lists clustered files and unrelated docs on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      attachments: [
+        { fileName: 'invoice.pdf', kind: 'supplier_invoice' },
+        { fileName: 'packing-slip.pdf', kind: 'supporting' },
+      ],
+      unrelatedAttachments: ['other.pdf'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"fileName": "invoice.pdf"');
+    expect(texts).toContain('invoice.pdf (supplier_invoice)');
+    expect(texts).toContain('packing-slip.pdf (supporting)');
+    expect(texts).toContain('"unrelatedAttachments"');
+  });
+
+  it('announces resend updates with an updated headline', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      updated: true,
+      attachment: { fileName: 'v2.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('updated `SUPIN-412727`');
+    expect(texts).not.toContain('created `SUPIN-412727`');
+  });
+
+  it('renders resend skips with the skip reason', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      skipped: true,
+      skipReason: 'No documents newer than the last processing of SUPIN-412727.',
+      attachment: { fileName: 'v2.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend for `SUPIN-412727`');
+    expect(texts).not.toContain('created `SUPIN-412727`');
+    expect(texts).toContain('*Skipped*');
+    expect(texts).toContain('No documents newer than the last processing of SUPIN-412727.');
+    expect(texts).toContain('"skipped": true');
+  });
+
+  it('flags resends that need manual review in the headline instead of saying created', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      skipped: true,
+      needsManualReview: true,
+      skipReason: 'Invoice SUPIN-412727 is Approved (paid); re-sent documents need manual review.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('needs manual review for `SUPIN-412727`');
+    expect(texts).not.toContain('created `SUPIN-412727`');
+    expect(texts).toContain('re-sent documents need manual review.');
+  });
+
+  it('keeps resend headlines when Workday returned only a WID', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'b'.repeat(32),
+      skipped: true,
+      skipReason: 'No documents or messages newer than the last processing.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(`skipped resend for \`${'b'.repeat(32)}\` (nothing new)`);
+    expect(texts).not.toContain('function ran');
+  });
+
+  it('labels a canceled invoice that was not replaced instead of saying nothing new', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-1',
+      skipped: true,
+      canceledNotReplaced: true,
+      skipReason: 'Invoice SUPIN-1 was canceled and no newer document for it arrived, so no replacement was created.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend for `SUPIN-1` (canceled; not replaced)');
+    expect(texts).not.toContain('nothing new');
+  });
+
+  it('says another run is processing when a claim was already held', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      skipped: true,
+      inProgressElsewhere: true,
+      skipReason: 'Another run is already processing supplier invoice INV-1 for this conversation; skipped to avoid a duplicate.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend (another run is processing it)');
+  });
+
+  it('warns in the headline and body when a create may be a duplicate', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      possibleDuplicate: "Possible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.",
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412727` (possible duplicate, check before approving)');
+    expect(texts).toContain("*Possible duplicate*\nPossible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.");
+  });
+
+  it('names the canceled invoice a new create replaces', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412728',
+      replacesCanceledInvoice: 'SUPIN-412727',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412728`');
+    expect(texts).toContain('"replacesCanceledInvoice": "SUPIN-412727"');
+  });
+
+  it('surfaces registry sync failures on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      registrySync: 'failed',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"registrySync": "failed"');
   });
 
   it('omits the Workday invoice number on create when Invoice_Number is missing', async () => {

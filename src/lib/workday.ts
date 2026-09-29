@@ -1451,6 +1451,11 @@ export type SupplierInvoiceSubmitPriorFailure = {
   message: string;
 };
 
+/** Workday rejects a supplier invoice number already used on another invoice for the same supplier. */
+export function isDuplicateSuppliersInvoiceNumberMessage(message: string | undefined): boolean {
+  return /supplier['’]?s invoice number.*already in use/i.test(message ?? '');
+}
+
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   Validation_Fault?: unknown;
@@ -1481,7 +1486,7 @@ interface SubmitSupplierInvoiceWithRepairOptions {
   invoiceWorkdayID: string | undefined;
   currentInvoice: any;
   buildOptions: buildSubmitInvoiceDataOptions;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   operationName: string;
   submitLogMessage: string;
   requestDebugLabel?: string;
@@ -1696,6 +1701,7 @@ async function submitSupplierInvoiceWithRepair({
   result: unknown;
   finalBuildOptions: buildSubmitInvoiceDataOptions;
   priorFailures: SupplierInvoiceSubmitPriorFailure[];
+  validationTriggeredFields: Set<FallbackField>;
 }> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   const relatedLines = linesWithRelatedLob(buildOptions);
@@ -1710,7 +1716,7 @@ async function submitSupplierInvoiceWithRepair({
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
     );
-    const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks) };
+    const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks, [...priorFailures]) };
     const invoiceData = buildSubmitInvoiceData(optionsWithNotes) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
 
@@ -1720,7 +1726,7 @@ async function submitSupplierInvoiceWithRepair({
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
-      return { result, finalBuildOptions: attemptBuildOptions, priorFailures };
+      return { result, finalBuildOptions: attemptBuildOptions, priorFailures, validationTriggeredFields };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -1976,6 +1982,53 @@ export async function getSupplierInvoice(
   return invoice;
 }
 
+export interface SupplierInvoiceEditability {
+  found: boolean;
+  editable: boolean;
+  status?: string;
+  isCanceled?: boolean;
+  isPaid?: boolean;
+  isPartiallyPaid?: boolean;
+}
+
+const WORKDAY_WID_PATTERN = /^[0-9a-f]{32}$/i;
+
+/** Mirrors the enrich-invoice editability guards so resends only touch Draft, unpaid, uncancelled invoices. */
+export async function getSupplierInvoiceEditability(
+  context: { workdayConfig: WorkdayConfig },
+  invoiceWorkdayID: string
+): Promise<SupplierInvoiceEditability> {
+  if (!WORKDAY_WID_PATTERN.test(invoiceWorkdayID)) {
+    throw new Error(`Invalid invoice Workday ID for status lookup: ${invoiceWorkdayID}`);
+  }
+  const result = await executeWorkdayQuery(
+    context.workdayConfig,
+    `SELECT workdayID, invoiceStatusAsText, isCanceled, invoiceIsPaid, invoiceIsPartiallyPaid
+     FROM supplierInvoices (dataSourceFilter = supplierInvoicesFilter)
+     WHERE workdayID = '${invoiceWorkdayID}'`
+  );
+  const row = (result.data as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!row) return { found: false, editable: false };
+  // Only an explicit false counts as "not canceled/paid"; missing or unexpected encodings fail closed.
+  const isExplicitlyFalse = (value: unknown) => value === false || value === 'false' || value === 0 || value === '0';
+  const isTrue = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1';
+  const status = typeof row.invoiceStatusAsText === 'string' ? row.invoiceStatusAsText : undefined;
+  const isCanceled = isTrue(row.isCanceled);
+  const isPaid = isTrue(row.invoiceIsPaid);
+  const isPartiallyPaid = isTrue(row.invoiceIsPartiallyPaid);
+  return {
+    found: true,
+    editable: status === 'Draft'
+      && isExplicitlyFalse(row.isCanceled)
+      && isExplicitlyFalse(row.invoiceIsPaid)
+      && isExplicitlyFalse(row.invoiceIsPartiallyPaid),
+    ...(status ? { status } : {}),
+    isCanceled,
+    isPaid,
+    isPartiallyPaid,
+  };
+}
+
 export interface InboundEmailData {
   emailFrom?: string;
   subject?: string;
@@ -2093,10 +2146,11 @@ export async function getWorkQueueTagWIDs(
 export interface SubmitSupplierInvoiceUpdateParams {
   invoiceWorkdayID: string;
   supplierWID?: string;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
   companyWID?: string;
+  companyReferenceType?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -2107,6 +2161,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   paymentTermsId?: string;
   omitPurchaseOrderLineReference?: boolean;
+  attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -2118,6 +2173,7 @@ export async function submitSupplierInvoiceUpdate(
     memo,
     invoiceDate,
     companyWID,
+    companyReferenceType,
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
@@ -2128,6 +2184,7 @@ export async function submitSupplierInvoiceUpdate(
     resolveCostCenterWorkdayIds,
     paymentTermsId,
     omitPurchaseOrderLineReference,
+    attachments,
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{
   success: boolean;
@@ -2164,7 +2221,7 @@ export async function submitSupplierInvoiceUpdate(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
+  const { finalBuildOptions, priorFailures, validationTriggeredFields } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID,
@@ -2173,6 +2230,7 @@ export async function submitSupplierInvoiceUpdate(
       currentInvoice,
       supplierWID,
       companyWID,
+      companyReferenceType,
       workQueueTags,
       memo,
       invoiceDate,
@@ -2187,13 +2245,16 @@ export async function submitSupplierInvoiceUpdate(
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true,
       omitPurchaseOrderLineReference,
+      attachments,
     },
     buildNotes,
     operationName: 'submitSupplierInvoiceUpdate',
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
 
-  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions).map(fallback =>
+    validationTriggeredFields.has(fallback.field) ? { ...fallback, dueToValidationError: true as const } : fallback
+  );
   debug('Supplier invoice updated successfully', { appliedFallbacks, priorFailures });
 
   return {
@@ -2209,7 +2270,7 @@ export interface SubmitNewSupplierInvoiceParams {
   companyWID: string;
   companyReferenceType?: string;
   currencyWID?: string;
-  buildNotes: (appliedFallbacks: AppliedFallback[]) => string;
+  buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
   invoiceReceivedDate?: string;
@@ -2275,7 +2336,7 @@ export async function submitNewSupplierInvoice(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { result, finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
+  const { result, finalBuildOptions, priorFailures, validationTriggeredFields } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID: undefined,
@@ -2309,7 +2370,9 @@ export async function submitNewSupplierInvoice(
     submitLogMessage: 'Submitting new Supplier Invoice to Workday',
   });
 
-  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions).map(fallback =>
+    validationTriggeredFields.has(fallback.field) ? { ...fallback, dueToValidationError: true as const } : fallback
+  );
   const invoiceWID = extractIdsByType(result, 'WID')[0];
   let invoiceNumber: string | undefined;
   if (invoiceWID) {

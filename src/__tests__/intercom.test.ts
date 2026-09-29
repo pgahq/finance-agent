@@ -7,6 +7,7 @@ import {
   fetchConversationInvoiceData,
   getIntercomConfig,
   intercomConversationCreatedAtToIsoDate,
+  latestIntercomMessageAt,
   IntercomAttachmentTooLargeError,
   IntercomNoAttachmentError,
   IntercomNotFoundError,
@@ -20,6 +21,49 @@ describe('intercom', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     jest.restoreAllMocks();
+  });
+
+  describe('latestIntercomMessageAt', () => {
+    it('counts a text-only supplier reply as newer information', () => {
+      expect(latestIntercomMessageAt({
+        created_at: 100,
+        source: { body: 'Invoice attached', attachments: [{ url: 'https://downloads.intercomcdn.com/a.pdf' }] },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'comment', body: 'PO is PO-413898', created_at: 300 },
+          ],
+        },
+      })).toBe(300);
+    });
+
+    it('ignores Intercom delivery-failed bounce notes', () => {
+      expect(latestIntercomMessageAt({
+        created_at: 100,
+        source: { body: 'Invoice attached' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'note', body: '<h2>Message delivery failed</h2><p>smtp;550 5.7.129</p>', created_at: 400 },
+          ],
+        },
+      })).toBe(100);
+    });
+
+    it('ignores body-less parts such as assignments and custom actions', () => {
+      expect(latestIntercomMessageAt({
+        created_at: 100,
+        source: { body: 'Invoice attached' },
+        conversation_parts: {
+          conversation_parts: [
+            { part_type: 'assignment', body: null, created_at: 400 },
+            { part_type: 'custom_action_started', body: '   ', created_at: 500 },
+          ],
+        },
+      })).toBe(100);
+    });
+
+    it('returns undefined when no message has content', () => {
+      expect(latestIntercomMessageAt({ created_at: 100 })).toBeUndefined();
+    });
   });
 
   describe('getIntercomConfig', () => {
@@ -192,6 +236,7 @@ describe('intercom', () => {
           conversation_parts: {
             conversation_parts: [{
               body: 'Use cost center 72200',
+              created_at: 1704153600,
               author: { email: 'approver@pgahq.com' },
               attachments: [
                 {
@@ -225,6 +270,7 @@ describe('intercom', () => {
             name: 'support.pdf',
             url: 'https://downloads.intercomcdn.com/support.pdf',
             contentType: 'application/pdf',
+            receivedAt: 1704067200,
             emailContext: {
               emailFrom: 'ap@vendor.com',
               subject: 'Invoice',
@@ -235,6 +281,7 @@ describe('intercom', () => {
             name: 'invoice.pdf',
             url: 'https://downloads.intercomcdn.com/invoice.pdf',
             contentType: 'application/pdf',
+            receivedAt: 1704153600,
             emailContext: {
               emailFrom: 'approver@pgahq.com',
               subject: 'Invoice',
@@ -313,6 +360,7 @@ describe('intercom', () => {
           name: 'PGA Invoice.pdf',
           url: 'https://downloads.intercomcdn.com/invoice.pdf',
           contentType: 'application/pdf',
+          receivedAt: 1704067200,
           emailContext: {
             emailFrom: 'jonyejekwe@pgahq.com',
             subject: '<p>AP Agent</p>',
