@@ -257,41 +257,52 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-CreateInvoiceProcessor`;
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
+    const clusteringMode = invoiceAttachmentClusteringMode();
+    const sendGroupedInvoke = (extra: Record<string, unknown> = {}) => lambda.send(new InvokeCommand({
+      FunctionName: processorFunctionName,
+      InvocationType: 'Event',
+      Payload: JSON.stringify({
+        data: [{
+          conversationId,
+          ...(conversationData.latestMessageAt != null ? { latestMessageAt: conversationData.latestMessageAt } : {}),
+          ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
+          ...(conversationData.assigneeEmail ? { assigneeEmail: conversationData.assigneeEmail } : {}),
+          ...(conversationData.conversationCreatedAt
+            ? { conversationCreatedAt: conversationData.conversationCreatedAt }
+            : {}),
+          conversationPdf,
+          attachments: uploadedAttachments,
+          ...extra,
+        }],
+        page: 1,
+        totalPages: 1,
+      }),
+    }));
 
-    await Promise.all(uploadedAttachments.map((attachment) =>
-      lambda.send(new InvokeCommand({
-        FunctionName: processorFunctionName,
-        InvocationType: 'Event',
-        Payload: JSON.stringify({
-          data: [{
-            ...attachment,
-            conversationPdf,
-          }],
-          page: 1,
-          totalPages: 1,
-        }),
-      }))
-    ));
-
-    // Shadow reporting is best-effort and must never block the real per-PDF invoices above.
-    if (invoiceAttachmentClusteringMode() === 'shadow') {
-      try {
-        await lambda.send(new InvokeCommand({
+    if (clusteringMode === 'on') {
+      await sendGroupedInvoke();
+    } else {
+      await Promise.all(uploadedAttachments.map((attachment) =>
+        lambda.send(new InvokeCommand({
           FunctionName: processorFunctionName,
           InvocationType: 'Event',
           Payload: JSON.stringify({
             data: [{
-              shadow: true,
-              conversationId,
-              ...(conversationData.appId ? { intercomAppId: conversationData.appId } : {}),
-              attachments: uploadedAttachments,
+              ...attachment,
+              conversationPdf,
             }],
             page: 1,
             totalPages: 1,
           }),
-        }));
-      } catch (error) {
-        debug('Failed to invoke shadow attachment clustering', { error: formatError(error), conversationId });
+        }))
+      ));
+      // Shadow reporting is best-effort and must never block the real per-PDF invoices above.
+      if (clusteringMode === 'shadow') {
+        try {
+          await sendGroupedInvoke({ shadow: true });
+        } catch (error) {
+          debug('Failed to invoke shadow attachment clustering', { error: formatError(error), conversationId });
+        }
       }
     }
 
