@@ -1,5 +1,7 @@
 import {
+  acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
+  releaseConversationInvoiceClaim,
   upsertConversationSupplierInvoice,
 } from '../lib/conversation_invoices.js';
 import type { DatabaseConnection } from '../lib/database.js';
@@ -57,5 +59,25 @@ describe('upsertConversationSupplierInvoice', () => {
     expect(query.mock.calls[0][0]).toContain(
       'last_processed_received_at = GREATEST(conversation_supplier_invoices.last_processed_received_at, EXCLUDED.last_processed_received_at)'
     );
+  });
+});
+
+describe('conversation invoice claims', () => {
+  it('acquires a free or expired claim and reports a live one as held', async () => {
+    const acquired = mockDb([{ claim_token: 'token-1' }]);
+    await expect(acquireConversationInvoiceClaim(acquired.db, '123', 'INV-100', 'token-1')).resolves.toBe(true);
+    const [sql, params] = acquired.query.mock.calls[0];
+    expect(sql).toContain('ON CONFLICT (conversation_id, supplier_invoice_number)');
+    expect(sql).toContain('WHERE conversation_invoice_claims.claimed_at < CURRENT_TIMESTAMP - make_interval(mins => $4)');
+    expect(params).toEqual(['123', 'INV-100', 'token-1', 15]);
+
+    const held = mockDb([]);
+    await expect(acquireConversationInvoiceClaim(held.db, '123', 'INV-100', 'token-2')).resolves.toBe(false);
+  });
+
+  it('releases only the caller\'s own claim', async () => {
+    const { db, query } = mockDb([]);
+    await releaseConversationInvoiceClaim(db, '123', 'INV-100', 'token-1');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('AND claim_token = $3'), ['123', 'INV-100', 'token-1']);
   });
 });

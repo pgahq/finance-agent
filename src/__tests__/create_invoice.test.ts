@@ -108,6 +108,14 @@ jest.mock('../lib/invoice_attachment_clustering.js', () => {
 jest.mock('../lib/conversation_invoices.js', () => ({
   getConversationSupplierInvoice: jest.fn(),
   upsertConversationSupplierInvoice: jest.fn(),
+  acquireConversationInvoiceClaim: jest.fn().mockResolvedValue(true),
+  releaseConversationInvoiceClaim: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../lib/invoice_cluster_plans.js', () => ({
+  createInvoiceClusterPlan: jest.fn().mockResolvedValue(undefined),
+  claimInvoiceCluster: jest.fn().mockResolvedValue(true),
+  finishInvoiceCluster: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockLambdaSend = jest.fn().mockResolvedValue({});
@@ -182,6 +190,7 @@ function freshRequire() {
     clustering: require('../lib/invoice_attachment_clustering.js'),
     s3: require('../lib/s3.js'),
     registry: require('../lib/conversation_invoices.js'),
+    plans: require('../lib/invoice_cluster_plans.js'),
     lambda: require('@aws-sdk/client-lambda'),
     loadEnv: require('@pga/lambda-env').default,
   };
@@ -1871,6 +1880,96 @@ describe('create_invoice', () => {
       expect(fanOutPayload.data[0].otherClustersLatestReceivedAt).toBe(200);
     });
 
+    it('records a plan, claims the first cluster, and tags fanned-out records with their plan row', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, clustering, plans, lambda, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true', AWS_STACK_NAME: 'finance-agent' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const secondInvoice = { s3Key: 'new-invoices/req-1/3-second.pdf', fileName: 'second.pdf', contentType: 'application/pdf', kind: 'supplier_invoice', confidence: 0.9 };
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoiceFile, supportFile, secondInvoice],
+        clustering: {
+          clusters: [
+            { primary: invoiceFile, supporting: [supportFile], fallback: false },
+            { primary: secondInvoice, supporting: [], fallback: false },
+          ],
+          unrelated: [],
+        },
+      });
+
+      await processor({ data: [{ conversationId: '1234567890', attachments: [invoiceFile, supportFile, secondInvoice] }] } as any);
+
+      const [, planId, conversationId, clusterNames] = plans.createInvoiceClusterPlan.mock.calls[0];
+      expect(conversationId).toBe('1234567890');
+      expect(clusterNames).toEqual([['invoice.pdf', 'support.pdf'], ['second.pdf']]);
+      expect(plans.claimInvoiceCluster).toHaveBeenCalledWith(expect.anything(), planId, 0);
+      expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), planId, 0, 'done', 'new-invoice-wid');
+      const fanOutPayload = JSON.parse(lambda.InvokeCommand.mock.calls[0][0].Payload);
+      expect(fanOutPayload.data[0]).toMatchObject({ planId, clusterIndex: 1, clustered: true });
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+    });
+
+    it('still processes the first cluster and reports clusters that could not be dispatched', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true', AWS_STACK_NAME: 'finance-agent' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      mockLambdaSend.mockRejectedValueOnce(new Error('invoke throttled'));
+      const secondInvoice = { s3Key: 'new-invoices/req-1/3-second.pdf', fileName: 'second.pdf', contentType: 'application/pdf', kind: 'supplier_invoice', confidence: 0.9 };
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoiceFile, secondInvoice],
+        clustering: {
+          clusters: [
+            { primary: invoiceFile, supporting: [], fallback: false },
+            { primary: secondInvoice, supporting: [], fallback: false },
+          ],
+          unrelated: [],
+        },
+      });
+
+      await processor({ data: [{ conversationId: '1234567890', attachments: [invoiceFile, secondInvoice] }] } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      const planId = plans.createInvoiceClusterPlan.mock.calls[0][1];
+      expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), planId, 1, 'failed');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'error',
+        expect.any(Number),
+        expect.objectContaining({ planId, undispatchedClusters: [['second.pdf']] }),
+        expect.objectContaining({ message: expect.stringContaining('1 of 2 invoice clusters could not be dispatched') }),
+      );
+    });
+
+    it('does nothing for a fanned-out record whose plan row is already done or in progress', async () => {
+      const { processor, workday, invoiceEnrichment, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      plans.claimInvoiceCluster.mockResolvedValue(false);
+
+      await processor({
+        data: [{ conversationId: '1234567890', clustered: true, planId: 'plan-1', clusterIndex: 1, attachments: [invoiceFile] }],
+      } as any);
+
+      expect(plans.claimInvoiceCluster).toHaveBeenCalledWith(expect.anything(), 'plan-1', 1);
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(plans.finishInvoiceCluster).not.toHaveBeenCalled();
+    });
+
+    it('marks the plan row failed when the cluster throws', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      workday.submitNewSupplierInvoice.mockRejectedValue(new Error('Workday down'));
+
+      await expect(processor({
+        data: [{ conversationId: '1234567890', clustered: true, planId: 'plan-1', clusterIndex: 1, attachments: [invoiceFile] }],
+      } as any)).rejects.toThrow('Workday down');
+
+      expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), 'plan-1', 1, 'failed');
+    });
+
     it('processes an already-clustered fan-out payload without re-parsing', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
       loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
@@ -2360,6 +2459,54 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({ skipped: true, registrySync: 'failed' }),
       );
+    });
+
+    it('skips without touching Workday or the registry when another run holds the invoice claim', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.acquireConversationInvoiceClaim.mockResolvedValue(false);
+
+      await processor({
+        data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
+      } as any);
+
+      expect(registry.acquireConversationInvoiceClaim).toHaveBeenCalledWith(expect.anything(), '1234567890', 'INV-001', expect.any(String));
+      expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(registry.releaseConversationInvoiceClaim).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ skipped: true, inProgressElsewhere: true }),
+      );
+    });
+
+    it.each([
+      ['succeeds', undefined],
+      ['fails', new Error('Workday down')],
+    ])('releases the invoice claim after the create %s', async (_label, failure) => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
+      if (failure) workday.submitNewSupplierInvoice.mockRejectedValue(failure);
+
+      const run = processor({
+        data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
+      } as any);
+      if (failure) {
+        await expect(run).rejects.toThrow('Workday down');
+      } else {
+        await run;
+      }
+
+      const token = registry.acquireConversationInvoiceClaim.mock.calls[0][3];
+      expect(registry.releaseConversationInvoiceClaim).toHaveBeenCalledWith(expect.anything(), '1234567890', 'INV-001', token);
     });
 
     it('does not advance the watermark when a skip has nothing newer at all', async () => {

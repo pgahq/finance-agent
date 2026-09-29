@@ -233,6 +233,17 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('nothing new');
   });
 
+  it('says another run is processing when a claim was already held', async () => {
+    await notifyResult('create_invoice', 'success', 1000, {
+      skipped: true,
+      inProgressElsewhere: true,
+      skipReason: 'Another run is already processing supplier invoice INV-1 for this conversation; skipped to avoid a duplicate.',
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('skipped resend (another run is processing it)');
+  });
+
   it('warns in the headline and body when a create may be a duplicate', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

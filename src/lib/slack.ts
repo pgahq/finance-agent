@@ -373,6 +373,7 @@ export async function notifyResult(
       skipped?: unknown;
       needsManualReview?: unknown;
       canceledNotReplaced?: unknown;
+      inProgressElsewhere?: unknown;
       possibleDuplicate?: unknown;
     } | undefined
     : undefined;
@@ -382,7 +383,9 @@ export async function notifyResult(
   const updatedInvoice = createDetails?.updated === true;
   const skippedInvoice = createDetails?.skipped === true;
   const needsManualReview = skippedInvoice && createDetails?.needsManualReview === true;
-  const skipLabel = createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
+  const skipLabel = createDetails?.inProgressElsewhere === true
+    ? 'another run is processing it'
+    : createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
   const invoiceRef = resendInvoiceLabel ? ` for \`${resendInvoiceLabel}\`` : '';
   const possibleDuplicate = Boolean(createdInvoiceNumber) && !skippedInvoice && !updatedInvoice
     && typeof createDetails?.possibleDuplicate === 'string';

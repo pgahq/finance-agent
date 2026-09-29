@@ -51,11 +51,21 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    `parseAndClusterInvoiceAttachments` (`src/lib/invoice_attachment_clustering.ts`):
    one structured LLM call (`src/prompts/parse_invoice_attachments_prompt.ts`,
    `tools: {}`, no RAG) over every file, then deterministic clustering in code.
-3. The processor creates **one Workday invoice per invoice cluster**: it first
-   Event-invokes itself (`clustered: true`, no re-parse) for each leftover
+3. The processor creates **one Workday invoice per invoice cluster**. It first
+   records a cluster plan (`invoice_cluster_plans`, one `pending` row per
+   cluster, `src/lib/invoice_cluster_plans.ts`), then Event-invokes itself
+   (`clustered: true`, `planId`, `clusterIndex`, no re-parse) for each leftover
    cluster, then processes the first cluster inline, keeping the 300s timeout
    per invoice. The first cluster reuses the PDFs already downloaded for
    classification; fanned-out clusters download their own.
+   - Every cluster run claims its plan row (`pending`/`failed` → `processing`,
+     or a `processing` row older than 15 minutes) before loading files, and
+     marks it `done` (with the Workday invoice WID) or `failed`. A duplicate
+     delivery of the same record finds the row taken and does nothing.
+   - Fan-out dispatches settle independently: a failed dispatch marks that row
+     `failed`, the first cluster still runs, and Slack posts one error naming
+     the clusters that were not processed so a re-trigger picks them up
+     (clusters already created are deduped by the registry).
 4. Enrichment receives every PDF in the cluster with document roles (invoice vs
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
@@ -185,8 +195,17 @@ invoice number, and concurrent double-fires.
   conversation). `buildNotes` receives each attempt's prior failures for this.
 - Registry writes never fail the invoice: a failed upsert after a successful
   create/update, or after a skip that advances the watermark, surfaces as
-  `registrySync: failed` in the Slack details. Concurrent double-fires can still race lookup-then-create; the
-  unique key keeps the registry to one row (last write wins).
+  `registrySync: failed` in the Slack details.
+- Claims: after enrichment extracts the invoice number and before reading the
+  registry, the run claims conversation plus number in
+  `conversation_invoice_claims` (`acquireConversationInvoiceClaim`, insert or
+  take over a claim older than 15 minutes, longer than the processor timeout).
+  A run that finds a live claim skips with a Slack `*Skipped*` note
+  (`inProgressElsewhere`, headline "another run is processing it") and never
+  touches Workday or the registry. The claim is released (only by its token)
+  after the create/update and registry write, including on failure. A cluster
+  with no extracted invoice number cannot be claimed or registered; only its
+  plan row protects it from duplicate deliveries.
 
 ## Flag discipline
 

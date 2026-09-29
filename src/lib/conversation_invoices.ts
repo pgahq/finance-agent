@@ -71,3 +71,41 @@ export async function upsertConversationSupplierInvoice(
     ]
   );
 }
+
+/** Longer than the processor Lambda timeout, so only a claim left by a crashed run can be taken over. */
+export const CONVERSATION_INVOICE_CLAIM_TTL_MINUTES = 15;
+
+/**
+ * Claims a conversation invoice before any Workday create or update. Returns false when another run
+ * holds a live claim; a claim older than the TTL is taken over.
+ */
+export async function acquireConversationInvoiceClaim(
+  db: DatabaseConnection,
+  conversationId: string,
+  supplierInvoiceNumber: string,
+  claimToken: string
+): Promise<boolean> {
+  const rows = await db.query(
+    `INSERT INTO conversation_invoice_claims (conversation_id, supplier_invoice_number, claim_token, claimed_at)
+     VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+     ON CONFLICT (conversation_id, supplier_invoice_number)
+     DO UPDATE SET claim_token = EXCLUDED.claim_token, claimed_at = CURRENT_TIMESTAMP
+      WHERE conversation_invoice_claims.claimed_at < CURRENT_TIMESTAMP - make_interval(mins => $4)
+     RETURNING claim_token`,
+    [conversationId, supplierInvoiceNumber, claimToken, CONVERSATION_INVOICE_CLAIM_TTL_MINUTES]
+  );
+  return rows.length > 0;
+}
+
+export async function releaseConversationInvoiceClaim(
+  db: DatabaseConnection,
+  conversationId: string,
+  supplierInvoiceNumber: string,
+  claimToken: string
+): Promise<void> {
+  await db.query(
+    `DELETE FROM conversation_invoice_claims
+      WHERE conversation_id = $1 AND supplier_invoice_number = $2 AND claim_token = $3`,
+    [conversationId, supplierInvoiceNumber, claimToken]
+  );
+}
