@@ -25,7 +25,6 @@ import {
   parseAndClusterInvoiceAttachments,
   type ClassifiedAttachment,
   type ClusterableAttachment,
-  type InvoiceAttachmentCluster,
 } from './lib/invoice_attachment_clustering.js';
 import {
   getConversationSupplierInvoice,
@@ -299,7 +298,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
   }
 
   if (clusteringEnabled && attachments?.length && !clustered) {
-    let firstCluster: InvoiceAttachmentCluster | undefined;
+    let firstClusterFiles: CreateInvoiceAttachment[] = [];
     let firstOtherClustersLatestReceivedAt: number | undefined;
     let unrelated: ClassifiedAttachment[] = [];
     const preloadedBuffers = new Map<string, Buffer>();
@@ -318,7 +317,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       const clusterFiles = clustering.clusters.map((cluster) => [cluster.primary, ...cluster.supporting]);
       const othersLatest = (index: number) =>
         clusterMaxReceivedAt(clusterFiles.filter((_, other) => other !== index).flat());
-      firstCluster = clustering.clusters[0];
+      firstClusterFiles = clusterFiles[0];
       firstOtherClustersLatestReceivedAt = othersLatest(0);
       unrelated = clustering.unrelated;
       const shared = { emailContext, conversationId, intercomAppId, assigneeEmail, conversationCreatedAt, conversationPdf, latestMessageAt };
@@ -343,9 +342,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       );
       throw error;
     }
-    if (!firstCluster) return;
     await createInvoiceFromCluster(context, {
-      files: [firstCluster.primary, ...firstCluster.supporting],
+      files: firstClusterFiles,
       unrelated,
       emailContext,
       conversationId,

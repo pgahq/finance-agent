@@ -30,7 +30,8 @@ changes must go through the migration helper.
 plus normalized supplier invoice number → Workday invoice WID/number,
 real resolved supplier WID (null when only the default supplier resolved),
 `last_processed_received_at` watermark — newest document or conversation
-message already processed) is created the same way in `getDatabaseConnection`.
+message time already considered for that invoice, whether it was applied or
+judged not new; it only moves forward) is created the same way in `getDatabaseConnection`.
 Its `UNIQUE (conversation_id, supplier_invoice_number)` constraint is the
 lookup index; do not add a second index on those columns. Reads/writes go through
 `src/lib/conversation_invoices.ts`, keyed by `normalizeClusterInvoiceNumber`.
