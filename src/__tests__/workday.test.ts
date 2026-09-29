@@ -5301,6 +5301,7 @@ describe('Workday utilities', () => {
           expect.objectContaining({
             field: 'suppliersInvoiceNumber',
             label: 'supplier invoice number suffixed with -20260928170000',
+            dueToValidationError: true,
           }),
         ]));
         expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
