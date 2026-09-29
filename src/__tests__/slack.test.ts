@@ -143,18 +143,18 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
-  it('shows the timestamped supplier invoice number and suffix label on create success', async () => {
+  it('shows the unchanged supplier invoice number and fallback supplier on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
       invoiceNumber: 'SUPIN-412727',
       supplier: { status: 'found', resolvedName: 'Safari', isDefault: false },
-      extracted: { suppliersInvoiceNumber: '12345-20260928170000' },
-      appliedFallbacks: ['supplier invoice number suffixed with -20260928170000'],
+      extracted: { suppliersInvoiceNumber: '12345' },
+      appliedFallbacks: ['default supplier'],
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
-    expect(texts).toContain('*Supplier Invoice #* → 12345-20260928170000');
-    expect(texts).toContain('*Fallbacks Applied*\n• supplier invoice number suffixed with -20260928170000');
+    expect(texts).toContain('*Supplier Invoice #* → 12345');
+    expect(texts).toContain('*Fallbacks Applied*\n• default supplier');
   });
 
   it('lists clustered files and unrelated docs on create success', async () => {
@@ -510,20 +510,20 @@ describe('notifyEnrichmentResult', () => {
     expect(texts).toContain(`*Fallbacks Applied*\n• ${closedNote}`);
   });
 
-  it('lists the timestamped supplier invoice number and suffix label on enrich success', async () => {
+  it('lists the unchanged supplier invoice number and fallback supplier on enrich success', async () => {
     await notifyEnrichmentResult({
       processingTime: 1500,
       invoiceNumber: 'INV-1',
       canModify: true,
       supplier: { status: 'matching', resolvedName: 'Safari', isDefault: false },
-      extracted: { suppliersInvoiceNumber: '12345-20260928170000' },
+      extracted: { suppliersInvoiceNumber: '12345' },
       fallbacks: { defaultSupplier: false },
-      appliedFallbackLabels: ['supplier invoice number suffixed with -20260928170000'],
+      appliedFallbackLabels: ['default supplier'],
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
-    expect(texts).toContain('*Supplier Invoice #* → 12345-20260928170000');
-    expect(texts).toContain('*Fallbacks Applied*\n• supplier invoice number suffixed with -20260928170000');
+    expect(texts).toContain('*Supplier Invoice #* → 12345');
+    expect(texts).toContain('*Fallbacks Applied*\n• default supplier');
   });
 
   it('omits the Workday invoice number when Invoice_Number is missing', async () => {

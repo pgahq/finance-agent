@@ -195,10 +195,12 @@ invoice number, and concurrent double-fires.
   the Workday submit, so two unnumbered invoices from one supplier on the same
   day never share a row.
 - Possible duplicates: Workday rejects a supplier invoice number already used
-  for that supplier, and the submit repair then retries with a changed value
-  (the default supplier, or a UTC `YYYYMMDDHHmmss` suffix on the same
-  supplier). The retry stays, because a supplier change also rescues a wrong
-  supplier match. The timestamp suffix does not switch suppliers.
+  for that supplier, and the submit repair retries once on the fallback
+  supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) with the same invoice number.
+  It does not append a timestamp. If that supplier is already selected, or
+  the fallback supplier is unset, the fault stops. A second "already in use"
+  after the fallback supplier also stops. The retry stays, because a supplier
+  change also rescues a wrong supplier match.
   With the registry on, a create that only succeeded after that rejection
   (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus any
   validation-driven fallback) is flagged as a possible duplicate in the work

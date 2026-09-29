@@ -1,7 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError } from './invoice_validation_failures.js';
-import { suffixDuplicateSuppliersInvoiceNumber } from './invoice_memo.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -517,7 +516,6 @@ interface buildSubmitInvoiceDataOptions {
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
-  suppliersInvoiceNumberSuffixed?: boolean;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   omitTaxApplicability?: boolean;
@@ -654,16 +652,23 @@ function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_
   return null;
 }
 
+function normalizeSupplierWID(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
 function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions): string | undefined {
-  return process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? options.defaultSupplierWID;
+  return normalizeSupplierWID(process.env.WORKDAY_DEFAULT_SUPPLIER_WID) ?? normalizeSupplierWID(options.defaultSupplierWID);
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
   const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob, applyAmountOnlyLineRetry } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
+  const selectedSupplierWID = normalizeSupplierWID(supplierWID);
+  const selectedDefaultSupplierWID = normalizeSupplierWID(defaultSupplierWID);
 
-  if (configuredDefaultSupplierWID && (supplierWID === configuredDefaultSupplierWID || (!supplierWID && defaultSupplierWID))) {
+  if (configuredDefaultSupplierWID && (selectedSupplierWID === configuredDefaultSupplierWID || (!selectedSupplierWID && selectedDefaultSupplierWID))) {
     fallbacks.push({ field: 'supplier', label: 'default supplier' });
   }
 
@@ -721,16 +726,6 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitConversationUrlField) {
     fallbacks.push({ field: 'conversationUrl', label: 'omitted Intercom URL field' });
-  }
-
-  if (options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber) {
-    const suffix = options.suppliersInvoiceNumber.match(/-(\d{14})$/)?.[1];
-    fallbacks.push({
-      field: 'suppliersInvoiceNumber',
-      label: suffix
-        ? `supplier invoice number suffixed with -${suffix}`
-        : 'supplier invoice number suffixed with timestamp',
-    });
   }
 
   return fallbacks;
@@ -891,11 +886,17 @@ async function getValidationFallbackField(
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
   if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
-    if (!options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber?.trim()) {
-      debug('Validation is a duplicate supplier invoice number; retrying with a timestamp suffix', { validationError });
-      return 'suppliersInvoiceNumber';
+    if (!options.suppliersInvoiceNumber?.trim()) {
+      debug('Validation is a duplicate supplier invoice number but no invoice number was submitted; skipping further retries', { validationError });
+      return undefined;
     }
-    debug('Validation is a duplicate supplier invoice number and the timestamp suffix was already applied; skipping further retries', { validationError });
+    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options);
+    const selectedSupplierWID = normalizeSupplierWID(options.supplierWID) ?? normalizeSupplierWID(options.defaultSupplierWID);
+    if (fallbackSupplierWID && selectedSupplierWID !== fallbackSupplierWID) {
+      debug('Validation is a duplicate supplier invoice number; retrying with the fallback supplier', { validationError });
+      return 'supplier';
+    }
+    debug('Validation is a duplicate supplier invoice number and the fallback supplier is unavailable or already selected; skipping further retries', { validationError });
     return undefined;
   }
 
@@ -976,24 +977,6 @@ async function getValidationFallbackField(
   }
 }
 
-function getDuplicateSuppliersInvoiceNumberRetryBuildOptions(
-  options: buildSubmitInvoiceDataOptions
-): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
-  if (options.suppliersInvoiceNumberSuffixed) return undefined;
-  const suffixed = suffixDuplicateSuppliersInvoiceNumber(options.suppliersInvoiceNumber);
-  if (!suffixed || suffixed === options.suppliersInvoiceNumber) return undefined;
-  const suffix = suffixed.match(/-(\d{14})$/)?.[1];
-  if (!suffix) return undefined;
-  return {
-    buildOptions: {
-      ...options,
-      suppliersInvoiceNumber: suffixed,
-      suppliersInvoiceNumberSuffixed: true,
-    },
-    fallbackLabel: `supplier invoice number suffixed with -${suffix}`,
-  };
-}
-
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
   field: FallbackField
@@ -1004,7 +987,7 @@ function getFallbackRetryBuildOptions(
     field === 'supplier'
     &&
     defaultSupplierWID
-    && options.supplierWID !== defaultSupplierWID
+    && normalizeSupplierWID(options.supplierWID) !== defaultSupplierWID
   ) {
     return {
       buildOptions: {
@@ -1114,10 +1097,6 @@ function getFallbackRetryBuildOptions(
       buildOptions: { ...options, omitConversationUrlField: true },
       fallbackLabel: 'omitted Intercom URL field',
     };
-  }
-
-  if (field === 'suppliersInvoiceNumber') {
-    return getDuplicateSuppliersInvoiceNumberRetryBuildOptions(options);
   }
 
   return undefined;
