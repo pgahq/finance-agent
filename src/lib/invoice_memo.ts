@@ -119,24 +119,6 @@ export function composeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInput
   return sanitizeSuppliersInvoiceNumber(`${prefix}${month}${day}${year}`);
 }
 
-export function suppliersInvoiceNumberTimestamp(now: Date = new Date()): string {
-  const pad = (value: number, length = 2) => String(value).padStart(length, '0');
-  return [
-    now.getUTCFullYear(),
-    pad(now.getUTCMonth() + 1),
-    pad(now.getUTCDate()),
-    pad(now.getUTCHours()),
-    pad(now.getUTCMinutes()),
-    pad(now.getUTCSeconds()),
-  ].join('');
-}
-
-export function suffixDuplicateSuppliersInvoiceNumber(value?: string | null, now: Date = new Date()): string | undefined {
-  const base = sanitizeSuppliersInvoiceNumber(value);
-  if (!base) return undefined;
-  return sanitizeSuppliersInvoiceNumber(`${base}-${suppliersInvoiceNumberTimestamp(now)}`);
-}
-
 function sanitizeMemoFragment(value: string | null): string | null {
   if (!value) return null;
   const sanitized = sanitizeMemoText(value);
