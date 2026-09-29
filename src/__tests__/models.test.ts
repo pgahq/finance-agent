@@ -8,6 +8,7 @@ describe('models', () => {
   const mockOpenai = jest.requireMock<{ openai: jest.Mock }>('@ai-sdk/openai').openai;
 
   it('builds the default model from gpt-5.4', () => {
+    expect(mockOpenai).toHaveBeenCalledWith('gpt-5.4');
     expect(defaultModel).toEqual(expect.objectContaining({ modelId: 'gpt-5.4' }));
   });
 
