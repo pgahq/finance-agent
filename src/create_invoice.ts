@@ -25,6 +25,7 @@ import {
   parseAndClusterInvoiceAttachments,
   type ClassifiedAttachment,
   type ClusterableAttachment,
+  type InvoiceAttachmentCluster,
 } from './lib/invoice_attachment_clustering.js';
 import {
   getConversationSupplierInvoice,
@@ -298,7 +299,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
   }
 
   if (clusteringEnabled && attachments?.length && !clustered) {
-    let firstCluster;
+    let firstCluster: InvoiceAttachmentCluster | undefined;
     let firstOtherClustersLatestReceivedAt: number | undefined;
     let unrelated: ClassifiedAttachment[] = [];
     const preloadedBuffers = new Map<string, Buffer>();
@@ -342,6 +343,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       );
       throw error;
     }
+    if (!firstCluster) return;
     await createInvoiceFromCluster(context, {
       files: [firstCluster.primary, ...firstCluster.supporting],
       unrelated,

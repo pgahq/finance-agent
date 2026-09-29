@@ -138,8 +138,9 @@ invoice number, and concurrent double-fires.
     instructions, which enrichment reads from the thread) can change the
     invoice with no new PDF, so it triggers a full update. A reply that brought
     another invoice is about that invoice, so it does not reprocess this one,
-    but anything after it still counts. Unrelated files do not block. When no
-    `receivedAt` is known at all, treat it as newer.
+    but anything after it still counts. Unrelated files do not block. When neither
+    the cluster's files nor the conversation have any known time
+    (`receivedAt` and `latestMessageAt` both missing), treat it as newer.
 - On every registry hit (same real supplier or unresolved), check the
   registered invoice's status via WQL (`getSupplierInvoiceEditability`) first.
   If AP **canceled** it or it is **no longer in Workday**, create a fresh
