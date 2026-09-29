@@ -34,7 +34,7 @@ message time already considered for that invoice, whether it was applied or
 judged not new; it only moves forward) is created the same way in `getDatabaseConnection`.
 Its `UNIQUE (conversation_id, supplier_invoice_number)` constraint is the
 lookup index; do not add a second index on those columns. Reads/writes go through
-`src/lib/conversation_invoices.ts`, keyed by `normalizeClusterInvoiceNumber`.
+`src/lib/conversation_invoices.ts`, keyed by `normalizeClusterInvoiceNumber` of the invoice number printed on the document (never a generated submit value).
 Concurrent runs are serialized by `conversation_invoice_claims` (primary key
 conversation plus number, `claim_token`, `claimed_at`; a claim older than 15
 minutes can be taken over), claimed before the registry read and released by
