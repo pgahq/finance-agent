@@ -879,10 +879,14 @@ async function getValidationFallbackField(
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
   if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
-    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options);
+    if (!options.suppliersInvoiceNumber?.trim()) {
+      debug('Validation is a duplicate supplier invoice number but no invoice number was submitted; skipping further retries', { validationError });
+      return undefined;
+    }
+    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options)?.trim() || undefined;
     const fallbackSupplierAlreadySelected = Boolean(
       fallbackSupplierWID
-      && (options.supplierWID === fallbackSupplierWID || (!options.supplierWID && options.defaultSupplierWID))
+      && (options.supplierWID === fallbackSupplierWID || (!options.supplierWID && options.defaultSupplierWID?.trim()))
     );
     if (fallbackSupplierWID && !fallbackSupplierAlreadySelected) {
       debug('Validation is a duplicate supplier invoice number; retrying with the fallback supplier', { validationError });
