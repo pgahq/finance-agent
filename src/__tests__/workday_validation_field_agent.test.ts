@@ -1,4 +1,15 @@
+import { ToolLoopAgent } from 'ai';
 import { classifyWorkdayValidationField } from '../lib/workday_validation_field_agent.js';
+
+jest.mock('ai', () => {
+  const actual = jest.requireActual<typeof import('ai')>('ai');
+  return {
+    ...actual,
+    ToolLoopAgent: jest.fn(() => {
+      throw new Error('duplicate invoice number must not call the model');
+    }),
+  };
+});
 
 describe('classifyWorkdayValidationField', () => {
   it('returns unknown for a duplicate supplier invoice number without calling the model', async () => {
@@ -16,5 +27,6 @@ describe('classifyWorkdayValidationField', () => {
       workdayField: 'Suppliers_Invoice_Number',
       reason: "Supplier's Invoice Number is already in use. Changing the supplier does not fix that fault.",
     });
+    expect(ToolLoopAgent).not.toHaveBeenCalled();
   });
 });

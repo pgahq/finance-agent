@@ -485,6 +485,7 @@ export interface EnrichmentNotification {
   poLineCount?: number;
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
+  appliedFallbackLabels?: string[];
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -496,7 +497,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -582,6 +583,9 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
   if (canModify && fallbacks.closedPurchaseOrderLines) {
     fallbackLines.push(fallbacks.closedPurchaseOrderLines);
+  }
+  if (canModify && appliedFallbackLabels?.length) {
+    fallbackLines.push(...appliedFallbackLabels);
   }
 
   if (!canModify) {

@@ -891,7 +891,7 @@ async function getValidationFallbackField(
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
   if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
-    if (getDuplicateSuppliersInvoiceNumberRetryBuildOptions(options)) {
+    if (!options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber?.trim()) {
       debug('Validation is a duplicate supplier invoice number; retrying with a timestamp suffix', { validationError });
       return 'suppliersInvoiceNumber';
     }
@@ -2191,6 +2191,7 @@ export async function submitSupplierInvoiceUpdate(
   message?: string;
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  suppliersInvoiceNumber?: string;
 }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -2261,6 +2262,7 @@ export async function submitSupplierInvoiceUpdate(
     success: true,
     message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
     appliedFallbacks,
+    suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
@@ -2322,6 +2324,7 @@ export async function submitNewSupplierInvoice(
   invoiceNumber?: string;
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  suppliersInvoiceNumber?: string;
 }> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
@@ -2390,6 +2393,7 @@ export async function submitNewSupplierInvoice(
     invoiceWID,
     invoiceNumber,
     appliedFallbacks,
+    suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
   };
 }

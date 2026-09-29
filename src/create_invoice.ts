@@ -38,6 +38,7 @@ import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   composeSuppliersInvoiceNumber,
+  supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
@@ -702,8 +703,10 @@ async function processInvoiceCluster(
       invoiceNumber: result.extractedSuppliersInvoiceNumber,
       accountNumber: result.extractedAccountNumber,
       invoiceDate: extractedInvoiceDate,
-      supplierName: result.supplier.extractedInformation?.supplierName
-        || result.supplier.resolvedSupplier?.supplierName,
+      supplierName: supplierNameForInvoiceNumber(
+        result.supplier.extractedInformation?.supplierName,
+        result.supplier.resolvedSupplier?.supplierName,
+      ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
@@ -1216,6 +1219,10 @@ async function processInvoiceCluster(
 
     await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
       ...sharedSlackDetails,
+      extracted: {
+        ...sharedSlackDetails.extracted,
+        suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+      },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
       ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),

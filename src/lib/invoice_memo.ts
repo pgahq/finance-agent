@@ -83,6 +83,11 @@ function supplierNamePrefix(name?: string | null): string | undefined {
   return letters ? letters.slice(0, 4) : undefined;
 }
 
+/** First name that yields an A–Z prefix: extracted PDF name, then the resolved Workday name. */
+export function supplierNameForInvoiceNumber(...names: Array<string | null | undefined>): string | undefined {
+  return names.find((name) => supplierNamePrefix(name)) ?? undefined;
+}
+
 /**
  * HQ supplier invoice number: a distinct printed number as-is; otherwise the
  * account number plus MMMYY; otherwise the first four letters of the supplier
@@ -90,11 +95,13 @@ function supplierNamePrefix(name?: string | null): string | undefined {
  * when that date is missing.
  */
 export function composeSuppliersInvoiceNumber(input: SuppliersInvoiceNumberInput): string | undefined {
+  const rawInvoice = input.invoiceNumber?.trim();
+  const rawAccount = input.accountNumber?.trim();
+  const sameAsAccount = Boolean(
+    rawInvoice && rawAccount && comparableId(rawInvoice) === comparableId(rawAccount)
+  );
   const invoiceNumber = sanitizeSuppliersInvoiceNumber(input.invoiceNumber);
   const accountNumber = sanitizeSuppliersInvoiceNumber(input.accountNumber);
-  const sameAsAccount = Boolean(
-    invoiceNumber && accountNumber && comparableId(invoiceNumber) === comparableId(accountNumber)
-  );
   if (invoiceNumber && !sameAsAccount) return invoiceNumber;
 
   const date = parseInvoiceCalendarDate(input.invoiceDate);

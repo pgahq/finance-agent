@@ -7,6 +7,7 @@ import {
   sanitizeMemoText,
   composeSuppliersInvoiceNumber,
   sanitizeSuppliersInvoiceNumber,
+  supplierNameForInvoiceNumber,
   suffixDuplicateSuppliersInvoiceNumber,
   suppliersInvoiceNumberTimestamp,
 } from '../lib/invoice_memo.js';
@@ -213,6 +214,22 @@ describe('composeSuppliersInvoiceNumber', () => {
       invoiceDate: '2022-04-01',
       supplierName: 'Comcast',
     })).toBe('54875-48235APR22');
+  });
+
+  it('keeps a printed number that only matches the account after pay-file sanitizing', () => {
+    expect(composeSuppliersInvoiceNumber({
+      invoiceNumber: '20|1183',
+      accountNumber: '201183',
+      invoiceDate: '2026-09-15',
+    })).toBe('20-1183');
+  });
+
+  it('uses the resolved supplier name when the extracted name has no letters', () => {
+    expect(supplierNameForInvoiceNumber('123!!!', 'Safari')).toBe('Safari');
+    expect(composeSuppliersInvoiceNumber({
+      invoiceDate: '2022-04-01',
+      supplierName: supplierNameForInvoiceNumber('123!!!', 'Safari'),
+    })).toBe('SAFA040122');
   });
 
   it('uses the first four letters of the supplier and MMDDYY when neither number is present', () => {
