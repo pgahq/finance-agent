@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
-import { openai } from '@ai-sdk/openai';
 import { ToolLoopAgent, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
+import { createLanguageModel } from './models.js';
 import type { ParsedValidationRule } from './workday.js';
 
 const inspectPreviousAttemptSchema = z.object({});
@@ -38,7 +38,7 @@ export interface WorkdaySubmitRepairInput {
 }
 
 function getRepairModel(): LanguageModel {
-  return openai(process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'gpt-5.4-mini');
+  return createLanguageModel(process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'gpt-5.4-mini');
 }
 
 function normalizeText(value: string): string {

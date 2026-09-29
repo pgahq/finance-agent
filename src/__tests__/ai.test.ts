@@ -18,7 +18,7 @@ jest.mock('ai', () => ({
 }));
 
 jest.mock('@ai-sdk/openai', () => ({
-  openai: jest.fn(() => 'mocked-openai-model')
+  openai: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'openai.responses', modelId }))
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -69,7 +69,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
@@ -84,7 +84,7 @@ describe('AI utilities', () => {
     });
 
     it('should use a supplied LanguageModel for both generation passes', async () => {
-      const customModel = { modelId: 'custom-model' } as unknown as LanguageModel;
+      const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
       mockGenerateText
         .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
         .mockResolvedValueOnce({ text: '', output: { ok: true } });
@@ -109,7 +109,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
@@ -159,7 +159,7 @@ describe('AI utilities', () => {
 
       // Verify Step 1: generateText was called with enhanced system prompt
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: expect.stringContaining('Test prompt'),
         stopWhen: 'mocked-step-count-is',
@@ -172,7 +172,7 @@ describe('AI utilities', () => {
 
       // Verify Step 2: structured output via generateText + Output.object
       expect(mockGenerateText).toHaveBeenNthCalledWith(2, {
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: expect.arrayContaining([
           expect.objectContaining({ role: 'user' }),
           expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
