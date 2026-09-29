@@ -20,8 +20,8 @@ import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   hasMemoIdentifiers,
+  composeSuppliersInvoiceNumber,
   memoIdentifiersFromEnrichment,
-  sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
@@ -178,7 +178,13 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
 
-    const extractedSuppliersInvoiceNumber = sanitizeSuppliersInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+      invoiceNumber: result.extractedSuppliersInvoiceNumber,
+      accountNumber: result.extractedAccountNumber,
+      invoiceDate: extractedInvoiceDate,
+      supplierName: result.supplier.extractedInformation?.supplierName
+        || result.supplier.resolvedSupplier?.supplierName,
+    });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;

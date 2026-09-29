@@ -422,6 +422,25 @@ function asValidationText(value: unknown): string {
   return collectWorkdayValidationErrorText(value);
 }
 
+function validationHaystack(value: unknown): string {
+  const collected = asValidationText(value);
+  if (!value || typeof value !== 'object') return collected;
+
+  const record = value as Record<string, unknown>;
+  const extras = ['message', 'detailMessage', 'xpath', 'Xpath', 'XPath', 'Message', 'Detail_Message']
+    .map(key => record[key])
+    .filter((part): part is string => typeof part === 'string' && part.length > 0);
+
+  return extras.length ? `${collected} ${extras.join(' ')}` : collected;
+}
+
+export function isDuplicateSuppliersInvoiceNumberError(value: unknown): boolean {
+  const text = validationHaystack(value);
+  const mentionsInvoiceNumber = /supplier['’]?s invoice number/i.test(text)
+    || /Suppliers_Invoice_Number/i.test(text);
+  return mentionsInvoiceNumber && /already in use/i.test(text);
+}
+
 export function isRequiredLineOfBusinessWorktagError(text: unknown): boolean {
   return /must also have a value:\s*Line of Business/i.test(asValidationText(text));
 }
