@@ -151,6 +151,10 @@ function enrichmentStubCompany(parsedPo?: ParsedPurchaseOrder) {
   return { descriptor: fallback.descriptor, id: fallback.id };
 }
 
+// Submit repairs that change who or what the invoice is keyed on in Workday. A string set, so a repair field
+// added later (a suffixed invoice number) counts without widening the fallback type here.
+const DUPLICATE_NUMBER_REPAIR_FIELDS: ReadonlySet<string> = new Set(['supplier', 'suppliersInvoiceNumber']);
+
 export interface CreateInvoiceAttachment extends ClusterableAttachment {
   kind?: ClassifiedAttachment['kind'];
   supportingKind?: ClassifiedAttachment['supportingKind'];
@@ -931,9 +935,9 @@ async function processInvoiceCluster(
     };
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
-    const registryNumber = extractedSuppliersInvoiceNumber
-      ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
-      : undefined;
+    // Key resends on the number printed on the document, never a generated submit value: a number composed
+    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
+    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
     const clusterFilesReceivedAt = clusterMaxReceivedAt(loaded);
 
@@ -1133,16 +1137,22 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
-    // The default-supplier retry also rescues a wrong supplier match, so it stays; when the registry is
-    // on, a retry caused by "invoice number already in use" is flagged as a possible duplicate instead.
+    // A create that only succeeded after Workday rejected the invoice number as already in use, on a retry
+    // that changed the supplier or the submitted invoice number, may duplicate an invoice the registry never
+    // saw. The retries stay, because they also rescue a wrong supplier match; the invoice is flagged.
+    const validationRetries = (appliedFallbacks: AppliedFallback[]) =>
+      appliedFallbacks.filter(
+        (fallback) => fallback.dueToValidationError && DUPLICATE_NUMBER_REPAIR_FIELDS.has(fallback.field)
+      );
     const isPossibleDuplicate = (
       appliedFallbacks: AppliedFallback[],
       priorFailures: SupplierInvoiceSubmitPriorFailure[] = []
     ) => trackResends
-      && appliedFallbacks.some((fallback) => fallback.field === 'supplier' && fallback.dueToValidationError)
+      && validationRetries(appliedFallbacks).length > 0
       && priorFailures.some((failure) => isDuplicateSuppliersInvoiceNumberMessage(failure.message));
     const resolvedSupplierLabel = result.supplier.resolvedSupplier?.supplierName ?? 'the matched supplier';
-    const possibleDuplicateNote = `Possible duplicate: Workday reported supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}, so this invoice was created under the default supplier. Check for an existing invoice before approving.`;
+    const possibleDuplicateNote = (appliedFallbacks: AppliedFallback[]) =>
+      `Possible duplicate: Workday says supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}. This invoice was created on a retry that changed: ${validationRetries(appliedFallbacks).map((fallback) => fallback.label).join('; ')}. Check for an existing invoice before approving.`;
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
@@ -1150,7 +1160,7 @@ async function processInvoiceCluster(
       buildNotes: (appliedFallbacks, priorFailures) =>
         buildNotes(appliedFallbacks) +
         (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : '') +
-        (isPossibleDuplicate(appliedFallbacks, priorFailures) ? `\n\n${possibleDuplicateNote}` : ''),
+        (isPossibleDuplicate(appliedFallbacks, priorFailures) ? `\n\n${possibleDuplicateNote(appliedFallbacks)}` : ''),
       memo,
       invoiceDate: extractedInvoiceDate,
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
@@ -1174,6 +1184,9 @@ async function processInvoiceCluster(
 
     run.workdayInvoiceWid = createOutcome.invoiceWID;
     const possibleDuplicate = isPossibleDuplicate(createOutcome.appliedFallbacks, createOutcome.priorFailures);
+    const supplierFellBack = createOutcome.appliedFallbacks.some(
+      (fallback) => fallback.field === 'supplier' && fallback.dueToValidationError
+    );
     let registrySyncFailed = false;
     if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
@@ -1183,7 +1196,7 @@ async function processInvoiceCluster(
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: possibleDuplicate ? null : resolvedSupplierWID ?? null,
+            supplierWid: possibleDuplicate && supplierFellBack ? null : resolvedSupplierWID ?? null,
             workdayInvoiceWid: createOutcome.invoiceWID,
             workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
             lastProcessedReceivedAt: clusterReceivedAt ?? null,
@@ -1200,7 +1213,7 @@ async function processInvoiceCluster(
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
       ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),
-      ...(possibleDuplicate ? { possibleDuplicate: possibleDuplicateNote } : {}),
+      ...(possibleDuplicate ? { possibleDuplicate: possibleDuplicateNote(createOutcome.appliedFallbacks) } : {}),
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,

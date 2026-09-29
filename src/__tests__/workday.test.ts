@@ -4536,6 +4536,9 @@ describe('Workday utilities', () => {
       expect(isDuplicateSuppliersInvoiceNumberMessage(
         "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
       )).toBe(true);
+      expect(isDuplicateSuppliersInvoiceNumberMessage(
+        'Enter a Supplier’s Invoice Number that isn’t already in use on another supplier invoice'
+      )).toBe(true);
       expect(isDuplicateSuppliersInvoiceNumberMessage("You can't select this supplier to invoice this purchase order.")).toBe(false);
       expect(isDuplicateSuppliersInvoiceNumberMessage(undefined)).toBe(false);
     });
