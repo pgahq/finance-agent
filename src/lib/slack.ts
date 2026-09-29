@@ -366,12 +366,26 @@ export async function notifyResult(
     && details.invoiceNumber
     ? details.invoiceNumber
     : undefined;
-  const updatedInvoice = createdInvoiceNumber && details?.updated === true;
-  const skippedInvoice = createdInvoiceNumber && details?.skipped === true;
-  const needsManualReview = skippedInvoice && details?.needsManualReview === true;
-  const possibleDuplicateNote = (details as { possibleDuplicate?: unknown } | undefined)?.possibleDuplicate;
+  const createDetails = lambdaName === 'create_invoice' && status === 'success'
+    ? details as {
+      invoiceWID?: unknown;
+      updated?: unknown;
+      skipped?: unknown;
+      needsManualReview?: unknown;
+      canceledNotReplaced?: unknown;
+      possibleDuplicate?: unknown;
+    } | undefined
+    : undefined;
+  // Resend outcomes must stay visible even when Workday returned no invoice number, so fall back to the WID.
+  const resendInvoiceLabel = createdInvoiceNumber
+    ?? (typeof createDetails?.invoiceWID === 'string' && createDetails.invoiceWID ? createDetails.invoiceWID : undefined);
+  const updatedInvoice = createDetails?.updated === true;
+  const skippedInvoice = createDetails?.skipped === true;
+  const needsManualReview = skippedInvoice && createDetails?.needsManualReview === true;
+  const skipLabel = createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
+  const invoiceRef = resendInvoiceLabel ? ` for \`${resendInvoiceLabel}\`` : '';
   const possibleDuplicate = Boolean(createdInvoiceNumber) && !skippedInvoice && !updatedInvoice
-    && typeof possibleDuplicateNote === 'string';
+    && typeof createDetails?.possibleDuplicate === 'string';
 
   const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
     ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
@@ -386,11 +400,11 @@ export async function notifyResult(
   let mainMessage = shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
     : needsManualReview
-    ? `⚠️ *${lambdaName}* needs manual review for \`${createdInvoiceNumber}\` (resend not applied) in ${timeText}`
+    ? `⚠️ *${lambdaName}* needs manual review${invoiceRef} (resend not applied) in ${timeText}`
     : skippedInvoice
-      ? `⏭️ *${lambdaName}* skipped resend for \`${createdInvoiceNumber}\` (nothing new) in ${timeText}`
+      ? `⏭️ *${lambdaName}* skipped resend${invoiceRef} (${skipLabel}) in ${timeText}`
       : updatedInvoice
-        ? `${statusEmoji} *${lambdaName}* updated \`${createdInvoiceNumber}\` in ${timeText}`
+        ? `${statusEmoji} *${lambdaName}* updated${resendInvoiceLabel ? ` \`${resendInvoiceLabel}\`` : ' invoice'} in ${timeText}`
         : possibleDuplicate
           ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` (possible duplicate, check before approving) in ${timeText}`
         : createdInvoiceNumber

@@ -1762,10 +1762,10 @@ describe('create_invoice', () => {
       expect(clustering.parseAndClusterInvoiceAttachments).toHaveBeenCalledTimes(1);
       const enrichArgs = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0];
       expect(enrichArgs[1].map((att: { fileName: string }) => att.fileName))
-        .toEqual(['invoice.pdf', 'support.pdf']);
+        .toEqual(['1-invoice.pdf', '2-support.pdf']);
       expect(enrichArgs[6]).toEqual([
-        { fileName: 'invoice.pdf', role: 'invoice' },
-        { fileName: 'support.pdf', role: 'supporting' },
+        { fileName: '1-invoice.pdf', role: 'invoice' },
+        { fileName: '2-support.pdf', role: 'supporting' },
       ]);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
@@ -2203,6 +2203,7 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({
           skipped: true,
+          canceledNotReplaced: true,
           skipReason: 'Invoice SUPIN-1 was canceled and no newer document for it arrived, so no replacement was created.',
         }),
       );
@@ -2524,7 +2525,7 @@ describe('create_invoice', () => {
         .toEqual(['v2.pdf', 'v1.pdf', transcriptPdf.fileName]);
       expect(updateArgs.buildNotes([])).toContain('New attachments: v2.pdf.');
       expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1]
-        .map((att: { fileName: string }) => att.fileName)).toEqual(['v2.pdf', 'v1.pdf']);
+        .map((att: { fileName: string }) => att.fileName)).toEqual(['1-v2.pdf', '2-v1.pdf']);
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
         'success',

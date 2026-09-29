@@ -501,9 +501,14 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     }] : [];
     const submitAttachments = [...loaded.map(toSubmitAttachment), ...transcriptAttachments];
     const buffer = loaded[0].buffer;
-    const processedAttachments = loaded.map((file) => ({
+    // Resends often reuse one name (for example two `Invoice.pdf` versions in one cluster), so enrichment
+    // sees numbered names, matching classification, to tell the invoice from its backup.
+    const numberFileNames = clustered && loaded.length > 1;
+    const enrichmentFileName = (file: LoadedClusterFile, index: number) =>
+      numberFileNames ? `${index + 1}-${file.fileName}` : file.fileName;
+    const processedAttachments = loaded.map((file, index) => ({
       id: file.s3Key,
-      fileName: file.fileName,
+      fileName: enrichmentFileName(file, index),
       contentType: file.contentType,
       presignedUrl: file.presignedUrl,
       expiresAt: new Date(Date.now() + 3600 * 1000),
@@ -511,9 +516,9 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       buffer: file.buffer,
     }));
     const attachmentRoles: InvoiceAttachmentRole[] | undefined =
-      clustered && loaded.length > 1
+      numberFileNames
         ? loaded.map((file, index) => ({
-          fileName: file.fileName,
+          fileName: enrichmentFileName(file, index),
           role: index === 0 ? 'invoice' as const : 'supporting' as const,
         }))
         : undefined;
@@ -870,7 +875,10 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             conversationId,
             invoiceLabel,
           });
-          await skipResend(`Invoice ${invoiceLabel} was canceled and no newer document for it arrived, so no replacement was created.`);
+          await skipResend(
+            `Invoice ${invoiceLabel} was canceled and no newer document for it arrived, so no replacement was created.`,
+            { canceledNotReplaced: true },
+          );
           return;
         }
         replacedInvoice = existing;
