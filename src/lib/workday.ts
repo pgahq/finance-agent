@@ -1410,7 +1410,7 @@ export type SupplierInvoiceSubmitPriorFailure = {
 
 /** Workday rejects a supplier invoice number already used on another invoice for the same supplier. */
 export function isDuplicateSuppliersInvoiceNumberMessage(message: string | undefined): boolean {
-  return /supplier'?s invoice number.*already in use/i.test(message ?? '');
+  return /supplier['’]?s invoice number.*already in use/i.test(message ?? '');
 }
 
 type SanitizedSoapError = Error & {
