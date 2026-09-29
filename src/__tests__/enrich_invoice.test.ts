@@ -603,6 +603,52 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('uses the existing Workday supplier name when the extracted name has no letters', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: '123!!!',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceDate: '2022-04-01'
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Safari', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ suppliersInvoiceNumber: 'SAFA040122' })
+    );
+  });
+
   it('should note when invoice date defaults to the first day of the current month', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
 
@@ -1294,6 +1340,67 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.suppliersInvoiceNumber).toBe('20-1183-01SEP26');
     expect(params.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
+  });
+
+  it('reports the timestamped supplier invoice number after a duplicate retry', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Safari', memo: 'Trip' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedSuppliersInvoiceNumber: '12345',
+      extractedInvoiceDate: '2026-09-28',
+    });
+    submitSupplierInvoiceUpdate.mockResolvedValueOnce({
+      success: true,
+      suppliersInvoiceNumber: '12345-20260928170000',
+      appliedFallbacks: [{
+        field: 'suppliersInvoiceNumber',
+        label: 'supplier invoice number suffixed with -20260928170000',
+        dueToValidationError: true,
+      }],
+      priorFailures: [{
+        attempt: 1,
+        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+      }],
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Safari', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.buildNotes([{
+      field: 'suppliersInvoiceNumber',
+      label: 'supplier invoice number suffixed with -20260928170000',
+    }])).toContain('Fallback values applied: supplier invoice number suffixed with -20260928170000');
+    expect(params.buildNotes([])).toContain('Supplier Invoice Number (from document): 12345');
+    expect(notifyEnrichmentResult).toHaveBeenCalledWith(expect.objectContaining({
+      extracted: expect.objectContaining({ suppliersInvoiceNumber: '12345-20260928170000' }),
+      appliedFallbackLabels: ['supplier invoice number suffixed with -20260928170000'],
+    }));
   });
 
   it('does not pass a header memo when enrichment has a description but no identifiers', async () => {

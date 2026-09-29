@@ -143,6 +143,20 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('shows the timestamped supplier invoice number and suffix label on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      supplier: { status: 'found', resolvedName: 'Safari', isDefault: false },
+      extracted: { suppliersInvoiceNumber: '12345-20260928170000' },
+      appliedFallbacks: ['supplier invoice number suffixed with -20260928170000'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Supplier Invoice #* → 12345-20260928170000');
+    expect(texts).toContain('*Fallbacks Applied*\n• supplier invoice number suffixed with -20260928170000');
+  });
+
   it('lists clustered files and unrelated docs on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -248,12 +262,12 @@ describe('notifyResult', () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
       invoiceNumber: 'SUPIN-412727',
-      possibleDuplicate: "Possible duplicate: Workday reported supplier's invoice number INV-1 is already in use for Acme.",
+      possibleDuplicate: "Possible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.",
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
     expect(texts).toContain('created `SUPIN-412727` (possible duplicate, check before approving)');
-    expect(texts).toContain("*Possible duplicate*\nPossible duplicate: Workday reported supplier's invoice number INV-1 is already in use for Acme.");
+    expect(texts).toContain("*Possible duplicate*\nPossible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.");
   });
 
   it('names the canceled invoice a new create replaces', async () => {
@@ -494,6 +508,22 @@ describe('notifyEnrichmentResult', () => {
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
     expect(texts).toContain(`*Fallbacks Applied*\n• ${closedNote}`);
+  });
+
+  it('lists the timestamped supplier invoice number and suffix label on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Safari', isDefault: false },
+      extracted: { suppliersInvoiceNumber: '12345-20260928170000' },
+      fallbacks: { defaultSupplier: false },
+      appliedFallbackLabels: ['supplier invoice number suffixed with -20260928170000'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Supplier Invoice #* → 12345-20260928170000');
+    expect(texts).toContain('*Fallbacks Applied*\n• supplier invoice number suffixed with -20260928170000');
   });
 
   it('omits the Workday invoice number when Invoice_Number is missing', async () => {

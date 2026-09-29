@@ -1689,6 +1689,76 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
   });
 
+  it('submits an account number plus MMMYY when the printed invoice number is the account number', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: '20-1183-01',
+      extractedAccountNumber: '20-1183-01',
+      extractedInvoiceDate: '2026-09-15',
+      supplier: {
+        ...baseEnrichmentResult.supplier,
+        extractedInformation: {
+          supplierName: 'City of Frisco Texas',
+          memo: 'Utility bill',
+        },
+      },
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-frisco/UtilityBill.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.suppliersInvoiceNumber).toBe('20-1183-01SEP26');
+    expect(submitArgs.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
+  });
+
+  it('reports the timestamped supplier invoice number after a duplicate retry', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: '12345',
+    });
+    workday.submitNewSupplierInvoice.mockResolvedValue({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      suppliersInvoiceNumber: '12345-20260928170000',
+      appliedFallbacks: [{
+        field: 'suppliersInvoiceNumber',
+        label: 'supplier invoice number suffixed with -20260928170000',
+        dueToValidationError: true,
+      }],
+      priorFailures: [{
+        attempt: 1,
+        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+      }],
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-safari/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.buildNotes([{
+      field: 'suppliersInvoiceNumber',
+      label: 'supplier invoice number suffixed with -20260928170000',
+    }])).toContain('supplier invoice number suffixed with -20260928170000');
+    expect(submitArgs.buildNotes([])).toContain('Supplier Invoice Number (from document): 12345');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        extracted: expect.objectContaining({ suppliersInvoiceNumber: '12345-20260928170000' }),
+        appliedFallbacks: expect.arrayContaining(['supplier invoice number suffixed with -20260928170000']),
+      }),
+    );
+  });
+
   describe('invoice attachment clustering', () => {
     const invoiceFile = {
       s3Key: 'new-invoices/req-1/1-invoice.pdf',
@@ -2264,6 +2334,43 @@ describe('create_invoice', () => {
       );
     });
 
+    it('reports the timestamped supplier invoice number after a duplicate retry on resend', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+      workday.submitSupplierInvoiceUpdate.mockResolvedValue({
+        success: true,
+        suppliersInvoiceNumber: 'INV-001-20260928170000',
+        appliedFallbacks: [{
+          field: 'suppliersInvoiceNumber',
+          label: 'supplier invoice number suffixed with -20260928170000',
+          dueToValidationError: true,
+        }],
+      });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          updated: true,
+          extracted: expect.objectContaining({ suppliersInvoiceNumber: 'INV-001-20260928170000' }),
+          appliedFallbacks: expect.arrayContaining(['supplier invoice number suffixed with -20260928170000']),
+        }),
+      );
+    });
+
     it('skips the resend when no documents are newer than the last processing', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
@@ -2653,8 +2760,9 @@ describe('create_invoice', () => {
         );
         expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ supplierWid: 'supplier-wid-1' })
+          expect.objectContaining({ supplierWid: 'supplier-wid-1', supplierInvoiceNumber: 'INV-001' })
         );
+        expect(registry.acquireConversationInvoiceClaim).toHaveBeenCalledWith(expect.anything(), '1234567890', 'INV-001', expect.any(String));
       });
 
       it('does not flag a default-supplier retry caused by a different validation error', async () => {
@@ -2927,31 +3035,5 @@ describe('create_invoice', () => {
         expect.objectContaining({ invoiceNumber: 'SUPIN-412727', registrySync: 'failed' }),
       );
     });
-  });
-
-  it('submits an account number plus MMMYY when the printed invoice number is the account number', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
-      ...baseEnrichmentResult,
-      extractedSuppliersInvoiceNumber: '20-1183-01',
-      extractedAccountNumber: '20-1183-01',
-      extractedInvoiceDate: '2026-09-15',
-      supplier: {
-        ...baseEnrichmentResult.supplier,
-        extractedInformation: {
-          supplierName: 'City of Frisco Texas',
-          memo: 'Utility bill',
-        },
-      },
-    });
-
-    await processor({
-      data: [attachmentRequest('new-invoices/req-frisco/UtilityBill.pdf')]
-    } as any);
-
-    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.suppliersInvoiceNumber).toBe('20-1183-01SEP26');
-    expect(submitArgs.buildNotes([])).toContain('Supplier Invoice Number (from document): 20-1183-01');
   });
 });

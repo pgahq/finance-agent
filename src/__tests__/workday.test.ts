@@ -5190,11 +5190,21 @@ describe('Workday utilities', () => {
             });
           });
 
+        const buildNotes = jest.fn().mockReturnValue('notes');
         const result = await submitNewSupplierInvoiceForTest({
           suppliersInvoiceNumber: '12345',
+          buildNotes,
         });
 
         expect(result.success).toBe(true);
+        expect(result.suppliersInvoiceNumber).toBe('12345-20260928170000');
+        expect(buildNotes.mock.calls[1][0]).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            field: 'suppliersInvoiceNumber',
+            label: 'supplier invoice number suffixed with -20260928170000',
+            dueToValidationError: true,
+          }),
+        ]));
         expect(result.priorFailures).toEqual([
           {
             attempt: 1,
@@ -5205,6 +5215,7 @@ describe('Workday utilities', () => {
           expect.objectContaining({
             field: 'suppliersInvoiceNumber',
             label: 'supplier invoice number suffixed with -20260928170000',
+            dueToValidationError: true,
           }),
         ]));
         expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
