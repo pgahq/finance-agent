@@ -189,8 +189,11 @@ invoice number, and concurrent double-fires.
   → skip with a `*Skipped*` note naming manual review,
   `needsManualReview: true`, and a "needs manual review" headline.
   Status-check errors fail closed (Slack error, throw).
-- No extracted invoice number: the registry cannot key the invoice, so always
-  create (current behavior).
+- No invoice number printed on the document: the registry cannot key the
+  invoice, so always create. The registry and claims key on the printed number
+  (`result.extractedSuppliersInvoiceNumber`), never on a number generated for
+  the Workday submit, so two unnumbered invoices from one supplier on the same
+  day never share a row.
 - Possible duplicates: Workday rejects a supplier invoice number already used
   for that supplier, and the submit repair then retries with a changed value
   (the default supplier, or a changed invoice number where the repair does

@@ -931,9 +931,9 @@ async function processInvoiceCluster(
     };
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
-    const registryNumber = extractedSuppliersInvoiceNumber
-      ? normalizeClusterInvoiceNumber(extractedSuppliersInvoiceNumber)
-      : undefined;
+    // Key resends on the number printed on the document, never a generated submit value: a number composed
+    // from the supplier name and date would give two unnumbered invoices on the same day one registry row.
+    const registryNumber = normalizeClusterInvoiceNumber(result.extractedSuppliersInvoiceNumber);
     const clusterReceivedAt = clusterMaxReceivedAt([...loaded, { receivedAt: latestMessageAt }]);
     const clusterFilesReceivedAt = clusterMaxReceivedAt(loaded);
 
