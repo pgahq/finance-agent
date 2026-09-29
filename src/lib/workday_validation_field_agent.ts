@@ -31,7 +31,7 @@ function getValidationFieldModel(): LanguageModel {
 
 export async function classifyWorkdayValidationField(
   input: WorkdayValidationFieldInput,
-  { model = getValidationFieldModel() }: { model?: LanguageModel } = {}
+  options: { model?: LanguageModel } = {}
 ): Promise<WorkdayValidationFieldDecision> {
   if (isDuplicateSuppliersInvoiceNumberError(input.validation)) {
     return {
@@ -42,7 +42,7 @@ export async function classifyWorkdayValidationField(
   }
 
   const agent = new ToolLoopAgent({
-    model,
+    model: options.model ?? getValidationFieldModel(),
     instructions: `You classify Workday Supplier Invoice validation faults.
 
 Use only the validation message, detail message, and XPath returned by inspectValidationError.

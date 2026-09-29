@@ -87,6 +87,18 @@ describe('Workday agent models', () => {
       expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'validation-model' }));
     });
 
+    it('does not build a model when a duplicate invoice number skips the agent', async () => {
+      const mockOpenai = jest.requireMock<{ openai: jest.Mock }>('@ai-sdk/openai').openai;
+      const decision = await classifyWorkdayValidationField({
+        validation: { message: "Supplier's Invoice Number is already in use", detailMessage: undefined, xpath: undefined },
+        allowedRetryFields: ['supplier'],
+      });
+
+      expect(decision.retryField).toBe('unknown');
+      expect(mockToolLoopAgent).not.toHaveBeenCalled();
+      expect(mockOpenai).not.toHaveBeenCalled();
+    });
+
     it('falls back to WORKDAY_SUBMIT_REPAIR_MODEL, then gpt-5.4-mini', async () => {
       process.env.WORKDAY_SUBMIT_REPAIR_MODEL = 'repair-model';
       await classifyWorkdayValidationField(validationInput);
