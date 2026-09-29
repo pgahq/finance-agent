@@ -20,8 +20,9 @@ import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
   hasMemoIdentifiers,
+  composeSuppliersInvoiceNumber,
+  supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
-  sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
@@ -178,7 +179,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
 
-    const extractedSuppliersInvoiceNumber = sanitizeSuppliersInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+      invoiceNumber: result.extractedSuppliersInvoiceNumber,
+      accountNumber: result.extractedAccountNumber,
+      invoiceDate: extractedInvoiceDate,
+      supplierName: supplierNameForInvoiceNumber(
+        result.supplier.extractedInformation?.supplierName,
+        result.supplier.resolvedSupplier?.supplierName,
+        result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined,
+      ),
+    });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
@@ -279,15 +289,21 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
+      const invoiceNumberFallback = submissionFallbacks
+        .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
+        .map((fallback) => fallback.label);
       return baseNotes
         + (merged.purchaseOrderLineOmitted
           ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
           : '')
-        + formatFallbackNotes(merged);
+        + formatFallbackNotes(merged)
+        + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
     };
 
     let fallbacks: Fallbacks;
     let priorFailures: Array<{ attempt: number; fallback?: string; message: string }> | undefined;
+    let submittedSuppliersInvoiceNumber = extractedSuppliersInvoiceNumber;
+    let invoiceNumberFallbackLabels: string[] = [];
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
 
@@ -318,6 +334,10 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       }
       fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
       priorFailures = updateOutcome.priorFailures;
+      submittedSuppliersInvoiceNumber = updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber;
+      invoiceNumberFallbackLabels = updateOutcome.appliedFallbacks
+        .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
+        .map((fallback) => fallback.label);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
       fallbacks = mergeFallbacks(upfrontFallbacks, []);
@@ -356,7 +376,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       extracted: {
         invoiceDate: extractedInvoiceDate,
         amountDue: extractedAmountDue,
-        suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
+        suppliersInvoiceNumber: submittedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
@@ -375,6 +395,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)
           : undefined,
       },
+      ...(invoiceNumberFallbackLabels.length ? { appliedFallbackLabels: invoiceNumberFallbackLabels } : {}),
       ...(priorFailures?.length ? { priorFailures } : {}),
     });
   } catch (error) {

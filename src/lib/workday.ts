@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError } from './invoice_validation_failures.js';
+import { suffixDuplicateSuppliersInvoiceNumber } from './invoice_memo.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -516,6 +517,7 @@ interface buildSubmitInvoiceDataOptions {
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
+  suppliersInvoiceNumberSuffixed?: boolean;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
   omitTaxApplicability?: boolean;
@@ -532,8 +534,8 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
@@ -721,6 +723,16 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
     fallbacks.push({ field: 'conversationUrl', label: 'omitted Intercom URL field' });
   }
 
+  if (options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber) {
+    const suffix = options.suppliersInvoiceNumber.match(/-(\d{14})$/)?.[1];
+    fallbacks.push({
+      field: 'suppliersInvoiceNumber',
+      label: suffix
+        ? `supplier invoice number suffixed with -${suffix}`
+        : 'supplier invoice number suffixed with timestamp',
+    });
+  }
+
   return fallbacks;
 }
 
@@ -878,6 +890,15 @@ async function getValidationFallbackField(
 ): Promise<FallbackField | undefined> {
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
+  if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
+    if (!options.suppliersInvoiceNumberSuffixed && options.suppliersInvoiceNumber?.trim()) {
+      debug('Validation is a duplicate supplier invoice number; retrying with a timestamp suffix', { validationError });
+      return 'suppliersInvoiceNumber';
+    }
+    debug('Validation is a duplicate supplier invoice number and the timestamp suffix was already applied; skipping further retries', { validationError });
+    return undefined;
+  }
+
   if (options.assigneeWID && isAssigneeValidationError(validationText)) {
     debug('Validation references assignee; retrying without Assignee_Reference');
     return 'assignee';
@@ -953,6 +974,24 @@ async function getValidationFallbackField(
     });
     return undefined;
   }
+}
+
+function getDuplicateSuppliersInvoiceNumberRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  if (options.suppliersInvoiceNumberSuffixed) return undefined;
+  const suffixed = suffixDuplicateSuppliersInvoiceNumber(options.suppliersInvoiceNumber);
+  if (!suffixed || suffixed === options.suppliersInvoiceNumber) return undefined;
+  const suffix = suffixed.match(/-(\d{14})$/)?.[1];
+  if (!suffix) return undefined;
+  return {
+    buildOptions: {
+      ...options,
+      suppliersInvoiceNumber: suffixed,
+      suppliersInvoiceNumberSuffixed: true,
+    },
+    fallbackLabel: `supplier invoice number suffixed with -${suffix}`,
+  };
 }
 
 function getFallbackRetryBuildOptions(
@@ -1075,6 +1114,10 @@ function getFallbackRetryBuildOptions(
       buildOptions: { ...options, omitConversationUrlField: true },
       fallbackLabel: 'omitted Intercom URL field',
     };
+  }
+
+  if (field === 'suppliersInvoiceNumber') {
+    return getDuplicateSuppliersInvoiceNumberRetryBuildOptions(options);
   }
 
   return undefined;
@@ -1658,6 +1701,7 @@ async function submitSupplierInvoiceWithRepair({
   result: unknown;
   finalBuildOptions: buildSubmitInvoiceDataOptions;
   priorFailures: SupplierInvoiceSubmitPriorFailure[];
+  validationTriggeredFields: Set<FallbackField>;
 }> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   const relatedLines = linesWithRelatedLob(buildOptions);
@@ -1682,7 +1726,7 @@ async function submitSupplierInvoiceWithRepair({
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
-      return { result, finalBuildOptions: attemptBuildOptions, priorFailures };
+      return { result, finalBuildOptions: attemptBuildOptions, priorFailures, validationTriggeredFields };
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -2147,6 +2191,7 @@ export async function submitSupplierInvoiceUpdate(
   message?: string;
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  suppliersInvoiceNumber?: string;
 }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -2177,7 +2222,7 @@ export async function submitSupplierInvoiceUpdate(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
+  const { finalBuildOptions, priorFailures, validationTriggeredFields } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID,
@@ -2208,13 +2253,16 @@ export async function submitSupplierInvoiceUpdate(
     submitLogMessage: 'Submitting updated Supplier Invoice to Workday',
   });
 
-  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions).map(fallback =>
+    validationTriggeredFields.has(fallback.field) ? { ...fallback, dueToValidationError: true as const } : fallback
+  );
   debug('Supplier invoice updated successfully', { appliedFallbacks, priorFailures });
 
   return {
     success: true,
     message: `Successfully updated invoice ${invoiceWorkdayID} with supplier ${supplierWID ?? '(existing)'}`,
     appliedFallbacks,
+    suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
   };
 }
@@ -2276,6 +2324,7 @@ export async function submitNewSupplierInvoice(
   invoiceNumber?: string;
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
+  suppliersInvoiceNumber?: string;
 }> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
@@ -2290,7 +2339,7 @@ export async function submitNewSupplierInvoice(
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
   }
 
-  const { result, finalBuildOptions, priorFailures } = await submitSupplierInvoiceWithRepair({
+  const { result, finalBuildOptions, priorFailures, validationTriggeredFields } = await submitSupplierInvoiceWithRepair({
     client: client as ResourceManagementClient,
     workdayConfig: context.workdayConfig,
     invoiceWorkdayID: undefined,
@@ -2324,7 +2373,9 @@ export async function submitNewSupplierInvoice(
     submitLogMessage: 'Submitting new Supplier Invoice to Workday',
   });
 
-  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions);
+  const appliedFallbacks = getAppliedFallbacks(finalBuildOptions).map(fallback =>
+    validationTriggeredFields.has(fallback.field) ? { ...fallback, dueToValidationError: true as const } : fallback
+  );
   const invoiceWID = extractIdsByType(result, 'WID')[0];
   let invoiceNumber: string | undefined;
   if (invoiceWID) {
@@ -2342,6 +2393,7 @@ export async function submitNewSupplierInvoice(
     invoiceWID,
     invoiceNumber,
     appliedFallbacks,
+    suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
   };
 }

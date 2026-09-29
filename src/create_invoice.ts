@@ -37,8 +37,9 @@ import {
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
+  composeSuppliersInvoiceNumber,
+  supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
-  sanitizeSuppliersInvoiceNumber,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
 import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
@@ -698,7 +699,15 @@ async function processInvoiceCluster(
       emailCompany: result.emailWorktags?.company,
     });
 
-    const extractedSuppliersInvoiceNumber = sanitizeSuppliersInvoiceNumber(result.extractedSuppliersInvoiceNumber);
+    const extractedSuppliersInvoiceNumber = composeSuppliersInvoiceNumber({
+      invoiceNumber: result.extractedSuppliersInvoiceNumber,
+      accountNumber: result.extractedAccountNumber,
+      invoiceDate: extractedInvoiceDate,
+      supplierName: supplierNameForInvoiceNumber(
+        result.supplier.extractedInformation?.supplierName,
+        result.supplier.resolvedSupplier?.supplierName,
+      ),
+    });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
@@ -1121,6 +1130,10 @@ async function processInvoiceCluster(
         const processingTime = Date.now() - startTime;
         await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
           ...sharedSlackDetails,
+          extracted: {
+            ...sharedSlackDetails.extracted,
+            suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+          },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
@@ -1210,6 +1223,10 @@ async function processInvoiceCluster(
 
     await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
       ...sharedSlackDetails,
+      extracted: {
+        ...sharedSlackDetails.extracted,
+        suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+      },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
       ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),

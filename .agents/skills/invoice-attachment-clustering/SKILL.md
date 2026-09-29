@@ -196,8 +196,9 @@ invoice number, and concurrent double-fires.
   day never share a row.
 - Possible duplicates: Workday rejects a supplier invoice number already used
   for that supplier, and the submit repair then retries with a changed value
-  (the default supplier, or a changed invoice number where the repair does
-  that). The retry stays, because it also rescues a wrong supplier match.
+  (the default supplier, or a UTC `YYYYMMDDHHmmss` suffix on the same
+  supplier). The retry stays, because a supplier change also rescues a wrong
+  supplier match. The timestamp suffix does not switch suppliers.
   With the registry on, a create that only succeeded after that rejection
   (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus a
   validation-driven fallback that changed the supplier or the submitted
