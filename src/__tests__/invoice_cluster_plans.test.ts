@@ -1,4 +1,10 @@
-import { claimInvoiceCluster, createInvoiceClusterPlan, finishInvoiceCluster } from '../lib/invoice_cluster_plans.js';
+import {
+  claimInvoiceCluster,
+  createInvoiceClusterPlan,
+  finishInvoiceCluster,
+  markInvoiceClusterUndispatched,
+  releaseInvoiceCluster,
+} from '../lib/invoice_cluster_plans.js';
 import type { DatabaseConnection } from '../lib/database.js';
 
 function mockDb(rows: unknown[] = []) {
@@ -34,5 +40,17 @@ describe('invoice cluster plans', () => {
     const { db, query } = mockDb();
     await finishInvoiceCluster(db, 'plan-1', 0, 'done', 'invoice-wid');
     expect(query).toHaveBeenCalledWith(expect.stringContaining('SET status = $3'), ['plan-1', 0, 'done', 'invoice-wid']);
+  });
+
+  it('marks an undispatched cluster failed only while it is still pending', async () => {
+    const { db, query } = mockDb();
+    await markInvoiceClusterUndispatched(db, 'plan-1', 1);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("AND status = 'pending'"), ['plan-1', 1]);
+  });
+
+  it('returns a processing cluster to pending when this run did no work', async () => {
+    const { db, query } = mockDb();
+    await releaseInvoiceCluster(db, 'plan-1', 1);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'pending', claimed_at = NULL"), ['plan-1', 1]);
   });
 });

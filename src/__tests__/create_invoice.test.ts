@@ -116,6 +116,8 @@ jest.mock('../lib/invoice_cluster_plans.js', () => ({
   createInvoiceClusterPlan: jest.fn().mockResolvedValue(undefined),
   claimInvoiceCluster: jest.fn().mockResolvedValue(true),
   finishInvoiceCluster: jest.fn().mockResolvedValue(undefined),
+  markInvoiceClusterUndispatched: jest.fn().mockResolvedValue(undefined),
+  releaseInvoiceCluster: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockLambdaSend = jest.fn().mockResolvedValue({});
@@ -1931,7 +1933,7 @@ describe('create_invoice', () => {
 
       expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
       const planId = plans.createInvoiceClusterPlan.mock.calls[0][1];
-      expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), planId, 1, 'failed');
+      expect(plans.markInvoiceClusterUndispatched).toHaveBeenCalledWith(expect.anything(), planId, 1);
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
         'error',
@@ -1968,6 +1970,59 @@ describe('create_invoice', () => {
       } as any)).rejects.toThrow('Workday down');
 
       expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), 'plan-1', 1, 'failed');
+    });
+
+    it('returns the plan row to pending when another run holds the invoice claim', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.acquireConversationInvoiceClaim.mockResolvedValue(false);
+
+      await processor({
+        data: [{ conversationId: '1234567890', clustered: true, planId: 'plan-1', clusterIndex: 1, attachments: [invoiceFile] }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(plans.releaseInvoiceCluster).toHaveBeenCalledWith(expect.anything(), 'plan-1', 1);
+      expect(plans.finishInvoiceCluster).not.toHaveBeenCalled();
+    });
+
+    it('keeps the plan row done when a step after the Workday create throws', async () => {
+      const { processor, slack, invoiceEnrichment, invoiceLines, registry, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
+      slack.notifyResult.mockRejectedValueOnce(new Error('slack down'));
+
+      await expect(processor({
+        data: [{ conversationId: '1234567890', clustered: true, planId: 'plan-1', clusterIndex: 1, attachments: [invoiceFile] }],
+      } as any)).rejects.toThrow();
+
+      expect(plans.finishInvoiceCluster).toHaveBeenCalledWith(expect.anything(), 'plan-1', 1, 'done', 'new-invoice-wid');
+      expect(plans.finishInvoiceCluster).not.toHaveBeenCalledWith(expect.anything(), 'plan-1', 1, 'failed');
+    });
+
+    it('alerts Slack when the plan row cannot be marked done', async () => {
+      const { processor, slack, invoiceEnrichment, invoiceLines, registry, plans, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
+      plans.finishInvoiceCluster.mockRejectedValue(new Error('db down'));
+
+      await processor({
+        data: [{ conversationId: '1234567890', clustered: true, planId: 'plan-1', clusterIndex: 1, attachments: [invoiceFile] }],
+      } as any);
+
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'error',
+        expect.any(Number),
+        expect.objectContaining({ planId: 'plan-1', clusterIndex: 1, invoiceWID: 'new-invoice-wid' }),
+        expect.objectContaining({ message: expect.stringContaining('could not be marked done') }),
+      );
     });
 
     it('processes an already-clustered fan-out payload without re-parsing', async () => {

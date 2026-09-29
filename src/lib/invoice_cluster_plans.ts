@@ -60,3 +60,31 @@ export async function finishInvoiceCluster(
     [planId, clusterIndex, status, workdayInvoiceWid ?? null]
   );
 }
+
+/** Marks a cluster whose dispatch failed, unless a run has already claimed it. */
+export async function markInvoiceClusterUndispatched(
+  db: DatabaseConnection,
+  planId: string,
+  clusterIndex: number
+): Promise<void> {
+  await db.query(
+    `UPDATE invoice_cluster_plans
+        SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+      WHERE plan_id = $1 AND cluster_index = $2 AND status = 'pending'`,
+    [planId, clusterIndex]
+  );
+}
+
+/** Returns a claimed cluster to pending when this run did no work on it (another run owns the invoice). */
+export async function releaseInvoiceCluster(
+  db: DatabaseConnection,
+  planId: string,
+  clusterIndex: number
+): Promise<void> {
+  await db.query(
+    `UPDATE invoice_cluster_plans
+        SET status = 'pending', claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE plan_id = $1 AND cluster_index = $2 AND status = 'processing'`,
+    [planId, clusterIndex]
+  );
+}

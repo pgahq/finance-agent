@@ -5,6 +5,15 @@ describe('SAM template', () => {
   const globals = readFileSync(join(process.cwd(), 'template.yml'), 'utf8').split('\nResources:')[0];
   const circleci = readFileSync(join(process.cwd(), '.circleci/config.yml'), 'utf8');
 
+  it('keeps the create-invoice processor timeout shorter than the invoice and cluster claim lifetime', () => {
+    const template = readFileSync(join(process.cwd(), 'template.yml'), 'utf8');
+    const processorBlock = template.split('\n  CreateInvoiceProcessor:')[1]?.split('\n  # ')[0] ?? '';
+    const timeoutSeconds = Number(processorBlock.match(/Timeout:\s*(\d+)/)?.[1]);
+    const { CONVERSATION_INVOICE_CLAIM_TTL_MINUTES } = jest.requireActual('../lib/conversation_invoices.js');
+    expect(timeoutSeconds).toBeGreaterThan(0);
+    expect(timeoutSeconds).toBeLessThan(CONVERSATION_INVOICE_CLAIM_TTL_MINUTES * 60);
+  });
+
   it('disables Lambda async retries for all functions', () => {
     expect(globals).toContain('EventInvokeConfig:');
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);

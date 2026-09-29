@@ -66,7 +66,13 @@ import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
-import { claimInvoiceCluster, createInvoiceClusterPlan, finishInvoiceCluster } from './lib/invoice_cluster_plans.js';
+import {
+  claimInvoiceCluster,
+  createInvoiceClusterPlan,
+  finishInvoiceCluster,
+  markInvoiceClusterUndispatched,
+  releaseInvoiceCluster,
+} from './lib/invoice_cluster_plans.js';
 import {
   closedPurchaseOrderLineNote,
   getSupplierInvoiceEditability,
@@ -373,7 +379,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       throw error;
     }
     for (const { clusterIndex } of undispatched) {
-      await finishInvoiceCluster(context.dbConnection, planId, clusterIndex, 'failed').catch((error: unknown) => {
+      await markInvoiceClusterUndispatched(context.dbConnection, planId, clusterIndex).catch((error: unknown) => {
         debug('Failed to mark undispatched invoice cluster', { planId, clusterIndex, error });
       });
     }
@@ -502,6 +508,8 @@ interface ClusterInvoiceInput {
 /** Set while processing a cluster so the wrapper can finish the plan row and release the invoice claim. */
 interface ClusterRunState {
   invoiceClaim?: { conversationId: string; supplierInvoiceNumber: string; claimToken: string };
+  /** Another run held the invoice claim, so this run did no Workday or registry work. */
+  invoiceClaimContended?: boolean;
   workdayInvoiceWid?: string;
 }
 
@@ -531,14 +539,21 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
   const run: ClusterRunState = {};
   try {
     await processInvoiceCluster(context, input, run);
-    if (plan) {
-      await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'done', run.workdayInvoiceWid)
-        .catch((error: unknown) => debug('Failed to mark invoice cluster done', { ...plan, error }));
+    if (plan && run.invoiceClaimContended) {
+      await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
+        .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
+    } else if (plan) {
+      await markInvoiceClusterDone(context, input, plan, run.workdayInvoiceWid);
     }
   } catch (error) {
     if (plan) {
-      await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'failed')
-        .catch((finishError: unknown) => debug('Failed to mark invoice cluster failed', { ...plan, error: finishError }));
+      // Once Workday accepted the invoice, a later failure must not make the cluster retryable.
+      if (run.workdayInvoiceWid) {
+        await markInvoiceClusterDone(context, input, plan, run.workdayInvoiceWid);
+      } else {
+        await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'failed')
+          .catch((finishError: unknown) => debug('Failed to mark invoice cluster failed', { ...plan, error: finishError }));
+      }
     }
     throw error;
   } finally {
@@ -547,6 +562,31 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       await releaseConversationInvoiceClaim(context.dbConnection, claim.conversationId, claim.supplierInvoiceNumber, claim.claimToken)
         .catch((error: unknown) => debug('Failed to release conversation invoice claim', { ...claim, error }));
     }
+  }
+}
+
+async function markInvoiceClusterDone(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  plan: { planId: string; clusterIndex: number },
+  workdayInvoiceWid: string | undefined
+): Promise<void> {
+  try {
+    await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'done', workdayInvoiceWid);
+  } catch (error) {
+    // The row stays processing and becomes claimable after the TTL, so AP must know it may be reprocessed.
+    debug('Failed to mark invoice cluster done', { ...plan, error });
+    await notifyResult(
+      'create_invoice',
+      'error',
+      Date.now() - input.startTime,
+      slackInvoiceDetails({
+        ...plan,
+        ...(workdayInvoiceWid ? { invoiceWID: workdayInvoiceWid } : {}),
+        attachments: input.files.map((file) => file.fileName),
+      }, input.conversationId, input.intercomAppId),
+      new Error('The invoice was processed but its cluster plan row could not be marked done; a later retry of this cluster could process it again.')
+    );
   }
 }
 
@@ -910,6 +950,7 @@ async function processInvoiceCluster(
       const claimToken = randomUUID();
       if (!(await acquireConversationInvoiceClaim(context.dbConnection, conversationId, registryNumber, claimToken))) {
         debug('Another run holds the claim for this conversation invoice; skipping', { conversationId, registryNumber });
+        run.invoiceClaimContended = true;
         await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
           ...sharedSlackDetails,
           skipped: true,

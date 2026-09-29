@@ -61,9 +61,17 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    - Every cluster run claims its plan row (`pending`/`failed` → `processing`,
      or a `processing` row older than 15 minutes) before loading files, and
      marks it `done` (with the Workday invoice WID) or `failed`. A duplicate
-     delivery of the same record finds the row taken and does nothing.
+     delivery of the same record finds the row taken and does nothing. Once
+     Workday accepted the invoice, a later error still marks the row `done`,
+     so it is never retried. A run that skipped because another run held the
+     invoice claim returns the row to `pending`. A failure to mark the row
+     `done` posts a Slack error, since the row becomes claimable again after
+     the TTL.
+   - The 15-minute takeover TTL (claims and plan rows) is longer than the
+     processor timeout (300s; `template.test.ts` guards this), so a row or
+     claim is only taken over after its owner was stopped.
    - Fan-out dispatches settle independently: a failed dispatch marks that row
-     `failed`, the first cluster still runs, and Slack posts one error naming
+     `failed` only if it is still `pending`, the first cluster still runs, and Slack posts one error naming
      the clusters that were not processed so a re-trigger picks them up
      (clusters already created are deduped by the registry).
 4. Enrichment receives every PDF in the cluster with document roles (invoice vs

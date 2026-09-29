@@ -72,7 +72,10 @@ export async function upsertConversationSupplierInvoice(
   );
 }
 
-/** Longer than the processor Lambda timeout, so only a claim left by a crashed run can be taken over. */
+/**
+ * Longer than the CreateInvoiceProcessor Lambda timeout (300s, guarded by template.test.ts), so a claim
+ * can only be taken over after its owner was stopped and can no longer write.
+ */
 export const CONVERSATION_INVOICE_CLAIM_TTL_MINUTES = 15;
 
 /**
