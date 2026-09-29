@@ -652,16 +652,23 @@ function extractLineCostCenterId(line: { costCenterId?: string | null; Worktags_
   return null;
 }
 
+function normalizeSupplierWID(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
 function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions): string | undefined {
-  return process.env.WORKDAY_DEFAULT_SUPPLIER_WID ?? options.defaultSupplierWID;
+  return normalizeSupplierWID(process.env.WORKDAY_DEFAULT_SUPPLIER_WID) ?? normalizeSupplierWID(options.defaultSupplierWID);
 }
 
 function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
   const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob, applyAmountOnlyLineRetry } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
+  const selectedSupplierWID = normalizeSupplierWID(supplierWID);
+  const selectedDefaultSupplierWID = normalizeSupplierWID(defaultSupplierWID);
 
-  if (configuredDefaultSupplierWID && (supplierWID === configuredDefaultSupplierWID || (!supplierWID && defaultSupplierWID))) {
+  if (configuredDefaultSupplierWID && (selectedSupplierWID === configuredDefaultSupplierWID || (!selectedSupplierWID && selectedDefaultSupplierWID))) {
     fallbacks.push({ field: 'supplier', label: 'default supplier' });
   }
 
@@ -883,12 +890,9 @@ async function getValidationFallbackField(
       debug('Validation is a duplicate supplier invoice number but no invoice number was submitted; skipping further retries', { validationError });
       return undefined;
     }
-    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options)?.trim() || undefined;
-    const fallbackSupplierAlreadySelected = Boolean(
-      fallbackSupplierWID
-      && (options.supplierWID === fallbackSupplierWID || (!options.supplierWID && options.defaultSupplierWID?.trim()))
-    );
-    if (fallbackSupplierWID && !fallbackSupplierAlreadySelected) {
+    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options);
+    const selectedSupplierWID = normalizeSupplierWID(options.supplierWID) ?? normalizeSupplierWID(options.defaultSupplierWID);
+    if (fallbackSupplierWID && selectedSupplierWID !== fallbackSupplierWID) {
       debug('Validation is a duplicate supplier invoice number; retrying with the fallback supplier', { validationError });
       return 'supplier';
     }
@@ -983,7 +987,7 @@ function getFallbackRetryBuildOptions(
     field === 'supplier'
     &&
     defaultSupplierWID
-    && options.supplierWID !== defaultSupplierWID
+    && normalizeSupplierWID(options.supplierWID) !== defaultSupplierWID
   ) {
     return {
       buildOptions: {

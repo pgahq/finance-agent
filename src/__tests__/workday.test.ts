@@ -5434,6 +5434,38 @@ describe('Workday utilities', () => {
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
     });
 
+    it('trims a padded fallback supplier id when retrying a duplicate invoice number', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = '  default-supplier-wid  ';
+      const duplicateInvoiceNumber = new Error(
+        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
+      );
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice
+        .mockImplementationOnce((request: any, callback: any) => {
+          capturedRequests.push(request);
+          callback(duplicateInvoiceNumber, null);
+        })
+        .mockImplementationOnce((request: any, callback: any) => {
+          capturedRequests.push(request);
+          callback(null, {
+            Supplier_Invoice_Reference: {
+              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
+            },
+          });
+        });
+
+      const result = await submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '12345' });
+
+      expect(result.success).toBe(true);
+      expect(result.suppliersInvoiceNumber).toBe('12345');
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ field: 'supplier', label: 'default supplier', dueToValidationError: true }),
+      ]));
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
+        .toBe('default-supplier-wid');
+    });
+
     it('should attach priorFailures when a fallback retry still fails', async () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
