@@ -2,7 +2,7 @@ import { debug } from '@pga/logger';
 import { ToolLoopAgent, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { createLanguageModel } from './models.js';
-import type { WorkdayValidationDetails } from './invoice_validation_failures.js';
+import { isDuplicateSuppliersInvoiceNumberError, type WorkdayValidationDetails } from './invoice_validation_failures.js';
 
 export type WorkdayValidationRetryField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'unknown';
 
@@ -33,13 +33,21 @@ export async function classifyWorkdayValidationField(
   input: WorkdayValidationFieldInput,
   { model = getValidationFieldModel() }: { model?: LanguageModel } = {}
 ): Promise<WorkdayValidationFieldDecision> {
+  if (isDuplicateSuppliersInvoiceNumberError(input.validation)) {
+    return {
+      retryField: 'unknown',
+      workdayField: 'Suppliers_Invoice_Number',
+      reason: "Supplier's Invoice Number is already in use. Changing the supplier does not fix that fault.",
+    };
+  }
+
   const agent = new ToolLoopAgent({
     model,
     instructions: `You classify Workday Supplier Invoice validation faults.
 
 Use only the validation message, detail message, and XPath returned by inspectValidationError.
 Map the failing Workday field to one of the configured retry fields only when the evidence is clear:
-- supplier: supplier references or supplier identity fields
+- supplier: supplier references or supplier identity fields. A duplicate Supplier's Invoice Number ("already in use", XPath Suppliers_Invoice_Number) is unknown — do not map it to supplier
 - invoiceDate: invoice date fields or date restrictions
 - paymentTerms: payment terms fields
 - worktag:fund: fund worktag errors — message or XPath references Fund or Fund_ID
@@ -51,7 +59,7 @@ Map the failing Workday field to one of the configured retry fields only when th
 When multiple Validation_Error entries exist, a required or disallowed Line of Business related-worktag rule is worktag:lob even if another message says the Cost Center is not available for the company. Do not classify that combination as worktag:costCenter.
 
 Only classify as a specific worktag type when the evidence clearly identifies that type.
-Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, when you cannot identify the specific worktag type, or when changing the field would require inventing new data.
+Return unknown when the failing field is not one of the allowed retry fields, when the evidence is ambiguous, when you cannot identify the specific worktag type, when changing the field would require inventing new data, or when the fault is a duplicate Supplier's Invoice Number. Changing the supplier does not fix an invoice number that is already in use.
 When finished, call done exactly once.`,
     tools: {
       inspectValidationError: tool({

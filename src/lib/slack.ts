@@ -172,14 +172,46 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
+  if (typeof details.possibleDuplicate === 'string' && details.possibleDuplicate) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Possible duplicate*\n${details.possibleDuplicate}`) }
+    });
+  }
+
+  if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Skipped*\n${details.skipReason}`) }
+    });
+  }
+
   const attachment = details.attachment as { fileName?: string } | undefined;
+  const clusterFiles = Array.isArray(details.attachments)
+    ? (details.attachments as Array<{ fileName?: string; kind?: string }>)
+      .map((file) => (file.kind ? `${file.fileName} (${file.kind})` : file.fileName))
+      .filter((name): name is string => Boolean(name))
+    : [];
+  const unrelatedFiles = Array.isArray(details.unrelatedAttachments)
+    ? (details.unrelatedAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
+    : [];
   const slackDetails: Record<string, unknown> = {
     ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
+    ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
+    ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
     ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
       ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
       : {}),
+    ...(details.updated === true && Array.isArray(details.newAttachments)
+      ? { newAttachments: (details.newAttachments as unknown[]).filter((name): name is string => typeof name === 'string') }
+      : {}),
+    ...(typeof details.replacesCanceledInvoice === 'string' && details.replacesCanceledInvoice
+      ? { replacesCanceledInvoice: details.replacesCanceledInvoice }
+      : {}),
+    ...(details.skipped === true ? { skipped: true } : {}),
+    ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
@@ -334,6 +366,29 @@ export async function notifyResult(
     && details.invoiceNumber
     ? details.invoiceNumber
     : undefined;
+  const createDetails = lambdaName === 'create_invoice' && status === 'success'
+    ? details as {
+      invoiceWID?: unknown;
+      updated?: unknown;
+      skipped?: unknown;
+      needsManualReview?: unknown;
+      canceledNotReplaced?: unknown;
+      inProgressElsewhere?: unknown;
+      possibleDuplicate?: unknown;
+    } | undefined
+    : undefined;
+  // Resend outcomes must stay visible even when Workday returned no invoice number, so fall back to the WID.
+  const resendInvoiceLabel = createdInvoiceNumber
+    ?? (typeof createDetails?.invoiceWID === 'string' && createDetails.invoiceWID ? createDetails.invoiceWID : undefined);
+  const updatedInvoice = createDetails?.updated === true;
+  const skippedInvoice = createDetails?.skipped === true;
+  const needsManualReview = skippedInvoice && createDetails?.needsManualReview === true;
+  const skipLabel = createDetails?.inProgressElsewhere === true
+    ? 'another run is processing it'
+    : createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
+  const invoiceRef = resendInvoiceLabel ? ` for \`${resendInvoiceLabel}\`` : '';
+  const possibleDuplicate = Boolean(createdInvoiceNumber) && !skippedInvoice && !updatedInvoice
+    && typeof createDetails?.possibleDuplicate === 'string';
 
   const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
     ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
@@ -347,9 +402,17 @@ export async function notifyResult(
   // Build the main message
   let mainMessage = shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
-    : createdInvoiceNumber
-      ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
-      : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
+    : needsManualReview
+    ? `⚠️ *${lambdaName}* needs manual review${invoiceRef} (resend not applied) in ${timeText}`
+    : skippedInvoice
+      ? `⏭️ *${lambdaName}* skipped resend${invoiceRef} (${skipLabel}) in ${timeText}`
+      : updatedInvoice
+        ? `${statusEmoji} *${lambdaName}* updated${resendInvoiceLabel ? ` \`${resendInvoiceLabel}\`` : ' invoice'} in ${timeText}`
+        : possibleDuplicate
+          ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` (possible duplicate, check before approving) in ${timeText}`
+        : createdInvoiceNumber
+          ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+          : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
     mainMessage += ` for ${context}`;
@@ -422,6 +485,7 @@ export interface EnrichmentNotification {
   poLineCount?: number;
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
+  appliedFallbackLabels?: string[];
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -433,7 +497,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -519,6 +583,9 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
   if (canModify && fallbacks.closedPurchaseOrderLines) {
     fallbackLines.push(fallbacks.closedPurchaseOrderLines);
+  }
+  if (canModify && appliedFallbackLabels?.length) {
+    fallbackLines.push(...appliedFallbackLabels);
   }
 
   if (!canModify) {
