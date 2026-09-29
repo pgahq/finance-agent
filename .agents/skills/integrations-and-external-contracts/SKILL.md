@@ -122,7 +122,7 @@ Create-invoice Slack **errors** show the Workday `Message` plus prior submit att
 
 - A printed supplier invoice number that is not the same as the account number is submitted as printed (after the character rules above).
 - No distinct invoice number, but an account number: sanitized account number plus `MMMYY`, with no extra hyphen (`54875-48235` on 2022-04-01 → `54875-48235APR22`). The same account and invoice number, ignoring spaces, `#`, and hyphens, is not a distinct invoice number (`20-1183-01` in September 2026 → `20-1183-01SEP26`).
-- Neither number: the first four letters of the supplier name (letters only, uppercase; a shorter name stays shorter) plus `MMDDYY` (`Safari` on 2022-04-01 → `SAFA040122`). Prefer the name extracted from the PDF, then the resolved Workday supplier name.
+- Neither number: the first four letters of the supplier name (letters only, uppercase; a shorter name stays shorter) plus `MMDDYY` (`Safari` on 2022-04-01 → `SAFA040122`). Prefer the name extracted from the PDF, then the resolved Workday supplier name. On enrich, when the match is the supplier already on the invoice, that supplier's name is the last fallback.
 - A generated number with no document invoice date is left unset. Wire, individual, and SIR expense-report formats are not applied; enrichment has no payment-type or person signal for them.
 - The Workday note still records the document value (`Supplier Invoice Number (from document)`). Slack `*Supplier Invoice #*` is the number submitted to Workday.
 

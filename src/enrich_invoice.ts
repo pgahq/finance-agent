@@ -186,6 +186,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       supplierName: supplierNameForInvoiceNumber(
         result.supplier.extractedInformation?.supplierName,
         result.supplier.resolvedSupplier?.supplierName,
+        result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined,
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
