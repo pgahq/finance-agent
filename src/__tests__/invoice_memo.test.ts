@@ -8,8 +8,6 @@ import {
   composeSuppliersInvoiceNumber,
   sanitizeSuppliersInvoiceNumber,
   supplierNameForInvoiceNumber,
-  suffixDuplicateSuppliersInvoiceNumber,
-  suppliersInvoiceNumberTimestamp,
 } from '../lib/invoice_memo.js';
 import { formatMemoIdentifierNotes } from '../lib/invoice_enrichment.js';
 import type { FinalInvoiceLine } from '../lib/invoice_lines.js';
@@ -171,20 +169,6 @@ describe('sanitizeSuppliersInvoiceNumber', () => {
   it('replaces pipes and other unsafe characters with a hyphen', () => {
     expect(sanitizeSuppliersInvoiceNumber('INV|001>>>')).toBe('INV-001');
     expect(sanitizeSuppliersInvoiceNumber('INV 001')).toBe('INV-001');
-  });
-});
-
-describe('suffixDuplicateSuppliersInvoiceNumber', () => {
-  it('appends a UTC timestamp', () => {
-    const now = new Date('2026-09-28T17:00:00.000Z');
-    expect(suppliersInvoiceNumberTimestamp(now)).toBe('20260928170000');
-    expect(suffixDuplicateSuppliersInvoiceNumber('12345', now)).toBe('12345-20260928170000');
-    expect(suffixDuplicateSuppliersInvoiceNumber('20-1183-01SEP26', now)).toBe('20-1183-01SEP26-20260928170000');
-  });
-
-  it('returns undefined when there is no invoice number', () => {
-    expect(suffixDuplicateSuppliersInvoiceNumber(null, new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
-    expect(suffixDuplicateSuppliersInvoiceNumber('   ', new Date('2026-09-28T17:00:00.000Z'))).toBeUndefined();
   });
 });
 

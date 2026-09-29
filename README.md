@@ -430,6 +430,7 @@ flowchart TD
 
 Retry guardrails:
 
+- A duplicate supplier invoice number retries once on the fallback supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) with the same number, before the repair agent. It does not append a timestamp. If that supplier is already selected, the submitted number is blank, or the fallback supplier is unset, the fault stops.
 - Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
 - The repair agent must inspect the latest failed request before deciding whether to retry.
 - Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available.
