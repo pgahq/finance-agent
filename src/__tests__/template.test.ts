@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CONVERSATION_INVOICE_CLAIM_TTL_MINUTES } from '../lib/conversation_invoices.js';
 
 describe('SAM template', () => {
   const globals = readFileSync(join(process.cwd(), 'template.yml'), 'utf8').split('\nResources:')[0];
@@ -9,7 +10,6 @@ describe('SAM template', () => {
     const template = readFileSync(join(process.cwd(), 'template.yml'), 'utf8');
     const processorBlock = template.split('\n  CreateInvoiceProcessor:')[1]?.split('\n  # ')[0] ?? '';
     const timeoutSeconds = Number(processorBlock.match(/Timeout:\s*(\d+)/)?.[1]);
-    const { CONVERSATION_INVOICE_CLAIM_TTL_MINUTES } = jest.requireActual('../lib/conversation_invoices.js');
     expect(timeoutSeconds).toBeGreaterThan(0);
     expect(timeoutSeconds).toBeLessThan(CONVERSATION_INVOICE_CLAIM_TTL_MINUTES * 60);
   });
