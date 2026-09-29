@@ -1133,16 +1133,20 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
-    // The default-supplier retry also rescues a wrong supplier match, so it stays; when the registry is
-    // on, a retry caused by "invoice number already in use" is flagged as a possible duplicate instead.
+    // A create that only succeeded after Workday rejected the invoice number as already in use (whatever the
+    // retry changed, such as the default supplier or a suffixed number) may duplicate an invoice the registry
+    // never saw. The retries stay, because they also rescue a wrong supplier match; the invoice is flagged.
+    const validationRetries = (appliedFallbacks: AppliedFallback[]) =>
+      appliedFallbacks.filter((fallback) => fallback.dueToValidationError);
     const isPossibleDuplicate = (
       appliedFallbacks: AppliedFallback[],
       priorFailures: SupplierInvoiceSubmitPriorFailure[] = []
     ) => trackResends
-      && appliedFallbacks.some((fallback) => fallback.field === 'supplier' && fallback.dueToValidationError)
+      && validationRetries(appliedFallbacks).length > 0
       && priorFailures.some((failure) => isDuplicateSuppliersInvoiceNumberMessage(failure.message));
     const resolvedSupplierLabel = result.supplier.resolvedSupplier?.supplierName ?? 'the matched supplier';
-    const possibleDuplicateNote = `Possible duplicate: Workday reported supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}, so this invoice was created under the default supplier. Check for an existing invoice before approving.`;
+    const possibleDuplicateNote = (appliedFallbacks: AppliedFallback[]) =>
+      `Possible duplicate: Workday reported supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}, so this invoice was created after retrying with: ${validationRetries(appliedFallbacks).map((fallback) => fallback.label).join('; ')}. Check for an existing invoice before approving.`;
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
@@ -1150,7 +1154,7 @@ async function processInvoiceCluster(
       buildNotes: (appliedFallbacks, priorFailures) =>
         buildNotes(appliedFallbacks) +
         (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : '') +
-        (isPossibleDuplicate(appliedFallbacks, priorFailures) ? `\n\n${possibleDuplicateNote}` : ''),
+        (isPossibleDuplicate(appliedFallbacks, priorFailures) ? `\n\n${possibleDuplicateNote(appliedFallbacks)}` : ''),
       memo,
       invoiceDate: extractedInvoiceDate,
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
@@ -1174,6 +1178,9 @@ async function processInvoiceCluster(
 
     run.workdayInvoiceWid = createOutcome.invoiceWID;
     const possibleDuplicate = isPossibleDuplicate(createOutcome.appliedFallbacks, createOutcome.priorFailures);
+    const supplierFellBack = createOutcome.appliedFallbacks.some(
+      (fallback) => fallback.field === 'supplier' && fallback.dueToValidationError
+    );
     let registrySyncFailed = false;
     if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
@@ -1183,7 +1190,7 @@ async function processInvoiceCluster(
           await upsertConversationSupplierInvoice(context.dbConnection, {
             conversationId,
             supplierInvoiceNumber: registryNumber,
-            supplierWid: possibleDuplicate ? null : resolvedSupplierWID ?? null,
+            supplierWid: possibleDuplicate && supplierFellBack ? null : resolvedSupplierWID ?? null,
             workdayInvoiceWid: createOutcome.invoiceWID,
             workdayInvoiceNumber: createOutcome.invoiceNumber ?? null,
             lastProcessedReceivedAt: clusterReceivedAt ?? null,
@@ -1200,7 +1207,7 @@ async function processInvoiceCluster(
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
       ...(replacedInvoiceLabel ? { replacesCanceledInvoice: replacedInvoiceLabel } : {}),
-      ...(possibleDuplicate ? { possibleDuplicate: possibleDuplicateNote } : {}),
+      ...(possibleDuplicate ? { possibleDuplicate: possibleDuplicateNote(createOutcome.appliedFallbacks) } : {}),
       ...(assigneeEmail ? { assigneeEmail } : {}),
       ...(assigneeMatch ? {
         assigneeWorkdayId: assigneeMatch.workdayId,
