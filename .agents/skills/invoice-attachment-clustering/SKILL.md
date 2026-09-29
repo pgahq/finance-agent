@@ -199,8 +199,9 @@ invoice number, and concurrent double-fires.
   (the default supplier, or a changed invoice number where the repair does
   that). The retry stays, because it also rescues a wrong supplier match.
   With the registry on, a create that only succeeded after that rejection
-  (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus any
-  validation-driven fallback) is flagged as a possible duplicate in the work
+  (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus a
+  validation-driven fallback that changed the supplier or the submitted
+  invoice number, `DUPLICATE_NUMBER_REPAIR_FIELDS`) is flagged as a possible duplicate in the work
   queue notes and the Slack headline/body (`possibleDuplicate`, naming the
   retried values). The registry row records an unresolved supplier only when
   the retry replaced the supplier. This covers invoices the registry never saw

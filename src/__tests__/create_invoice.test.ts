@@ -2611,7 +2611,7 @@ describe('create_invoice', () => {
 
         const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
         expect(createArgs.buildNotes(duplicateOutcome.appliedFallbacks, duplicateOutcome.priorFailures))
-          .toContain("Possible duplicate: Workday reported supplier's invoice number INV-001 is already in use for Test Supplier, so this invoice was created after retrying with: default supplier.");
+          .toContain("Possible duplicate: Workday says supplier's invoice number INV-001 is already in use for Test Supplier. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.");
         expect(createArgs.buildNotes([], [])).not.toContain('Possible duplicate');
         expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
           expect.anything(),
@@ -2647,14 +2647,36 @@ describe('create_invoice', () => {
 
         const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
         expect(createArgs.buildNotes(suffixedOutcome.appliedFallbacks, suffixedOutcome.priorFailures))
-          .toContain('created after retrying with: supplier invoice number suffixed with -20260929151200.');
+          .toContain('This invoice was created on a retry that changed: supplier invoice number suffixed with -20260929151200.');
         expect(slack.notifyResult.mock.calls[0][3].possibleDuplicate).toEqual(
           expect.stringContaining('supplier invoice number suffixed with -20260929151200')
         );
         expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ supplierWid: 'supplier-wid-1' })
+          expect.objectContaining({ supplierWid: 'supplier-wid-1', supplierInvoiceNumber: 'INV-001' })
         );
+        expect(registry.acquireConversationInvoiceClaim).toHaveBeenCalledWith(expect.anything(), '1234567890', 'INV-001', expect.any(String));
+      });
+
+      it('does not flag a retry that only changed an unrelated field after the duplicate-number rejection', async () => {
+        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+        enableClustering(loadEnv);
+        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+        registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
+        const dateOnlyOutcome = {
+          ...duplicateOutcome,
+          appliedFallbacks: [{ field: 'invoiceDate', label: 'default invoice date', dueToValidationError: true }],
+        };
+        workday.submitNewSupplierInvoice.mockResolvedValue(dateOnlyOutcome);
+
+        await processor({
+          data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
+        } as any);
+
+        const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(createArgs.buildNotes(dateOnlyOutcome.appliedFallbacks, dateOnlyOutcome.priorFailures)).not.toContain('Possible duplicate');
+        expect(slack.notifyResult.mock.calls[0][3].possibleDuplicate).toBeUndefined();
       });
 
       it('does not flag a default-supplier retry caused by a different validation error', async () => {

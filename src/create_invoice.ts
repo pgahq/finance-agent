@@ -151,6 +151,10 @@ function enrichmentStubCompany(parsedPo?: ParsedPurchaseOrder) {
   return { descriptor: fallback.descriptor, id: fallback.id };
 }
 
+// Submit repairs that change who or what the invoice is keyed on in Workday. A string set, so a repair field
+// added later (a suffixed invoice number) counts without widening the fallback type here.
+const DUPLICATE_NUMBER_REPAIR_FIELDS: ReadonlySet<string> = new Set(['supplier', 'suppliersInvoiceNumber']);
+
 export interface CreateInvoiceAttachment extends ClusterableAttachment {
   kind?: ClassifiedAttachment['kind'];
   supportingKind?: ClassifiedAttachment['supportingKind'];
@@ -1133,11 +1137,13 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
-    // A create that only succeeded after Workday rejected the invoice number as already in use (whatever the
-    // retry changed, such as the default supplier or a suffixed number) may duplicate an invoice the registry
-    // never saw. The retries stay, because they also rescue a wrong supplier match; the invoice is flagged.
+    // A create that only succeeded after Workday rejected the invoice number as already in use, on a retry
+    // that changed the supplier or the submitted invoice number, may duplicate an invoice the registry never
+    // saw. The retries stay, because they also rescue a wrong supplier match; the invoice is flagged.
     const validationRetries = (appliedFallbacks: AppliedFallback[]) =>
-      appliedFallbacks.filter((fallback) => fallback.dueToValidationError);
+      appliedFallbacks.filter(
+        (fallback) => fallback.dueToValidationError && DUPLICATE_NUMBER_REPAIR_FIELDS.has(fallback.field)
+      );
     const isPossibleDuplicate = (
       appliedFallbacks: AppliedFallback[],
       priorFailures: SupplierInvoiceSubmitPriorFailure[] = []
@@ -1146,7 +1152,7 @@ async function processInvoiceCluster(
       && priorFailures.some((failure) => isDuplicateSuppliersInvoiceNumberMessage(failure.message));
     const resolvedSupplierLabel = result.supplier.resolvedSupplier?.supplierName ?? 'the matched supplier';
     const possibleDuplicateNote = (appliedFallbacks: AppliedFallback[]) =>
-      `Possible duplicate: Workday reported supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}, so this invoice was created after retrying with: ${validationRetries(appliedFallbacks).map((fallback) => fallback.label).join('; ')}. Check for an existing invoice before approving.`;
+      `Possible duplicate: Workday says supplier's invoice number ${extractedSuppliersInvoiceNumber} is already in use for ${resolvedSupplierLabel}. This invoice was created on a retry that changed: ${validationRetries(appliedFallbacks).map((fallback) => fallback.label).join('; ')}. Check for an existing invoice before approving.`;
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: targetSupplierWID,
       companyWID,
