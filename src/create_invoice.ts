@@ -1130,6 +1130,10 @@ async function processInvoiceCluster(
         const processingTime = Date.now() - startTime;
         await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
           ...sharedSlackDetails,
+          extracted: {
+            ...sharedSlackDetails.extracted,
+            suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+          },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,

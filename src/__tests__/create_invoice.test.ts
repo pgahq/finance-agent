@@ -2334,6 +2334,43 @@ describe('create_invoice', () => {
       );
     });
 
+    it('reports the timestamped supplier invoice number after a duplicate retry on resend', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+      workday.submitSupplierInvoiceUpdate.mockResolvedValue({
+        success: true,
+        suppliersInvoiceNumber: 'INV-001-20260928170000',
+        appliedFallbacks: [{
+          field: 'suppliersInvoiceNumber',
+          label: 'supplier invoice number suffixed with -20260928170000',
+          dueToValidationError: true,
+        }],
+      });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          updated: true,
+          extracted: expect.objectContaining({ suppliersInvoiceNumber: 'INV-001-20260928170000' }),
+          appliedFallbacks: expect.arrayContaining(['supplier invoice number suffixed with -20260928170000']),
+        }),
+      );
+    });
+
     it('skips the resend when no documents are newer than the last processing', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);
