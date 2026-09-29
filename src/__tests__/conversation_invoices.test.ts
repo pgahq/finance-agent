@@ -51,5 +51,8 @@ describe('upsertConversationSupplierInvoice', () => {
       expect.stringContaining('ON CONFLICT (conversation_id, supplier_invoice_number)'),
       ['123', 'INV-100', 'supplier-wid', 'invoice-wid', 'SUPIN-1', 1704153600]
     );
+    expect(db.query.mock.calls[0][0]).toContain(
+      'last_processed_received_at = GREATEST(conversation_supplier_invoices.last_processed_received_at, EXCLUDED.last_processed_received_at)'
+    );
   });
 });

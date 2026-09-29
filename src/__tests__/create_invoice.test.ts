@@ -180,6 +180,7 @@ function freshRequire() {
     invoiceLines: require('../lib/invoice_lines.js'),
     database: require('../lib/database.js'),
     clustering: require('../lib/invoice_attachment_clustering.js'),
+    s3: require('../lib/s3.js'),
     registry: require('../lib/conversation_invoices.js'),
     lambda: require('@aws-sdk/client-lambda'),
     loadEnv: require('@pga/lambda-env').default,
@@ -1701,6 +1702,48 @@ describe('create_invoice', () => {
       };
     }
 
+    it('keeps unrelated files off the invoice and reuses the classification downloads', async () => {
+      const { processor, workday, clustering, invoiceEnrichment, invoiceLines, s3, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const flyer = { s3Key: 'new-invoices/req-1/3-flyer.pdf', fileName: 'flyer.pdf', contentType: 'application/pdf', kind: 'unrelated', confidence: 0.9 };
+      clustering.parseAndClusterInvoiceAttachments.mockImplementation(
+        async (files: Array<{ s3Key: string }>, load: (key: string) => Promise<Buffer>) => {
+          await Promise.all(files.map((file) => load(file.s3Key)));
+          return {
+            classified: [invoiceFile, supportFile, flyer],
+            clustering: { clusters: [{ primary: invoiceFile, supporting: [supportFile], fallback: false }], unrelated: [flyer] },
+          };
+        }
+      );
+
+      await processor({ data: [{ conversationId: '1234567890', attachments: [invoiceFile, supportFile, flyer] }] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.attachments.map((att: { fileName: string }) => att.fileName)).toEqual(['invoice.pdf', 'support.pdf']);
+      const downloadedKeys = s3.getBinaryFromS3.mock.calls.map((call: unknown[]) => call[1]);
+      expect(downloadedKeys.filter((key: string) => key === invoiceFile.s3Key)).toHaveLength(1);
+      expect(downloadedKeys.filter((key: string) => key === supportFile.s3Key)).toHaveLength(1);
+    });
+
+    it('processes a clustered fan-out record one PDF at a time on a processor with the flag off', async () => {
+      const { processor, workday, clustering, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({});
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await processor({
+        data: [{ conversationId: '1234567890', clustered: true, attachments: [invoiceFile, supportFile] }],
+      } as any);
+
+      expect(clustering.parseAndClusterInvoiceAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
+      expect(workday.submitNewSupplierInvoice.mock.calls.map((call: any[]) => call[1].attachments[0].fileName))
+        .toEqual(['invoice.pdf', 'support.pdf']);
+      expect(registry.getConversationSupplierInvoice).not.toHaveBeenCalled();
+    });
+
     it('parses unclustered attachments and enriches the whole cluster', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
       loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
@@ -2289,6 +2332,33 @@ describe('create_invoice', () => {
         const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
         expect(updateArgs.omitPurchaseOrderLineReference).toBe(true);
       }
+    });
+
+    it('reports a failed watermark write on a skip instead of hiding it', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 200 }));
+      registry.upsertConversationSupplierInvoice.mockRejectedValue(new Error('db down'));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          latestMessageAt: 300,
+          otherClustersLatestReceivedAt: 300,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v1.pdf', 'v1.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ skipped: true, registrySync: 'failed' }),
+      );
     });
 
     it('does not advance the watermark when a skip has nothing newer at all', async () => {

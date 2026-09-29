@@ -59,7 +59,7 @@ export async function upsertConversationSupplierInvoice(
      DO UPDATE SET supplier_wid = EXCLUDED.supplier_wid,
                    workday_invoice_wid = EXCLUDED.workday_invoice_wid,
                    workday_invoice_number = EXCLUDED.workday_invoice_number,
-                   last_processed_received_at = EXCLUDED.last_processed_received_at,
+                   last_processed_received_at = GREATEST(conversation_supplier_invoices.last_processed_received_at, EXCLUDED.last_processed_received_at),
                    updated_at = CURRENT_TIMESTAMP`,
     [
       invoice.conversationId,

@@ -51,14 +51,16 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    `parseAndClusterInvoiceAttachments` (`src/lib/invoice_attachment_clustering.ts`):
    one structured LLM call (`src/prompts/parse_invoice_attachments_prompt.ts`,
    `tools: {}`, no RAG) over every file, then deterministic clustering in code.
-3. The processor creates **one Workday invoice per invoice cluster** inline for
-   the first cluster and Event-invokes itself (`clustered: true`, no re-parse)
-   for each leftover cluster, keeping the 300s timeout per invoice.
+3. The processor creates **one Workday invoice per invoice cluster**: it first
+   Event-invokes itself (`clustered: true`, no re-parse) for each leftover
+   cluster, then processes the first cluster inline, keeping the 300s timeout
+   per invoice. The first cluster reuses the PDFs already downloaded for
+   classification; fanned-out clusters download their own.
 4. Enrichment receives every PDF in the cluster with document roles (invoice vs
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
    (invoice first), with the Intercom conversation transcript appended last.
-   Slack success/error lists cluster filenames plus kinds.
+   Slack success lists cluster filenames plus kinds; errors list filenames.
 
 ## Taxonomy (per file)
 
@@ -107,7 +109,10 @@ so a dropped classification never creates an extra supplier invoice.
 A conversation can be triggered again after the supplier sends corrected or
 missing documents. The processor keeps a Postgres registry
 (`conversation_supplier_invoices`, keyed by conversation plus normalized
-supplier invoice number) so a resend never creates a second supplier invoice:
+supplier invoice number) so a resend updates or skips instead of creating a
+second supplier invoice. Exceptions are listed below: a different real
+supplier, a canceled invoice re-sent with a newer document, no extracted
+invoice number, and concurrent double-fires.
 
 - Registry miss (or same number resolving to a **different** real supplier):
   create as usual, then upsert the registry row with the Workday WID/number,
@@ -120,8 +125,9 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   W-9 arrives) updates the existing invoice, keeping the real supplier.
 - The watermark is the newest of the cluster's `receivedAt` values and the
   conversation's `latestMessageAt` (newest source/part with a body or
-  attachment; body-less assignments and custom actions do not count) at the
-  last processing. The registry is the only source for create vs update; it
+  attachment; body-less assignments, custom actions, and Intercom **Message
+  delivery failed** bounce notes do not count) at the last processing. The
+  saved watermark only moves forward (`GREATEST` on upsert). The registry is the only source for create vs update; it
   never searches Workday for a matching supplier and invoice number.
 - "Newer for this invoice" means one of:
   - a file in **this cluster** is newer than the watermark, or
@@ -177,8 +183,8 @@ supplier invoice number) so a resend never creates a second supplier invoice:
   registry never saw (created before the flag, by AP, or in another
   conversation). `buildNotes` receives each attempt's prior failures for this.
 - Registry writes never fail the invoice: a failed upsert after a successful
-  create/update surfaces as `registrySync: failed` in the success Slack
-  details. Concurrent double-fires can still race lookup-then-create; the
+  create/update, or after a skip that advances the watermark, surfaces as
+  `registrySync: failed` in the Slack details. Concurrent double-fires can still race lookup-then-create; the
   unique key keeps the registry to one row (last write wins).
 
 ## Flag discipline
@@ -192,8 +198,8 @@ supplier invoice number) so a resend never creates a second supplier invoice:
 - `lambda-env` caches values per container. A flip applies as new containers
   start; to apply immediately, update the functions' configuration. While
   containers disagree, the trigger and processor stay compatible: a processor
-  with the flag off handles the clustered `attachments` payload one PDF at a
-  time.
+  with the flag off handles any `attachments` payload, grouped from the trigger
+  or clustered from a fan-out, one PDF at a time.
 - Read `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` inside the handler after
   `loadEnv()`, via `invoiceAttachmentClusteringMode` or
   `isInvoiceAttachmentClusteringEnabled` (true only for `on`) — never as a

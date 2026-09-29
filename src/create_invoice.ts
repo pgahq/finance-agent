@@ -301,10 +301,15 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     let firstCluster;
     let firstOtherClustersLatestReceivedAt: number | undefined;
     let unrelated: ClassifiedAttachment[] = [];
+    const preloadedBuffers = new Map<string, Buffer>();
     try {
       const { clustering } = await parseAndClusterInvoiceAttachments(
         attachments,
-        (key) => getBinaryFromS3(context.s3Config, key)
+        async (key) => {
+          const buffer = await getBinaryFromS3(context.s3Config, key);
+          preloadedBuffers.set(key, buffer);
+          return buffer;
+        }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -348,13 +353,16 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
       conversationPdf,
       latestMessageAt,
       otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
+      preloadedBuffers,
       startTime,
       clustered: true,
     });
     return;
   }
 
-  if (attachments?.length && (clustered || clusteringEnabled)) {
+  // A processor whose cached flag is off never groups, even for a clustered fan-out record, so a
+  // flag flip mid-flight falls back to one invoice per PDF rather than a cluster the registry skips.
+  if (attachments?.length && clusteringEnabled) {
     await createInvoiceFromCluster(context, {
       files: attachments,
       unrelated: [],
@@ -426,6 +434,8 @@ interface ClusterInvoiceInput {
   };
   latestMessageAt?: number;
   otherClustersLatestReceivedAt?: number;
+  /** Buffers already downloaded for classification in this invocation, keyed by S3 key. */
+  preloadedBuffers?: Map<string, Buffer>;
   startTime: number;
   clustered: boolean;
 }
@@ -459,6 +469,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    preloadedBuffers,
     startTime,
     clustered,
   } = input;
@@ -470,7 +481,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
     debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
     const loaded: LoadedClusterFile[] = await Promise.all(files.map(async (file) => {
       const [buffer, presignedUrl] = await Promise.all([
-        getBinaryFromS3(context.s3Config, file.s3Key),
+        preloadedBuffers?.get(file.s3Key) ?? getBinaryFromS3(context.s3Config, file.s3Key),
         getPresignedUrl(context.s3Config, file.s3Key),
       ]);
       return { ...file, buffer, presignedUrl };
@@ -507,8 +518,8 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
         }))
         : undefined;
 
-    // There's no existing Workday invoice yet, so enrich against a stub with no
-    // existing supplier. Prefer the PO company when a matching PO is found;
+    // Enrich against a stub with no existing supplier, even on a resend update, so the latest documents
+    // decide the supplier. Prefer the PO company when a matching PO is found;
     // otherwise use Default OCR Company.
     const stubInvoice: WorkdayInvoice = {};
     const parsedPo = await resolvePurchaseOrder(context, fileName, emailContext);
@@ -819,6 +830,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
       const invoiceLabel = existing ? existing.workdayInvoiceNumber ?? existing.workdayInvoiceWid : undefined;
 
       const skipResend = async (skipReason: string, extra: Record<string, unknown> = {}) => {
+        let skipRegistrySyncFailed = false;
         if (existing && clusterReceivedAt != null && (watermark == null || clusterReceivedAt > watermark)) {
           // Everything up to now has been seen and judged not new for this invoice, so a later
           // text-only reply about it still counts as new.
@@ -833,6 +845,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
             });
           } catch (error) {
             debug('Failed to advance conversation invoice registry watermark after skip:', error);
+            skipRegistrySyncFailed = true;
           }
         }
         await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
@@ -842,6 +855,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
           skipped: true,
           skipReason,
           ...extra,
+          ...(skipRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
       };
 
