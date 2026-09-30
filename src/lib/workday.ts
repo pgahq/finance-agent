@@ -886,17 +886,7 @@ async function getValidationFallbackField(
   const validationText = collectWorkdayValidationErrorText(error) || validationError;
 
   if (isDuplicateSuppliersInvoiceNumberError(error) || isDuplicateSuppliersInvoiceNumberError(validationText)) {
-    if (!options.suppliersInvoiceNumber?.trim()) {
-      debug('Validation is a duplicate supplier invoice number but no invoice number was submitted; skipping further retries', { validationError });
-      return undefined;
-    }
-    const fallbackSupplierWID = getConfiguredDefaultSupplierWID(options);
-    const selectedSupplierWID = normalizeSupplierWID(options.supplierWID) ?? normalizeSupplierWID(options.defaultSupplierWID);
-    if (fallbackSupplierWID && selectedSupplierWID !== fallbackSupplierWID) {
-      debug('Validation is a duplicate supplier invoice number; retrying with the fallback supplier', { validationError });
-      return 'supplier';
-    }
-    debug('Validation is a duplicate supplier invoice number and the fallback supplier is unavailable or already selected; skipping further retries', { validationError });
+    debug('Validation is a duplicate supplier invoice number; failing without fallback retry', { validationError });
     return undefined;
   }
 

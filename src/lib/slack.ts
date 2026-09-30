@@ -172,13 +172,6 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
-  if (typeof details.possibleDuplicate === 'string' && details.possibleDuplicate) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: truncateSlackText(`*Possible duplicate*\n${details.possibleDuplicate}`) }
-    });
-  }
-
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
       type: 'section',
@@ -374,7 +367,6 @@ export async function notifyResult(
       needsManualReview?: unknown;
       canceledNotReplaced?: unknown;
       inProgressElsewhere?: unknown;
-      possibleDuplicate?: unknown;
     } | undefined
     : undefined;
   // Resend outcomes must stay visible even when Workday returned no invoice number, so fall back to the WID.
@@ -387,8 +379,6 @@ export async function notifyResult(
     ? 'another run is processing it'
     : createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
   const invoiceRef = resendInvoiceLabel ? ` for \`${resendInvoiceLabel}\`` : '';
-  const possibleDuplicate = Boolean(createdInvoiceNumber) && !skippedInvoice && !updatedInvoice
-    && typeof createDetails?.possibleDuplicate === 'string';
 
   const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
     ? details as { wouldCreateInvoices?: unknown; attachments?: unknown } | undefined
@@ -408,8 +398,6 @@ export async function notifyResult(
       ? `⏭️ *${lambdaName}* skipped resend${invoiceRef} (${skipLabel}) in ${timeText}`
       : updatedInvoice
         ? `${statusEmoji} *${lambdaName}* updated${resendInvoiceLabel ? ` \`${resendInvoiceLabel}\`` : ' invoice'} in ${timeText}`
-        : possibleDuplicate
-          ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` (possible duplicate, check before approving) in ${timeText}`
         : createdInvoiceNumber
           ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
