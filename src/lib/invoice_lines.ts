@@ -132,6 +132,15 @@ export interface FinalInvoiceLine {
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
 }
 
+// Extraction sets hasDiscount on merchandise rows that print a discounted net price.
+// Only a row that credits money back is a discount line; a positive row is merchandise
+// and must keep its quantity and PO line link so Workday records the PO as invoiced.
+export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'extendedAmount' | 'unitCost'>): boolean {
+  if (line.hasDiscount !== true) return false;
+  const amount = line.extendedAmount ?? line.unitCost;
+  return amount == null || amount <= 0;
+}
+
 export interface LineFallbacks {
   fund: boolean;
   costCenter: boolean;
@@ -646,14 +655,24 @@ export function applyMissingQuantityColumnLines(
 ): FinalInvoiceLine[] {
   if (invoiceLineQuantityDisplayed) return lines;
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     return asAmountOnlyLine(line, finalLineExtendedAmount(line));
   });
 }
 
+// Workday only counts PO quantity as invoiced when the linked line keeps its quantity,
+// so a PO-linked row whose printed unit price is before a discount submits the net unit
+// price when that price reproduces the printed line total to the cent.
+function netUnitCostForPurchaseOrderLine(line: FinalInvoiceLine, extendedAmount: number): number | null {
+  const quantity = line.quantity;
+  if (!line.purchaseOrderLineId || quantity == null || quantity <= 0) return null;
+  const netUnitCost = Math.round((extendedAmount / quantity) * 100) / 100;
+  return toCents(quantity * netUnitCost) === toCents(extendedAmount) ? netUnitCost : null;
+}
+
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     if (line.quantity === 0 && line.unitCost === 0) return line;
 
     const extendedAmount = line.extendedAmount ?? null;
@@ -665,6 +684,8 @@ export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): Fina
     }
 
     if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
+      const netUnitCost = netUnitCostForPurchaseOrderLine(line, extendedAmount);
+      if (netUnitCost != null) return { ...line, unitCost: netUnitCost };
       return asAmountOnlyLine(line, extendedAmount);
     }
 
@@ -692,7 +713,7 @@ export function lineHasQuantityOrUnitAndExtended(line: FinalInvoiceLine): boolea
 
 export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     if (!lineHasQuantityOrUnitAndExtended(line)) return line;
     return {
       ...line,
