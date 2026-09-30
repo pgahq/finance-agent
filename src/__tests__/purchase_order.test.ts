@@ -13,6 +13,7 @@ describe('normalizePurchaseOrderNumber', () => {
     expect(normalizePurchaseOrderNumber(null)).toBeUndefined();
     expect(normalizePurchaseOrderNumber('PO-12')).toBeUndefined();
     expect(normalizePurchaseOrderNumber('not-a-po')).toBeUndefined();
+    expect(normalizePurchaseOrderNumber('PO Number')).toBeUndefined();
   });
 });
 
@@ -30,6 +31,11 @@ describe('findPurchaseOrderNumber', () => {
     expect(findPurchaseOrderNumber(
       'Please advise on the position of this invoice for PO-414498'
     )).toBe('PO-414498');
+  });
+
+  it('does not treat the label "PO Number" as a PO number', () => {
+    expect(findPurchaseOrderNumber('PO Number: see attached invoice')).toBeUndefined();
+    expect(findPurchaseOrderNumber('PO Number: PO-414672')).toBe('PO-414672');
   });
 
   it('returns undefined when no PO number is present', () => {
