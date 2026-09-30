@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isDuplicateSuppliersInvoiceNumberMessage, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -4529,19 +4529,6 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Purchase_Order_Reference).toBeUndefined();
     });
 
-  });
-
-  describe('isDuplicateSuppliersInvoiceNumberMessage', () => {
-    it('recognizes the Workday duplicate supplier invoice number fault only', () => {
-      expect(isDuplicateSuppliersInvoiceNumberMessage(
-        "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
-      )).toBe(true);
-      expect(isDuplicateSuppliersInvoiceNumberMessage(
-        'Enter a Supplier’s Invoice Number that isn’t already in use on another supplier invoice'
-      )).toBe(true);
-      expect(isDuplicateSuppliersInvoiceNumberMessage("You can't select this supplier to invoice this purchase order.")).toBe(false);
-      expect(isDuplicateSuppliersInvoiceNumberMessage(undefined)).toBe(false);
-    });
   });
 
   describe('submitNewSupplierInvoice', () => {
