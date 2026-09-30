@@ -1,3 +1,4 @@
+import type { LanguageModel } from 'ai';
 import { getAiResponse } from '../lib/ai.js';
 
 // Mock the AI SDK
@@ -17,7 +18,7 @@ jest.mock('ai', () => ({
 }));
 
 jest.mock('@ai-sdk/openai', () => ({
-  openai: jest.fn()
+  openai: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'openai.responses', modelId }))
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -40,7 +41,6 @@ describe('AI utilities', () => {
   const mockGenerateText = require('ai').generateText;
   const mockNoObjectGeneratedError = require('ai').NoObjectGeneratedError;
   const mockNoOutputGeneratedError = require('ai').NoOutputGeneratedError;
-  const mockOpenai = require('@ai-sdk/openai').openai;
   const mockStepCountIs = require('ai').stepCountIs;
   const mockOutputObject = require('ai').Output.object;
 
@@ -54,7 +54,6 @@ describe('AI utilities', () => {
       toolResults: []
     });
     
-    mockOpenai.mockReturnValue('mocked-openai-model');
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
     mockOutputObject.mockReturnValue('mocked-output-object');
     mockNoObjectGeneratedError.isInstance.mockReturnValue(false);
@@ -70,7 +69,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
@@ -84,6 +83,24 @@ describe('AI utilities', () => {
       expect(result).toEqual('{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}');
     });
 
+    it('should use a supplied LanguageModel for both generation passes', async () => {
+      const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
+      mockGenerateText
+        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
+        .mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+        model: customModel,
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      expect(mockGenerateText.mock.calls[0][0].model).toBe(customModel);
+      expect(mockGenerateText.mock.calls[1][0].model).toBe(customModel);
+    });
+
     it('should add system prompt if not present', async () => {
       await getAiResponse({
         prompt: 'System prompt',
@@ -92,7 +109,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
@@ -142,7 +159,7 @@ describe('AI utilities', () => {
 
       // Verify Step 1: generateText was called with enhanced system prompt
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: expect.stringContaining('Test prompt'),
         stopWhen: 'mocked-step-count-is',
@@ -155,7 +172,7 @@ describe('AI utilities', () => {
 
       // Verify Step 2: structured output via generateText + Output.object
       expect(mockGenerateText).toHaveBeenNthCalledWith(2, {
-        model: 'mocked-openai-model',
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: expect.arrayContaining([
           expect.objectContaining({ role: 'user' }),
           expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
