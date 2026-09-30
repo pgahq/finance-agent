@@ -84,7 +84,6 @@ import {
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
   type ParsedPurchaseOrder,
-  type SupplierInvoiceSubmitPriorFailure,
 } from './lib/workday.js';
 
 function toPurchaseOrderEnrichmentContext(

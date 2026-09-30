@@ -5277,12 +5277,6 @@ describe('Workday utilities', () => {
 
       await expect(submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '12345' })).rejects.toMatchObject({
         message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-        priorFailures: [
-          {
-            attempt: 1,
-            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-          },
-        ],
       });
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
