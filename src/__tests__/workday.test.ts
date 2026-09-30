@@ -2987,6 +2987,22 @@ describe('Workday utilities', () => {
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
+      it('keeps the PO line reference, quantity, and tax applicability on a positive line flagged hasDiscount', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedTaxAmount: '$45.00',
+          finalLines: [{ lineOrder: 1, description: 'Titl Pro V1 Cstm', hasDiscount: true, quantity: 45, unitCost: 43.71, extendedAmount: 1966.95, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(45);
+        expect(lines[0].Unit_Cost).toBe(43.71);
+        expect(lines[0].Extended_Amount).toBe(1966.95);
+        expect(lines[0].Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] });
+        expect(lines[0].Tax_Applicability_Reference).toEqual({ ID: [{ $attributes: { type: 'Tax_Applicability_ID' }, $value: 'TAX_APPLICABILITY-3-2' }] });
+      });
+
       it('should set Quantity and Unit_Cost to 0 with Extended_Amount when invoice has no quantity column', async () => {
         const { getCapturedRequest } = setupMockClient();
 
