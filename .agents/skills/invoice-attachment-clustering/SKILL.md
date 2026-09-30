@@ -194,21 +194,12 @@ invoice number, and concurrent double-fires.
   (`result.extractedSuppliersInvoiceNumber`), never on a number generated for
   the Workday submit, so two unnumbered invoices from one supplier on the same
   day never share a row.
-- Possible duplicates: Workday rejects a supplier invoice number already used
-  for that supplier, and the submit repair retries once on the fallback
-  supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) with the same invoice number.
-  It does not append a timestamp. If that supplier is already selected, or
-  the fallback supplier is unset, the fault stops. A second "already in use"
-  after the fallback supplier also stops. The retry stays, because a supplier
-  change also rescues a wrong supplier match.
-  With the registry on, a create that only succeeded after that rejection
-  (`isDuplicateSuppliersInvoiceNumberMessage` on a prior failure plus any
-  validation-driven fallback) is flagged as a possible duplicate in the work
-  queue notes and the Slack headline/body (`possibleDuplicate`, naming the
-  retried values). The registry row records an unresolved supplier only when
-  the retry replaced the supplier. This covers invoices the registry never saw
-  (created before the flag, by AP, or in another conversation). `buildNotes`
-  receives each attempt's prior failures for this.
+- Duplicate supplier invoice numbers: when Workday rejects a supplier invoice
+  number already used for that supplier, the create stops and reports the
+  original Workday validation message. It does not retry on the fallback
+  supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) and is not flagged as a possible
+  duplicate. The registry row records the resolved supplier as usual on
+  successful creates.
 - Registry writes never fail the invoice: a failed upsert after a successful
   create/update, or after a skip that advances the watermark, surfaces as
   `registrySync: failed` in the Slack details.

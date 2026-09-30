@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isDuplicateSuppliersInvoiceNumberMessage, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -4451,19 +4451,6 @@ describe('Workday utilities', () => {
 
   });
 
-  describe('isDuplicateSuppliersInvoiceNumberMessage', () => {
-    it('recognizes the Workday duplicate supplier invoice number fault only', () => {
-      expect(isDuplicateSuppliersInvoiceNumberMessage(
-        "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
-      )).toBe(true);
-      expect(isDuplicateSuppliersInvoiceNumberMessage(
-        'Enter a Supplier’s Invoice Number that isn’t already in use on another supplier invoice'
-      )).toBe(true);
-      expect(isDuplicateSuppliersInvoiceNumberMessage("You can't select this supplier to invoice this purchase order.")).toBe(false);
-      expect(isDuplicateSuppliersInvoiceNumberMessage(undefined)).toBe(false);
-    });
-  });
-
   describe('submitNewSupplierInvoice', () => {
     const mockContext = {
       workdayConfig: {
@@ -5180,137 +5167,11 @@ describe('Workday utilities', () => {
       }));
     });
 
-    it('retries a duplicate supplier invoice number on the fallback supplier and keeps the number', async () => {
+    it('does not retry a duplicate supplier invoice number even when a fallback supplier is configured', async () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
 
-      const duplicateInvoiceNumber = new Error(
-        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
-      );
-
-      const capturedRequests: any[] = [];
-      mockClient.Submit_Supplier_Invoice
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(duplicateInvoiceNumber, null);
-        })
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(null, {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
-            },
-          });
-        });
-
-      const buildNotes = jest.fn().mockReturnValue('notes');
-      const result = await submitNewSupplierInvoiceForTest({
-        suppliersInvoiceNumber: '12345',
-        buildNotes,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.suppliersInvoiceNumber).toBe('12345');
-      expect(buildNotes.mock.calls[1][0]).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          field: 'supplier',
-          label: 'default supplier',
-          dueToValidationError: true,
-        }),
-      ]));
-      expect(result.priorFailures).toEqual([
-        {
-          attempt: 1,
-          message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-        },
-      ]);
-      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          field: 'supplier',
-          label: 'default supplier',
-          dueToValidationError: true,
-        }),
-      ]));
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
-        .toBe(mockSupplierID);
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
-        .toBe('default-supplier-wid');
-      expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
-        .toBe('12345');
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
-        .toBe('12345');
-    });
-
-    it('does not retry again when the invoice number is still in use on the fallback supplier', async () => {
-      const mockClient = mockSoapClient();
-      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
-      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
-
-      const duplicateInvoiceNumber = new Error(
-        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
-      );
-
-      const capturedRequests: any[] = [];
-      mockClient.Submit_Supplier_Invoice
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(duplicateInvoiceNumber, null);
-        })
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(duplicateInvoiceNumber, null);
-        });
-
-      const rejected = submitNewSupplierInvoiceForTest({
-        suppliersInvoiceNumber: '12345',
-      });
-      await expect(rejected).rejects.toMatchObject({
-        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-        priorFailures: [
-          {
-            attempt: 1,
-            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-          },
-          {
-            attempt: 2,
-            fallback: 'default supplier',
-            message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-          },
-        ],
-      });
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
-        .toBe('default-supplier-wid');
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
-        .toBe('12345');
-    });
-
-    it('does not retry a duplicate supplier invoice number when the fallback supplier is unset', async () => {
-      const mockClient = mockSoapClient();
-      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
-      const duplicateInvoiceNumber = new Error(
-        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
-      );
-
-      mockClient.Submit_Supplier_Invoice.mockImplementationOnce((_request: any, callback: any) => {
-        callback(duplicateInvoiceNumber, null);
-      });
-
-      await expect(submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '12345' })).rejects.toMatchObject({
-        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-      });
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
-      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-    });
-
-    it('does not retry a duplicate supplier invoice number when the fallback supplier is already selected', async () => {
-      const mockClient = mockSoapClient();
-      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
-      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
       const duplicateInvoiceNumber = new Error(
         'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
       );
@@ -5321,69 +5182,15 @@ describe('Workday utilities', () => {
         callback(duplicateInvoiceNumber, null);
       });
 
-      await expect(submitNewSupplierInvoiceForTest({
-        supplierWID: 'default-supplier-wid',
-        suppliersInvoiceNumber: '12345',
-      })).rejects.toMatchObject({
+      await expect(submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '12345' })).rejects.toMatchObject({
         message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
       });
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
-        .toBe('default-supplier-wid');
+        .toBe(mockSupplierID);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Suppliers_Invoice_Number)
         .toBe('12345');
-    });
-
-    it('does not retry a duplicate supplier invoice number when no invoice number was submitted', async () => {
-      const mockClient = mockSoapClient();
-      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
-      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
-      const duplicateInvoiceNumber = new Error(
-        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
-      );
-
-      mockClient.Submit_Supplier_Invoice.mockImplementationOnce((_request: any, callback: any) => {
-        callback(duplicateInvoiceNumber, null);
-      });
-
-      await expect(submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '   ' })).rejects.toMatchObject({
-        message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-      });
-      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
-      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-    });
-
-    it('trims a padded fallback supplier id when retrying a duplicate invoice number', async () => {
-      const mockClient = mockSoapClient();
-      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = '  default-supplier-wid  ';
-      const duplicateInvoiceNumber = new Error(
-        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
-      );
-      const capturedRequests: any[] = [];
-      mockClient.Submit_Supplier_Invoice
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(duplicateInvoiceNumber, null);
-        })
-        .mockImplementationOnce((request: any, callback: any) => {
-          capturedRequests.push(request);
-          callback(null, {
-            Supplier_Invoice_Reference: {
-              ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }],
-            },
-          });
-        });
-
-      const result = await submitNewSupplierInvoiceForTest({ suppliersInvoiceNumber: '12345' });
-
-      expect(result.success).toBe(true);
-      expect(result.suppliersInvoiceNumber).toBe('12345');
-      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
-        expect.objectContaining({ field: 'supplier', label: 'default supplier', dueToValidationError: true }),
-      ]));
-      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
-        .toBe('default-supplier-wid');
     });
 
     it('should attach priorFailures when a fallback retry still fails', async () => {

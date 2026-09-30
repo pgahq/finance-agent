@@ -33,7 +33,6 @@ jest.mock('../lib/workday.js', () => ({
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
   getSupplierInvoiceEditability: jest.fn(),
-  isDuplicateSuppliersInvoiceNumberMessage: jest.requireActual('../lib/workday.js').isDuplicateSuppliersInvoiceNumberMessage,
 }));
 
 jest.mock('../lib/employees.js', () => ({
@@ -2690,120 +2689,6 @@ describe('create_invoice', () => {
 
       expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
       expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
-    });
-
-    describe('possible duplicate after the default-supplier retry', () => {
-      const duplicateOutcome = {
-        success: true,
-        invoiceWID: 'new-invoice-wid',
-        invoiceNumber: 'SUPIN-412727',
-        appliedFallbacks: [{ field: 'supplier', label: 'default supplier', dueToValidationError: true }],
-        priorFailures: [{
-          attempt: 1,
-          message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
-        }],
-      };
-
-      it('keeps the retried invoice but flags it and records an unresolved supplier', async () => {
-        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
-        enableClustering(loadEnv);
-        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-        registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
-        workday.submitNewSupplierInvoice.mockResolvedValue(duplicateOutcome);
-
-        await processor({
-          data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
-        } as any);
-
-        const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-        expect(createArgs.buildNotes(duplicateOutcome.appliedFallbacks, duplicateOutcome.priorFailures))
-          .toContain("Possible duplicate: Workday reported supplier's invoice number INV-001 is already in use for Test Supplier, so this invoice was created after retrying with: default supplier.");
-        expect(createArgs.buildNotes([], [])).not.toContain('Possible duplicate');
-        expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({ workdayInvoiceWid: 'new-invoice-wid', supplierWid: null })
-        );
-        expect(slack.notifyResult).toHaveBeenCalledWith(
-          'create_invoice',
-          'success',
-          expect.any(Number),
-          expect.objectContaining({ possibleDuplicate: expect.stringContaining('Possible duplicate') }),
-        );
-      });
-
-      it('flags a retry that changed the invoice number instead of the supplier, and keeps the supplier', async () => {
-        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
-        enableClustering(loadEnv);
-        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-        registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
-        const suffixedOutcome = {
-          ...duplicateOutcome,
-          appliedFallbacks: [{
-            field: 'suppliersInvoiceNumber',
-            label: 'supplier invoice number suffixed with -20260929151200',
-            dueToValidationError: true,
-          }],
-        };
-        workday.submitNewSupplierInvoice.mockResolvedValue(suffixedOutcome);
-
-        await processor({
-          data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
-        } as any);
-
-        const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-        expect(createArgs.buildNotes(suffixedOutcome.appliedFallbacks, suffixedOutcome.priorFailures))
-          .toContain('created after retrying with: supplier invoice number suffixed with -20260929151200.');
-        expect(slack.notifyResult.mock.calls[0][3].possibleDuplicate).toEqual(
-          expect.stringContaining('supplier invoice number suffixed with -20260929151200')
-        );
-        expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({ supplierWid: 'supplier-wid-1', supplierInvoiceNumber: 'INV-001' })
-        );
-        expect(registry.acquireConversationInvoiceClaim).toHaveBeenCalledWith(expect.anything(), '1234567890', 'INV-001', expect.any(String));
-      });
-
-      it('does not flag a default-supplier retry caused by a different validation error', async () => {
-        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
-        enableClustering(loadEnv);
-        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-        registry.getConversationSupplierInvoice.mockResolvedValue(undefined);
-        workday.submitNewSupplierInvoice.mockResolvedValue({
-          ...duplicateOutcome,
-          priorFailures: [{ attempt: 1, message: "You can't select this supplier to invoice this purchase order." }],
-        });
-
-        await processor({
-          data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
-        } as any);
-
-        expect(slack.notifyResult.mock.calls[0][3].possibleDuplicate).toBeUndefined();
-        expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({ supplierWid: 'supplier-wid-1' })
-        );
-      });
-
-      it('leaves the flag-off path unchanged', async () => {
-        const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
-        loadEnv.mockResolvedValue({});
-        invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-        invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
-        workday.submitNewSupplierInvoice.mockResolvedValue(duplicateOutcome);
-
-        await processor({
-          data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: '1234567890' }],
-        } as any);
-
-        const createArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-        expect(createArgs.buildNotes(duplicateOutcome.appliedFallbacks, duplicateOutcome.priorFailures))
-          .not.toContain('Possible duplicate');
-        expect(slack.notifyResult.mock.calls[0][3].possibleDuplicate).toBeUndefined();
-        expect(registry.upsertConversationSupplierInvoice).not.toHaveBeenCalled();
-      });
     });
 
     const transcriptPdf = {
