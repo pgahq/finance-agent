@@ -157,7 +157,7 @@ describe('recordAgentInvoiceSnapshot', () => {
       releaseSha: 'abc123',
     });
     const [sql, params] = query.mock.calls[0];
-    expect(sql).toContain('COALESCE((SELECT MAX(write_seq) FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1), 0) + 1');
+    expect(sql).toContain('COALESCE((SELECT MAX(write_seq) FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1::varchar), 0) + 1');
     expect(params).toEqual([
       'inv-wid', 'create', null, '{"lines":[]}', 'conv-1',
       '["new-invoices/r/0-a.pdf"]', '["supplier_invoice"]', 'abc123', 'on', null,

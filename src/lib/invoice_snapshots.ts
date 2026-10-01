@@ -313,8 +313,8 @@ export async function recordAgentInvoiceSnapshot(db: DatabaseConnection, input: 
     `INSERT INTO agent_invoice_snapshots
        (workday_invoice_wid, write_seq, source, workday_invoice_number, fields, conversation_id,
         s3_keys, attachment_kinds, release_sha, clustering_mode, pre_write_diff)
-     VALUES ($1,
-       COALESCE((SELECT MAX(write_seq) FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1), 0) + 1,
+     VALUES ($1::varchar,
+       COALESCE((SELECT MAX(write_seq) FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1::varchar), 0) + 1,
        $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       input.workdayInvoiceWid,
