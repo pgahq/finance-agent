@@ -98,7 +98,10 @@ on facts and leaves anything unproven `unattributed`. First match wins:
 4. `replacement`: a live invoice with the same supplier invoice number (and
    supplier WID when WQL returns it) that the agent did not write. Its fields
    are diffed against the agent snapshot so the miss still has a field score.
-   Needs `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`; skipped while unset.
+   Uses the `suppliersInvoiceNumber` WQL field (`SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`
+   on `ScoreInvoicesProcessor`). The agent submits the printed number when there
+   is one, so AP's re-keyed invoice normally carries the same number; an invoice
+   with no printed number gets an HQ-convention number AP may not reproduce.
 5. `duplicate`: another agent invoice with the same supplier and supplier
    invoice number that is still live.
 6. `wrong_document`: the primary attachment was classified `supporting` or
@@ -134,11 +137,10 @@ whether either one should be mapped later. Adding an agent reason or tag is a
 configuration change.
 
 Optional WQL fields stay unset until confirmed in the tenant:
-`SCORE_HOLD_REASON_WQL_FIELD`, `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`, and
-the `SCORE_CANCEL_REASON_WQL_FIELD` fallback. Without the hold field the score
-records `On hold` from the Get `On_Hold` flag. None of the `SCORE_*` settings
-is in `template.yml` yet; add them under `Environment` on `ScoreInvoicesFunction`
-and `ScoreInvoicesProcessor` (both classify status) once the values are known.
+`SCORE_HOLD_REASON_WQL_FIELD` and the `SCORE_CANCEL_REASON_WQL_FIELD` fallback. Without the hold field the score
+records `On hold` from the Get `On_Hold` flag. Other `SCORE_*` settings are not in
+`template.yml`; add them under `Environment` on `ScoreInvoicesFunction` and
+`ScoreInvoicesProcessor` (both classify status) when needed.
 Status text is confirmed: Draft, In Progress, Approved, Canceled (Denied
 assumed), which the defaults already match.
 

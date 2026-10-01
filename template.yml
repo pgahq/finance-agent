@@ -884,6 +884,8 @@ Resources:
       Environment:
         Variables:
           CANCEL_REASON_ATTRIBUTION: !Ref CancelReasonAttribution
+          # WQL alias for Supplier's Invoice Number on supplierInvoices; finds an invoice AP re-keyed after a cancel.
+          SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD: suppliersInvoiceNumber
           INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
           INTERCOM_API_BASE_URL: https://api.intercom.io
       VpcConfig:
