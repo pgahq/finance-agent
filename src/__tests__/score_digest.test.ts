@@ -134,7 +134,7 @@ describe('score digest handler', () => {
 
   it('posts the week to the audit webhook and still posts when the backlog count fails', async () => {
     mockQuery
-      .mockResolvedValueOnce([{ workday_invoice_wid: 'w1', entry_read_at: new Date(), outcome: 'submitted_clean', entry_diff: [], terminal: false }])
+      .mockResolvedValueOnce([{ workday_invoice_wid: 'w1', entry_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], terminal: false }])
       .mockResolvedValueOnce([]);
     (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('No work queue tags found'));
 
@@ -144,6 +144,23 @@ describe('score digest handler', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
     const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
     expect(payload.text).toContain('Finance agent audit');
+  });
+
+  it('applies an AP label added after the cancel was scored', async () => {
+    mockQuery
+      .mockResolvedValueOnce([{
+        workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'canceled',
+        cancel_attribution: 'unattributed', cancel_basis: 'early_draft_cancel', label_attribution: 'agent',
+      }])
+      .mockResolvedValueOnce([]);
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
+
+    await handler({});
+
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { blocks: Array<{ text?: { text: string } }> };
+    const cancels = payload.blocks.find((block) => block.text?.text.startsWith('*Cancels*'))?.text?.text;
+    expect(cancels).toContain('*Cancels* · 1 agent, 0 business, 0 unattributed');
+    expect(cancels).toContain('AP label: 1');
   });
 
   it('counts pre-snapshot agent invoices by state and skips ones that have a snapshot', async () => {

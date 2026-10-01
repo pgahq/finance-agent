@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, type StatusClass } from './lib/invoice_score.js';
-import { escapeWqlLiteral, rowToInvoiceScore } from './lib/invoice_scores.js';
+import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
 import { buildDigestBlocks, digestWindow, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
@@ -52,15 +52,27 @@ export async function backlogOutcomes(context: ProcessingContext, window: Digest
   return counts;
 }
 
+/** AP labels added after a cancel was scored still count in the digest. */
+function withCancelLabel(row: Record<string, unknown>): InvoiceScore {
+  const score = rowToInvoiceScore(row);
+  const label = row.label_attribution;
+  if ((label === 'agent' || label === 'business') && (score.outcome === 'canceled' || score.outcome === 'deleted')) {
+    return { ...score, cancelAttribution: label, cancelBasis: 'ap_label' };
+  }
+  return score;
+}
+
 // Weekly digest - posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL)
 export const handler = withHandler(async (context) => {
   const startTime = Date.now();
   try {
     const window = digestWindow(new Date());
     const rows = await context.dbConnection.query(
-      `SELECT * FROM agent_invoice_scores
-        WHERE COALESCE(entry_read_at, final_read_at, updated_at) >= $1
-           OR (terminal = false AND outcome = 'stuck_draft')`,
+      `SELECT s.*, l.attribution AS label_attribution
+         FROM agent_invoice_scores s
+         LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
+        WHERE COALESCE(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
+           OR (s.terminal = false AND s.outcome = 'stuck_draft')`,
       [window.previousStart]
     ) as Array<Record<string, unknown>>;
     const unattributed = await context.dbConnection.query(
@@ -71,7 +83,7 @@ export const handler = withHandler(async (context) => {
         LIMIT ${UNATTRIBUTED_CANCEL_LIMIT}`
     ) as Array<Record<string, unknown>>;
 
-    const summary = summarizeScores(rows.map(rowToInvoiceScore), window, unattributed.map(rowToInvoiceScore));
+    const summary = summarizeScores(rows.map(withCancelLabel), window, unattributed.map(rowToInvoiceScore));
     try {
       summary.backlog = await backlogOutcomes(context, window);
     } catch (error) {
