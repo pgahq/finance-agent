@@ -2156,6 +2156,8 @@ export async function submitSupplierInvoiceUpdate(
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   suppliersInvoiceNumber?: string;
+  /** The live invoice read just before the update, so callers can see what the update replaced. */
+  previousInvoice?: unknown;
 }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -2228,6 +2230,7 @@ export async function submitSupplierInvoiceUpdate(
     appliedFallbacks,
     suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
+    previousInvoice: currentInvoice,
   };
 }
 
@@ -2289,6 +2292,8 @@ export async function submitNewSupplierInvoice(
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   suppliersInvoiceNumber?: string;
+  /** The invoice as Workday returned it right after create, when that read succeeded. */
+  createdInvoice?: unknown;
 }> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
@@ -2342,9 +2347,11 @@ export async function submitNewSupplierInvoice(
   );
   const invoiceWID = extractIdsByType(result, 'WID')[0];
   let invoiceNumber: string | undefined;
+  let createdInvoice: unknown;
   if (invoiceWID) {
     try {
-      invoiceNumber = readInvoiceNumber(await getSupplierInvoice(context, invoiceWID));
+      createdInvoice = await getSupplierInvoice(context, invoiceWID);
+      invoiceNumber = readInvoiceNumber(createdInvoice);
     } catch (error) {
       debug('Could not load Invoice_Number after create', { invoiceWID, error });
     }
@@ -2359,6 +2366,7 @@ export async function submitNewSupplierInvoice(
     appliedFallbacks,
     suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
+    ...(createdInvoice ? { createdInvoice } : {}),
   };
 }
 

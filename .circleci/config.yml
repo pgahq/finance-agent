@@ -85,6 +85,8 @@ references:
             AddonEnvironment=$ADDON_ENVIRONMENT
             GmailAddonOauthClientId="${GMAIL_ADDON_OAUTH_CLIENT_ID}"
             GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
+            ReleaseSha=$CIRCLE_SHA1
+            TenantRefreshWeekday=$TENANT_REFRESH_WEEKDAY
       - run:
           name: Publish Gmail Workspace add-on
           command: |
@@ -164,6 +166,8 @@ jobs:
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: c722leqk
       ADDON_ENVIRONMENT: sandbox
+      # The implementation tenant is refreshed from production every Saturday.
+      TENANT_REFRESH_WEEKDAY: "6"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -180,6 +184,7 @@ jobs:
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: jyi16dpc
       ADDON_ENVIRONMENT: production
+      TENANT_REFRESH_WEEKDAY: none
 
 workflows:
   version: 2
