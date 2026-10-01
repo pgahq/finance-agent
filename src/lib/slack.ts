@@ -205,6 +205,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       : {}),
     ...(details.skipped === true ? { skipped: true } : {}),
     ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
+    ...(details.snapshotSync === 'failed' ? { snapshotSync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
@@ -474,6 +475,8 @@ export interface EnrichmentNotification {
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
+  /** The scoring snapshot for this write could not be saved; the invoice itself was processed. */
+  snapshotSync?: 'failed';
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -618,6 +621,13 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+    });
+  }
+
+  if (notification.snapshotSync === 'failed') {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '```{\n  "snapshotSync": "failed"\n}```' }]
     });
   }
 

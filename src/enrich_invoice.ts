@@ -42,11 +42,17 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
+import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
 import { annotateSupplierInvoice, closedPurchaseOrderLineNote, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
+
+function invoiceNumberOf(invoice: { Invoice_Number?: unknown } | undefined): string | undefined {
+  return typeof invoice?.Invoice_Number === 'string' && invoice.Invoice_Number ? invoice.Invoice_Number : undefined;
+}
 
 async function buildQuery(context: Parameters<typeof getWorkQueueTagWIDs>[0]): Promise<string> {
   const wids = await getWorkQueueTagWIDs(context, [MODIFIED_TAG_REF_ID]);
@@ -304,11 +310,17 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     let priorFailures: Array<{ attempt: number; fallback?: string; message: string }> | undefined;
     let submittedSuppliersInvoiceNumber = extractedSuppliersInvoiceNumber;
     let invoiceNumberFallbackLabels: string[] = [];
+    let snapshotSyncFailed = false;
     if (canModifyInvoice && targetSupplierWID) {
       debug(`Setting supplier to WID=${targetSupplierWID}`);
 
       const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
+      const baselineSaved = await snapshotEnrichBaseline(context.dbConnection, {
+        workdayInvoiceWid: invoiceData.workdayID,
+        invoice: detailedInvoice,
+        ...(invoiceNumberOf(detailedInvoice) ? { workdayInvoiceNumber: invoiceNumberOf(detailedInvoice) } : {}),
+      });
       const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
         supplierWID: targetSupplierWID,
@@ -332,6 +344,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
         return;
       }
+      const writeSaved = await snapshotAgentWrite(context, {
+        workdayInvoiceWid: invoiceData.workdayID,
+        source: 'enrich',
+        previousInvoice: updateOutcome.previousInvoice,
+        ...(invoiceNumberOf(detailedInvoice) ? { workdayInvoiceNumber: invoiceNumberOf(detailedInvoice) } : {}),
+        clusteringMode: invoiceAttachmentClusteringMode(),
+      });
+      snapshotSyncFailed = !baselineSaved || !writeSaved;
       fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
       priorFailures = updateOutcome.priorFailures;
       submittedSuppliersInvoiceNumber = updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber;
@@ -397,6 +417,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       },
       ...(invoiceNumberFallbackLabels.length ? { appliedFallbackLabels: invoiceNumberFallbackLabels } : {}),
       ...(priorFailures?.length ? { priorFailures } : {}),
+      ...(snapshotSyncFailed ? { snapshotSync: 'failed' as const } : {}),
     });
   } catch (error) {
     const processingTime = Date.now() - startTime;

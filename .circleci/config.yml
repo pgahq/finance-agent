@@ -56,6 +56,7 @@ references:
             DefaultOcrSpendCategoryId=$FALLBACK_SPEND_CATEGORY_ID
             FallbackLineOfBusinessId=$FALLBACK_LOB_ID
             IntercomAppId=$INTERCOM_APP_ID
+            ReleaseSha=$CIRCLE_SHA1
 
 jobs:
   build:
