@@ -57,6 +57,7 @@ references:
             FallbackLineOfBusinessId=$FALLBACK_LOB_ID
             IntercomAppId=$INTERCOM_APP_ID
             ReleaseSha=$CIRCLE_SHA1
+            TenantRefreshWeekday=$TENANT_REFRESH_WEEKDAY
 
 jobs:
   build:
@@ -118,6 +119,8 @@ jobs:
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: c722leqk
+      # The implementation tenant is refreshed from production every Saturday.
+      TENANT_REFRESH_WEEKDAY: "6"
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -133,6 +136,7 @@ jobs:
       FALLBACK_SPEND_CATEGORY_ID: Default_OCR_Spend_Category
       FALLBACK_LOB_ID: Default_Line_Of_Business
       INTERCOM_APP_ID: jyi16dpc
+      TENANT_REFRESH_WEEKDAY: none
 
 workflows:
   version: 2

@@ -48,6 +48,12 @@ Parameters:
       JSON mapping of Workday cancel reasons and work queue tags to cancel attribution for invoice scoring,
       for example {"business":["Supplier Voided"],"duplicate":["Duplicate"],"agent":[],"agentTags":[]}
     Default: "{}"
+  TenantRefreshWeekday:
+    Type: String
+    Description: >-
+      UTC weekday (0-6, 6 = Saturday) when this Workday tenant is overwritten with production data, or
+      "none". Scoring skips that day and closes invoices the refresh removed instead of treating them as deletions.
+    Default: "none"
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -68,6 +74,7 @@ Globals:
         WORKDAY_TENANT: !Ref WorkdayTenant
         WORKDAY_UI_BASE_URL: !Ref WorkdayUiBaseUrl
         RELEASE_SHA: !Ref ReleaseSha
+        SCORE_TENANT_REFRESH_WEEKDAY: !Ref TenantRefreshWeekday
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token

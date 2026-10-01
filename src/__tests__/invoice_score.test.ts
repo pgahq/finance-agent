@@ -4,7 +4,9 @@ import {
   classifyStatus,
   entryOutcome,
   isTerminalStatus,
+  lastTenantRefresh,
   mentionsSupplierVoidOrCredit,
+  tenantRefreshWeekday,
   scoreChanges,
   statusConfigFromEnv,
   type CancelReasonMapping,
@@ -128,6 +130,21 @@ describe('attributeCancel', () => {
 
   it('does not treat an unmapped reason as proof either way', () => {
     expect(attributeCancel({ cancelReason: 'Other' }, noMapping)).toEqual({ attribution: 'unattributed', basis: 'no_signal' });
+  });
+});
+
+describe('tenant refresh', () => {
+  it('reads the refresh weekday and ignores none or invalid values', () => {
+    expect(tenantRefreshWeekday({ SCORE_TENANT_REFRESH_WEEKDAY: '6' })).toBe(6);
+    expect(tenantRefreshWeekday({ SCORE_TENANT_REFRESH_WEEKDAY: 'none' })).toBeUndefined();
+    expect(tenantRefreshWeekday({ SCORE_TENANT_REFRESH_WEEKDAY: '7' })).toBeUndefined();
+    expect(tenantRefreshWeekday({})).toBeUndefined();
+  });
+
+  it('finds the start of the most recent refresh day', () => {
+    expect(lastTenantRefresh(new Date('2026-10-05T14:00:00Z'), 6)).toEqual(new Date('2026-10-03T00:00:00Z'));
+    expect(lastTenantRefresh(new Date('2026-10-03T18:00:00Z'), 6)).toEqual(new Date('2026-10-03T00:00:00Z'));
+    expect(lastTenantRefresh(new Date('2026-10-02T23:59:00Z'), 6)).toEqual(new Date('2026-09-26T00:00:00Z'));
   });
 });
 

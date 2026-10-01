@@ -1,4 +1,4 @@
-import type { CancelBasis, Outcome, ScoredChange } from './invoice_score.js';
+import { LOST_TO_REFRESH_STATUS, type CancelBasis, type Outcome, type ScoredChange } from './invoice_score.js';
 import type { InvoiceScore } from './invoice_scores.js';
 import type { ScoredFieldName } from './invoice_snapshots.js';
 import type { SlackBlock } from './slack.js';
@@ -54,6 +54,8 @@ export interface DigestSummary {
   enteredPrevious: number;
   outcomes: Partial<Record<Outcome, number>>;
   stuckDrafts: number;
+  /** Sandbox only: agent invoices the weekly tenant refresh removed before they finished. */
+  lostToRefresh: number;
   fieldRates: FieldRate[];
   releaseRates: ReleaseRate[];
   late: { closed: number; corrected: number };
@@ -99,7 +101,9 @@ export function summarizeScores(
 ): DigestSummary {
   const enteredNow = scores.filter((score) => within(score.entryReadAt, window.start, window.end));
   const enteredBefore = scores.filter((score) => within(score.entryReadAt, window.previousStart, window.start));
-  const closedNow = scores.filter((score) => score.terminal && within(score.finalReadAt, window.start, window.end));
+  const closedInWindow = scores.filter((score) => score.terminal && within(score.finalReadAt, window.start, window.end));
+  const lostToRefresh = closedInWindow.filter((score) => score.finalStatus === LOST_TO_REFRESH_STATUS).length;
+  const closedNow = closedInWindow.filter((score) => score.finalStatus !== LOST_TO_REFRESH_STATUS);
 
   const outcomes: Partial<Record<Outcome, number>> = {};
   const bump = (outcome: Outcome | undefined) => {
@@ -193,6 +197,7 @@ export function summarizeScores(
     enteredPrevious: enteredBefore.length,
     outcomes,
     stuckDrafts,
+    lostToRefresh,
     fieldRates,
     releaseRates,
     late,
@@ -266,6 +271,7 @@ const OUTCOME_LABELS: Record<Outcome, string> = {
   canceled: 'canceled',
   deleted: 'deleted',
   stuck_draft: 'stuck in Draft',
+  lost_to_refresh: 'lost to the sandbox refresh',
 };
 
 export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
@@ -275,10 +281,15 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   ];
 
   const outcomeLines = (Object.keys(OUTCOME_LABELS) as Outcome[])
-    .filter((outcome) => outcome !== 'stuck_draft' && summary.outcomes[outcome])
+    .filter((outcome) => outcome !== 'stuck_draft' && outcome !== 'lost_to_refresh' && summary.outcomes[outcome])
     .map((outcome) => `• ${summary.outcomes[outcome]} ${OUTCOME_LABELS[outcome]}`);
   const enteredLine = `*${summary.entered}* agent invoices reached AP this week (${summary.enteredPrevious} the week before).`;
-  blocks.push(section([enteredLine, ...outcomeLines, `• ${summary.stuckDrafts} still in Draft past the cutoff`].join('\n')));
+  blocks.push(section([
+    enteredLine,
+    ...outcomeLines,
+    `• ${summary.stuckDrafts} still in Draft past the cutoff`,
+    ...(summary.lostToRefresh ? [`• ${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored)`] : []),
+  ].join('\n')));
 
   if (summary.fieldRates.length) {
     const line = (rate: FieldRate) => {

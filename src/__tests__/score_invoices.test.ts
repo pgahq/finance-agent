@@ -220,6 +220,39 @@ describe('scoreInvoice', () => {
     }));
   });
 
+  describe('in a sandbox refreshed every Saturday', () => {
+    const monday = new Date('2026-10-12T14:00:00Z');
+
+    beforeEach(() => {
+      process.env.SCORE_TENANT_REFRESH_WEEKDAY = '6';
+    });
+
+    afterEach(() => {
+      delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
+    });
+
+    it('closes a Draft invoice the refresh removed without attributing a cancel', async () => {
+      const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: null }, monday);
+      expect(score).toEqual(expect.objectContaining({ outcome: 'lost_to_refresh', finalStatus: 'Lost to tenant refresh', terminal: true }));
+      expect(score?.cancelAttribution).toBeUndefined();
+      expect(scores.getCancelLabel).not.toHaveBeenCalled();
+    });
+
+    it('keeps the entry score of a submitted invoice the refresh removed', async () => {
+      (scores.getInvoiceScore as jest.Mock).mockResolvedValue({
+        workdayInvoiceWid: wid, terminal: false, entryReadAt: new Date('2026-10-09T14:00:00Z'), outcome: 'submitted_edited', entryDiff: [],
+      });
+      const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: null }, monday);
+      expect(score).toEqual(expect.objectContaining({ outcome: 'submitted_edited', finalStatus: 'Lost to tenant refresh', terminal: true }));
+    });
+
+    it('still treats an invoice written after the refresh and then removed as deleted', async () => {
+      (snapshots.getAgentInvoiceSnapshots as jest.Mock).mockResolvedValue([snapshot({ createdAt: new Date('2026-10-11T12:00:00Z') })]);
+      const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: null }, monday);
+      expect(score?.outcome).toBe('deleted');
+    });
+  });
+
   it('lets an AP label decide the cancel', async () => {
     (scores.getCancelLabel as jest.Mock).mockResolvedValue('business');
     (snapshots.getAgentInvoiceSnapshots as jest.Mock).mockResolvedValue([snapshot({ attachmentKinds: ['supporting'] })]);
@@ -270,6 +303,14 @@ describe('selecting invoices to score', () => {
       { workdayInvoiceWid: wid, status: status('In Progress') },
       { workdayInvoiceWid: 'gone', status: null },
     ]);
+  });
+
+  it('skips the run on the sandbox refresh day', async () => {
+    process.env.S3_BUCKET_NAME = 'finance-agent-test';
+    process.env.SCORE_TENANT_REFRESH_WEEKDAY = String(new Date().getUTCDay());
+    await handler({});
+    expect(scores.listPendingScoreInvoices).not.toHaveBeenCalled();
+    delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
   });
 
   it('batches the status query and dispatches the processor in groups', async () => {

@@ -51,6 +51,16 @@ describe('SAM template', () => {
       expect(circleci).toMatch(/ReleaseSha=\$CIRCLE_SHA1/);
     });
 
+    it('marks only the dev tenant as refreshed from production on Saturdays', () => {
+      expect(globals).toMatch(/TenantRefreshWeekday:/);
+      expect(globals).toMatch(/SCORE_TENANT_REFRESH_WEEKDAY:\s*!Ref TenantRefreshWeekday/);
+      expect(circleci).toMatch(/TenantRefreshWeekday=\$TENANT_REFRESH_WEEKDAY/);
+      const devJob = circleci.split('deploy-to-dev:')[1]?.split('deploy-to-prod:')[0] ?? '';
+      const prodJob = circleci.split('deploy-to-prod:')[1]?.split('workflows:')[0] ?? '';
+      expect(devJob).toMatch(/TENANT_REFRESH_WEEKDAY:\s*"6"/);
+      expect(prodJob).toMatch(/TENANT_REFRESH_WEEKDAY:\s*none/);
+    });
+
     it('runs the scoring query daily and dispatches to its processor', () => {
       const query = resourceBlock('ScoreInvoicesFunction');
       expect(query).toContain('Handler: dist/score_invoices.handler');

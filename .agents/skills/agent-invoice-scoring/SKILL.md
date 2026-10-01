@@ -148,6 +148,35 @@ basis, memo and supplier invoice number rewrite examples, the five worst
 invoices, up to ten unlabeled unattributed cancels (early Draft first), and an
 outcome-only count of `FINAGENT-invoice-modified` invoices with no snapshot.
 
+## Sandbox refresh (dev only)
+
+The implementation tenant is overwritten with production every Saturday, so
+every invoice the dev agent wrote that week disappears, and production's
+agent-tagged invoices appear. `SCORE_TENANT_REFRESH_WEEKDAY` (UTC weekday,
+`TenantRefreshWeekday` parameter, `6` on `deploy-to-dev`, `none` on
+`deploy-to-prod`) handles that:
+
+- `ScoreInvoices` skips the refresh day.
+- An invoice missing from WQL whose last agent write was before 00:00 UTC on
+  the latest refresh day closes with final status `Lost to tenant refresh`, with
+  no cancel attribution. One that never left Draft gets outcome
+  `lost_to_refresh`; one AP had submitted keeps its entry score.
+- The digest leaves those out of late corrections and cancels, reports them on
+  their own line, and skips the outcome-only "before snapshots" count.
+
+A real deletion in the sandbox is also treated as lost to the refresh. Dev
+scores prove the jobs and queries work; production carries the real numbers.
+
+## Eval cases
+
+`tsx src/export-eval-cases.ts [--since YYYY-MM-DD] [--out cases.jsonl]` exports
+every `submitted_edited` invoice as a JSON Lines case (`src/lib/eval_cases.ts`):
+the S3 keys and attachment kinds the agent read, its PO lines, what the agent
+submitted, what AP saved at entry, the misses (material and agent-owned), and
+convention changes. With `INTERCOM_ACCESS_TOKEN` set, each case also carries
+the conversation messages. It needs database access, so run it where the
+Lambdas' Aurora cluster is reachable.
+
 ## Gotchas
 
 - The scorer depends on snapshots; invoices written before they shipped only

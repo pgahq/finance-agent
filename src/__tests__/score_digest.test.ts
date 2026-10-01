@@ -163,6 +163,26 @@ describe('score digest handler', () => {
     expect(cancels).toContain('AP label: 1');
   });
 
+  it('in a refreshed sandbox, reports invoices the refresh removed apart and skips the pre-snapshot count', async () => {
+    process.env.SCORE_TENANT_REFRESH_WEEKDAY = '6';
+    mockQuery
+      .mockResolvedValueOnce([
+        { workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'lost_to_refresh', final_status: 'Lost to tenant refresh' },
+        { workday_invoice_wid: 'w2', terminal: true, entry_read_at: new Date(Date.now() - 5000), final_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], final_status: 'Lost to tenant refresh' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await handler({});
+
+    expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { blocks: Array<{ type: string; text?: { text: string } }> };
+    const text = payload.blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(text).toContain('• 2 removed by the weekly sandbox refresh (not scored)');
+    expect(text).toContain('on 0 of 0 invoices closed this week');
+    expect(text).toContain('*Cancels* · 0 agent, 0 business, 0 unattributed');
+    delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
+  });
+
   it('counts pre-snapshot agent invoices by state and skips ones that have a snapshot', async () => {
     mockQuery
       .mockResolvedValueOnce([])

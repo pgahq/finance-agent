@@ -9,9 +9,12 @@ import {
   entryOutcome,
   isTerminalStatus,
   isTruthyFlag,
+  lastTenantRefresh,
+  LOST_TO_REFRESH_STATUS,
   mentionsSupplierVoidOrCredit,
   scoreChanges,
   statusConfigFromEnv,
+  tenantRefreshWeekday,
   type CancelEvidence,
   type InvoiceStatusRow,
   type StatusClass,
@@ -163,6 +166,11 @@ async function gatherCancelEvidence(
   return evidence;
 }
 
+function removedByTenantRefresh(latest: AgentInvoiceSnapshot, now: Date): boolean {
+  const weekday = tenantRefreshWeekday();
+  return weekday !== undefined && latest.createdAt.getTime() < lastTenantRefresh(now, weekday).getTime();
+}
+
 function applyEntry(
   score: InvoiceScore,
   input: { snapshots: AgentInvoiceSnapshot[]; latest: AgentInvoiceSnapshot; currentFields: ScoredFields; statusText?: string; now: Date }
@@ -223,6 +231,12 @@ export async function scoreInvoice(
     const stuckDays = positiveNumber(process.env.SCORE_STUCK_DRAFT_DAYS, DEFAULT_STUCK_DRAFT_DAYS);
     if (hoursBetween(latest.createdAt, now) < stuckDays * 24) return undefined;
     score.outcome = 'stuck_draft';
+  } else if (statusClass === 'not_found' && removedByTenantRefresh(latest, now)) {
+    // The sandbox was overwritten with production data, so the invoice vanished without anyone canceling it.
+    if (!score.entryReadAt) score.outcome = 'lost_to_refresh';
+    score.finalStatus = LOST_TO_REFRESH_STATUS;
+    score.finalReadAt = now;
+    score.terminal = true;
   } else if (statusClass === 'canceled' || statusClass === 'not_found') {
     const evidence = await gatherCancelEvidence(context, {
       score, snapshots, latest, status: item.status, current, currentFields, now,

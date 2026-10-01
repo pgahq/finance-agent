@@ -120,7 +120,33 @@ export function countsAgainstAgent(change: ScoredChange): boolean {
   return change.category === 'material' && change.agentOwned;
 }
 
-export type Outcome = 'submitted_clean' | 'submitted_edited' | 'canceled' | 'deleted' | 'denied' | 'stuck_draft';
+export type Outcome =
+  | 'submitted_clean'
+  | 'submitted_edited'
+  | 'canceled'
+  | 'deleted'
+  | 'denied'
+  | 'stuck_draft'
+  | 'lost_to_refresh';
+
+/** Final status recorded when a sandbox refresh removed an invoice the agent wrote there. */
+export const LOST_TO_REFRESH_STATUS = 'Lost to tenant refresh';
+
+/**
+ * UTC weekday (0 = Sunday … 6 = Saturday) when the Workday tenant is overwritten with a copy of
+ * production. Only the implementation tenant is refreshed, so only dev sets `SCORE_TENANT_REFRESH_WEEKDAY`.
+ */
+export function tenantRefreshWeekday(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const value = env.SCORE_TENANT_REFRESH_WEEKDAY?.trim();
+  return value && /^[0-6]$/.test(value) ? Number(value) : undefined;
+}
+
+/** Start (00:00 UTC) of the most recent refresh day on or before `now`. */
+export function lastTenantRefresh(now: Date, weekday: number): Date {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const daysBack = (start.getUTCDay() - weekday + 7) % 7;
+  return new Date(start.getTime() - daysBack * 86_400_000);
+}
 
 export function entryOutcome(changes: ScoredChange[]): Outcome {
   return changes.some(countsAgainstAgent) ? 'submitted_edited' : 'submitted_clean';

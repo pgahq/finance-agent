@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import type { DatabaseConnection } from './lib/database.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
-import { classifyStatus, statusConfigFromEnv, type StatusClass } from './lib/invoice_score.js';
+import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
 import { buildDigestBlocks, digestWindow, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
@@ -99,10 +99,13 @@ export const handler = withHandler(async (context) => {
       window,
       await loadUnlabeledCancels(context.dbConnection)
     );
-    try {
-      summary.backlog = await backlogOutcomes(context, window);
-    } catch (error) {
-      debug('Could not count pre-snapshot agent invoices; posting the digest without them', error);
+    // A refreshed sandbox holds production's agent invoices, which would all look like pre-snapshot work.
+    if (tenantRefreshWeekday() === undefined) {
+      try {
+        summary.backlog = await backlogOutcomes(context, window);
+      } catch (error) {
+        debug('Could not count pre-snapshot agent invoices; posting the digest without them', error);
+      }
     }
 
     await postSlackBlocks(buildDigestBlocks(summary), process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');

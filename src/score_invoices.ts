@@ -1,7 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { withHandler } from './lib/handlers.js';
-import { classifyStatus, statusConfigFromEnv, type InvoiceStatusRow, type StatusClass } from './lib/invoice_score.js';
+import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type InvoiceStatusRow, type StatusClass } from './lib/invoice_score.js';
 import { fetchInvoiceStatuses, listPendingScoreInvoices, type PendingScoreRow } from './lib/invoice_scores.js';
 import { notifyResult } from './lib/slack.js';
 import { DEFAULT_STUCK_DRAFT_DAYS, type ScoreInvoiceItem } from './score_invoices_processor.js';
@@ -44,6 +44,10 @@ export const handler = withHandler(async (context) => {
   const startTime = Date.now();
   const now = new Date();
   const stuckDraftDays = Number(process.env.SCORE_STUCK_DRAFT_DAYS) > 0 ? Number(process.env.SCORE_STUCK_DRAFT_DAYS) : DEFAULT_STUCK_DRAFT_DAYS;
+  if (tenantRefreshWeekday() === now.getUTCDay()) {
+    debug('Skipping agent invoice scoring on the tenant refresh day');
+    return;
+  }
   try {
     const pending = await listPendingScoreInvoices(context.dbConnection);
     const statuses = await fetchInvoiceStatuses(context.workdayConfig, pending.map((row) => row.workdayInvoiceWid));
