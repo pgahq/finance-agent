@@ -51,6 +51,16 @@ describe('SAM template', () => {
       expect(circleci).toMatch(/ReleaseSha=\$CIRCLE_SHA1/);
     });
 
+    it('maps Order Canceled and Alternate Payment Method Used to business by default', () => {
+      const raw = globals.match(/CancelReasonAttribution:[\s\S]*?Default:\s*'([^']+)'/)?.[1] ?? '';
+      expect(JSON.parse(raw)).toEqual({
+        business: ['INVOICE_CANCEL_REASON-3-3', 'INVOICE_CANCEL_REASON-3-4'],
+        duplicate: [],
+        agent: [],
+        agentTags: [],
+      });
+    });
+
     it('marks only the dev tenant as refreshed from production on Saturdays', () => {
       expect(globals).toMatch(/TenantRefreshWeekday:/);
       expect(globals).toMatch(/SCORE_TENANT_REFRESH_WEEKDAY:\s*!Ref TenantRefreshWeekday/);

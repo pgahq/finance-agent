@@ -253,6 +253,35 @@ describe('scoreInvoice', () => {
     });
   });
 
+  it('reads the cancel reason from the canceled invoice and matches it by reference ID', async () => {
+    process.env.CANCEL_REASON_ATTRIBUTION = '{"business":["INVOICE_CANCEL_REASON-3-3"]}';
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue({
+      ...invoice(),
+      Invoice_Cancel_Reason_Reference: {
+        $attributes: { Descriptor: 'Order Canceled' },
+        ID: [
+          { $attributes: { type: 'WID' }, $value: '706677ded2b01001faf9ba63a0d10000' },
+          { $attributes: { type: 'Invoice_Cancel_Reason' }, $value: 'INVOICE_CANCEL_REASON-3-3' },
+        ],
+      },
+    });
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Canceled', { isCanceled: true }) }, now);
+    expect(score).toEqual(expect.objectContaining({
+      cancelReason: 'Order Canceled', cancelAttribution: 'business', cancelBasis: 'business_reason',
+    }));
+    expect(score?.cancelEvidence?.cancelReasonIds).toEqual(['706677ded2b01001faf9ba63a0d10000', 'INVOICE_CANCEL_REASON-3-3']);
+  });
+
+  it('falls back to the reference ID when the cancel reason has no display name', async () => {
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue({
+      ...invoice(),
+      Invoice_Cancel_Reason_Reference: { ID: [{ $attributes: { type: 'Invoice_Cancel_Reason' }, $value: 'INVOICE_CANCEL_REASON-3-1' }] },
+    });
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Canceled', { isCanceled: true }) }, now);
+    expect(score?.cancelReason).toBe('INVOICE_CANCEL_REASON-3-1');
+    expect(score?.cancelAttribution).toBe('unattributed');
+  });
+
   it('lets an AP label decide the cancel', async () => {
     (scores.getCancelLabel as jest.Mock).mockResolvedValue('business');
     (snapshots.getAgentInvoiceSnapshots as jest.Mock).mockResolvedValue([snapshot({ attachmentKinds: ['supporting'] })]);
