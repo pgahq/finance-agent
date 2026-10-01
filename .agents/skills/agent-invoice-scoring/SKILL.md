@@ -127,6 +127,7 @@ and the template default serves both:
 | Invoiced in Error | `INVOICE_CANCEL_REASON-3-2` | unmapped: supplier mistake or a backup document turned into an invoice |
 | Order Canceled | `INVOICE_CANCEL_REASON-3-3` | business |
 | Alternate Payment Method Used | `INVOICE_CANCEL_REASON-3-4` | business |
+| Duplicate Invoice (Workday-owned) | `DUPLICATE` (`Workday_Invoice_Cancel_Reason`) | duplicate (agent) |
 
 Unmapped reasons fall through to the evidence rules; AP labels on them show
 whether either one should be mapped later. Adding an agent reason or tag is a
