@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineAvailableForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, selectInvoiceablePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -5760,6 +5760,113 @@ describe('Workday utilities', () => {
       expect(lines).toHaveLength(1);
       expect(lines[0].purchaseOrderLineId).toBe('POL-99');
       expect(lines[0].worktagsReference).toEqual([makeWorktag('Cost_Center_Reference_ID', 'CC-100')]);
+    });
+
+    const statusRef = (descriptor: string, idType: string, id: string) => ({
+      descriptor,
+      ID: [
+        { $attributes: { type: 'WID' }, $value: `wid-${id}` },
+        { $attributes: { type: idType }, $value: id }
+      ]
+    });
+
+    it('should parse service dates and line statuses on service lines', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 9,
+        Service_Order_Line_ID: 'POL-9',
+        Description: 'Monthly retainer',
+        Start_Date: '2026-09-01-07:00',
+        End_Date: '2026-09-30-07:00',
+        Invoice_Status_Reference: statusRef('Partially Invoiced', 'Document_Status_ID', 'PARTIALLY_INVOICED'),
+        Payment_Status_Reference: statusRef('Unpaid', 'Document_Payment_Status_ID', 'UNPAID'),
+      }));
+
+      expect(line).toEqual(expect.objectContaining({
+        purchaseOrderLineId: 'POL-9',
+        startDate: '2026-09-01',
+        endDate: '2026-09-30',
+        invoiceStatus: { id: 'PARTIALLY_INVOICED', descriptor: 'Partially Invoiced' },
+        paymentStatus: { id: 'UNPAID', descriptor: 'Unpaid' },
+      }));
+      expect(line.closeStatus).toBeUndefined();
+    });
+
+    it('should parse line statuses but no service dates on goods lines', () => {
+      const [line] = parsePurchaseOrderLines({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Goods_Line_Data: {
+                Line_Number: 1,
+                Goods_Purchase_Order_Line_ID: 'POL-G1',
+                Item_Description: 'Banners',
+                Invoice_Status_Reference: statusRef('Fully Invoiced', 'Document_Status_ID', 'FULLY_INVOICED'),
+                Close_Status_Reference: statusRef('Closed', 'Document_Status_ID', 'CLOSED'),
+              }
+            }
+          }
+        }
+      });
+
+      expect(line.invoiceStatus).toEqual({ id: 'FULLY_INVOICED', descriptor: 'Fully Invoiced' });
+      expect(line.closeStatus).toEqual({ id: 'CLOSED', descriptor: 'Closed' });
+      expect(line.startDate).toBeUndefined();
+      expect(line.endDate).toBeUndefined();
+    });
+  });
+
+  describe('isPurchaseOrderLineAvailableForInvoicing', () => {
+    const status = (descriptor: string, id = 'DOCUMENT_STATUS-opaque') => ({ id, descriptor });
+
+    it.each([
+      ['fully invoiced', { invoiceStatus: status('Fully Invoiced') }],
+      ['invoiced', { invoiceStatus: status('Invoiced') }],
+      ['fully paid', { paymentStatus: status('Fully Paid') }],
+      ['paid', { paymentStatus: status('Paid') }],
+      ['closed', { closeStatus: status('Closed') }],
+      ['pending close', { closeStatus: status('Pending Close') }],
+      ['fully invoiced by ID', { invoiceStatus: { id: 'FULLY_INVOICED' } }],
+    ])('should exclude a %s line', (_label, line) => {
+      expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(false);
+    });
+
+    it.each([
+      ['no statuses', {}],
+      ['partially invoiced', { invoiceStatus: status('Partially Invoiced') }],
+      ['not invoiced', { invoiceStatus: status('Not Invoiced') }],
+      ['partially paid', { paymentStatus: status('Partially Paid') }],
+      ['unpaid', { paymentStatus: status('Unpaid') }],
+    ])('should keep a line with %s', (_label, line) => {
+      expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(true);
+    });
+  });
+
+  describe('selectInvoiceablePurchaseOrderLines', () => {
+    const poLine = (id: string, invoiced = false) => ({
+      lineOrder: Number(id.replace(/\D/g, '')),
+      purchaseOrderLineId: id,
+      purchaseOrderDocumentNumber: 'PO-404770',
+      ...(invoiced ? { invoiceStatus: { descriptor: 'Fully Invoiced' } } : {}),
+    });
+
+    it('should keep only lines that can still be invoiced', () => {
+      const result = selectInvoiceablePurchaseOrderLines([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')]);
+
+      expect(result.allLinesConsumed).toBe(false);
+      expect(result.lines?.map((line) => line.purchaseOrderLineId)).toEqual(['POL-2', 'POL-3']);
+    });
+
+    it('should return every line and flag it when all lines are consumed', () => {
+      const lines = [poLine('POL-1', true), poLine('POL-2', true)];
+      const result = selectInvoiceablePurchaseOrderLines(lines);
+
+      expect(result.allLinesConsumed).toBe(true);
+      expect(result.lines).toBe(lines);
+    });
+
+    it('should pass through a missing PO', () => {
+      expect(selectInvoiceablePurchaseOrderLines(undefined)).toEqual({ lines: undefined, allLinesConsumed: false });
     });
   });
 

@@ -45,6 +45,8 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrder: jest.requireActual('../lib/workday.js').parsePurchaseOrder,
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
+  consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
+  selectInvoiceablePurchaseOrderLines: jest.requireActual('../lib/workday.js').selectInvoiceablePurchaseOrderLines,
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -1111,6 +1113,81 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain(closedNote);
     expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.closedPurchaseOrderLines).toBe(closedNote);
+  });
+
+  it.each([
+    ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], ['POL-2'], false],
+    ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], ['POL-1', 'POL-2'], true],
+  ])('filters PO lines when %s', async (_label, invoiceStatuses, expectedLineIds, omitted) => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-413898',
+            Service_Line_Data: invoiceStatuses.map((descriptor, index) => ({
+              Line_Number: index + 1,
+              Service_Order_Line_ID: `POL-${index + 1}`,
+              Description: 'Quarterly retainer',
+              Start_Date: index === 0 ? '2026-07-01' : '2026-10-01',
+              End_Date: index === 0 ? '2026-09-30' : '2026-12-31',
+              Invoice_Status_Reference: { descriptor, ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: `status-${index}` }] },
+            })),
+          }
+        }
+      }
+    });
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-413898',
+      extractedInvoiceDate: '2026-10-02',
+      extractedServicePeriod: 'Q4 2026',
+      extractedInvoiceLines: [
+        { description: 'Quarterly retainer', quantity: 1, unitCost: '1500.00', totalPrice: '1500.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValueOnce({
+      lines: [{ lineOrder: 1, description: 'Quarterly retainer', quantity: 1, unitCost: 1500, extendedAmount: 1500, purchaseOrderLineId: 'POL-2', costCenterId: 'CC-PO' }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const mergeCall = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+    expect(mergeCall[1].map((line: any) => line.purchaseOrderLineId)).toEqual(expectedLineIds);
+    expect(mergeCall[7]).toEqual({ invoiceDate: '2026-10-02', servicePeriod: 'Q4 2026' });
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(Boolean(params.omitPurchaseOrderLineReference)).toBe(omitted);
+    const notes = params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
+    if (omitted) {
+      expect(notes).toContain('All lines on PO-413898 are fully invoiced, fully paid, or closed');
+    }
   });
 
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
