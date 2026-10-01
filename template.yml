@@ -42,6 +42,12 @@ Parameters:
     Type: String
     Description: Git commit deployed, stamped on agent invoice snapshots so scores can be compared by release
     Default: unknown
+  CancelReasonAttribution:
+    Type: String
+    Description: >-
+      JSON mapping of Workday cancel reasons and work queue tags to cancel attribution for invoice scoring,
+      for example {"business":["Supplier Voided"],"duplicate":["Duplicate"],"agent":[],"agentTags":[]}
+    Default: "{}"
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -761,6 +767,48 @@ Resources:
           Properties:
             Path: /create-invoice
             Method: POST
+
+  # Score Invoices - daily: finds agent invoices that reached a new stage and dispatches them to the processor
+  ScoreInvoicesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ScoreInvoices"
+      Handler: dist/score_invoices.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 14 * * ? *)
+
+  # Score Invoices Processor - entry diff at AP submit, final read at a terminal state, cancel attribution
+  ScoreInvoicesProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ScoreInvoicesProcessor"
+      Handler: dist/score_invoices_processor.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          CANCEL_REASON_ATTRIBUTION: !Ref CancelReasonAttribution
+          INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
+          INTERCOM_API_BASE_URL: https://api.intercom.io
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
 
 Outputs:
   EnrichInvoiceApiUrl:

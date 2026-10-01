@@ -98,7 +98,7 @@ interface ReferenceId {
 }
 
 function referenceIds(reference: unknown): ReferenceId[] {
-  return asArray(reference as unknown).flatMap((ref) => {
+  return asArray(reference).flatMap((ref) => {
     if (!ref || typeof ref !== 'object') return [];
     return asArray((ref as { ID?: unknown }).ID).flatMap((id): ReferenceId[] => {
       if (id && typeof id === 'object') {
@@ -120,6 +120,11 @@ export function referenceKey(reference: unknown): string | undefined {
   return preferred.type ? `${preferred.type}=${preferred.value}` : preferred.value;
 }
 
+/** The WID of a Workday reference, when the response carried one. */
+export function referenceWid(reference: unknown): string | undefined {
+  return referenceIds(reference).find((id) => id.type === 'WID')?.value;
+}
+
 function worktagHasType(worktag: unknown, type: string): boolean {
   return referenceIds(worktag).some((id) => id.type === type);
 }
@@ -129,7 +134,7 @@ function extractLine(line: Record<string, unknown>): ScoredLine {
   let fund: string | undefined;
   let lineOfBusiness: string | undefined;
   const otherWorktags: string[] = [];
-  for (const worktag of asArray(line.Worktags_Reference as unknown)) {
+  for (const worktag of asArray(line.Worktags_Reference)) {
     const key = referenceKey(worktag);
     if (!key) continue;
     if (!costCenter && worktagHasType(worktag, 'Cost_Center_Reference_ID')) {
@@ -169,7 +174,7 @@ function withDefined<K extends string, V>(key: K, value: V | undefined): Partial
 export function extractScoredFields(invoice: unknown): ScoredFields {
   const data = (invoice && typeof invoice === 'object' ? invoice : {}) as Record<string, unknown>;
   const invoiceDate = text(data.Invoice_Date)?.slice(0, 10);
-  const lines = asArray(data.Invoice_Line_Replacement_Data as unknown)
+  const lines = asArray(data.Invoice_Line_Replacement_Data)
     .filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
     .map(extractLine)
     .sort((a, b) => (a.lineOrder ?? Number.MAX_SAFE_INTEGER) - (b.lineOrder ?? Number.MAX_SAFE_INTEGER));
@@ -330,7 +335,7 @@ export async function getAgentInvoiceSnapshots(db: DatabaseConnection, workdayIn
   const rows = await db.query(
     `SELECT ${SNAPSHOT_COLUMNS} FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1 ORDER BY write_seq`,
     [workdayInvoiceWid]
-  );
+  ) as Array<Record<string, unknown>>;
   return rows.map(rowToSnapshot);
 }
 
@@ -343,7 +348,7 @@ export async function getLatestAgentWriteSnapshot(
       WHERE workday_invoice_wid = $1 AND source = ANY($2::text[])
       ORDER BY write_seq DESC LIMIT 1`,
     [workdayInvoiceWid, [...AGENT_WRITE_SOURCES]]
-  );
+  ) as Array<Record<string, unknown>>;
   return rows[0] ? rowToSnapshot(rows[0]) : undefined;
 }
 
@@ -370,7 +375,7 @@ export async function snapshotAgentWrite(
       const latest = await getLatestAgentWriteSnapshot(context.dbConnection, input.workdayInvoiceWid);
       if (latest) preWriteDiff = diffScoredFields(latest.fields, extractScoredFields(previousInvoice));
     }
-    const invoice = providedInvoice ?? await getSupplierInvoice(context, input.workdayInvoiceWid);
+    const invoice: unknown = providedInvoice ?? await getSupplierInvoice(context, input.workdayInvoiceWid) as unknown;
     const invoiceNumber = rest.workdayInvoiceNumber
       ?? (typeof (invoice as { Invoice_Number?: unknown })?.Invoice_Number === 'string'
         ? (invoice as { Invoice_Number: string }).Invoice_Number

@@ -286,10 +286,10 @@ export function assertAllowedAttachmentUrl(url: string): URL {
   return parsed;
 }
 
-export async function fetchConversationInvoiceData(
+async function fetchConversation(
   config: IntercomConfig,
   conversationId: string,
-): Promise<IntercomConversationInvoiceData> {
+): Promise<IntercomConversationResponse> {
   const url = `${config.apiBaseUrl}/conversations/${encodeURIComponent(conversationId)}?display_as=plaintext`;
   debug('Fetching Intercom conversation', { conversationId, apiBaseUrl: config.apiBaseUrl });
 
@@ -329,7 +329,39 @@ export async function fetchConversationInvoiceData(
   if (!parsed.success) {
     throw new IntercomUpstreamError('Intercom Conversations API returned an unexpected response');
   }
-  const conversation = parsed.data;
+  return parsed.data;
+}
+
+export interface IntercomConversationMessage {
+  /** Unix seconds. */
+  createdAt?: number;
+  body: string;
+}
+
+/** The source email and every conversation part that has a body, in API order. */
+export async function fetchConversationMessages(
+  config: IntercomConfig,
+  conversationId: string,
+): Promise<IntercomConversationMessage[]> {
+  const conversation = await fetchConversation(config, conversationId);
+  const messages: IntercomConversationMessage[] = [];
+  const add = (body: string | null | undefined, createdAt: number | undefined) => {
+    if (body?.trim() && !isIntercomMessageDeliveryFailedBody(body)) {
+      messages.push({ body, ...(createdAt != null ? { createdAt } : {}) });
+    }
+  };
+  add(conversation.source?.body, conversation.created_at);
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    add(part.body, part.created_at ?? conversation.created_at);
+  }
+  return messages;
+}
+
+export async function fetchConversationInvoiceData(
+  config: IntercomConfig,
+  conversationId: string,
+): Promise<IntercomConversationInvoiceData> {
+  const conversation = await fetchConversation(config, conversationId);
   const attachments = collectAttachments(conversation);
   const invoiceAttachments = attachments.filter(
     (attachment) => attachment.contentType === 'application/pdf'
