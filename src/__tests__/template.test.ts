@@ -79,6 +79,7 @@ describe('SAM template', () => {
       expect(processor).toContain('FunctionName: !Sub "${AWS::StackName}-ScoreInvoicesProcessor"');
       expect(processor).toContain('Handler: dist/score_invoices_processor.processor');
       expect(processor).toMatch(/CANCEL_REASON_ATTRIBUTION:\s*!Ref CancelReasonAttribution/);
+      expect(processor).toMatch(/SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD:\s*suppliersInvoiceNumber/);
       expect(Number(processor.match(/Timeout:\s*(\d+)/)?.[1])).toBeLessThanOrEqual(900);
     });
 
