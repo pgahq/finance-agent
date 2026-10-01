@@ -41,6 +41,43 @@ describe('SAM template', () => {
     expect(globalSsmRefs.length + maxFunctionSsmRefs).toBeLessThanOrEqual(10);
   });
 
+  describe('agent invoice scoring', () => {
+    const template = readFileSync(join(process.cwd(), 'template.yml'), 'utf8');
+    const resourceBlock = (name: string) => template.split(`\n  ${name}:`)[1]?.split(/\n  (?:# |[A-Z][A-Za-z]+:)/)[0] ?? '';
+
+    it('stamps snapshots with the deployed commit from CircleCI', () => {
+      expect(globals).toMatch(/ReleaseSha:/);
+      expect(globals).toMatch(/RELEASE_SHA:\s*!Ref ReleaseSha/);
+      expect(circleci).toMatch(/ReleaseSha=\$CIRCLE_SHA1/);
+    });
+
+    it('runs the scoring query daily and dispatches to its processor', () => {
+      const query = resourceBlock('ScoreInvoicesFunction');
+      expect(query).toContain('Handler: dist/score_invoices.handler');
+      expect(query).toMatch(/Schedule:\s*cron\(0 14 \* \* \? \*\)/);
+      const processor = resourceBlock('ScoreInvoicesProcessor');
+      expect(processor).toContain('FunctionName: !Sub "${AWS::StackName}-ScoreInvoicesProcessor"');
+      expect(processor).toContain('Handler: dist/score_invoices_processor.processor');
+      expect(processor).toMatch(/CANCEL_REASON_ATTRIBUTION:\s*!Ref CancelReasonAttribution/);
+      expect(Number(processor.match(/Timeout:\s*(\d+)/)?.[1])).toBeLessThanOrEqual(900);
+    });
+
+    it('posts the weekly digest only through the audit webhook', () => {
+      const digest = resourceBlock('ScoreDigestFunction');
+      expect(digest).toContain('Handler: dist/score_digest.handler');
+      expect(digest).toMatch(/Schedule:\s*cron\(30 14 \? \* MON \*\)/);
+      expect(digest).toMatch(/AUDIT_SLACK_WEBHOOK_URL:\s*ssm:\/finance-agent\/audit-slack-webhook-url/);
+      expect(template.match(/AUDIT_SLACK_WEBHOOK_URL:/g)).toHaveLength(1);
+    });
+
+    it('keeps every function within the per-function SSM reference budget', () => {
+      const resources = template.split('\nResources:')[1].split(/\n  (?=[A-Z][A-Za-z]+:\n)/);
+      for (const resource of resources) {
+        expect((resource.match(/:\s*ssm:\//g) ?? []).length).toBeLessThanOrEqual(2);
+      }
+    });
+  });
+
   it('wires WORKDAY_UI_BASE_URL from the WorkdayUiBaseUrl parameter', () => {
     expect(globals).toMatch(/WorkdayUiBaseUrl:/);
     expect(globals).toMatch(/WORKDAY_UI_BASE_URL:\s*!Ref WorkdayUiBaseUrl/);
