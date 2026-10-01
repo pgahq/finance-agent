@@ -51,11 +51,11 @@ describe('SAM template', () => {
       expect(circleci).toMatch(/ReleaseSha=\$CIRCLE_SHA1/);
     });
 
-    it('maps Order Canceled and Alternate Payment Method Used to business by default', () => {
+    it('maps the Workday cancel reasons by reference ID by default', () => {
       const raw = globals.match(/CancelReasonAttribution:[\s\S]*?Default:\s*'([^']+)'/)?.[1] ?? '';
       expect(JSON.parse(raw)).toEqual({
         business: ['INVOICE_CANCEL_REASON-3-3', 'INVOICE_CANCEL_REASON-3-4'],
-        duplicate: [],
+        duplicate: ['DUPLICATE'],
         agent: [],
         agentTags: [],
       });
