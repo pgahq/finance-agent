@@ -21,7 +21,7 @@ interface SlackDividerBlock {
   type: 'divider';
 }
 
-type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
+export type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
 
 const SLACK_SECTION_TEXT_LIMIT = 2900;
 
@@ -275,14 +275,16 @@ function buildCloudWatchLogUrl(): string | undefined {
 }
 
 /**
- * Send a message to Slack using blocks
+ * Send a message to Slack using blocks. Defaults to the per-invoice channel webhook.
  */
-async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
+async function sendSlackMessage(
+  blocks: SlackBlock[],
+  webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
+  webhookEnvName = 'SLACK_WEBHOOK_URL'
+): Promise<void> {
   try {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-
     if (!webhookUrl) {
-      debug('SLACK_WEBHOOK_URL environment variable not set - skipping Slack notification');
+      debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
       return;
     }
 
@@ -315,6 +317,19 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
     debug('Error sending Slack notification:', error);
     // Don't throw - we don't want Slack failures to break the main process
   }
+}
+
+/**
+ * Posts blocks to a specific incoming webhook (for example the audit channel). Never throws, and never
+ * falls back to the per-invoice channel when the webhook is not configured.
+ */
+export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<void> {
+  // An undefined argument would pick up sendSlackMessage's per-invoice default, so stop here instead.
+  if (!webhookUrl) {
+    debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
+    return;
+  }
+  await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
