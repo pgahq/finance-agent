@@ -166,10 +166,10 @@ export function summarizeScores(
   const worst: InvoiceLink[] = [
     ...canceledNow
       .filter((score) => score.cancelAttribution === 'agent')
-      .map((score) => ({ score, weight: 1000, detail: `canceled (${score.cancelBasis ?? 'agent'})` })),
+      .map((score) => ({ score, weight: 1000, detail: `canceled (${(score.cancelBasis && BASIS_LABELS[score.cancelBasis]) ?? score.cancelBasis ?? 'agent'})` })),
     ...enteredNow
       .filter((score) => materialCount(score) > 0)
-      .map((score) => ({ score, weight: materialCount(score), detail: `${materialCount(score)} material field changes` })),
+      .map((score) => ({ score, weight: materialCount(score), detail: plural(materialCount(score), 'material field change') })),
   ]
     .sort((a, b) => b.weight - a.weight)
     .slice(0, MAX_WORST)
@@ -236,6 +236,10 @@ const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
 
 const percent = (rate: number) => `${Math.round(rate * 100)}%`;
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
 function shortDate(date: Date): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
 }
@@ -298,7 +302,7 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   }
 
   blocks.push(section(
-    `*Late corrections* · ${summary.late.corrected} of ${summary.late.closed} invoices that closed this week had coding changed after AP submitted them.`
+    `*Late corrections* · coding changed after AP submitted on ${summary.late.corrected} of ${plural(summary.late.closed, 'invoice')} closed this week.`
   ));
 
   const { cancels } = summary;
