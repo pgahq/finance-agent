@@ -45,9 +45,10 @@ Parameters:
   CancelReasonAttribution:
     Type: String
     Description: >-
-      JSON mapping of Workday cancel reasons and work queue tags to cancel attribution for invoice scoring,
-      for example {"business":["Supplier Voided"],"duplicate":["Duplicate"],"agent":[],"agentTags":[]}
-    Default: "{}"
+      JSON mapping of Workday cancel reasons (name or Invoice_Cancel_Reason ID) and work queue tags to cancel
+      attribution for invoice scoring. Order Canceled (3-3) and Alternate Payment Method Used (3-4) are business;
+      Incorrect Supplier (3-1) and Invoiced in Error (3-2) stay unmapped because either side can cause them.
+    Default: '{"business":["INVOICE_CANCEL_REASON-3-3","INVOICE_CANCEL_REASON-3-4"],"duplicate":[],"agent":[],"agentTags":[]}'
   TenantRefreshWeekday:
     Type: String
     Description: >-

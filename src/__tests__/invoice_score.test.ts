@@ -128,6 +128,12 @@ describe('attributeCancel', () => {
       .toBe('no_signal');
   });
 
+  it('matches a mapped reason by its reference ID when the name differs', () => {
+    const byId: CancelReasonMapping = { ...noMapping, business: ['invoice_cancel_reason-3-4'] };
+    expect(attributeCancel({ cancelReason: 'Paid by P-card', cancelReasonIds: ['wid', 'INVOICE_CANCEL_REASON-3-4'] }, byId))
+      .toEqual({ attribution: 'business', basis: 'business_reason' });
+  });
+
   it('does not treat an unmapped reason as proof either way', () => {
     expect(attributeCancel({ cancelReason: 'Other' }, noMapping)).toEqual({ attribution: 'unattributed', basis: 'no_signal' });
   });

@@ -177,8 +177,9 @@ export interface CancelReasonMapping {
 
 /**
  * `CANCEL_REASON_ATTRIBUTION` JSON, for example
- * `{"business":["Supplier Voided"],"duplicate":["Duplicate"],"agent":[],"agentTags":["FINAGENT-agent-error"]}`.
- * No existing cancel reason points at the agent, so `agent` starts empty. Invalid JSON is ignored.
+ * `{"business":["INVOICE_CANCEL_REASON-3-3"],"duplicate":[],"agent":[],"agentTags":["FINAGENT-agent-error"]}`.
+ * Entries match a cancel reason's name or reference ID. No existing cancel reason points at the agent,
+ * so `agent` starts empty. Invalid JSON is ignored.
  */
 export function cancelReasonMappingFromEnv(env: NodeJS.ProcessEnv = process.env): CancelReasonMapping {
   const empty: CancelReasonMapping = { business: [], duplicate: [], agent: [], agentTags: [] };
@@ -203,7 +204,10 @@ export function cancelReasonMappingFromEnv(env: NodeJS.ProcessEnv = process.env)
 export interface CancelEvidence {
   /** AP's label from cancel_labels, which overrides every rule. */
   apLabel?: 'agent' | 'business';
+  /** The cancel reason's name when Workday returned one, else its reference ID. */
   cancelReason?: string;
+  /** Every ID on the cancel reason reference (for example `INVOICE_CANCEL_REASON-3-3` and its WID). */
+  cancelReasonIds?: string[];
   workQueueTags?: string[];
   /** A live invoice with the same supplier invoice number that the agent did not create. */
   replacement?: { workdayInvoiceWid: string; workdayInvoiceNumber?: string; diff?: FieldChange[] };
@@ -231,6 +235,11 @@ function matches(list: string[], value: string | undefined): boolean {
   return Boolean(value) && list.includes(value!.trim().toLowerCase());
 }
 
+/** A mapped cancel reason matches on its name or any of its reference IDs. */
+function matchesReason(list: string[], evidence: CancelEvidence): boolean {
+  return [evidence.cancelReason, ...(evidence.cancelReasonIds ?? [])].some((value) => matches(list, value));
+}
+
 /**
  * Decides whether a canceled agent invoice was the agent's fault. No cancel reason points at the
  * agent today, so most decisions come from the facts below; anything unproven stays unattributed.
@@ -241,12 +250,12 @@ export function attributeCancel(
   earlyCancelHours = DEFAULT_EARLY_CANCEL_HOURS
 ): CancelAttributionResult {
   if (evidence.apLabel) return { attribution: evidence.apLabel, basis: 'ap_label' };
-  if (matches(mapping.agent, evidence.cancelReason)) return { attribution: 'agent', basis: 'agent_reason' };
+  if (matchesReason(mapping.agent, evidence)) return { attribution: 'agent', basis: 'agent_reason' };
   if ((evidence.workQueueTags ?? []).some((tag) => matches(mapping.agentTags, tag))) {
     return { attribution: 'agent', basis: 'agent_tag' };
   }
-  if (matches(mapping.business, evidence.cancelReason)) return { attribution: 'business', basis: 'business_reason' };
-  if (matches(mapping.duplicate, evidence.cancelReason)) return { attribution: 'agent', basis: 'duplicate_reason' };
+  if (matchesReason(mapping.business, evidence)) return { attribution: 'business', basis: 'business_reason' };
+  if (matchesReason(mapping.duplicate, evidence)) return { attribution: 'agent', basis: 'duplicate_reason' };
   if (evidence.replacement) return { attribution: 'agent', basis: 'replacement' };
   if (evidence.duplicate) return { attribution: 'agent', basis: 'duplicate' };
   if (evidence.primaryAttachmentKind === 'supporting' || evidence.primaryAttachmentKind === 'unrelated') {

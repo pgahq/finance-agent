@@ -120,6 +120,19 @@ export function referenceKey(reference: unknown): string | undefined {
   return preferred.type ? `${preferred.type}=${preferred.value}` : preferred.value;
 }
 
+/** Every ID value on a Workday reference (WID and reference IDs). */
+export function referenceIdValues(reference: unknown): string[] {
+  return referenceIds(reference).map((id) => id.value);
+}
+
+/** The display name Workday puts on a reference (`Descriptor` attribute), when present. */
+export function referenceDescriptor(reference: unknown): string | undefined {
+  const ref = asArray(reference).find((item) => item && typeof item === 'object') as
+    { $attributes?: { Descriptor?: unknown } } | undefined;
+  const descriptor = ref?.$attributes?.Descriptor;
+  return typeof descriptor === 'string' && descriptor.trim() ? descriptor.trim() : undefined;
+}
+
 /** The WID of a Workday reference, when the response carried one. */
 export function referenceWid(reference: unknown): string | undefined {
   return referenceIds(reference).find((id) => id.type === 'WID')?.value;

@@ -34,6 +34,9 @@ import {
   diffScoredFields,
   extractScoredFields,
   getAgentInvoiceSnapshots,
+  referenceDescriptor,
+  referenceIdValues,
+  referenceKey,
   referenceWid,
   type AgentInvoiceSnapshot,
   type ScoredFieldName,
@@ -106,10 +109,17 @@ async function gatherCancelEvidence(
   const { score, snapshots, latest, status, current, currentFields, now } = input;
   const db = context.dbConnection;
   const firstWrite = snapshots.find((snapshot) => AGENT_WRITE_SOURCES.includes(snapshot.source)) ?? latest;
+  // Get_Supplier_Invoices returns the cancel reason on the invoice; the optional WQL field is a fallback.
+  const cancelReasonRef = (current as { Invoice_Cancel_Reason_Reference?: unknown } | undefined)?.Invoice_Cancel_Reason_Reference;
+  const cancelReasonIds = referenceIdValues(cancelReasonRef);
+  const cancelReason = referenceDescriptor(cancelReasonRef)
+    ?? status?.cancelReason
+    ?? referenceKey(cancelReasonRef)?.split('=').pop();
   const evidence: CancelEvidence = {
     canceledWhileDraft: !score.entryReadAt,
     hoursFromLastAgentWrite: Math.round(hoursBetween(latest.createdAt, now) * 10) / 10,
-    ...(status?.cancelReason ? { cancelReason: status.cancelReason } : {}),
+    ...(cancelReason ? { cancelReason } : {}),
+    ...(cancelReasonIds.length ? { cancelReasonIds } : {}),
     ...(latest.attachmentKinds?.[0] ? { primaryAttachmentKind: latest.attachmentKinds[0] } : {}),
     ...(latest.clusteringMode ? { clusteringMode: latest.clusteringMode } : {}),
   };

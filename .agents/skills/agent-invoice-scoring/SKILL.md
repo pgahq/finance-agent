@@ -111,18 +111,35 @@ on facts and leaves anything unproven `unattributed`. First match wins:
    no AP edits, within `SCORE_EARLY_CANCEL_HOURS` (default 72) of detection.
 9. Otherwise `no_signal`.
 
+The cancel reason comes from the canceled invoice itself:
+`Get_Supplier_Invoices` returns a read-only `Invoice_Cancel_Reason_Reference`
+(name from its `Descriptor`, IDs such as `INVOICE_CANCEL_REASON-3-3`).
+`SCORE_CANCEL_REASON_WQL_FIELD` is only a fallback for when that read fails.
+
 `CANCEL_REASON_ATTRIBUTION` is the `CancelReasonAttribution` template
-parameter (default `{}`), for example
-`{"business":["Supplier Voided"],"duplicate":["Duplicate"],"agent":[],"agentTags":["FINAGENT-agent-error"]}`.
-Matching is case-insensitive on the reason text WQL returns. Adding an agent
-reason or tag later is a configuration change.
+parameter. Entries match a reason's name or any of its IDs, case-insensitively.
+The sandbox is a copy of production, so the IDs are the same in both tenants
+and the template default serves both:
+
+| Reason | ID | Mapping |
+| --- | --- | --- |
+| Incorrect Supplier | `INVOICE_CANCEL_REASON-3-1` | unmapped: agent supplier match or supplier billing the wrong entity |
+| Invoiced in Error | `INVOICE_CANCEL_REASON-3-2` | unmapped: supplier mistake or a backup document turned into an invoice |
+| Order Canceled | `INVOICE_CANCEL_REASON-3-3` | business |
+| Alternate Payment Method Used | `INVOICE_CANCEL_REASON-3-4` | business |
+
+Unmapped reasons fall through to the evidence rules; AP labels on them show
+whether either one should be mapped later. Adding an agent reason or tag is a
+configuration change.
 
 Optional WQL fields stay unset until confirmed in the tenant:
-`SCORE_CANCEL_REASON_WQL_FIELD`, `SCORE_HOLD_REASON_WQL_FIELD`,
-`SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`. Without the hold field the score
+`SCORE_HOLD_REASON_WQL_FIELD`, `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`, and
+the `SCORE_CANCEL_REASON_WQL_FIELD` fallback. Without the hold field the score
 records `On hold` from the Get `On_Hold` flag. None of the `SCORE_*` settings
 is in `template.yml` yet; add them under `Environment` on `ScoreInvoicesFunction`
 and `ScoreInvoicesProcessor` (both classify status) once the values are known.
+Status text is confirmed: Draft, In Progress, Approved, Canceled (Denied
+assumed), which the defaults already match.
 
 To record AP's call on an unattributed cancel:
 
