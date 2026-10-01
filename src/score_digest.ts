@@ -1,4 +1,5 @@
 import { debug } from '@pga/logger';
+import type { DatabaseConnection } from './lib/database.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
@@ -52,6 +53,32 @@ export async function backlogOutcomes(context: ProcessingContext, window: Digest
   return counts;
 }
 
+/** Scores touched since `since`, plus open stuck Drafts, with any AP cancel label applied. */
+export async function loadDigestScores(db: DatabaseConnection, since: Date): Promise<InvoiceScore[]> {
+  const rows = await db.query(
+    `SELECT s.*, l.attribution AS label_attribution
+       FROM agent_invoice_scores s
+       LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
+      WHERE COALESCE(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
+         OR (s.terminal = false AND s.outcome = 'stuck_draft')`,
+    [since]
+  ) as Array<Record<string, unknown>>;
+  return rows.map(withCancelLabel);
+}
+
+/** The most recent unattributed cancels AP has not labeled yet. */
+export async function loadUnlabeledCancels(db: DatabaseConnection, limit = UNATTRIBUTED_CANCEL_LIMIT): Promise<InvoiceScore[]> {
+  const rows = await db.query(
+    `SELECT s.* FROM agent_invoice_scores s
+       LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
+      WHERE s.terminal = true AND s.cancel_attribution = 'unattributed' AND l.workday_invoice_wid IS NULL
+      ORDER BY s.final_read_at DESC
+      LIMIT $1`,
+    [limit]
+  ) as Array<Record<string, unknown>>;
+  return rows.map(rowToInvoiceScore);
+}
+
 /** AP labels added after a cancel was scored still count in the digest. */
 function withCancelLabel(row: Record<string, unknown>): InvoiceScore {
   const score = rowToInvoiceScore(row);
@@ -67,23 +94,11 @@ export const handler = withHandler(async (context) => {
   const startTime = Date.now();
   try {
     const window = digestWindow(new Date());
-    const rows = await context.dbConnection.query(
-      `SELECT s.*, l.attribution AS label_attribution
-         FROM agent_invoice_scores s
-         LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
-        WHERE COALESCE(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
-           OR (s.terminal = false AND s.outcome = 'stuck_draft')`,
-      [window.previousStart]
-    ) as Array<Record<string, unknown>>;
-    const unattributed = await context.dbConnection.query(
-      `SELECT s.* FROM agent_invoice_scores s
-         LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
-        WHERE s.terminal = true AND s.cancel_attribution = 'unattributed' AND l.workday_invoice_wid IS NULL
-        ORDER BY s.final_read_at DESC
-        LIMIT ${UNATTRIBUTED_CANCEL_LIMIT}`
-    ) as Array<Record<string, unknown>>;
-
-    const summary = summarizeScores(rows.map(withCancelLabel), window, unattributed.map(rowToInvoiceScore));
+    const summary = summarizeScores(
+      await loadDigestScores(context.dbConnection, window.previousStart),
+      window,
+      await loadUnlabeledCancels(context.dbConnection)
+    );
     try {
       summary.backlog = await backlogOutcomes(context, window);
     } catch (error) {
