@@ -262,6 +262,17 @@ Deployment is automated via CircleCI:
 - **Slack**: Real-time notifications to #notify-finance-agent-dev
 - **Error Tracking**: Detailed error context and processing statistics
 
+### Agent invoice scoring
+
+The agent saves a snapshot of the fields it wrote after every create, resend
+update, and enrich write. `ScoreInvoices` runs daily and scores each invoice
+twice: when AP submits it (what AP changed before submitting) and when it is
+approved, paid, denied, or canceled (late corrections and cancel attribution).
+`ScoreDigest` posts a weekly summary by field to `#notify-finance-agent-audit`
+(`#notify-finance-agent-audit-dev` in dev) through the
+`/finance-agent/audit-slack-webhook-url` SSM parameter. Details, settings, and
+how AP labels a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.
+
 ## 🔒 Security
 
 - Workday OAuth authentication
