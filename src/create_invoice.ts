@@ -78,10 +78,12 @@ import {
 } from './lib/invoice_cluster_plans.js';
 import {
   closedPurchaseOrderLineNote,
+  consumedPurchaseOrderLinesNote,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
   loadPurchaseOrder,
   OMITTED_PO_LINE_REFERENCE_LABEL,
+  selectInvoiceablePurchaseOrderLines,
   submitNewSupplierInvoice,
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
@@ -731,11 +733,19 @@ async function processInvoiceCluster(
     const companyReferenceType = selectedCompany.companyReferenceType;
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
-    const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const { lines: poLines, allLinesConsumed: allPoLinesConsumed } = selectInvoiceablePurchaseOrderLines(
+      usedDefaultCompany ? undefined : matchedPo?.lines
+    );
     const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
     if (poClosedForInvoicing) {
       debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+    } else if (allPoLinesConsumed) {
+      debug(`Every line on PO ${matchedPo?.documentNumber} is fully invoiced, fully paid, or closed; coding lines from the PO without Purchase_Order_Line_Reference`);
     }
+    const omitPoLineReferences = poClosedForInvoicing || allPoLinesConsumed;
+    const poLineOmittedNote = !poClosedForInvoicing && allPoLinesConsumed
+      ? consumedPurchaseOrderLinesNote(extractedPurchaseOrderNumber)
+      : closedPurchaseOrderLineNote(extractedPurchaseOrderNumber);
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -783,7 +793,8 @@ async function processInvoiceCluster(
       fallbackIds,
       emailWorktags,
       relatedLobLookup,
-      invoiceLineQuantityDisplayed
+      invoiceLineQuantityDisplayed,
+      { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -883,7 +894,7 @@ async function processInvoiceCluster(
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
         + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+          ? `\n\nPurchase order lines: ${poLineOmittedNote}`
           : '')
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
@@ -1089,7 +1100,7 @@ async function processInvoiceCluster(
           return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-              ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
+              ? `\n\nPurchase order lines: ${poLineOmittedNote}`
               : '') +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
@@ -1112,7 +1123,7 @@ async function processInvoiceCluster(
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
           attachments: submitAttachments,
-          ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         const updateSnapshotSaved = await snapshotAgentWrite(context, {
@@ -1182,7 +1193,7 @@ async function processInvoiceCluster(
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
-      ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
     });
 
@@ -1234,7 +1245,7 @@ async function processInvoiceCluster(
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
       appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
-        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber) : f.label
+        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? poLineOmittedNote : f.label
       ),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),

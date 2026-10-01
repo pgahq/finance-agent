@@ -474,6 +474,11 @@ export interface PurchaseOrderLine {
   lineLevelWorktagsReference?: any[];
   splitLineData?: PurchaseOrderLineSplit[];
   shipToAddressId?: string | null;
+  startDate?: string;
+  endDate?: string;
+  invoiceStatus?: PurchaseOrderDocumentStatus;
+  paymentStatus?: PurchaseOrderDocumentStatus;
+  closeStatus?: PurchaseOrderDocumentStatus;
 }
 
 export interface PurchaseOrderCompany {
@@ -2454,10 +2459,14 @@ function parsePurchaseOrderCompany(poData: any): PurchaseOrderCompany | undefine
 }
 
 function parsePurchaseOrderDocumentStatus(poData: any): PurchaseOrderDocumentStatus | undefined {
-  const ref = ([] as any[]).concat(poData?.Purchase_Order_Document_Status_Reference ?? [])[0];
+  return parseStatusReference(poData?.Purchase_Order_Document_Status_Reference, 'Document_Status_ID');
+}
+
+function parseStatusReference(raw: any, idType: string): PurchaseOrderDocumentStatus | undefined {
+  const ref = ([] as any[]).concat(raw ?? [])[0];
   if (!ref) return undefined;
   const ids = ([] as any[]).concat(ref.ID ?? []);
-  const id = ids.find((entry: any) => entry.$attributes?.type === 'Document_Status_ID')?.$value;
+  const id = ids.find((entry: any) => entry.$attributes?.type === idType)?.$value;
   const descriptor = ref.descriptor ?? ref.$attributes?.Descriptor;
   if (!id && !descriptor) return undefined;
   return {
@@ -2492,6 +2501,41 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
   if (!status) return false;
   return CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.id))
     || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
+}
+
+const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'invoiced']);
+const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid', 'paid']);
+
+function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
+  if (!status) return false;
+  return values.has(normalizeDocumentStatus(status.id)) || values.has(normalizeDocumentStatus(status.descriptor));
+}
+
+// Fully invoiced, fully paid, or closed PO lines cannot take another invoice line. Status
+// IDs vary by tenant, so descriptors are checked too; a missing status reads as available.
+export function isPurchaseOrderLineAvailableForInvoicing(
+  line: Pick<PurchaseOrderLine, 'invoiceStatus' | 'paymentStatus' | 'closeStatus'>
+): boolean {
+  return !statusMatches(line.invoiceStatus, FULLY_INVOICED_LINE_STATUSES)
+    && !statusMatches(line.paymentStatus, FULLY_PAID_LINE_STATUSES)
+    && !statusMatches(line.closeStatus, CLOSED_FOR_INVOICING_STATUSES);
+}
+
+// When every line is consumed, all lines are returned so the invoice still picks up PO
+// coding; the caller must then omit Purchase_Order_Line_Reference.
+export function selectInvoiceablePurchaseOrderLines(lines: PurchaseOrderLine[] | undefined): {
+  lines: PurchaseOrderLine[] | undefined;
+  allLinesConsumed: boolean;
+} {
+  if (!lines?.length) return { lines, allLinesConsumed: false };
+  const available = lines.filter(isPurchaseOrderLineAvailableForInvoicing);
+  if (available.length === 0) return { lines, allLinesConsumed: true };
+  return { lines: available, allLinesConsumed: false };
+}
+
+export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): string {
+  const po = purchaseOrderNumber || 'The PO';
+  return `All lines on ${po} are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.`;
 }
 
 export function closedPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
@@ -2559,6 +2603,8 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
       lineLevelWorktagsReference,
       splitLineData,
       shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+      ...parsePurchaseOrderLineServiceWindow(line),
+      ...parsePurchaseOrderLineStatuses(line),
     };
   });
 
@@ -2581,10 +2627,33 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
       lineLevelWorktagsReference,
       splitLineData,
       shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+      ...parsePurchaseOrderLineStatuses(line),
     };
   });
 
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
+}
+
+function parsePurchaseOrderLineServiceWindow(line: any): Pick<PurchaseOrderLine, 'startDate' | 'endDate'> {
+  const startDate = normalizeInvoiceDate(line.Start_Date);
+  const endDate = normalizeInvoiceDate(line.End_Date);
+  return {
+    ...(startDate ? { startDate } : {}),
+    ...(endDate ? { endDate } : {}),
+  };
+}
+
+function parsePurchaseOrderLineStatuses(
+  line: any
+): Pick<PurchaseOrderLine, 'invoiceStatus' | 'paymentStatus' | 'closeStatus'> {
+  const invoiceStatus = parseStatusReference(line.Invoice_Status_Reference, 'Document_Status_ID');
+  const paymentStatus = parseStatusReference(line.Payment_Status_Reference, 'Document_Payment_Status_ID');
+  const closeStatus = parseStatusReference(line.Close_Status_Reference, 'Document_Status_ID');
+  return {
+    ...(invoiceStatus ? { invoiceStatus } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
+    ...(closeStatus ? { closeStatus } : {}),
+  };
 }
 
 export async function getPurchaseOrder(

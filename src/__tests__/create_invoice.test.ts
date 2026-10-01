@@ -29,6 +29,8 @@ jest.mock('../lib/workday.js', () => ({
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
+  consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
+  selectInvoiceablePurchaseOrderLines: jest.requireActual('../lib/workday.js').selectInvoiceablePurchaseOrderLines,
   OMITTED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').OMITTED_PO_LINE_REFERENCE_LABEL,
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
@@ -1154,6 +1156,78 @@ describe('create_invoice', () => {
     expect(closedNotes).not.toContain('omitted PO line reference');
     expect(submitArgs.buildNotes([])).not.toContain('Closed or Pending Close');
     expect(slack.notifyResult.mock.calls[0][3].appliedFallbacks).toEqual([closedNote]);
+  });
+
+  const monthlyPoLines = (fullyInvoicedThrough: number) => Array.from({ length: 12 }, (_, index) => {
+    const month = index + 1;
+    const mm = String(month).padStart(2, '0');
+    return {
+      lineOrder: month,
+      purchaseOrderLineId: `POL-${mm}`,
+      purchaseOrderDocumentNumber: 'PO-414498',
+      description: 'Monthly retainer',
+      startDate: `2026-${mm}-01`,
+      endDate: `2026-${mm}-28`,
+      ...(month <= fullyInvoicedThrough ? { invoiceStatus: { id: 'FULLY_INVOICED', descriptor: 'Fully Invoiced' } } : {}),
+    };
+  });
+
+  it('should send only PO lines that can still be invoiced, with the invoice date and service period, to the line merge', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-414498',
+      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+      lines: monthlyPoLines(8),
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedInvoiceDate: '2026-09-05',
+      extractedServicePeriod: 'September 2026',
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{ ...attachmentRequest('new-invoices/req-monthly-po/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
+    } as any);
+
+    const mergeCall = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+    expect(mergeCall[1].map((line: any) => line.purchaseOrderLineId)).toEqual(['POL-09', 'POL-10', 'POL-11', 'POL-12']);
+    expect(mergeCall[7]).toEqual({ invoiceDate: '2026-09-05', servicePeriod: 'September 2026' });
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  it('should code from the PO but omit PO line refs when every PO line is fully invoiced', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const allInvoiced = monthlyPoLines(12);
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-414498',
+      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+      lines: allInvoiced,
+    });
+    workday.submitNewSupplierInvoice.mockResolvedValue({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }],
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-414498',
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{ ...attachmentRequest('new-invoices/req-consumed-po/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(allInvoiced);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
+    const consumedNote = 'All lines on PO-414498 are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.';
+    expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }])).toContain(consumedNote);
+    expect(slack.notifyResult.mock.calls[0][3].appliedFallbacks).toEqual([consumedNote]);
   });
 
   it('should keep the PO company over a recommended PDF company', async () => {

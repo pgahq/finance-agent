@@ -1130,3 +1130,153 @@ describe('applyAmountOnlyLineRetry', () => {
     expect(applyAmountOnlyLineRetry(lines)).toEqual(lines);
   });
 });
+
+describe('buildFinalInvoiceLines service-date matching', () => {
+  const monthlyLine = (month: number, overrides: Partial<PurchaseOrderLine> = {}): PurchaseOrderLine => {
+    const mm = String(month).padStart(2, '0');
+    const lastDay = new Date(Date.UTC(2026, month, 0)).getUTCDate();
+    return poLine({
+      lineOrder: month,
+      purchaseOrderLineId: `POL-${mm}`,
+      description: 'Monthly retainer',
+      startDate: `2026-${mm}-01`,
+      endDate: `2026-${mm}-${lastDay}`,
+      ...overrides,
+    });
+  };
+
+  const mergedLine = (purchaseOrderLineId: string | null, lineOrder = 1) => ({
+    lineOrder,
+    description: 'Monthly retainer',
+    memo: 'Monthly retainer',
+    quantity: 1,
+    unitCost: 5000,
+    extendedAmount: 5000,
+    costCenterId: 'CC-Building Services-PBG',
+    fundId: 'FUND-General_Fund_Unrestricted',
+    spendCategoryId: null,
+    lineOfBusinessId: 'LOB-Facilities',
+    eventId: null,
+    shipToAddressId: null,
+    purchaseOrderLineId,
+    hasDiscount: null,
+  });
+
+  const extracted = [{ description: 'Monthly retainer', quantity: 1, unitCost: '5000', totalPrice: '5000', hasDiscount: null }];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.FALLBACK_COST_CENTER_ID;
+  });
+
+  it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
+
+    await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod: 'September 2026' }
+    );
+
+    const input = JSON.parse((mockGetAiResponse.mock.calls[0][0] as any).messages[0].content);
+    expect(input.invoiceDate).toBe('2026-09-05');
+    expect(input.invoiceServicePeriod).toBe('September 2026');
+    expect(input.purchaseOrderLines.map((line: any) => [line.purchaseOrderLineId, line.startDate, line.endDate])).toEqual([
+      ['POL-08', '2026-08-01', '2026-08-31'],
+      ['POL-09', '2026-09-01', '2026-09-30'],
+    ]);
+  });
+
+  it('relinks to the PO line whose window covers the invoice date when no service period is stated', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9), monthlyLine(10)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+  });
+
+  it('keeps the model pick when the invoice states a service period', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod: 'August 2026' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('does not move a line onto a PO line another invoice line already uses', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08', 1), mergedLine('POL-09', 2)] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [...extracted, ...extracted],
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-30' }
+    );
+
+    expect(result.lines.map((line) => line.purchaseOrderLineId)).toEqual(['POL-08', 'POL-09']);
+  });
+
+  it('does not relink to a covering PO line with different coding', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8),
+        monthlyLine(9, { worktagsReference: [makeWorktag('Cost_Center_Reference_ID', 'CC-Other')] }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps the model pick when the PO lines have no service dates', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-001')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [poLine(), poLine({ lineOrder: 2, purchaseOrderLineId: 'POL-002' })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-001');
+  });
+});

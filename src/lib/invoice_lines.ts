@@ -317,7 +317,7 @@ function extractSpendCategoryId(spendCategoryReference: any): string | null {
   return match?.$value ?? null;
 }
 
-interface ParsedPoLineWorktags {
+export interface ParsedPoLineWorktags {
   purchaseOrderLineId: string | null;
   lineOfBusinessId: string | null;
   costCenterId: string | null;
@@ -330,6 +330,8 @@ interface ParsedPoLineWorktags {
   memo: string | null;
   shipToAddressId: string | null;
   splitLineData: PurchaseOrderLineSplit[];
+  startDate?: string | null;
+  endDate?: string | null;
 }
 
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
@@ -352,6 +354,8 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
+      startDate: line.startDate ?? null,
+      endDate: line.endDate ?? null,
     };
   });
 }
@@ -723,6 +727,68 @@ export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoic
   });
 }
 
+export interface InvoiceDateContext {
+  invoiceDate?: string | null;
+  servicePeriod?: string | null;
+}
+
+function toIsoDate(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const iso = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1];
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split('T')[0];
+}
+
+function poLineCoversDate(line: Pick<ParsedPoLineWorktags, 'startDate' | 'endDate'>, isoDate: string): boolean | undefined {
+  if (!line.startDate || !line.endDate) return undefined;
+  return line.startDate <= isoDate && isoDate <= line.endDate;
+}
+
+function poLinesShareCoding(a: ParsedPoLineWorktags, b: ParsedPoLineWorktags): boolean {
+  return a.costCenterId === b.costCenterId
+    && a.fundId === b.fundId
+    && a.spendCategoryId === b.spendCategoryId
+    && a.lineOfBusinessId === b.lineOfBusinessId;
+}
+
+// Free-text service periods are left to the merge model. This only corrects a pick whose
+// Start-End window excludes the invoice date when exactly one unclaimed, same-coded PO
+// line covers it, so multi-month invoices that already split across lines are untouched.
+export function alignPoLinesToInvoiceDate(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[],
+  invoiceDate?: string | null
+): FinalInvoiceLine[] {
+  const isoDate = toIsoDate(invoiceDate);
+  if (!isoDate || poLines.length < 2) return lines;
+  const poLinesById = new Map(
+    poLines
+      .filter((line): line is ParsedPoLineWorktags & { purchaseOrderLineId: string } => !!line.purchaseOrderLineId)
+      .map(line => [line.purchaseOrderLineId, line])
+  );
+  const claimed = new Set(lines.map(line => line.purchaseOrderLineId).filter((id): id is string => !!id));
+  return lines.map(line => {
+    const picked = line.purchaseOrderLineId ? poLinesById.get(line.purchaseOrderLineId) : undefined;
+    if (!picked || poLineCoversDate(picked, isoDate) !== false) return line;
+    const covering = [...poLinesById.values()].filter(candidate =>
+      !claimed.has(candidate.purchaseOrderLineId)
+      && poLineCoversDate(candidate, isoDate) === true
+      && poLinesShareCoding(candidate, picked)
+    );
+    if (covering.length !== 1) return line;
+    const target = covering[0];
+    claimed.add(target.purchaseOrderLineId);
+    debug(`Invoice date ${isoDate} is outside PO line ${picked.purchaseOrderLineId} (${picked.startDate} to ${picked.endDate}); linking line ${line.lineOrder} to ${target.purchaseOrderLineId} (${target.startDate} to ${target.endDate}) instead`);
+    return {
+      ...line,
+      purchaseOrderLineId: target.purchaseOrderLineId,
+      shipToAddressId: target.shipToAddressId ?? line.shipToAddressId,
+    };
+  });
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
@@ -730,11 +796,14 @@ export async function buildFinalInvoiceLines(
   fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup,
-  invoiceLineQuantityDisplayed?: boolean
+  invoiceLineQuantityDisplayed?: boolean,
+  invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
+    invoiceDate: invoiceContext?.invoiceDate ?? null,
+    invoiceServicePeriod: invoiceContext?.servicePeriod ?? null,
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
@@ -748,6 +817,8 @@ export async function buildFinalInvoiceLines(
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
       splitLineData: line.splitLineData ?? [],
+      startDate: line.startDate,
+      endDate: line.endDate,
     })),
     emailBody: emailBody ?? null,
   };
@@ -773,8 +844,11 @@ export async function buildFinalInvoiceLines(
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
+  const dateAlignedLines = invoiceContext?.servicePeriod
+    ? lines
+    : alignPoLinesToInvoiceDate(lines, parsedPoLines, invoiceContext?.invoiceDate);
   return finalizeInvoiceLines(
-    pinExtractedLineDescriptions(lines, extractedLines),
+    pinExtractedLineDescriptions(dateAlignedLines, extractedLines),
     appliedFallbacks,
     parsedPoLines,
     emailWorktags,
