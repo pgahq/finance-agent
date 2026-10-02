@@ -1,4 +1,4 @@
-import { LOST_TO_REFRESH_STATUS, type CancelBasis, type Outcome, type ScoredChange } from './invoice_score.js';
+import { LOST_TO_REFRESH_STATUS, scoreChanges, type CancelBasis, type Outcome, type ScoredChange } from './invoice_score.js';
 import type { InvoiceScore } from './invoice_scores.js';
 import type { ScoredFieldName } from './invoice_snapshots.js';
 import type { SlackBlock } from './slack.js';
@@ -358,7 +358,14 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
 export interface DailyScoreLine {
   workdayInvoiceWid: string;
   workdayInvoiceNumber?: string;
+  /** Outcome headline, for example `submitted with AP edits` or `canceled · agent (not an invoice)`. */
   text: string;
+  /** Agent-owned fields AP changed before submitting. */
+  entryChanges: ScoredChange[];
+  /** Agent-owned fields changed after submit, at the final read. */
+  lateChanges: ScoredChange[];
+  /** Enrich invoices only: changes to OCR values the agent left alone. */
+  ocrOnlyChanges: number;
 }
 
 export interface DailySummary {
@@ -368,20 +375,8 @@ export interface DailySummary {
   lostToRefresh: number;
 }
 
-const MAX_DAILY_LINES = 25;
-
-function fieldList(changes: ScoredChange[] | undefined, category: 'material' | 'convention'): string[] {
-  return [...new Set(againstAgent(changes).filter((change) => change.category === category).map((change) => FIELD_LABELS[change.field]))];
-}
-
-function describeChanges(changes: ScoredChange[] | undefined): string {
-  const material = fieldList(changes, 'material');
-  const convention = fieldList(changes, 'convention');
-  return [
-    material.length ? material.join(', ') : '',
-    convention.length ? `conventions: ${convention.join(', ')}` : '',
-  ].filter(Boolean).join('; ');
-}
+/** Webhook posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
+export const MAX_DAILY_INVOICE_MESSAGES = 40;
 
 /** What was scored between `since` and `until`: AP submits, final reads, cancels, and newly stuck Drafts. */
 export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): DailySummary {
@@ -399,37 +394,88 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
       continue;
     }
     const parts: string[] = [];
+    let entryChanges: ScoredChange[] = [];
+    let lateChanges: ScoredChange[] = [];
+    let ocrOnlyChanges = 0;
     if (score.outcome === 'canceled' || score.outcome === 'deleted') {
       if (!closed) continue;
       const basis = score.cancelBasis ? BASIS_LABELS[score.cancelBasis] ?? score.cancelBasis.replace(/_/g, ' ') : undefined;
       parts.push(`${score.outcome} · ${score.cancelAttribution ?? 'unattributed'}${basis ? ` (${basis})` : ''}`);
+      entryChanges = scoreChanges(score.cancelEvidence?.replacement?.diff ?? []);
     } else if (score.outcome === 'stuck_draft') {
       if (score.terminal || !within(score.updatedAt, since, until)) continue;
       parts.push(OUTCOME_LABELS.stuck_draft);
     } else {
       if (entered) {
-        const changes = describeChanges(score.entryDiff);
-        parts.push(`${OUTCOME_LABELS[score.outcome ?? 'submitted_clean']}${changes ? ` · ${changes}` : ''}`);
+        parts.push(OUTCOME_LABELS[score.outcome ?? 'submitted_clean']);
+        entryChanges = againstAgent(score.entryDiff);
+        ocrOnlyChanges = (score.entryDiff ?? []).filter((change) => change.agentOwned === false).length;
       }
       if (closed) {
-        const late = describeChanges(score.lateDiff);
-        parts.push(`${score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase()}${late ? ` · changed after submit: ${late}` : ''}`);
+        parts.push(score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase());
+        lateChanges = againstAgent(score.lateDiff);
       }
     }
-    if (parts.length) lines.push({ ...link, text: parts.join(' → ') });
+    if (parts.length) lines.push({ ...link, text: parts.join(' → '), entryChanges, lateChanges, ocrOnlyChanges });
   }
   return { since, until, lines, lostToRefresh };
 }
 
-export function buildDailyBlocks(summary: DailySummary): SlackBlock[] {
-  const shown = summary.lines.slice(0, MAX_DAILY_LINES);
-  const more = summary.lines.length - shown.length;
+/** `Cost_Center_Reference_ID=CC72200` → `CC72200`; arrays join; amounts keep two decimals. */
+function displayValue(value: unknown): string {
+  if (value == null || value === '' || (Array.isArray(value) && !value.length)) return '(blank)';
+  if (Array.isArray(value)) return value.map(displayValue).join(', ');
+  if (typeof value === 'number') return value.toFixed(2);
+  if (typeof value === 'object') {
+    const line = value as { amount?: unknown; itemDescription?: unknown };
+    const amount = typeof line.amount === 'number' ? line.amount.toFixed(2) : undefined;
+    const description = typeof line.itemDescription === 'string' ? line.itemDescription : undefined;
+    return [amount, description].filter(Boolean).join(' · ') || 'line';
+  }
+  const text = String(value);
+  const reference = text.match(/^[A-Za-z_]+=(.+)$/);
+  return reference ? reference[1] : text;
+}
+
+function changeLine(change: ScoredChange): string {
+  const where = change.line != null ? ` (line ${change.line + 1})` : '';
+  if (change.field === 'line.added') return `• Line added${where}: ${quote(displayValue(change.after))}`;
+  if (change.field === 'line.removed') return `• Line removed${where}: ${quote(displayValue(change.before))}`;
+  return `• ${FIELD_LABELS[change.field]}${where}: ${quote(displayValue(change.before))} → ${quote(displayValue(change.after))}`;
+}
+
+function changeSections(title: string, changes: ScoredChange[]): string[] {
+  const material = changes.filter((change) => change.category === 'material');
+  const convention = changes.filter((change) => change.category === 'convention');
   return [
-    section([
-      `*Finance agent audit · daily* · ${shortDate(summary.until)} · ${plural(summary.lines.length, 'invoice')} scored`,
-      ...shown.map((line) => `• ${invoiceLink(line)}: ${line.text}`),
-      ...(more > 0 ? [`…and ${more} more in the weekly digest`] : []),
-      ...(summary.lostToRefresh ? [`• ${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored)`] : []),
-    ].join('\n')),
+    ...(material.length ? [`*${title}*`, ...material.map(changeLine)] : []),
+    ...(convention.length ? [`*${title === 'Changed by AP' ? 'Conventions' : `${title} (conventions)`}*`, ...convention.map(changeLine)] : []),
   ];
+}
+
+/** One message per scored invoice: outcome, then before → after for each field AP changed. */
+export function buildDailyInvoiceMessages(summary: DailySummary): SlackBlock[][] {
+  const shown = summary.lines.slice(0, MAX_DAILY_INVOICE_MESSAGES);
+  const messages = shown.map((line): SlackBlock[] => {
+    const isCancel = line.text.startsWith('canceled') || line.text.startsWith('deleted');
+    const body = [
+      ...changeSections(isCancel ? 'AP replacement differs' : 'Changed by AP', line.entryChanges),
+      ...changeSections('Changed after submit', line.lateChanges),
+    ];
+    const blocks: SlackBlock[] = [section(`*Finance agent audit* · ${invoiceLink(line)} · ${line.text}`)];
+    if (body.length) blocks.push(section(body.join('\n')));
+    if (line.ocrOnlyChanges) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `${plural(line.ocrOnlyChanges, 'other change')} to OCR values the agent left alone (not counted)` }],
+      });
+    }
+    return blocks;
+  });
+  const footer: string[] = [];
+  const more = summary.lines.length - shown.length;
+  if (more > 0) footer.push(`…and ${plural(more, 'more invoice')} scored today; see the weekly digest.`);
+  if (summary.lostToRefresh) footer.push(`${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored).`);
+  if (footer.length) messages.push([{ type: 'context', elements: [{ type: 'mrkdwn', text: footer.join(' ') }] }]);
+  return messages;
 }
