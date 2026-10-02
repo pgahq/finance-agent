@@ -283,6 +283,16 @@ export async function scoreInvoice(
   }
 
   await upsertInvoiceScore(db, score);
+  debug('Scored agent invoice', {
+    workdayInvoiceWid: score.workdayInvoiceWid,
+    workdayInvoiceNumber: score.workdayInvoiceNumber,
+    status: statusText,
+    outcome: score.outcome,
+    terminal: score.terminal,
+    entryFields: score.entryDiff?.filter((change) => change.agentOwned).map((change) => change.field),
+    lateFields: score.lateDiff?.filter((change) => change.agentOwned).map((change) => change.field),
+    ...(score.cancelAttribution ? { cancel: `${score.cancelAttribution}/${score.cancelBasis}` } : {}),
+  });
   return score;
 }
 

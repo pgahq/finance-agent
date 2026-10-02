@@ -12,7 +12,7 @@ jest.mock('../lib/workday.js', () => ({
 }));
 
 import type { InvoiceScore } from '../lib/invoice_scores.js';
-import { buildDigestBlocks, digestWindow, summarizeScores } from '../lib/score_digest.js';
+import { buildDailyBlocks, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores } from '../lib/score_digest.js';
 import { postSlackBlocks } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
@@ -97,6 +97,43 @@ describe('summarizeScores', () => {
   });
 });
 
+describe('summarizeDay', () => {
+  const until = new Date('2026-10-02T14:20:00Z');
+  const since = new Date('2026-10-01T14:20:00Z');
+  const today = new Date('2026-10-02T14:00:49Z');
+
+  it('lists each invoice scored in the last day with its outcome and the fields AP changed', () => {
+    const summary = summarizeDay([
+      score({ workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', entryReadAt: today, outcome: 'submitted_edited', entryDiff: [costCenterChange, memoChange, ocrSupplierChange] }),
+      score({ workdayInvoiceWid: 'w2', workdayInvoiceNumber: 'SUPIN-462665', entryReadAt: today, outcome: 'submitted_clean', entryDiff: [] }),
+      score({ workdayInvoiceWid: 'w3', terminal: true, entryReadAt: lastWeek, finalReadAt: today, finalStatus: 'Approved', outcome: 'submitted_clean', lateDiff: [costCenterChange] }),
+      score({ workdayInvoiceWid: 'w4', terminal: true, finalReadAt: today, outcome: 'canceled', cancelAttribution: 'agent', cancelBasis: 'wrong_document' }),
+      score({ workdayInvoiceWid: 'w5', terminal: true, finalReadAt: today, finalStatus: 'Lost to tenant refresh', outcome: 'lost_to_refresh' }),
+      score({ workdayInvoiceWid: 'w6', outcome: 'stuck_draft', updatedAt: today }),
+      score({ workdayInvoiceWid: 'w7', entryReadAt: lastWeek, outcome: 'submitted_edited', entryDiff: [costCenterChange] }),
+    ], since, until);
+
+    expect(summary.lines).toEqual([
+      { workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', text: 'submitted with AP edits · Cost center; conventions: Header memo' },
+      { workdayInvoiceWid: 'w2', workdayInvoiceNumber: 'SUPIN-462665', text: 'submitted with no material change' },
+      { workdayInvoiceWid: 'w3', text: 'approved · changed after submit: Cost center' },
+      { workdayInvoiceWid: 'w4', text: 'canceled · agent (not an invoice)' },
+      { workdayInvoiceWid: 'w6', text: 'stuck in Draft' },
+    ]);
+    expect(summary.lostToRefresh).toBe(1);
+  });
+
+  it('renders one Slack section for the day', () => {
+    const blocks = buildDailyBlocks(summarizeDay([
+      score({ workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', entryReadAt: today, outcome: 'submitted_clean', entryDiff: [memoChange] }),
+    ], since, until));
+    expect(blocks).toHaveLength(1);
+    const text = blocks[0].type === 'section' ? blocks[0].text.text : '';
+    expect(text).toContain('*Finance agent audit · daily* · Oct 2 · 1 invoice scored');
+    expect(text).toContain('`SUPIN-462667`: submitted with no material change · conventions: Header memo');
+  });
+});
+
 describe('postSlackBlocks', () => {
   const fetchMock = jest.fn().mockResolvedValue({ ok: true });
 
@@ -144,6 +181,27 @@ describe('score digest handler', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
     const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
     expect(payload.text).toContain('Finance agent audit');
+  });
+
+  it('in daily mode posts the invoices scored in the last day to the audit webhook', async () => {
+    mockQuery.mockResolvedValueOnce([{
+      workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000),
+      outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false,
+    }]);
+
+    await handler({ mode: 'daily' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
+    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
+    expect(payload.text).toContain('Finance agent audit · daily');
+    expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
+  });
+
+  it('in daily mode posts nothing when no invoice was scored', async () => {
+    mockQuery.mockResolvedValueOnce([]);
+    await handler({ mode: 'daily' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('applies an AP label added after the cancel was scored', async () => {
