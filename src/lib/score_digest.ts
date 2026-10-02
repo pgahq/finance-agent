@@ -354,3 +354,82 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
 
   return blocks;
 }
+
+export interface DailyScoreLine {
+  workdayInvoiceWid: string;
+  workdayInvoiceNumber?: string;
+  text: string;
+}
+
+export interface DailySummary {
+  since: Date;
+  until: Date;
+  lines: DailyScoreLine[];
+  lostToRefresh: number;
+}
+
+const MAX_DAILY_LINES = 25;
+
+function fieldList(changes: ScoredChange[] | undefined, category: 'material' | 'convention'): string[] {
+  return [...new Set(againstAgent(changes).filter((change) => change.category === category).map((change) => FIELD_LABELS[change.field]))];
+}
+
+function describeChanges(changes: ScoredChange[] | undefined): string {
+  const material = fieldList(changes, 'material');
+  const convention = fieldList(changes, 'convention');
+  return [
+    material.length ? material.join(', ') : '',
+    convention.length ? `conventions: ${convention.join(', ')}` : '',
+  ].filter(Boolean).join('; ');
+}
+
+/** What was scored between `since` and `until`: AP submits, final reads, cancels, and newly stuck Drafts. */
+export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): DailySummary {
+  const lines: DailyScoreLine[] = [];
+  let lostToRefresh = 0;
+  for (const score of scores) {
+    const link = {
+      workdayInvoiceWid: score.workdayInvoiceWid,
+      ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
+    };
+    const entered = within(score.entryReadAt, since, until);
+    const closed = score.terminal && within(score.finalReadAt, since, until);
+    if (closed && score.finalStatus === LOST_TO_REFRESH_STATUS) {
+      lostToRefresh += 1;
+      continue;
+    }
+    const parts: string[] = [];
+    if (score.outcome === 'canceled' || score.outcome === 'deleted') {
+      if (!closed) continue;
+      const basis = score.cancelBasis ? BASIS_LABELS[score.cancelBasis] ?? score.cancelBasis.replace(/_/g, ' ') : undefined;
+      parts.push(`${score.outcome} · ${score.cancelAttribution ?? 'unattributed'}${basis ? ` (${basis})` : ''}`);
+    } else if (score.outcome === 'stuck_draft') {
+      if (score.terminal || !within(score.updatedAt, since, until)) continue;
+      parts.push(OUTCOME_LABELS.stuck_draft);
+    } else {
+      if (entered) {
+        const changes = describeChanges(score.entryDiff);
+        parts.push(`${OUTCOME_LABELS[score.outcome ?? 'submitted_clean']}${changes ? ` · ${changes}` : ''}`);
+      }
+      if (closed) {
+        const late = describeChanges(score.lateDiff);
+        parts.push(`${score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase()}${late ? ` · changed after submit: ${late}` : ''}`);
+      }
+    }
+    if (parts.length) lines.push({ ...link, text: parts.join(' → ') });
+  }
+  return { since, until, lines, lostToRefresh };
+}
+
+export function buildDailyBlocks(summary: DailySummary): SlackBlock[] {
+  const shown = summary.lines.slice(0, MAX_DAILY_LINES);
+  const more = summary.lines.length - shown.length;
+  return [
+    section([
+      `*Finance agent audit · daily* · ${shortDate(summary.until)} · ${plural(summary.lines.length, 'invoice')} scored`,
+      ...shown.map((line) => `• ${invoiceLink(line)}: ${line.text}`),
+      ...(more > 0 ? [`…and ${more} more in the weekly digest`] : []),
+      ...(summary.lostToRefresh ? [`• ${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored)`] : []),
+    ].join('\n')),
+  ];
+}

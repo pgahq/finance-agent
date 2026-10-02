@@ -844,6 +844,13 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: cron(30 14 ? * MON *)
+            Input: '{"mode":"weekly"}'
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # After the 14:00 UTC scoring run; posts only on days something was scored.
+            Schedule: cron(20 14 * * ? *)
+            Input: '{"mode":"daily"}'
 
 Outputs:
   EnrichInvoiceApiUrl:

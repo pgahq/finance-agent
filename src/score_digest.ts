@@ -3,7 +3,7 @@ import type { DatabaseConnection } from './lib/database.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
-import { buildDigestBlocks, digestWindow, summarizeScores, type DigestWindow } from './lib/score_digest.js';
+import { buildDailyBlocks, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
@@ -89,10 +89,26 @@ function withCancelLabel(row: Record<string, unknown>): InvoiceScore {
   return score;
 }
 
-// Weekly digest - posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL)
-export const handler = withHandler(async (context) => {
+async function postDailySummary(context: ProcessingContext, now: Date): Promise<void> {
+  const since = new Date(now.getTime() - 24 * 3_600_000);
+  const summary = summarizeDay(await loadDigestScores(context.dbConnection, since), since, now);
+  if (!summary.lines.length) {
+    debug('No agent invoices scored in the last day; skipping the daily audit post');
+    return;
+  }
+  await postSlackBlocks(buildDailyBlocks(summary), process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
+  debug('Posted daily agent invoice audit summary', { scored: summary.lines.length });
+}
+
+// Audit posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL): `{ "mode": "daily" }` after each scoring
+// run, and the weekly digest otherwise.
+export const handler = withHandler(async (context, event?: { mode?: string }) => {
   const startTime = Date.now();
   try {
+    if (event?.mode === 'daily') {
+      await postDailySummary(context, new Date());
+      return;
+    }
     const window = digestWindow(new Date());
     const summary = summarizeScores(
       await loadDigestScores(context.dbConnection, window.previousStart),

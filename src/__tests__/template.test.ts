@@ -86,7 +86,8 @@ describe('SAM template', () => {
     it('posts the weekly digest only through the audit webhook', () => {
       const digest = resourceBlock('ScoreDigestFunction');
       expect(digest).toContain('Handler: dist/score_digest.handler');
-      expect(digest).toMatch(/Schedule:\s*cron\(30 14 \? \* MON \*\)/);
+      expect(digest).toMatch(/Schedule:\s*cron\(30 14 \? \* MON \*\)\s*\n\s*Input: '\{"mode":"weekly"\}'/);
+      expect(digest).toMatch(/Schedule:\s*cron\(20 14 \* \* \? \*\)\s*\n\s*Input: '\{"mode":"daily"\}'/);
       expect(digest).toMatch(/AUDIT_SLACK_WEBHOOK_URL:\s*ssm:\/finance-agent\/audit-slack-webhook-url/);
       expect(template.match(/AUDIT_SLACK_WEBHOOK_URL:/g)).toHaveLength(1);
     });
