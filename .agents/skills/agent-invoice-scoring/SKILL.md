@@ -159,13 +159,25 @@ it (basis `ap_label`) and drops the invoice from the to-label list.
 ## Daily summary
 
 `ScoreDigest` also runs daily at 14:20 UTC with input `{"mode":"daily"}`, after
-the 14:00 scoring run. It posts one message to the audit channel listing each
-invoice scored in the last 24 hours: outcome, the agent-owned fields AP changed
-(material first, conventions after), late changes at the final read, cancel
-attribution, and newly stuck Drafts. Invoices lost to a sandbox refresh are
-counted on one line. It posts nothing on a day with nothing scored. Each scored
-invoice is also logged as `Scored agent invoice` with outcome and changed field
-names (no values) in the processor's log group.
+the 14:00 scoring run. It posts **one message per invoice** scored in the last
+24 hours to the audit channel, about a second apart (incoming webhooks allow
+roughly one message per second):
+
+- Headline: invoice link and outcome (`submitted with AP edits`, `approved`,
+  `canceled · agent (not an invoice)`, `stuck in Draft`).
+- *Changed by AP*: each agent-owned material field with before → after values
+  (reference IDs shown without their type, for example `CC72200`), and line
+  number. *Conventions* lists memo, description, and invoice-number changes the
+  same way.
+- *Changed after submit* at the final read; *AP replacement differs* for a
+  cancel AP re-keyed.
+- A context line counts enrich changes to OCR values the agent left alone.
+
+At most `MAX_DAILY_INVOICE_MESSAGES` (40) messages per day; the rest are counted
+in a closing line that points to the weekly digest, which also carries the
+sandbox-refresh count. Nothing is posted on a day with nothing scored. Each
+scored invoice is also logged as `Scored agent invoice` with outcome and changed
+field names (no values) in the processor's log group.
 
 ## Weekly digest
 

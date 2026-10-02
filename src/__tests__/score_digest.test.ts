@@ -12,7 +12,7 @@ jest.mock('../lib/workday.js', () => ({
 }));
 
 import type { InvoiceScore } from '../lib/invoice_scores.js';
-import { buildDailyBlocks, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores } from '../lib/score_digest.js';
+import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
 import { postSlackBlocks } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
@@ -102,7 +102,7 @@ describe('summarizeDay', () => {
   const since = new Date('2026-10-01T14:20:00Z');
   const today = new Date('2026-10-02T14:00:49Z');
 
-  it('lists each invoice scored in the last day with its outcome and the fields AP changed', () => {
+  it('lists each invoice scored in the last day with its outcome and the changes AP made', () => {
     const summary = summarizeDay([
       score({ workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', entryReadAt: today, outcome: 'submitted_edited', entryDiff: [costCenterChange, memoChange, ocrSupplierChange] }),
       score({ workdayInvoiceWid: 'w2', workdayInvoiceNumber: 'SUPIN-462665', entryReadAt: today, outcome: 'submitted_clean', entryDiff: [] }),
@@ -113,24 +113,73 @@ describe('summarizeDay', () => {
       score({ workdayInvoiceWid: 'w7', entryReadAt: lastWeek, outcome: 'submitted_edited', entryDiff: [costCenterChange] }),
     ], since, until);
 
-    expect(summary.lines).toEqual([
-      { workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', text: 'submitted with AP edits · Cost center; conventions: Header memo' },
-      { workdayInvoiceWid: 'w2', workdayInvoiceNumber: 'SUPIN-462665', text: 'submitted with no material change' },
-      { workdayInvoiceWid: 'w3', text: 'approved · changed after submit: Cost center' },
-      { workdayInvoiceWid: 'w4', text: 'canceled · agent (not an invoice)' },
-      { workdayInvoiceWid: 'w6', text: 'stuck in Draft' },
+    expect(summary.lines.map((line) => [line.workdayInvoiceWid, line.text])).toEqual([
+      ['w1', 'submitted with AP edits'],
+      ['w2', 'submitted with no material change'],
+      ['w3', 'approved'],
+      ['w4', 'canceled · agent (not an invoice)'],
+      ['w6', 'stuck in Draft'],
     ]);
+    expect(summary.lines[0]).toEqual(expect.objectContaining({ entryChanges: [costCenterChange, memoChange], ocrOnlyChanges: 1 }));
+    expect(summary.lines[2].lateChanges).toEqual([costCenterChange]);
     expect(summary.lostToRefresh).toBe(1);
   });
+});
 
-  it('renders one Slack section for the day', () => {
-    const blocks = buildDailyBlocks(summarizeDay([
-      score({ workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462667', entryReadAt: today, outcome: 'submitted_clean', entryDiff: [memoChange] }),
+describe('buildDailyInvoiceMessages', () => {
+  const until = new Date('2026-10-02T14:20:00Z');
+  const since = new Date('2026-10-01T14:20:00Z');
+  const today = new Date('2026-10-02T14:00:49Z');
+  const textOf = (blocks: ReturnType<typeof buildDailyInvoiceMessages>[number]) =>
+    blocks.map((block) => (block.type === 'section' ? block.text.text : block.type === 'context' ? block.elements[0].text : '')).join('\n');
+
+  it('posts one message per invoice with before and after values for each change', () => {
+    const messages = buildDailyInvoiceMessages(summarizeDay([
+      score({
+        workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-462665', entryReadAt: today, outcome: 'submitted_edited',
+        entryDiff: [
+          { field: 'line.costCenter', line: 0, before: 'Cost_Center_Reference_ID=CC72200', after: 'Cost_Center_Reference_ID=CC72100', category: 'material', agentOwned: true },
+          { field: 'line.otherWorktags', line: 1, before: [], after: ['Organization_Reference_ID=VENU-Frisco'], category: 'material', agentOwned: true },
+          { field: 'line.removed', line: 2, before: { amount: 50, itemDescription: 'Freight', otherWorktags: [] }, category: 'material', agentOwned: true },
+          { field: 'line.memo', line: 0, before: 'AC 1. Services', after: 'Services', category: 'convention', agentOwned: true },
+          ocrSupplierChange,
+        ],
+      }),
+      score({ workdayInvoiceWid: 'w2', workdayInvoiceNumber: 'SUPIN-462667', entryReadAt: today, outcome: 'submitted_clean', entryDiff: [] }),
     ], since, until));
-    expect(blocks).toHaveLength(1);
-    const text = blocks[0].type === 'section' ? blocks[0].text.text : '';
-    expect(text).toContain('*Finance agent audit · daily* · Oct 2 · 1 invoice scored');
-    expect(text).toContain('`SUPIN-462667`: submitted with no material change · conventions: Header memo');
+
+    expect(messages).toHaveLength(2);
+    const first = textOf(messages[0]);
+    expect(first).toContain('*Finance agent audit* · `SUPIN-462665` · submitted with AP edits');
+    expect(first).toContain('*Changed by AP*');
+    expect(first).toContain('• Cost center (line 1): `CC72200` → `CC72100`');
+    expect(first).toContain('• Other worktags (line 2): `(blank)` → `VENU-Frisco`');
+    expect(first).toContain('• Line removed (line 3): `50.00 · Freight`');
+    expect(first).toContain('*Conventions*');
+    expect(first).toContain('• Line memo (line 1): `AC 1. Services` → `Services`');
+    expect(first).toContain('1 other change to OCR values the agent left alone (not counted)');
+    expect(textOf(messages[1])).toBe('*Finance agent audit* · `SUPIN-462667` · submitted with no material change');
+  });
+
+  it('shows late changes and how an AP replacement differs from a canceled invoice', () => {
+    const messages = buildDailyInvoiceMessages(summarizeDay([
+      score({ workdayInvoiceWid: 'w3', terminal: true, entryReadAt: lastWeek, finalReadAt: today, finalStatus: 'Approved', outcome: 'submitted_clean', lateDiff: [costCenterChange] }),
+      score({
+        workdayInvoiceWid: 'w4', terminal: true, finalReadAt: today, outcome: 'canceled', cancelAttribution: 'agent', cancelBasis: 'replacement',
+        cancelEvidence: { replacement: { workdayInvoiceWid: 'r1', diff: [{ field: 'supplier', before: 'Supplier_ID=S-1', after: 'Supplier_ID=S-2' }] } },
+      }),
+    ], since, until));
+    expect(textOf(messages[0])).toContain('*Changed after submit*\n• Cost center (line 1): `CC1` → `CC2`');
+    expect(textOf(messages[1])).toContain('*AP replacement differs*\n• Supplier: `S-1` → `S-2`');
+  });
+
+  it('caps the messages on a busy day and notes the sandbox refresh', () => {
+    const many = Array.from({ length: MAX_DAILY_INVOICE_MESSAGES + 3 }, (_, index) =>
+      score({ workdayInvoiceWid: `w${index}`, entryReadAt: today, outcome: 'submitted_clean', entryDiff: [] }));
+    many.push(score({ workdayInvoiceWid: 'lost', terminal: true, finalReadAt: today, finalStatus: 'Lost to tenant refresh', outcome: 'lost_to_refresh' }));
+    const messages = buildDailyInvoiceMessages(summarizeDay(many, since, until));
+    expect(messages).toHaveLength(MAX_DAILY_INVOICE_MESSAGES + 1);
+    expect(textOf(messages[messages.length - 1])).toBe('…and 3 more invoices scored today; see the weekly digest. 1 removed by the weekly sandbox refresh (not scored).');
   });
 });
 
@@ -183,18 +232,18 @@ describe('score digest handler', () => {
     expect(payload.text).toContain('Finance agent audit');
   });
 
-  it('in daily mode posts the invoices scored in the last day to the audit webhook', async () => {
-    mockQuery.mockResolvedValueOnce([{
-      workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000),
-      outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false,
-    }]);
+  it('in daily mode posts one message per invoice scored in the last day to the audit webhook', async () => {
+    mockQuery.mockResolvedValueOnce([
+      { workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
+      { workday_invoice_wid: 'w2', workday_invoice_number: 'SUPIN-2', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
+    ]);
 
     await handler({ mode: 'daily' });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => url === 'https://hooks.slack.test/audit')).toBe(true);
     const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
-    expect(payload.text).toContain('Finance agent audit · daily');
+    expect(payload.text).toContain('Finance agent audit · `SUPIN-1` · submitted with AP edits');
     expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
   });
 

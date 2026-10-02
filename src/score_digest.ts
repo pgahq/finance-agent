@@ -3,12 +3,13 @@ import type { DatabaseConnection } from './lib/database.js';
 import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
-import { buildDailyBlocks, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
+import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
 const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const UNATTRIBUTED_CANCEL_LIMIT = 10;
+export const DAILY_MESSAGE_GAP_MS = 1100;
 
 const BACKLOG_STATE_LABELS: Record<StatusClass, string> = {
   draft: 'in Draft',
@@ -96,8 +97,13 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
     debug('No agent invoices scored in the last day; skipping the daily audit post');
     return;
   }
-  await postSlackBlocks(buildDailyBlocks(summary), process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
-  debug('Posted daily agent invoice audit summary', { scored: summary.lines.length });
+  const messages = buildDailyInvoiceMessages(summary);
+  for (const [index, blocks] of messages.entries()) {
+    // Incoming webhooks allow about one message per second.
+    if (index > 0) await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
+    await postSlackBlocks(blocks, process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
+  }
+  debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: messages.length });
 }
 
 // Audit posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL): `{ "mode": "daily" }` after each scoring
