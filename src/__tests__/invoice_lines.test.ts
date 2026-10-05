@@ -1211,11 +1211,12 @@ describe('statesServicePeriod', () => {
     '2026/09',
     '9/1 - 9/30',
     '2026-09-01 to 2026-09-30',
+    '09.01.2026 - 09.30.2026',
   ])('recognizes "%s" as a stated period', (text) => {
     expect(statesServicePeriod(text)).toBe(true);
   });
 
-  it.each(['Monthly retainer', 'Annual services', 'Mayfield maintenance', '', null])(
+  it.each(['Monthly retainer', 'Annual services', 'Mayfield maintenance', 'Consulting 1.5 hours', '', null])(
     'does not treat "%s" as a stated period',
     (text) => {
       expect(statesServicePeriod(text)).toBe(false);
@@ -1410,6 +1411,26 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
   });
 
+  it('does not relink from or to a PO line whose window is unparseable or inverted', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { startDate: '2026-08-31', endDate: '2026-08-01' }),
+        monthlyLine(9, { endDate: 'not-a-date' }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
   it('keeps the model pick when the line description states its own period', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{ ...mergedLine('POL-08'), description: 'Retainer - August 2026' }],
@@ -1466,6 +1487,70 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     );
 
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps a line on its consumed period PO line and flags the reference to be dropped', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{ ...mergedLine('POL-08'), description: 'Retainer - August 2026' }],
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    const input = JSON.parse((mockGetAiResponse.mock.calls[0][0] as any).messages[0].content);
+    expect(input.purchaseOrderLines.map((line: any) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      ['POL-08', false],
+      ['POL-09', true],
+    ]);
+    expect(result.lines[0]).toEqual(expect.objectContaining({
+      purchaseOrderLineId: 'POL-08',
+      omitPurchaseOrderLineReference: true,
+      costCenterId: 'CC-Building Services-PBG',
+    }));
+  });
+
+  it('relinks to a consumed PO line covering the invoice date instead of an open line for another month', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-08-20' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+    expect(result.lines[0].omitPurchaseOrderLineReference).toBe(true);
+  });
+
+  it('leaves the reference on lines matched to an open PO line', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
   });
 
   it('does not relink between PO lines that carry no worktags', async () => {

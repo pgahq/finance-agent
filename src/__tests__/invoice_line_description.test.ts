@@ -175,5 +175,6 @@ describe('invoice line description prompts', () => {
     expect(mergeInvoiceLinesPrompt).toContain('Choose the PO line whose startDate-endDate window contains that period');
     expect(mergeInvoiceLinesPrompt).toContain('choose the PO line whose window contains invoiceDate');
     expect(mergeInvoiceLinesPrompt).toContain('match each line to its own PO line');
+    expect(mergeInvoiceLinesPrompt).toContain('never move to a different period\'s line because the matching one is unavailable');
   });
 });

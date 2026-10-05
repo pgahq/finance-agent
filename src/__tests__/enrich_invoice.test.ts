@@ -46,7 +46,11 @@ jest.mock('../lib/workday.js', () => ({
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
-  selectInvoiceablePurchaseOrderLines: jest.requireActual('../lib/workday.js').selectInvoiceablePurchaseOrderLines,
+  markPurchaseOrderLineAvailability: jest.requireActual('../lib/workday.js').markPurchaseOrderLineAvailability,
+  formatPurchaseOrderLineFallbackNotes: jest.requireActual('../lib/workday.js').formatPurchaseOrderLineFallbackNotes,
+  isPurchaseOrderLineFallback: jest.requireActual('../lib/workday.js').isPurchaseOrderLineFallback,
+  purchaseOrderLineFallbackNote: jest.requireActual('../lib/workday.js').purchaseOrderLineFallbackNote,
+  CONSUMED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').CONSUMED_PO_LINE_REFERENCE_LABEL,
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -1116,9 +1120,9 @@ describe('enrich_invoice', () => {
   });
 
   it.each([
-    ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], ['POL-2'], false],
-    ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], ['POL-1', 'POL-2'], true],
-  ])('filters PO lines when %s', async (_label, invoiceStatuses, expectedLineIds, omitted) => {
+    ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], [false, true]],
+    ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], [false, false]],
+  ])('flags PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability) => {
     const { getAiResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -1180,14 +1184,22 @@ describe('enrich_invoice', () => {
     } as any);
 
     const mergeCall = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
-    expect(mergeCall[1].map((line: any) => line.purchaseOrderLineId)).toEqual(expectedLineIds);
+    expect(mergeCall[1].map((line: any) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      ['POL-1', expectedAvailability[0]],
+      ['POL-2', expectedAvailability[1]],
+    ]);
     expect(mergeCall[7]).toEqual({ invoiceDate: '2026-10-02', servicePeriod: 'Q4 2026' });
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(Boolean(params.omitPurchaseOrderLineReference)).toBe(omitted);
-    const notes = params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
-    if (omitted) {
-      expect(notes).toContain('All lines on PO-413898 are fully invoiced, fully paid, or closed');
-    }
+    expect(params.omitPurchaseOrderLineReference).toBeUndefined();
+    const notes = params.buildNotes([{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' }]);
+    expect(notes).toContain('Invoice lines that matched lines on PO-413898 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.');
+
+    const bothNotes = params.buildNotes([
+      { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
+      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+    ]);
+    expect(bothNotes.match(/Purchase order lines: /g)).toHaveLength(2);
+    expect(bothNotes).not.toContain('Fallback values applied');
   });
 
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {

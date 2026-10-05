@@ -75,13 +75,13 @@ import {
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
 import {
-  closedPurchaseOrderLineNote,
-  consumedPurchaseOrderLinesNote,
+  formatPurchaseOrderLineFallbackNotes,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
+  isPurchaseOrderLineFallback,
   loadPurchaseOrder,
-  OMITTED_PO_LINE_REFERENCE_LABEL,
-  selectInvoiceablePurchaseOrderLines,
+  markPurchaseOrderLineAvailability,
+  purchaseOrderLineFallbackNote,
   submitNewSupplierInvoice,
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
@@ -727,18 +727,12 @@ async function processInvoiceCluster(
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
     const matchedPoLines = usedDefaultCompany ? undefined : matchedPo?.lines;
     const poClosedForInvoicing = Boolean(matchedPoLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
-    const { lines: poLines, allLinesConsumed: allPoLinesConsumed } = poClosedForInvoicing
-      ? { lines: matchedPoLines, allLinesConsumed: false }
-      : selectInvoiceablePurchaseOrderLines(matchedPoLines);
+    const poLines = poClosedForInvoicing ? matchedPoLines : markPurchaseOrderLineAvailability(matchedPoLines);
     if (poClosedForInvoicing) {
       debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
-    } else if (allPoLinesConsumed) {
-      debug(`Every line on PO ${matchedPo?.documentNumber} is fully invoiced, fully paid, or closed; coding lines from the PO without Purchase_Order_Line_Reference`);
     }
-    const omitPoLineReferences = poClosedForInvoicing || allPoLinesConsumed;
-    const poLineOmittedNote = !poClosedForInvoicing && allPoLinesConsumed
-      ? consumedPurchaseOrderLinesNote(extractedPurchaseOrderNumber)
-      : closedPurchaseOrderLineNote(extractedPurchaseOrderNumber);
+    const purchaseOrderLineFallbackLabel = (label: string) =>
+      purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -879,16 +873,14 @@ async function processInvoiceCluster(
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
-        + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-          ? `\n\nPurchase order lines: ${poLineOmittedNote}`
-          : '')
+        + formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber)
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -1089,12 +1081,10 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
           return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
-            (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-              ? `\n\nPurchase order lines: ${poLineOmittedNote}`
-              : '') +
+            formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
@@ -1116,7 +1106,7 @@ async function processInvoiceCluster(
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
           paymentTermsId,
           attachments: submitAttachments,
-          ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         let updateRegistrySyncFailed = false;
@@ -1144,9 +1134,7 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f =>
-            f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? poLineOmittedNote : f.label
-          ),
+          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
@@ -1180,7 +1168,7 @@ async function processInvoiceCluster(
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
-      ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
     });
 
@@ -1222,9 +1210,7 @@ async function processInvoiceCluster(
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
-        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? poLineOmittedNote : f.label
-      ),
+      appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));

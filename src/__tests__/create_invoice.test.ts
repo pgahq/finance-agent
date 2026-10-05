@@ -30,7 +30,11 @@ jest.mock('../lib/workday.js', () => ({
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
-  selectInvoiceablePurchaseOrderLines: jest.requireActual('../lib/workday.js').selectInvoiceablePurchaseOrderLines,
+  markPurchaseOrderLineAvailability: jest.requireActual('../lib/workday.js').markPurchaseOrderLineAvailability,
+  formatPurchaseOrderLineFallbackNotes: jest.requireActual('../lib/workday.js').formatPurchaseOrderLineFallbackNotes,
+  isPurchaseOrderLineFallback: jest.requireActual('../lib/workday.js').isPurchaseOrderLineFallback,
+  purchaseOrderLineFallbackNote: jest.requireActual('../lib/workday.js').purchaseOrderLineFallbackNote,
+  CONSUMED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').CONSUMED_PO_LINE_REFERENCE_LABEL,
   OMITTED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').OMITTED_PO_LINE_REFERENCE_LABEL,
   submitNewSupplierInvoice: jest.fn().mockResolvedValue({ success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-412727', appliedFallbacks: [] }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
@@ -1026,7 +1030,9 @@ describe('create_invoice', () => {
         memo: undefined
       }]
     });
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(parsedPo.lines);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(
+      parsedPo.lines.map((line: any) => ({ ...line, availableForInvoicing: true }))
+    );
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
@@ -1106,7 +1112,7 @@ describe('create_invoice', () => {
     };
   });
 
-  it('should send only PO lines that can still be invoiced, with the invoice date and service period, to the line merge', async () => {
+  it('should send every PO line, flagged by availability, with the invoice date and service period, to the line merge', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
@@ -1126,7 +1132,9 @@ describe('create_invoice', () => {
     } as any);
 
     const mergeCall = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
-    expect(mergeCall[1].map((line: any) => line.purchaseOrderLineId)).toEqual(['POL-09', 'POL-10', 'POL-11', 'POL-12']);
+    expect(mergeCall[1]).toHaveLength(12);
+    expect(mergeCall[1].filter((line: any) => line.availableForInvoicing).map((line: any) => line.purchaseOrderLineId))
+      .toEqual(['POL-09', 'POL-10', 'POL-11', 'POL-12']);
     expect(mergeCall[7]).toEqual({ invoiceDate: '2026-09-05', servicePeriod: 'September 2026' });
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
@@ -1156,9 +1164,18 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
     expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain('PO-414498 is Closed or Pending Close');
+
+    const bothNotes = submitArgs.buildNotes([
+      { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
+      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+    ]);
+    expect(bothNotes.match(/Purchase order lines: /g)).toHaveLength(2);
+    expect(bothNotes).toContain('PO-414498 is Closed or Pending Close');
+    expect(bothNotes).toContain('Invoice lines that matched lines on PO-414498 already fully invoiced');
+    expect(bothNotes).not.toContain('Fallback values applied');
   });
 
-  it('should code from the PO but omit PO line refs when every PO line is fully invoiced', async () => {
+  it('should keep consumed PO lines for coding and report the dropped references by their own note', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     const allInvoiced = monthlyPoLines(12);
     workday.loadPurchaseOrder.mockResolvedValue({
@@ -1166,11 +1183,12 @@ describe('create_invoice', () => {
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
       lines: allInvoiced,
     });
+    const consumedFallback = { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' };
     workday.submitNewSupplierInvoice.mockResolvedValue({
       success: true,
       invoiceWID: 'new-invoice-wid',
       invoiceNumber: 'SUPIN-412727',
-      appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }],
+      appliedFallbacks: [consumedFallback],
     });
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
@@ -1182,11 +1200,16 @@ describe('create_invoice', () => {
       data: [{ ...attachmentRequest('new-invoices/req-consumed-po/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
     } as any);
 
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(allInvoiced);
+    const mergedPoLines = invoiceLines.buildFinalInvoiceLines.mock.calls[0][1];
+    expect(mergedPoLines.map((line: any) => line.purchaseOrderLineId)).toEqual(allInvoiced.map((line) => line.purchaseOrderLineId));
+    expect(mergedPoLines.every((line: any) => line.availableForInvoicing === false)).toBe(true);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
-    const consumedNote = 'All lines on PO-414498 are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.';
-    expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }])).toContain(consumedNote);
+    expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+    const consumedNote = 'Invoice lines that matched lines on PO-414498 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.';
+    const notes = submitArgs.buildNotes([consumedFallback]);
+    expect(notes).toContain(consumedNote);
+    expect(notes).not.toContain('Closed or Pending Close');
+    expect(notes).not.toContain('Fallback values applied');
     expect(slack.notifyResult.mock.calls[0][3].appliedFallbacks).toEqual([consumedNote]);
   });
 
@@ -2492,7 +2515,7 @@ describe('create_invoice', () => {
       workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
       workday.submitSupplierInvoiceUpdate.mockResolvedValue({
         success: true,
-        appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }],
+        appliedFallbacks: [{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' }],
       });
 
       await processor({
@@ -2503,14 +2526,14 @@ describe('create_invoice', () => {
         }],
       } as any);
 
-      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].omitPurchaseOrderLineReference).toBe(true);
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].omitPurchaseOrderLineReference).toBeUndefined();
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
         'success',
         expect.any(Number),
         expect.objectContaining({
           updated: true,
-          appliedFallbacks: ['All lines on PO-414498 are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.'],
+          appliedFallbacks: ['Invoice lines that matched lines on PO-414498 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.'],
         }),
       );
     });

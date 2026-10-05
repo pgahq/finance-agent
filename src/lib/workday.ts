@@ -479,6 +479,7 @@ export interface PurchaseOrderLine {
   invoiceStatus?: PurchaseOrderDocumentStatus;
   paymentStatus?: PurchaseOrderDocumentStatus;
   closeStatus?: PurchaseOrderDocumentStatus;
+  availableForInvoicing?: boolean;
 }
 
 export interface PurchaseOrderCompany {
@@ -537,10 +538,11 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
+export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -636,6 +638,55 @@ function submittedLinesCarryTaxApplicability(options: buildSubmitInvoiceDataOpti
   return lines.some((line: any) => line.Tax_Applicability_Reference);
 }
 
+// Counts how many lines of the invoice being updated already link to each PO line.
+function currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice: any): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of ([] as any[]).concat(currentInvoice?.Invoice_Line_Replacement_Data ?? [])) {
+    const ids = new Set<string>();
+    for (const ref of ([] as any[]).concat(line?.Purchase_Order_Line_Reference ?? [])) {
+      for (const id of ([] as any[]).concat(ref?.ID ?? [])) {
+        if (id?.$attributes?.type === 'Purchase_Order_Line_ID' && id.$value) ids.add(String(id.$value));
+      }
+    }
+    for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// A line matched to a consumed PO line drops its reference, unless the invoice being updated
+// already links to that PO line: this invoice may be what consumed it. Each existing link can
+// be kept by at most as many submitted lines as held it before, so an extra line matched to
+// the same consumed PO line still drops its reference. Mutates the remaining budget.
+function lineKeepsPurchaseOrderLineReference(
+  line: { purchaseOrderLineId?: string | null; omitPurchaseOrderLineReference?: boolean },
+  selfReferenceBudget: Map<string, number>
+): boolean {
+  if (!line.omitPurchaseOrderLineReference) return true;
+  const remaining = line.purchaseOrderLineId ? selfReferenceBudget.get(line.purchaseOrderLineId) ?? 0 : 0;
+  if (remaining <= 0) return false;
+  selfReferenceBudget.set(line.purchaseOrderLineId as string, remaining - 1);
+  return true;
+}
+
+function countSubmittedPurchaseOrderLineReferences(options: buildSubmitInvoiceDataOptions): number {
+  return ([] as any[])
+    .concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? [])
+    .filter((line: any) => line.Purchase_Order_Line_Reference)
+    .length;
+}
+
+// True only when the consumed-line flags removed at least one reference from the payload.
+function finalLinesDropConsumedPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
+  if (options.omitPurchaseOrderLineReference || options.finalLines === undefined) return false;
+  const finalLines = ([] as any[]).concat(options.finalLines as any);
+  if (!finalLines.some((line: any) => line.omitPurchaseOrderLineReference)) return false;
+  const unflagged = {
+    ...options,
+    finalLines: finalLines.map((line: any) => ({ ...line, omitPurchaseOrderLineReference: false })),
+  };
+  return countSubmittedPurchaseOrderLineReferences(unflagged) > countSubmittedPurchaseOrderLineReferences(options);
+}
+
 function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
   const lines = ([] as any[]).concat(
     buildSubmitInvoiceData({ ...options, omitPurchaseOrderLineReference: false }).Invoice_Line_Replacement_Data ?? []
@@ -727,6 +778,8 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
     fallbacks.push({ field: 'purchaseOrderLine', label: OMITTED_PO_LINE_REFERENCE_LABEL });
+  } else if (finalLinesDropConsumedPurchaseOrderLineReference(options)) {
+    fallbacks.push({ field: 'consumedPurchaseOrderLine', label: CONSUMED_PO_LINE_REFERENCE_LABEL });
   }
 
   if (options.omitConversationUrlField) {
@@ -1110,6 +1163,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
+  const selfReferenceBudget = currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice);
   const invoiceHadExistingLines = ocrLines.length > 0;
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
@@ -1271,7 +1325,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
       }),
       ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && lineKeepsPurchaseOrderLineReference(line, selfReferenceBudget) && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
       ...(line.memo && { Memo: line.memo }),
     };
   });
@@ -2526,26 +2580,39 @@ function countLineStatuses(
   return counts;
 }
 
-// When every line is consumed, all lines are returned so the invoice still picks up PO
-// coding; the caller must then omit Purchase_Order_Line_Reference.
-export function selectInvoiceablePurchaseOrderLines(lines: PurchaseOrderLine[] | undefined): {
-  lines: PurchaseOrderLine[] | undefined;
-  allLinesConsumed: boolean;
-} {
-  if (!lines?.length) return { lines, allLinesConsumed: false };
+// Consumed lines stay in the list so line matching still sees their service windows and
+// coding; an invoice line matched to one is coded from it but submitted without its reference.
+export function markPurchaseOrderLineAvailability(lines: PurchaseOrderLine[] | undefined): PurchaseOrderLine[] | undefined {
+  if (!lines?.length) return lines;
   debug('PO line status counts:', {
     invoiceStatus: countLineStatuses(lines, 'invoiceStatus'),
     paymentStatus: countLineStatuses(lines, 'paymentStatus'),
     closeStatus: countLineStatuses(lines, 'closeStatus'),
   });
-  const available = lines.filter(isPurchaseOrderLineAvailableForInvoicing);
-  if (available.length === 0) return { lines, allLinesConsumed: true };
-  return { lines: available, allLinesConsumed: false };
+  return lines.map((line) => ({ ...line, availableForInvoicing: isPurchaseOrderLineAvailableForInvoicing(line) }));
 }
 
 export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): string {
-  const po = purchaseOrderNumber || 'The PO';
-  return `All lines on ${po} are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.`;
+  const po = purchaseOrderNumber || 'the PO';
+  return `Invoice lines that matched lines on ${po} already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.`;
+}
+
+export function purchaseOrderLineFallbackNote(label: string, purchaseOrderNumber?: string): string | undefined {
+  if (label === OMITTED_PO_LINE_REFERENCE_LABEL) return closedPurchaseOrderLineNote(purchaseOrderNumber);
+  if (label === CONSUMED_PO_LINE_REFERENCE_LABEL) return consumedPurchaseOrderLinesNote(purchaseOrderNumber);
+  return undefined;
+}
+
+export function isPurchaseOrderLineFallback(fallback: Pick<AppliedFallback, 'field'>): boolean {
+  return fallback.field === 'purchaseOrderLine' || fallback.field === 'consumedPurchaseOrderLine';
+}
+
+export function formatPurchaseOrderLineFallbackNotes(fallbacks: AppliedFallback[], purchaseOrderNumber?: string): string {
+  const notes = [...new Set(fallbacks
+    .filter(isPurchaseOrderLineFallback)
+    .map((fallback) => purchaseOrderLineFallbackNote(fallback.label, purchaseOrderNumber))
+    .filter((note): note is string => !!note))];
+  return notes.map((note) => `\n\nPurchase order lines: ${note}`).join('');
 }
 
 export function closedPurchaseOrderLineNote(purchaseOrderNumber?: string): string {

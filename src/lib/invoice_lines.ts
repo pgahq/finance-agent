@@ -129,6 +129,8 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  /** Matched PO line is fully invoiced, fully paid, or closed: keep its coding, drop its reference. */
+  omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
 }
@@ -324,6 +326,7 @@ export interface ParsedPoLineWorktags {
   splitLineData: PurchaseOrderLineSplit[];
   startDate?: string | null;
   endDate?: string | null;
+  availableForInvoicing?: boolean;
 }
 
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
@@ -348,6 +351,7 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       splitLineData: line.splitLineData ?? [],
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
+      availableForInvoicing: line.availableForInvoicing !== false,
     };
   });
 }
@@ -597,6 +601,7 @@ export function applyDefaultCompanyLineWorktags(
     spendCategoryId: fallbackIds.spendCategoryId ?? null,
     lineOfBusinessId: fallbackIds.lineOfBusinessId ?? null,
     purchaseOrderLineId: null,
+    omitPurchaseOrderLineReference: undefined,
     eventId: null,
     eventWid: null,
     shipToAddressId: null,
@@ -722,11 +727,16 @@ export interface InvoiceDateContext {
   servicePeriod?: string | null;
 }
 
+function isValidIsoDate(iso: string): boolean {
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso;
+}
+
 function toIsoDate(value?: string | null): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   const iso = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (iso) return iso[1];
+  if (iso) return isValidIsoDate(iso[1]) ? iso[1] : undefined;
   const parsed = new Date(trimmed);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split('T')[0];
 }
@@ -739,16 +749,22 @@ const SERVICE_PERIOD_PATTERN = new RegExp([
   String.raw`\bq[1-4]\b|\bquarter\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+qtr\b`,
   String.raw`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b`,
   String.raw`\b\d{1,2}[/-]\d{4}\b|\b\d{4}[/-]\d{1,2}(?:[/-]\d{1,2})?\b`,
+  String.raw`\b\d{1,2}\.\d{1,2}\.\d{2,4}\b`,
 ].join('|'), 'i');
 
 export function statesServicePeriod(text?: string | null): boolean {
   return !!text && SERVICE_PERIOD_PATTERN.test(text);
 }
 
-// A missing Start_Date or End_Date leaves that side of the window open.
+// A missing Start_Date or End_Date leaves that side of the window open. An unparseable or
+// inverted window is unknown, so it neither triggers nor receives a relink.
 function poLineCoversDate(line: Pick<ParsedPoLineWorktags, 'startDate' | 'endDate'>, isoDate: string): boolean | undefined {
-  if (!line.startDate && !line.endDate) return undefined;
-  return (!line.startDate || line.startDate <= isoDate) && (!line.endDate || isoDate <= line.endDate);
+  const startDate = toIsoDate(line.startDate);
+  const endDate = toIsoDate(line.endDate);
+  if ((line.startDate && !startDate) || (line.endDate && !endDate)) return undefined;
+  if (!startDate && !endDate) return undefined;
+  if (startDate && endDate && startDate > endDate) return undefined;
+  return (!startDate || startDate <= isoDate) && (!endDate || isoDate <= endDate);
 }
 
 function worktagIdentityKey(worktags: any[]): string {
@@ -817,6 +833,23 @@ export function alignPoLinesToInvoiceDate(
   });
 }
 
+export function markConsumedPoLineReferences(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  const consumedIds = new Set(
+    poLines
+      .filter(line => line.availableForInvoicing === false && line.purchaseOrderLineId)
+      .map(line => line.purchaseOrderLineId as string)
+  );
+  if (consumedIds.size === 0) return lines;
+  return lines.map(line => {
+    if (!line.purchaseOrderLineId || !consumedIds.has(line.purchaseOrderLineId)) return line;
+    debug(`Invoice line ${line.lineOrder} matched consumed PO line ${line.purchaseOrderLineId}; coding from it without Purchase_Order_Line_Reference`);
+    return { ...line, omitPurchaseOrderLineReference: true };
+  });
+}
+
 export async function buildFinalInvoiceLines(
   extractedLines: ExtractedInvoiceLine[],
   poLines: PurchaseOrderLine[] | undefined,
@@ -848,6 +881,7 @@ export async function buildFinalInvoiceLines(
       splitLineData: line.splitLineData ?? [],
       startDate: line.startDate,
       endDate: line.endDate,
+      availableForInvoicing: line.availableForInvoicing,
     })),
     emailBody: emailBody ?? null,
   };
@@ -880,7 +914,7 @@ export async function buildFinalInvoiceLines(
     ? pinnedLines
     : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate);
   return finalizeInvoiceLines(
-    dateAlignedLines,
+    markConsumedPoLineReferences(dateAlignedLines, parsedPoLines),
     appliedFallbacks,
     parsedPoLines,
     emailWorktags,

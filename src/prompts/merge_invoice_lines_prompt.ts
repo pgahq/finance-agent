@@ -28,7 +28,7 @@ You will receive a JSON object with the following fields:
 - **extractedInvoiceLines**: Line items extracted from the invoice document (concatenated description, quantity, unitCost as string, totalPrice as string)
 - **invoiceDate** (optional): Invoice date from the document (YYYY-MM-DD when known)
 - **invoiceServicePeriod** (optional): Service or billing period from the document, as written (e.g. "2026 - September", "Q3 2026", "Jul 1 - Sep 30, 2026")
-- **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday (fully invoiced, fully paid, and closed lines are removed when the PO still has open lines), each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId, lineOfBusinessId (extracted ID strings), worktagsReference (the full array of raw Workday worktag reference objects for that line), and startDate/endDate (the line's service window, YYYY-MM-DD, when set)
+- **purchaseOrderLines** (optional): Lines from a matching Purchase Order in Workday, each with purchaseOrderLineId, costCenterId, fundId, spendCategoryId, lineOfBusinessId (extracted ID strings), worktagsReference (the full array of raw Workday worktag reference objects for that line), startDate/endDate (the line's service window, YYYY-MM-DD, when set), and availableForInvoicing (false when the line is already fully invoiced, fully paid, or closed)
 - **emailBody** (optional): The plain-text email that accompanied this invoice. Do not copy codes from it into ID fields; email coding is resolved upstream.
 
 Your task is to produce final invoice lines by:
@@ -39,6 +39,8 @@ Your task is to produce final invoice lines by:
    - Choose the PO line whose startDate-endDate window contains that period. A missing startDate or endDate leaves that side of the window open.
    - Only when no period is stated for the line, or the stated period cannot be mapped to dates (e.g. "Annual services"), choose the PO line whose window contains invoiceDate.
    - Never choose a PO line whose window clearly excludes the stated period when another PO line covers it. If an invoice lists several periods on separate lines, match each line to its own PO line.
+   - availableForInvoicing does not change which line matches by period or date. If the line whose window covers the period has availableForInvoicing false, still choose it and copy its purchaseOrderLineId and coding; never move to a different period's line because the matching one is unavailable. The reference is dropped downstream.
+   - Only when nothing distinguishes the candidate lines (no period, no usable invoiceDate), prefer a line with availableForInvoicing true.
 3. For lineOfBusinessId: copy the matched PO line's lineOfBusinessId value when it is present. Do not invent an LOB id from the description or email.
 4. For eventId: inspect the matched PO line's worktagsReference array for a worktag that looks like a specific event, tournament, championship, conference, or occasion (e.g. "2026-PGA_Championship" — often starts with a year or contains event-like language). Return the Organization_Reference_ID value of that worktag. Set null if you are unsure or no event-like worktag is present
 5. For shipToAddressId: copy the shipToAddressId value directly from the matched PO line
