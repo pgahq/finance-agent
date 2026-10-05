@@ -2711,9 +2711,18 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
 }
 
+// An unparseable bound is kept as its raw text so service-date matching treats the window as
+// unknown; dropping it would read as an open-ended window.
+function parseServiceWindowBound(raw: unknown): string | undefined {
+  const normalized = normalizeInvoiceDate(raw);
+  if (normalized) return normalized;
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  return text || undefined;
+}
+
 function parsePurchaseOrderLineServiceWindow(line: any): Pick<PurchaseOrderLine, 'startDate' | 'endDate'> {
-  const startDate = normalizeInvoiceDate(line.Start_Date);
-  const endDate = normalizeInvoiceDate(line.End_Date);
+  const startDate = parseServiceWindowBound(line.Start_Date);
+  const endDate = parseServiceWindowBound(line.End_Date);
   return {
     ...(startDate ? { startDate } : {}),
     ...(endDate ? { endDate } : {}),

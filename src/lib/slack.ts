@@ -480,7 +480,8 @@ export interface EnrichmentNotification {
     fallbackCostCenter?: string;
     fallbackLineOfBusiness?: string;
     fallbackPaymentTerms?: boolean;
-    closedPurchaseOrderLines?: string;
+    /** Closed-PO and consumed-PO-line notes for dropped Purchase_Order_Line_Reference values. */
+    purchaseOrderLineNotes?: string;
   };
 }
 
@@ -569,8 +570,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   if (canModify && fallbacks.fallbackPaymentTerms) {
     fallbackLines.push(`Fallback payment terms applied`);
   }
-  if (canModify && fallbacks.closedPurchaseOrderLines) {
-    fallbackLines.push(fallbacks.closedPurchaseOrderLines);
+  if (canModify && fallbacks.purchaseOrderLineNotes) {
+    fallbackLines.push(fallbacks.purchaseOrderLineNotes);
   }
   if (canModify && appliedFallbackLabels?.length) {
     fallbackLines.push(...appliedFallbackLabels);

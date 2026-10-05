@@ -5918,6 +5918,18 @@ describe('Workday utilities', () => {
       expect(line.closeStatus).toBeUndefined();
     });
 
+    it('should keep an unparseable service date as raw text so the window reads as unknown', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 1,
+        Service_Order_Line_ID: 'POL-1',
+        Start_Date: 'TBD',
+        End_Date: '2026-09-30',
+      }));
+
+      expect(line.startDate).toBe('TBD');
+      expect(line.endDate).toBe('2026-09-30');
+    });
+
     it('should parse line statuses but no service dates on goods lines', () => {
       const [line] = parsePurchaseOrderLines({
         Response_Data: {

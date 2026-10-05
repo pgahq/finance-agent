@@ -392,7 +392,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
         fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
-        closedPurchaseOrderLines: fallbacks.purchaseOrderLineNotes.length
+        purchaseOrderLineNotes: fallbacks.purchaseOrderLineNotes.length
           ? fallbacks.purchaseOrderLineNotes.join(' ')
           : undefined,
       },

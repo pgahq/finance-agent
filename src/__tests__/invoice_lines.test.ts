@@ -1411,6 +1411,23 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
   });
 
+  it('treats an impossible PO window date as unknown rather than as an open side', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9, { startDate: '2026-02-31' })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
   it('does not relink from or to a PO line whose window is unparseable or inverted', async () => {
     mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
 
