@@ -2470,6 +2470,51 @@ describe('create_invoice', () => {
       );
     });
 
+    it('names consumed PO lines, not a closed PO, on the resend Slack fallbacks', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414498',
+        company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+        lines: [1, 2].map((n) => ({
+          lineOrder: n,
+          purchaseOrderLineId: `POL-${n}`,
+          purchaseOrderDocumentNumber: 'PO-414498',
+          invoiceStatus: { descriptor: 'Fully Invoiced' },
+        })),
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-414498',
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+      workday.submitSupplierInvoiceUpdate.mockResolvedValue({
+        success: true,
+        appliedFallbacks: [{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }],
+      });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].omitPurchaseOrderLineReference).toBe(true);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          updated: true,
+          appliedFallbacks: ['All lines on PO-414498 are fully invoiced, fully paid, or closed; invoice lines were coded from the PO but not linked to PO lines.'],
+        }),
+      );
+    });
+
     it('skips the resend when no documents are newer than the last processing', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
       enableClustering(loadEnv);

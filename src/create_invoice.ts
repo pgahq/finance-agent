@@ -1144,7 +1144,9 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),
+          appliedFallbacks: updateOutcome.appliedFallbacks.map(f =>
+            f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? poLineOmittedNote : f.label
+          ),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
