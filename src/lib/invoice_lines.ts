@@ -673,9 +673,9 @@ export function applyMissingQuantityColumnLines(
 
 // Workday only counts PO quantity as invoiced when the linked line keeps its quantity.
 // A PO-linked discount line (printed price before discount) submits the net unit price
-// when that price reproduces the printed line total. Workday's Unit_Cost accepts up to
-// four decimal places, so we round to four to cover ordinary percentage discounts that
-// do not divide evenly to cents (e.g. 7 × $29.88 at 10% off = $188.24 → $26.8914).
+// when that price reproduces the printed line total. The WSDL allows six decimal places
+// on Unit_Cost; we round to four, which covers ordinary percentage discounts that do not
+// divide evenly to cents (e.g. 7 × $29.88 at 10% off = $188.24 → $26.8914).
 function netUnitCostForDiscountedPurchaseOrderLine(line: FinalInvoiceLine, extendedAmount: number): number | null {
   const quantity = line.quantity;
   if (line.hasDiscount !== true || !line.purchaseOrderLineId || quantity == null || quantity <= 0) return null;
