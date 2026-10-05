@@ -1119,10 +1119,17 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.purchaseOrderLineNotes).toBe(closedNote);
   });
 
+  afterEach(() => {
+    delete process.env.PO_LINE_SELECTION_ENABLED;
+    require('@pga/lambda-env').default.mockResolvedValue({});
+  });
+
   it.each([
     ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], [false, true]],
     ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], [false, false]],
   ])('flags PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability) => {
+    process.env.PO_LINE_SELECTION_ENABLED = 'true';
+    require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
     const { getAiResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');

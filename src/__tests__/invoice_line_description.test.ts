@@ -6,7 +6,7 @@ import {
 } from '../lib/invoice_lines.js';
 import { formatInvoiceLinesNotes } from '../lib/invoice_enrichment.js';
 import { invoiceEnrichmentPrompt } from '../prompts/enrich_invoice_prompt.js';
-import { mergeInvoiceLinesPrompt } from '../prompts/merge_invoice_lines_prompt.js';
+import { mergeInvoiceLinesPrompt, mergeInvoiceLinesPromptFor } from '../prompts/merge_invoice_lines_prompt.js';
 
 const hashrocketAmounts = { quantity: 32, unitCost: '155.00', totalPrice: '4,960.00' };
 
@@ -167,14 +167,21 @@ describe('invoice line description prompts', () => {
     expect(mergeInvoiceLinesPrompt).toContain('after** the concatenated description is set');
   });
 
-  it('tells merge to pick among same-service PO lines by service dates', () => {
-    expect(mergeInvoiceLinesPrompt).toContain('**invoiceServicePeriod**');
-    expect(mergeInvoiceLinesPrompt).toContain('startDate/endDate');
-    expect(mergeInvoiceLinesPrompt).toContain('that extracted line\'s own description applies to that line only and wins over invoiceServicePeriod');
-    expect(mergeInvoiceLinesPrompt).toContain('quarters ("Q3" = Jul 1 - Sep 30)');
-    expect(mergeInvoiceLinesPrompt).toContain('Choose the PO line whose startDate-endDate window contains that period');
-    expect(mergeInvoiceLinesPrompt).toContain('choose the PO line whose window contains invoiceDate');
-    expect(mergeInvoiceLinesPrompt).toContain('match each line to its own PO line');
-    expect(mergeInvoiceLinesPrompt).toContain('never move to a different period\'s line because the matching one is unavailable');
+  it('tells merge to pick among same-service PO lines by service dates when PO line selection is on', () => {
+    const prompt = mergeInvoiceLinesPromptFor(true);
+    expect(prompt.startsWith(mergeInvoiceLinesPrompt)).toBe(true);
+    expect(prompt).toContain('**invoiceServicePeriod**');
+    expect(prompt).toContain('startDate/endDate');
+    expect(prompt).toContain('that extracted line\'s own description applies to that line only and wins over invoiceServicePeriod');
+    expect(prompt).toContain('quarters ("Q3" = Jul 1 - Sep 30)');
+    expect(prompt).toContain('Choose the PO line whose startDate-endDate window contains that period');
+    expect(prompt).toContain('choose the PO line whose window contains invoiceDate');
+    expect(prompt).toContain('match each line to its own PO line');
+    expect(prompt).toContain('never move to a different period\'s line because the matching one is unavailable');
+  });
+
+  it('keeps the original merge prompt when PO line selection is off', () => {
+    expect(mergeInvoiceLinesPromptFor(false)).toBe(mergeInvoiceLinesPrompt);
+    expect(mergeInvoiceLinesPrompt).not.toContain('invoiceServicePeriod');
   });
 });

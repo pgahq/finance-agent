@@ -5961,6 +5961,7 @@ describe('Workday utilities', () => {
     it.each([
       ['fully invoiced', { invoiceStatus: status('Fully Invoiced') }],
       ['invoiced', { invoiceStatus: status('Invoiced') }],
+      ['over invoiced', { invoiceStatus: status('Over Invoiced') }],
       ['fully paid', { paymentStatus: status('Fully Paid') }],
       ['paid', { paymentStatus: status('Paid') }],
       ['closed', { closeStatus: status('Closed') }],
@@ -6005,8 +6006,17 @@ describe('Workday utilities', () => {
       ...(invoiced ? { invoiceStatus: { descriptor: 'Fully Invoiced' } } : {}),
     });
 
+    const enabledEnv = { PO_LINE_SELECTION_ENABLED: 'true' };
+
+    it('should leave lines unflagged when PO line availability is off', () => {
+      const lines = [poLine('POL-1', true), poLine('POL-2')];
+
+      expect(markPurchaseOrderLineAvailability(lines, {})).toBe(lines);
+      expect(markPurchaseOrderLineAvailability(lines, { PO_LINE_SELECTION_ENABLED: 'shadow' })).toBe(lines);
+    });
+
     it('should keep every line and flag the ones that can no longer be invoiced', () => {
-      const result = markPurchaseOrderLineAvailability([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')]);
+      const result = markPurchaseOrderLineAvailability([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')], enabledEnv);
 
       expect(result?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
         ['POL-1', false],
@@ -6042,7 +6052,7 @@ describe('Workday utilities', () => {
         }
       });
 
-      expect(markPurchaseOrderLineAvailability(parsed?.lines)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      expect(markPurchaseOrderLineAvailability(parsed?.lines, enabledEnv)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
         ['POL-1', false],
         ['POL-2', true],
         ['POL-3', false],

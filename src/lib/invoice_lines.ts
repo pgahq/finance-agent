@@ -1,7 +1,8 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { PurchaseOrderLine } from './workday.js';
-import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
+import { mergeInvoiceLinesPromptFor, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
+import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
@@ -861,11 +862,14 @@ export async function buildFinalInvoiceLines(
   invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
+  const poLineSelectionEnabled = isPoLineSelectionEnabled();
   const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
-    invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
-    invoiceServicePeriod,
+    ...(poLineSelectionEnabled ? {
+      invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
+      invoiceServicePeriod,
+    } : {}),
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
@@ -879,9 +883,11 @@ export async function buildFinalInvoiceLines(
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
       splitLineData: line.splitLineData ?? [],
-      startDate: line.startDate,
-      endDate: line.endDate,
-      availableForInvoicing: line.availableForInvoicing,
+      ...(poLineSelectionEnabled ? {
+        startDate: line.startDate,
+        endDate: line.endDate,
+        availableForInvoicing: line.availableForInvoicing,
+      } : {}),
     })),
     emailBody: emailBody ?? null,
   };
@@ -889,7 +895,7 @@ export async function buildFinalInvoiceLines(
   let mergeResult: MergeInvoiceLinesResult;
   try {
     mergeResult = await getAiResponse({
-      prompt: mergeInvoiceLinesPrompt,
+      prompt: mergeInvoiceLinesPromptFor(poLineSelectionEnabled),
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
@@ -910,11 +916,16 @@ export async function buildFinalInvoiceLines(
   const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
   // invoiceServicePeriod covers every line that states no period of its own, so when it
   // names a period no line is left for the invoice-date fallback.
-  const dateAlignedLines = statesServicePeriod(invoiceServicePeriod)
+  const selectedLines = !poLineSelectionEnabled
     ? pinnedLines
-    : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate);
+    : markConsumedPoLineReferences(
+      statesServicePeriod(invoiceServicePeriod)
+        ? pinnedLines
+        : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate),
+      parsedPoLines
+    );
   return finalizeInvoiceLines(
-    markConsumedPoLineReferences(dateAlignedLines, parsedPoLines),
+    selectedLines,
     appliedFallbacks,
     parsedPoLines,
     emailWorktags,

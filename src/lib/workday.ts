@@ -4,6 +4,7 @@ import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValid
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   asArray,
@@ -2549,7 +2550,7 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
     || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
 }
 
-const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'invoiced']);
+const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'invoiced', 'overinvoiced']);
 const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid', 'paid']);
 
 function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
@@ -2582,13 +2583,20 @@ function countLineStatuses(
 
 // Consumed lines stay in the list so line matching still sees their service windows and
 // coding; an invoice line matched to one is coded from it but submitted without its reference.
-export function markPurchaseOrderLineAvailability(lines: PurchaseOrderLine[] | undefined): PurchaseOrderLine[] | undefined {
+export function markPurchaseOrderLineAvailability(
+  lines: PurchaseOrderLine[] | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): PurchaseOrderLine[] | undefined {
   if (!lines?.length) return lines;
+  const enabled = isPoLineSelectionEnabled(env);
   debug('PO line status counts:', {
     invoiceStatus: countLineStatuses(lines, 'invoiceStatus'),
     paymentStatus: countLineStatuses(lines, 'paymentStatus'),
     closeStatus: countLineStatuses(lines, 'closeStatus'),
+    unavailableLines: lines.filter((line) => !isPurchaseOrderLineAvailableForInvoicing(line)).length,
+    poLineSelectionEnabled: enabled,
   });
+  if (!enabled) return lines;
   return lines.map((line) => ({ ...line, availableForInvoicing: isPurchaseOrderLineAvailableForInvoicing(line) }));
 }
 
