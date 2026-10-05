@@ -3244,7 +3244,7 @@ describe('Workday utilities', () => {
           setupMockClient();
 
           const result = await submitSupplierInvoiceUpdateForTest({
-            finalLines: [{ ...poCodedLine, hasDiscount: true, omitPurchaseOrderLineReference: true }],
+            finalLines: [{ ...poCodedLine, hasDiscount: true, quantity: 1, unitCost: -50, extendedAmount: -50, supplierInvoiceSplitLineData: undefined, omitPurchaseOrderLineReference: true }],
           });
 
           expect(result.appliedFallbacks.some((f) => f.field === 'consumedPurchaseOrderLine')).toBe(false);
