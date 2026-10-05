@@ -4738,6 +4738,210 @@ describe('Workday utilities', () => {
       );
     });
 
+    describe('duplicate worktag types', () => {
+      const ref = (type: string, value: string, wid?: string) => ({
+        ID: [
+          ...(wid ? [{ $attributes: { type: 'WID' }, $value: wid }] : []),
+          { $attributes: { type }, $value: value },
+        ],
+      });
+      const org = (value: string, wid: string) => ref('Organization_Reference_ID', value, wid);
+      const newInvoiceResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };
+      const duplicateWorktagFault = {
+        Validation_Fault: {
+          Validation_Error: [{
+            Message: 'Only one worktag for each type is allowed for each document line.',
+            Detail_Message: 'Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-Only one worktag for each type is allowed for each document line.{+84}- on Supplier Invoice Line Replacement Data',
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+          }],
+        },
+      };
+      const values = (worktags: any[] | undefined) => ([] as any[]).concat(worktags ?? []).flatMap((tag: any) =>
+        ([] as any[]).concat(tag.ID ?? [])
+          .filter((id: any) => id.$attributes?.type !== 'WID')
+          .map((id: any) => id.$value)
+      );
+      const submittedLines = (request: any) => ([] as any[]).concat(
+        request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data
+      );
+
+      it('keeps one LOB on a closed-PO line when the PO carries a different LOB the cache knows (PO-400628)', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        const resolveOrgWorktagKinds = jest.fn().mockResolvedValue(new Map([['wid-lob-corporate-comms', 'lob']]));
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'PGA of America - September Communications Consulting',
+            quantity: 4,
+            unitCost: 3500,
+            extendedAmount: 14000,
+            costCenterId: 'CC-Communications',
+            fundId: 'FUND-General_Fund_Unrestricted',
+            lineOfBusinessId: 'LOB-Communications',
+            purchaseOrderLineId: 'POL-1',
+            poPassthroughWorktagsReference: [
+              ref('Cost_Center_Reference_ID', 'CC-Communications', 'wid-cc'),
+              ref('Fund_ID', 'FUND-General_Fund_Unrestricted', 'wid-fund'),
+              org('Corporate_Communications', 'wid-lob-corporate-comms'),
+              org('VENU-Corporate', 'wid-venue'),
+            ],
+          }],
+          omitPurchaseOrderLineReference: true,
+          resolveOrgWorktagKinds,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(resolveOrgWorktagKinds).toHaveBeenCalledWith(expect.arrayContaining(['wid-lob-corporate-comms', 'Corporate_Communications']));
+        const [line] = submittedLines(capturedRequest);
+        expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+        expect(values(line.Worktags_Reference)).toEqual(expect.arrayContaining(['LOB-Communications', 'VENU-Corporate']));
+        expect(values(line.Worktags_Reference)).not.toContain('Corporate_Communications');
+        expect(values(line.Worktags_Reference).filter(value => value === 'CC-Communications')).toHaveLength(1);
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining('Dropped duplicate worktag types before submitting invoice (new invoice)'));
+      });
+
+      it('keeps one event on each split row when the PO line and its splits carry different events (PO-414007)', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        const lineEvent = org('2026-KPMG_Womens_PGA', 'wid-event-line');
+        const splitEvent = org('2026-Womens_PGA_Championship', 'wid-event-split');
+        const split = (costCenter: string) => ({
+          extendedAmount: 100,
+          worktagReference: [ref('Cost_Center_Reference_ID', costCenter, `wid-${costCenter}`), splitEvent],
+        });
+        const splits = [split('CC-Operations'), split('CC-Hospitality'), split('CC-Merchandise')];
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Gas - 2 pass',
+            quantity: 1,
+            unitCost: 300,
+            extendedAmount: 300,
+            fundId: 'FUND-Championships',
+            purchaseOrderLineId: 'POL-1',
+            poPassthroughWorktagsReference: [ref('Fund_ID', 'FUND-Championships', 'wid-fund'), lineEvent],
+            supplierInvoiceSplitLineData: splits,
+          }],
+          resolveOrgWorktagKinds: async () => new Map([['wid-event-line', 'event'], ['wid-event-split', 'event']]),
+        });
+
+        expect(result.success).toBe(true);
+        const [line] = submittedLines(capturedRequest);
+        expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(3);
+        for (const splitRow of line.Supplier_Invoice_Split_Line_Data) {
+          const splitValues = values(splitRow.Worktag_Reference);
+          expect(splitValues.filter(value => value.startsWith('2026-'))).toEqual(['2026-Womens_PGA_Championship']);
+          expect(splitValues.filter(value => value.startsWith('CC-'))).toHaveLength(1);
+        }
+      });
+
+      it('retries once without PO split rows and pass-through worktags on the duplicate worktag fault', async () => {
+        const mockClient = mockSoapClient();
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(duplicateWorktagFault, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        const unknownOrg = org('VENU-Something', 'wid-unknown');
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Gas - 4 pass Flip',
+            quantity: 2,
+            unitCost: 150,
+            extendedAmount: 300,
+            costCenterId: 'CC-Operations',
+            fundId: 'FUND-Championships',
+            lineOfBusinessId: 'LOB-Championships',
+            poPassthroughWorktagsReference: [unknownOrg],
+            supplierInvoiceSplitLineData: [
+              { extendedAmount: 150, worktagReference: [ref('Cost_Center_Reference_ID', 'CC-Operations', 'wid-ops')] },
+              { extendedAmount: 150, worktagReference: [ref('Cost_Center_Reference_ID', 'CC-Hospitality', 'wid-hosp')] },
+            ],
+          }],
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        const [firstLine] = submittedLines(capturedRequests[0]);
+        const [retryLine] = submittedLines(capturedRequests[1]);
+        expect(firstLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+        expect(retryLine.Supplier_Invoice_Split_Line_Data).toBeUndefined();
+        expect(values(retryLine.Worktags_Reference)).toEqual(['FUND-Championships', 'CC-Operations', 'LOB-Championships']);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO split rows and pass-through worktags' }),
+        ]));
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining(
+          'Submitted line worktags for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
+        ));
+      });
+
+      it('fails without a classifier or fallback cost center retry when no PO pass-through worktags remain', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(duplicateWorktagFault, null);
+        });
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+
+        await expect(submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Consulting',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            costCenterId: 'CC-Operations',
+          }],
+        })).rejects.toThrow('Only one worktag for each type is allowed for each document line.');
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
+      it('still submits when the organization kind lookup fails', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Consulting',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            poPassthroughWorktagsReference: [org('VENU-Corporate', 'wid-venue')],
+          }],
+          resolveOrgWorktagKinds: jest.fn().mockRejectedValue(new Error('db down')),
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      });
+    });
+
     describe('Zendesk URL additional field', () => {
       const conversationUrl = 'https://app.intercom.com/a/inbox/c722leqk/inbox/conversation/1234567890';
       const newInvoiceResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };

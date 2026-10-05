@@ -242,6 +242,60 @@ function isNonAllocationLineLevelTag(
   return true;
 }
 
+export type OrgWorktagKind = 'lob' | 'event';
+
+export interface WorktagTypeContext {
+  relatedLob?: RelatedLob | null;
+  lineOfBusinessId?: string | null;
+  /** Workday organization type keyed by WID or reference ID (reference IDs lowercased). */
+  orgKinds?: Map<string, OrgWorktagKind>;
+}
+
+function orgWorktagKind(tag: any, context?: WorktagTypeContext): OrgWorktagKind | null {
+  for (const value of worktagIdValues(tag)) {
+    const kind = context?.orgKinds?.get(value) ?? context?.orgKinds?.get(value.toLowerCase());
+    if (kind) return kind;
+  }
+  return isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId) ? 'lob' : null;
+}
+
+// Workday allows one worktag per Workday type on a line or split row. Non-organization
+// types are distinct SOAP ID types. Organization tags (LOB, event, venue, ...) share
+// Organization_Reference_ID, so only LOB and event can be typed; others stay as-is.
+function worktagTypeKey(tag: any, context?: WorktagTypeContext): string | null {
+  const type = primaryWorktagType(tag);
+  if (type && !ORG_WORKTAG_ID_TYPES.has(type)) return type;
+  const kind = orgWorktagKind(tag, context);
+  return kind ? `org:${kind}` : null;
+}
+
+/** Keep the first worktag of each Workday type; return the rest as dropped. */
+export function collapseWorktagsToOnePerType(
+  worktags: any[],
+  context?: WorktagTypeContext
+): { worktags: any[]; dropped: any[] } {
+  const seenKeys = new Set<string>();
+  const seenIdentities = new Set<string>();
+  const kept: any[] = [];
+  const dropped: any[] = [];
+  for (const tag of worktags) {
+    const identity = worktagIdentity(tag);
+    const key = worktagTypeKey(tag, context);
+    if ((identity && seenIdentities.has(identity)) || (key && seenKeys.has(key))) {
+      dropped.push(tag);
+      continue;
+    }
+    if (identity) seenIdentities.add(identity);
+    if (key) seenKeys.add(key);
+    kept.push(tag);
+  }
+  return { worktags: kept, dropped };
+}
+
+export function worktagIdValuesFromReferences(worktags: any[]): string[] {
+  return worktags.flatMap(worktagIdValues);
+}
+
 export function dedupeWorktagReferences(worktags: any[]): any[] {
   const seen = new Set<string>();
   const result: any[] = [];
