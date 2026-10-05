@@ -5995,6 +5995,9 @@ describe('Workday utilities', () => {
       ['pending close', { closeStatus: status('Pending Close') }],
       ['production fully invoiced ID', { invoiceStatus: { id: 'Fully Invoiced' } }],
       ['production fully paid ID', { paymentStatus: { id: 'FULLY PAID' } }],
+      ['paid ID', { paymentStatus: { id: 'PAID' } }],
+      ['credit card paid ID', { paymentStatus: { id: 'CREDIT_CARD_PAID' } }],
+      ['worker paid ID', { paymentStatus: { id: 'WORKER_PAID' } }],
     ])('should exclude a %s line', (_label, line) => {
       expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(false);
     });
@@ -6006,7 +6009,6 @@ describe('Workday utilities', () => {
       ['partially paid', { paymentStatus: status('Partially Paid') }],
       ['unpaid', { paymentStatus: status('Unpaid') }],
       ['ambiguous invoiced', { invoiceStatus: status('Invoiced') }],
-      ['ambiguous paid', { paymentStatus: status('Paid') }],
       ['production partially invoiced ID', { invoiceStatus: { id: 'Partially Invoiced' } }],
       ['production partially paid ID', { paymentStatus: { id: 'PARTIALLY_PAID' } }],
       ['production unpaid ID', { paymentStatus: { id: 'UNPAID' } }],

@@ -2555,9 +2555,11 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
 
 // Production Get_Purchase_Orders responses carry these line statuses as ID values with no
 // descriptor: Document_Status_ID "Fully Invoiced" / "Partially Invoiced", and
-// Document_Payment_Status_ID "FULLY PAID" / "PARTIALLY_PAID" / "UNPAID".
+// Document_Payment_Status_ID "FULLY PAID" / "PARTIALLY_PAID" / "UNPAID". The tenant's
+// payment status IDs also include PAID, CREDIT_CARD_PAID, and WORKER_PAID; partial payment
+// is always PARTIALLY_PAID, so those three mean paid in full.
 const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'overinvoiced']);
-const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid']);
+const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid', 'paid', 'creditcardpaid', 'workerpaid']);
 
 function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
   if (!status) return false;
