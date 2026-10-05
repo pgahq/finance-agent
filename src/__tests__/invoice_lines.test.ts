@@ -12,6 +12,7 @@ import {
   overlaySharedPoWorktagsOnUnmatchedLines,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
+  statesServicePeriod,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
 import { getAiResponse } from '../lib/ai.js';
@@ -1197,6 +1198,31 @@ describe('applyAmountOnlyLineRetry', () => {
   });
 });
 
+describe('statesServicePeriod', () => {
+  it.each([
+    'September 2026',
+    'Sept retainer',
+    'Q3 2026',
+    'third quarter 2026',
+    'quarter 3 2026',
+    '3rd qtr',
+    '09/2026',
+    '2026-09',
+    '2026/09',
+    '9/1 - 9/30',
+    '2026-09-01 to 2026-09-30',
+  ])('recognizes "%s" as a stated period', (text) => {
+    expect(statesServicePeriod(text)).toBe(true);
+  });
+
+  it.each(['Monthly retainer', 'Annual services', 'Mayfield maintenance', '', null])(
+    'does not treat "%s" as a stated period',
+    (text) => {
+      expect(statesServicePeriod(text)).toBe(false);
+    }
+  );
+});
+
 describe('buildFinalInvoiceLines service-date matching', () => {
   const monthlyLine = (month: number, overrides: Partial<PurchaseOrderLine> = {}): PurchaseOrderLine => {
     const mm = String(month).padStart(2, '0');
@@ -1275,6 +1301,24 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
   });
 
+  it('takes the ship-to address from the relinked PO line, clearing it when that line has none', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine('POL-08'), shipToAddressId: 'ADDR-AUG' }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { shipToAddressId: 'ADDR-AUG' }), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    expect(result.lines[0].shipToAddressId).toBeNull();
+  });
+
   it('keeps the model pick when the invoice states a service period', async () => {
     mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
 
@@ -1344,5 +1388,122 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     );
 
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-001');
+  });
+
+  it('treats a missing Start_Date or End_Date as an open side of the window', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { startDate: undefined }),
+        monthlyLine(9, { endDate: undefined }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+  });
+
+  it('keeps the model pick when the line description states its own period', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{ ...mergedLine('POL-08'), description: 'Retainer - August 2026' }],
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps the model pick when only the extracted description states a period', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine('POL-08'), description: 'Retainer' }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].description).toBe('Retainer - August 2026');
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('does not relink to a PO line whose split worktags differ', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+    const split = (costCenter: string) => [{ extendedAmount: 5000, worktagReference: [makeWorktag('Cost_Center_Reference_ID', costCenter)] }];
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { splitLineData: split('CC-Split-A') }),
+        monthlyLine(9, { splitLineData: split('CC-Split-B') }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('does not relink between PO lines that carry no worktags', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { worktagsReference: [] }), monthlyLine(9, { worktagsReference: [] })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['not mappable to dates', 'Annual services'],
+  ])('still relinks by invoice date when the service period is %s', async (_label, servicePeriod) => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    const input = JSON.parse((mockGetAiResponse.mock.calls[0][0] as any).messages[0].content);
+    expect(input.invoiceServicePeriod).toBe(servicePeriod.trim() || null);
   });
 });

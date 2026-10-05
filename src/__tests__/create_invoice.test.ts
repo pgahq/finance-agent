@@ -1132,6 +1132,32 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
+  it('should keep every line of a Closed PO as coding context even when some lines are fully invoiced', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const lines = monthlyPoLines(8);
+    workday.loadPurchaseOrder.mockResolvedValue({
+      documentNumber: 'PO-414498',
+      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+      documentStatus: { id: 'CLOSED', descriptor: 'Closed' },
+      lines,
+    });
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedPurchaseOrderNumber: 'PO-414498',
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+    await processor({
+      data: [{ ...attachmentRequest('new-invoices/req-closed-consumed-po/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(lines);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
+    expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
+      .toContain('PO-414498 is Closed or Pending Close');
+  });
+
   it('should code from the PO but omit PO line refs when every PO line is fully invoiced', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     const allInvoiced = monthlyPoLines(12);

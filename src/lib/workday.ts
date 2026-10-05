@@ -2513,6 +2513,19 @@ export function isPurchaseOrderLineAvailableForInvoicing(
     && !statusMatches(line.closeStatus, CLOSED_FOR_INVOICING_STATUSES);
 }
 
+function countLineStatuses(
+  lines: PurchaseOrderLine[],
+  field: 'invoiceStatus' | 'paymentStatus' | 'closeStatus'
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const line of lines) {
+    const status = line[field];
+    const label = status ? `${status.descriptor ?? '(no descriptor)'} [${status.id ?? 'no id'}]` : '(none)';
+    counts[label] = (counts[label] ?? 0) + 1;
+  }
+  return counts;
+}
+
 // When every line is consumed, all lines are returned so the invoice still picks up PO
 // coding; the caller must then omit Purchase_Order_Line_Reference.
 export function selectInvoiceablePurchaseOrderLines(lines: PurchaseOrderLine[] | undefined): {
@@ -2520,6 +2533,11 @@ export function selectInvoiceablePurchaseOrderLines(lines: PurchaseOrderLine[] |
   allLinesConsumed: boolean;
 } {
   if (!lines?.length) return { lines, allLinesConsumed: false };
+  debug('PO line status counts:', {
+    invoiceStatus: countLineStatuses(lines, 'invoiceStatus'),
+    paymentStatus: countLineStatuses(lines, 'paymentStatus'),
+    closeStatus: countLineStatuses(lines, 'closeStatus'),
+  });
   const available = lines.filter(isPurchaseOrderLineAvailableForInvoicing);
   if (available.length === 0) return { lines, allLinesConsumed: true };
   return { lines: available, allLinesConsumed: false };

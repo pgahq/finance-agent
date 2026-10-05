@@ -731,21 +731,59 @@ function toIsoDate(value?: string | null): string | undefined {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split('T')[0];
 }
 
+// Month names, quarters, and numeric dates or month-years. Text that matches is a period the
+// merge model must honor, so the invoice-date guard leaves it alone. Over-matching only keeps
+// the model pick; under-matching would let the guard override a stated period.
+const SERVICE_PERIOD_PATTERN = new RegExp([
+  String.raw`\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`,
+  String.raw`\bq[1-4]\b|\bquarter\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+qtr\b`,
+  String.raw`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b`,
+  String.raw`\b\d{1,2}[/-]\d{4}\b|\b\d{4}[/-]\d{1,2}(?:[/-]\d{1,2})?\b`,
+].join('|'), 'i');
+
+export function statesServicePeriod(text?: string | null): boolean {
+  return !!text && SERVICE_PERIOD_PATTERN.test(text);
+}
+
+// A missing Start_Date or End_Date leaves that side of the window open.
 function poLineCoversDate(line: Pick<ParsedPoLineWorktags, 'startDate' | 'endDate'>, isoDate: string): boolean | undefined {
-  if (!line.startDate || !line.endDate) return undefined;
-  return line.startDate <= isoDate && isoDate <= line.endDate;
+  if (!line.startDate && !line.endDate) return undefined;
+  return (!line.startDate || line.startDate <= isoDate) && (!line.endDate || isoDate <= line.endDate);
 }
 
+function worktagIdentityKey(worktags: any[]): string {
+  const identities = worktags
+    .map(worktagIdentity)
+    .filter((identity): identity is string => !!identity);
+  return [...new Set(identities)].sort().join('|');
+}
+
+function poLineCodingKey(line: ParsedPoLineWorktags): string {
+  const passthrough = worktagIdentityKey(passthroughForPoLine(line));
+  if (!passthrough) return '';
+  const splits = line.splitLineData.map(split => worktagIdentityKey(split.worktagReference ?? [])).sort();
+  return JSON.stringify([
+    line.costCenterId,
+    line.fundId,
+    line.spendCategoryId,
+    line.lineOfBusinessId,
+    passthrough,
+    splits,
+  ]);
+}
+
+// A relink changes only the PO line reference, so it is allowed only between lines whose
+// scalar IDs, passthrough worktags, and split worktags all match; every PO-derived field the
+// merge copied from the original line is then also true of the target. Lines with no
+// worktags never qualify.
 function poLinesShareCoding(a: ParsedPoLineWorktags, b: ParsedPoLineWorktags): boolean {
-  return a.costCenterId === b.costCenterId
-    && a.fundId === b.fundId
-    && a.spendCategoryId === b.spendCategoryId
-    && a.lineOfBusinessId === b.lineOfBusinessId;
+  const key = poLineCodingKey(a);
+  return key !== '' && key === poLineCodingKey(b);
 }
 
-// Free-text service periods are left to the merge model. This only corrects a pick whose
-// Start-End window excludes the invoice date when exactly one unclaimed, same-coded PO
-// line covers it, so multi-month invoices that already split across lines are untouched.
+// Stated service periods are left to the merge model. This only corrects a pick whose
+// Start-End window excludes the invoice date when exactly one unclaimed PO line with the
+// same coding covers it, so multi-month invoices that already split across lines are untouched.
 export function alignPoLinesToInvoiceDate(
   lines: FinalInvoiceLine[],
   poLines: ParsedPoLineWorktags[],
@@ -761,7 +799,7 @@ export function alignPoLinesToInvoiceDate(
   const claimed = new Set(lines.map(line => line.purchaseOrderLineId).filter((id): id is string => !!id));
   return lines.map(line => {
     const picked = line.purchaseOrderLineId ? poLinesById.get(line.purchaseOrderLineId) : undefined;
-    if (!picked || poLineCoversDate(picked, isoDate) !== false) return line;
+    if (!picked || statesServicePeriod(line.description) || poLineCoversDate(picked, isoDate) !== false) return line;
     const covering = [...poLinesById.values()].filter(candidate =>
       !claimed.has(candidate.purchaseOrderLineId)
       && poLineCoversDate(candidate, isoDate) === true
@@ -774,7 +812,7 @@ export function alignPoLinesToInvoiceDate(
     return {
       ...line,
       purchaseOrderLineId: target.purchaseOrderLineId,
-      shipToAddressId: target.shipToAddressId ?? line.shipToAddressId,
+      shipToAddressId: target.shipToAddressId,
     };
   });
 }
@@ -790,10 +828,11 @@ export async function buildFinalInvoiceLines(
   invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
+  const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
-    invoiceDate: invoiceContext?.invoiceDate ?? null,
-    invoiceServicePeriod: invoiceContext?.servicePeriod ?? null,
+    invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
+    invoiceServicePeriod,
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
@@ -834,11 +873,14 @@ export async function buildFinalInvoiceLines(
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  const dateAlignedLines = invoiceContext?.servicePeriod
-    ? lines
-    : alignPoLinesToInvoiceDate(lines, parsedPoLines, invoiceContext?.invoiceDate);
+  const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  // invoiceServicePeriod covers every line that states no period of its own, so when it
+  // names a period no line is left for the invoice-date fallback.
+  const dateAlignedLines = statesServicePeriod(invoiceServicePeriod)
+    ? pinnedLines
+    : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate);
   return finalizeInvoiceLines(
-    pinExtractedLineDescriptions(dateAlignedLines, extractedLines),
+    dateAlignedLines,
     appliedFallbacks,
     parsedPoLines,
     emailWorktags,

@@ -725,10 +725,11 @@ async function processInvoiceCluster(
     const companyReferenceType = selectedCompany.companyReferenceType;
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
-    const { lines: poLines, allLinesConsumed: allPoLinesConsumed } = selectInvoiceablePurchaseOrderLines(
-      usedDefaultCompany ? undefined : matchedPo?.lines
-    );
-    const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const matchedPoLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const poClosedForInvoicing = Boolean(matchedPoLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const { lines: poLines, allLinesConsumed: allPoLinesConsumed } = poClosedForInvoicing
+      ? { lines: matchedPoLines, allLinesConsumed: false }
+      : selectInvoiceablePurchaseOrderLines(matchedPoLines);
     if (poClosedForInvoicing) {
       debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
     } else if (allPoLinesConsumed) {

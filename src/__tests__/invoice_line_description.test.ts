@@ -166,4 +166,14 @@ describe('invoice line description prompts', () => {
     expect(mergeInvoiceLinesPrompt).toContain('Copy `description` from the extracted line **unchanged**');
     expect(mergeInvoiceLinesPrompt).toContain('after** the concatenated description is set');
   });
+
+  it('tells merge to pick among same-service PO lines by service dates', () => {
+    expect(mergeInvoiceLinesPrompt).toContain('**invoiceServicePeriod**');
+    expect(mergeInvoiceLinesPrompt).toContain('startDate/endDate');
+    expect(mergeInvoiceLinesPrompt).toContain('that extracted line\'s own description applies to that line only and wins over invoiceServicePeriod');
+    expect(mergeInvoiceLinesPrompt).toContain('quarters ("Q3" = Jul 1 - Sep 30)');
+    expect(mergeInvoiceLinesPrompt).toContain('Choose the PO line whose startDate-endDate window contains that period');
+    expect(mergeInvoiceLinesPrompt).toContain('choose the PO line whose window contains invoiceDate');
+    expect(mergeInvoiceLinesPrompt).toContain('match each line to its own PO line');
+  });
 });
