@@ -1,9 +1,9 @@
 import { debug } from '@pga/logger';
-import { openai } from '@ai-sdk/openai';
-import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type ModelMessage } from 'ai';
+import { generateText, Output, stepCountIs, NoObjectGeneratedError, NoOutputGeneratedError, type LanguageModel, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 import { resolveReferenceCodeTool } from './reference_ids.js';
+import { defaultModel } from './models.js';
 
 // Set OpenAI API key globally
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
@@ -13,13 +13,13 @@ export async function getAiResponse({
   prompt,
   messages,
   schema,
-  model = 'gpt-5.4',
+  model = defaultModel,
   tools,
 }: {
   prompt: string;
   messages: ModelMessage[];
   schema?: z.ZodSchema<any>;
-  model?: string;
+  model?: LanguageModel;
   tools?: Record<string, any>;
 }): Promise<unknown> {
   try {
@@ -42,7 +42,7 @@ export async function getAiResponse({
     }
     
     const generateTextOptions: any = {
-      model: openai(model),
+      model,
       messages,
       system: systemPrompt,
       stopWhen: stepCountIs(10),
@@ -69,7 +69,7 @@ export async function getAiResponse({
 
     // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
     const structuredResult = await generateText({
-      model: openai(model),
+      model,
       messages: [
         ...messages,
         ...textResult.response.messages,

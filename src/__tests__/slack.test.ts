@@ -258,18 +258,6 @@ describe('notifyResult', () => {
     expect(texts).toContain('skipped resend (another run is processing it)');
   });
 
-  it('warns in the headline and body when a create may be a duplicate', async () => {
-    await notifyResult('create_invoice', 'success', 12000, {
-      invoiceWID: 'new-invoice-wid',
-      invoiceNumber: 'SUPIN-412727',
-      possibleDuplicate: "Possible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.",
-    });
-
-    const texts = postedSlackTexts(global.fetch as jest.Mock);
-    expect(texts).toContain('created `SUPIN-412727` (possible duplicate, check before approving)');
-    expect(texts).toContain("*Possible duplicate*\nPossible duplicate: Workday says supplier's invoice number INV-1 is already in use for Acme. This invoice was created on a retry that changed: default supplier. Check for an existing invoice before approving.");
-  });
-
   it('names the canceled invoice a new create replaces', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

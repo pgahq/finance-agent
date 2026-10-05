@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
-import { openai } from '@ai-sdk/openai';
-import { ToolLoopAgent, stepCountIs, tool } from 'ai';
+import { ToolLoopAgent, stepCountIs, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
+import { createLanguageModel } from './models.js';
 import type { ParsedValidationRule } from './workday.js';
 
 const inspectPreviousAttemptSchema = z.object({});
@@ -37,8 +37,8 @@ export interface WorkdaySubmitRepairInput {
   getValidationRules: () => Promise<ParsedValidationRule[]>;
 }
 
-function getRepairModel(): string {
-  return process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'gpt-5.4-mini';
+function getRepairModel(): LanguageModel {
+  return createLanguageModel(process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'gpt-5.4-mini');
 }
 
 function normalizeText(value: string): string {
@@ -86,12 +86,13 @@ function buildAttemptContext(input: WorkdaySubmitRepairInput) {
 }
 
 export async function proposeWorkdaySubmitRepair(
-  input: WorkdaySubmitRepairInput
+  input: WorkdaySubmitRepairInput,
+  { model = getRepairModel() }: { model?: LanguageModel } = {}
 ): Promise<WorkdaySubmitRepairPlan> {
   let cachedRules: ParsedValidationRule[] | undefined;
 
   const agent = new ToolLoopAgent({
-    model: openai(getRepairModel()),
+    model,
     instructions: `You repair Workday Supplier Invoice submit validation faults.
 
 Always inspect the latest failed attempt before deciding what to do.
