@@ -265,7 +265,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         emailWorktags,
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
         invoiceLineQuantityDisplayed,
-        { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+        // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;

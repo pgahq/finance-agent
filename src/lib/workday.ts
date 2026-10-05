@@ -2510,7 +2510,10 @@ function parsePurchaseOrderDocumentStatus(poData: any): PurchaseOrderDocumentSta
 }
 
 function parseStatusReference(raw: any, idType: string): PurchaseOrderDocumentStatus | undefined {
-  const ref = ([] as any[]).concat(raw ?? [])[0];
+  const refs = ([] as any[]).concat(raw ?? []);
+  const ref = refs.find((candidate: any) =>
+    ([] as any[]).concat(candidate?.ID ?? []).some((entry: any) => entry?.$attributes?.type === idType)
+  ) ?? refs[0];
   if (!ref) return undefined;
   const ids = ([] as any[]).concat(ref.ID ?? []);
   const id = ids.find((entry: any) => entry.$attributes?.type === idType)?.$value;
@@ -2550,8 +2553,11 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
     || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
 }
 
-const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'invoiced', 'overinvoiced']);
-const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid', 'paid']);
+// Production Get_Purchase_Orders responses carry these line statuses as ID values with no
+// descriptor: Document_Status_ID "Fully Invoiced" / "Partially Invoiced", and
+// Document_Payment_Status_ID "FULLY PAID" / "PARTIALLY_PAID" / "UNPAID".
+const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'overinvoiced']);
+const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid']);
 
 function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
   if (!status) return false;

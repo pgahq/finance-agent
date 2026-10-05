@@ -781,7 +781,8 @@ async function processInvoiceCluster(
       emailWorktags,
       relatedLobLookup,
       invoiceLineQuantityDisplayed,
-      { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+      // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;

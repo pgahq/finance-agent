@@ -1139,8 +1139,9 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
-  it('should keep every line of a Closed PO as coding context even when some lines are fully invoiced', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+  it('should keep every line of a Closed PO as coding context and skip date-based selection even with PO line selection on', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
+    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
     const lines = monthlyPoLines(8);
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
@@ -1159,6 +1160,7 @@ describe('create_invoice', () => {
     } as any);
 
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(lines);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][7]).toBeUndefined();
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
     expect(submitArgs.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))

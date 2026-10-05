@@ -5934,6 +5934,19 @@ describe('Workday utilities', () => {
       expect(line.closeStatus).toBeUndefined();
     });
 
+    it('should read the status reference that carries the expected ID type when Workday returns several', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 1,
+        Service_Order_Line_ID: 'POL-1',
+        Invoice_Status_Reference: [
+          { ID: [{ $attributes: { type: 'WID' }, $value: 'wid-only' }] },
+          { ID: [{ $attributes: { type: 'WID' }, $value: 'wid-2' }, { $attributes: { type: 'Document_Status_ID' }, $value: 'Fully Invoiced' }] },
+        ],
+      }));
+
+      expect(line.invoiceStatus).toEqual({ id: 'Fully Invoiced' });
+    });
+
     it('should keep an unparseable service date as raw text so the window reads as unknown', () => {
       const [line] = parsePurchaseOrderLines(makePoResponse({
         Line_Number: 1,
@@ -5976,13 +5989,12 @@ describe('Workday utilities', () => {
 
     it.each([
       ['fully invoiced', { invoiceStatus: status('Fully Invoiced') }],
-      ['invoiced', { invoiceStatus: status('Invoiced') }],
       ['over invoiced', { invoiceStatus: status('Over Invoiced') }],
       ['fully paid', { paymentStatus: status('Fully Paid') }],
-      ['paid', { paymentStatus: status('Paid') }],
       ['closed', { closeStatus: status('Closed') }],
       ['pending close', { closeStatus: status('Pending Close') }],
-      ['fully invoiced by ID', { invoiceStatus: { id: 'FULLY_INVOICED' } }],
+      ['production fully invoiced ID', { invoiceStatus: { id: 'Fully Invoiced' } }],
+      ['production fully paid ID', { paymentStatus: { id: 'FULLY PAID' } }],
     ])('should exclude a %s line', (_label, line) => {
       expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(false);
     });
@@ -5993,6 +6005,11 @@ describe('Workday utilities', () => {
       ['not invoiced', { invoiceStatus: status('Not Invoiced') }],
       ['partially paid', { paymentStatus: status('Partially Paid') }],
       ['unpaid', { paymentStatus: status('Unpaid') }],
+      ['ambiguous invoiced', { invoiceStatus: status('Invoiced') }],
+      ['ambiguous paid', { paymentStatus: status('Paid') }],
+      ['production partially invoiced ID', { invoiceStatus: { id: 'Partially Invoiced' } }],
+      ['production partially paid ID', { paymentStatus: { id: 'PARTIALLY_PAID' } }],
+      ['production unpaid ID', { paymentStatus: { id: 'UNPAID' } }],
     ])('should keep a line with %s', (_label, line) => {
       expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(true);
     });
@@ -6053,7 +6070,14 @@ describe('Workday utilities', () => {
             Purchase_Order_Data: {
               Document_Number: 'PO-404770',
               Service_Line_Replacement_Data: [
-                { Line_Number: 1, Service_Order_Line_ID: 'POL-1', Payment_Status_Reference: ref('Paid', 'Document_Payment_Status_ID') },
+                {
+                  Line_Number: 1,
+                  Service_Order_Line_ID: 'POL-1',
+                  Payment_Status_Reference: { ID: [
+                    { $attributes: { type: 'WID' }, $value: 'd9e43706446c11de98360015c5e6daf6' },
+                    { $attributes: { type: 'Document_Payment_Status_ID' }, $value: 'FULLY PAID' },
+                  ] },
+                },
                 { Line_Number: 2, Service_Order_Line_ID: 'POL-2', Payment_Status_Reference: ref('Partially Paid', 'Document_Payment_Status_ID') },
                 { Line_Number: 5, Service_Order_Line_ID: 'POL-5', Payment_Status_Reference: ref('Fully Paid', 'Document_Payment_Status_ID') },
                 { Line_Number: 6, Service_Order_Line_ID: 'POL-6', Close_Status_Reference: ref('Pending Close', 'Document_Status_ID') },

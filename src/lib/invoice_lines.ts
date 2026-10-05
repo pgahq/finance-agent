@@ -886,7 +886,8 @@ export async function buildFinalInvoiceLines(
   invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
-  const poLineSelectionEnabled = isPoLineSelectionEnabled();
+  // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
+  const poLineSelectionEnabled = isPoLineSelectionEnabled() && invoiceContext !== undefined;
   const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,

@@ -1308,6 +1308,26 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     delete process.env.PO_LINE_SELECTION_ENABLED;
   });
 
+  it('uses the legacy merge prompt and input when the caller passes no invoice context (Closed PO)', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true
+    );
+
+    const call = mockGetAiResponse.mock.calls[0][0] as any;
+    const input = JSON.parse(call.messages[0].content);
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
+    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
+    expect(input).not.toHaveProperty('invoiceDate');
+  });
+
   it('keeps the pre-selection merge input, prompt, and model pick when PO line selection is off', async () => {
     delete process.env.PO_LINE_SELECTION_ENABLED;
     mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
