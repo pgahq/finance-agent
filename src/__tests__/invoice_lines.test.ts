@@ -1173,16 +1173,28 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     expect(result[0]).toMatchObject({ quantity: 45, unitCost: 43.71, extendedAmount: 1966.95, purchaseOrderLineId: 'POL-001' });
   });
 
+  it('uses four decimal precision for PO-linked discount lines that do not divide to cents', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', hasDiscount: true, quantity: 7, unitCost: 29.88, extendedAmount: 188.24, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 7, unitCost: 26.8914, extendedAmount: 188.24, purchaseOrderLineId: 'POL-001' });
+  });
+
   it('submits amount-only for the same line when it is not linked to a PO line', () => {
     const lines = [{ lineOrder: 1, description: 'Titl Pro V1 Cstm', hasDiscount: true, quantity: 45, unitCost: 46.5, extendedAmount: 1966.95 }];
     const result = alignSupplierInvoiceLineAmounts(lines);
     expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1966.95 });
   });
 
-  it('submits amount-only on a PO-linked line when no net unit cost reproduces the extended amount', () => {
-    const lines = [{ lineOrder: 1, description: 'Sintra Signs', quantity: 37, unitCost: 29.88, extendedAmount: 1105.49, purchaseOrderLineId: 'POL-001' }];
+  it('submits amount-only on a non-discount PO-linked line whose qty times unit does not match the total', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', quantity: 10, unitCost: 5, extendedAmount: 100, purchaseOrderLineId: 'POL-001' }];
     const result = alignSupplierInvoiceLineAmounts(lines);
-    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1105.49 });
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
+  });
+
+  it('submits amount-only on a PO-linked discount line when the net price is not lower', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', hasDiscount: true, quantity: 10, unitCost: 5, extendedAmount: 100, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
   });
 
   it('leaves already amount-only lines unchanged', () => {

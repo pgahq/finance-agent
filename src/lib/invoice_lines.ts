@@ -671,13 +671,16 @@ export function applyMissingQuantityColumnLines(
   });
 }
 
-// Workday only counts PO quantity as invoiced when the linked line keeps its quantity,
-// so a PO-linked row whose printed unit price is before a discount submits the net unit
-// price when that price reproduces the printed line total to the cent.
-function netUnitCostForPurchaseOrderLine(line: FinalInvoiceLine, extendedAmount: number): number | null {
+// Workday only counts PO quantity as invoiced when the linked line keeps its quantity.
+// A PO-linked discount line (printed price before discount) submits the net unit price
+// when that price reproduces the printed line total. Workday's Unit_Cost accepts up to
+// four decimal places, so we round to four to cover ordinary percentage discounts that
+// do not divide evenly to cents (e.g. 7 × $29.88 at 10% off = $188.24 → $26.8914).
+function netUnitCostForDiscountedPurchaseOrderLine(line: FinalInvoiceLine, extendedAmount: number): number | null {
   const quantity = line.quantity;
-  if (!line.purchaseOrderLineId || quantity == null || quantity <= 0) return null;
-  const netUnitCost = Math.round((extendedAmount / quantity) * 100) / 100;
+  if (line.hasDiscount !== true || !line.purchaseOrderLineId || quantity == null || quantity <= 0) return null;
+  const netUnitCost = Math.round((extendedAmount / quantity) * 10000) / 10000;
+  if (line.unitCost != null && netUnitCost >= line.unitCost) return null;
   return toCents(quantity * netUnitCost) === toCents(extendedAmount) ? netUnitCost : null;
 }
 
@@ -695,7 +698,7 @@ export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): Fina
     }
 
     if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
-      const netUnitCost = netUnitCostForPurchaseOrderLine(line, extendedAmount);
+      const netUnitCost = netUnitCostForDiscountedPurchaseOrderLine(line, extendedAmount);
       if (netUnitCost != null) return { ...line, unitCost: netUnitCost };
       return asAmountOnlyLine(line, extendedAmount);
     }
