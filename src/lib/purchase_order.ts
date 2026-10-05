@@ -4,7 +4,8 @@ export function normalizePurchaseOrderNumber(raw?: string | null): string | unde
   if (!raw) return undefined;
   const stripped = raw.trim().replace(/^[Pp][Oo][-–\s#]*/, '');
   const normalized = `PO-${stripped}`;
-  return /^PO-\w{6}$/.test(normalized) ? normalized : undefined;
+  // A digit is required so words such as "PO Number" are not read as a PO.
+  return /^PO-(?=\w*\d)\w{6}$/.test(normalized) ? normalized : undefined;
 }
 
 export function findPurchaseOrderNumber(
