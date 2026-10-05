@@ -1168,7 +1168,7 @@ describe('create_invoice', () => {
 
     const bothNotes = submitArgs.buildNotes([
       { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
-      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
     ]);
     expect(bothNotes.match(/Purchase order lines: /g)).toHaveLength(2);
     expect(bothNotes).toContain('PO-414498 is Closed or Pending Close');
@@ -1206,7 +1206,7 @@ describe('create_invoice', () => {
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
       lines: allInvoiced,
     });
-    const consumedFallback = { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' };
+    const consumedFallback = { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' };
     workday.submitNewSupplierInvoice.mockResolvedValue({
       success: true,
       invoiceWID: 'new-invoice-wid',
@@ -1228,7 +1228,7 @@ describe('create_invoice', () => {
     expect(mergedPoLines.every((line: any) => line.availableForInvoicing === false)).toBe(true);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
-    const consumedNote = 'Invoice lines that matched lines on PO-414498 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.';
+    const consumedNote = 'Invoice lines that matched lines on PO-414498 already fully invoiced or closed were coded from the PO but not linked to PO lines.';
     const notes = submitArgs.buildNotes([consumedFallback]);
     expect(notes).toContain(consumedNote);
     expect(notes).not.toContain('Closed or Pending Close');
@@ -2538,7 +2538,7 @@ describe('create_invoice', () => {
       workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
       workday.submitSupplierInvoiceUpdate.mockResolvedValue({
         success: true,
-        appliedFallbacks: [{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' }],
+        appliedFallbacks: [{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' }],
       });
 
       await processor({
@@ -2556,7 +2556,7 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({
           updated: true,
-          appliedFallbacks: ['Invoice lines that matched lines on PO-414498 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.'],
+          appliedFallbacks: ['Invoice lines that matched lines on PO-414498 already fully invoiced or closed were coded from the PO but not linked to PO lines.'],
         }),
       );
     });

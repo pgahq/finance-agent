@@ -130,7 +130,7 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
-  /** Matched PO line is fully invoiced, fully paid, or closed: keep its coding, drop its reference. */
+  /** Matched PO line is fully invoiced or closed: keep its coding, drop its reference. */
   omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];

@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -3138,7 +3139,7 @@ describe('Workday utilities', () => {
           expect(consumed.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
           expect(open.Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-002' }] });
           expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
-            { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+            { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
           ]));
         });
 
@@ -5990,14 +5991,10 @@ describe('Workday utilities', () => {
     it.each([
       ['fully invoiced', { invoiceStatus: status('Fully Invoiced') }],
       ['over invoiced', { invoiceStatus: status('Over Invoiced') }],
-      ['fully paid', { paymentStatus: status('Fully Paid') }],
       ['closed', { closeStatus: status('Closed') }],
       ['pending close', { closeStatus: status('Pending Close') }],
       ['production fully invoiced ID', { invoiceStatus: { id: 'Fully Invoiced' } }],
-      ['production fully paid ID', { paymentStatus: { id: 'FULLY PAID' } }],
-      ['paid ID', { paymentStatus: { id: 'PAID' } }],
-      ['credit card paid ID', { paymentStatus: { id: 'CREDIT_CARD_PAID' } }],
-      ['worker paid ID', { paymentStatus: { id: 'WORKER_PAID' } }],
+      ['production fully invoiced and fully paid IDs', { invoiceStatus: { id: 'Fully Invoiced' }, paymentStatus: { id: 'FULLY PAID' } }],
     ])('should exclude a %s line', (_label, line) => {
       expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(false);
     });
@@ -6006,14 +6003,15 @@ describe('Workday utilities', () => {
       ['no statuses', {}],
       ['partially invoiced', { invoiceStatus: status('Partially Invoiced') }],
       ['not invoiced', { invoiceStatus: status('Not Invoiced') }],
-      ['partially paid', { paymentStatus: status('Partially Paid') }],
-      ['unpaid', { paymentStatus: status('Unpaid') }],
       ['ambiguous invoiced', { invoiceStatus: status('Invoiced') }],
       ['production partially invoiced ID', { invoiceStatus: { id: 'Partially Invoiced' } }],
-      ['production partially paid ID', { paymentStatus: { id: 'PARTIALLY_PAID' } }],
+      ['payment status alone (FULLY PAID)', { paymentStatus: { id: 'FULLY PAID' } }],
+      ['payment status alone (PAID)', { paymentStatus: { id: 'PAID' } }],
+      ['payment status alone (CREDIT_CARD_PAID)', { paymentStatus: { id: 'CREDIT_CARD_PAID' } }],
+      ['partially invoiced and partially paid IDs', { invoiceStatus: { id: 'Partially Invoiced' }, paymentStatus: { id: 'PARTIALLY_PAID' } }],
       ['production unpaid ID', { paymentStatus: { id: 'UNPAID' } }],
     ])('should keep a line with %s', (_label, line) => {
-      expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(true);
+      expect(isPurchaseOrderLineAvailableForInvoicing(line as PurchaseOrderLine)).toBe(true);
     });
   });
 
@@ -6021,14 +6019,14 @@ describe('Workday utilities', () => {
     it('renders the closed-PO and consumed-line notes once each', () => {
       const notes = formatPurchaseOrderLineFallbackNotes([
         { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
-        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
-        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
+        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
         { field: 'assignee', label: 'omitted assignee' },
       ], 'PO-414498');
 
       expect(notes).toBe(
         '\n\nPurchase order lines: PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.'
-        + '\n\nPurchase order lines: Invoice lines that matched lines on PO-414498 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.'
+        + '\n\nPurchase order lines: Invoice lines that matched lines on PO-414498 already fully invoiced or closed were coded from the PO but not linked to PO lines.'
       );
     });
   });
@@ -6064,7 +6062,7 @@ describe('Workday utilities', () => {
       expect(markPurchaseOrderLineAvailability(undefined)).toBeUndefined();
     });
 
-    it('should flag paid and closed lines from a parsed Get_Purchase_Orders response', () => {
+    it('should flag fully invoiced and closed lines, not paid-only lines, from a parsed Get_Purchase_Orders response', () => {
       const ref = (descriptor: string, idType: string) => ({ descriptor, ID: [{ $attributes: { type: idType }, $value: `opaque-${descriptor}` }] });
       const parsed = parsePurchaseOrder({
         Response_Data: {
@@ -6095,11 +6093,11 @@ describe('Workday utilities', () => {
       });
 
       expect(markPurchaseOrderLineAvailability(parsed?.lines, enabledEnv)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
-        ['POL-1', false],
+        ['POL-1', true],
         ['POL-2', true],
         ['POL-3', false],
         ['POL-4', true],
-        ['POL-5', false],
+        ['POL-5', true],
         ['POL-6', false],
         ['POL-7', false],
       ]);

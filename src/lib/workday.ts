@@ -543,7 +543,7 @@ type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund
 type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
-export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)';
+export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -2553,26 +2553,23 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
     || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
 }
 
-// Production Get_Purchase_Orders responses carry these line statuses as ID values with no
-// descriptor: Document_Status_ID "Fully Invoiced" / "Partially Invoiced", and
-// Document_Payment_Status_ID "FULLY PAID" / "PARTIALLY_PAID" / "UNPAID". The tenant's
-// payment status IDs also include PAID, CREDIT_CARD_PAID, and WORKER_PAID; partial payment
-// is always PARTIALLY_PAID, so those three mean paid in full.
+// Production Get_Purchase_Orders responses carry line invoice status as a Document_Status_ID
+// value with no descriptor: "Fully Invoiced" / "Partially Invoiced".
 const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'overinvoiced']);
-const FULLY_PAID_LINE_STATUSES = new Set(['fullypaid', 'paid', 'creditcardpaid', 'workerpaid']);
 
 function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
   if (!status) return false;
   return values.has(normalizeDocumentStatus(status.id)) || values.has(normalizeDocumentStatus(status.descriptor));
 }
 
-// Fully invoiced, fully paid, or closed PO lines cannot take another invoice line. Status
-// IDs vary by tenant, so descriptors are checked too; a missing status reads as available.
+// Fully invoiced or closed PO lines cannot take another invoice line. Payment status is
+// parsed and logged but not used: production lines are FULLY PAID only when also Fully
+// Invoiced. Status IDs vary by tenant, so descriptors are checked too; a missing status reads
+// as available.
 export function isPurchaseOrderLineAvailableForInvoicing(
-  line: Pick<PurchaseOrderLine, 'invoiceStatus' | 'paymentStatus' | 'closeStatus'>
+  line: Pick<PurchaseOrderLine, 'invoiceStatus' | 'closeStatus'>
 ): boolean {
   return !statusMatches(line.invoiceStatus, FULLY_INVOICED_LINE_STATUSES)
-    && !statusMatches(line.paymentStatus, FULLY_PAID_LINE_STATUSES)
     && !statusMatches(line.closeStatus, CLOSED_FOR_INVOICING_STATUSES);
 }
 
@@ -2583,7 +2580,7 @@ function countLineStatuses(
   const counts: Record<string, number> = {};
   for (const line of lines) {
     const status = line[field];
-    const label = status ? `${status.descriptor ?? '(no descriptor)'} [${status.id ?? 'no id'}]` : '(none)';
+    const label = status ? (status.descriptor ?? status.id ?? '(unnamed)') : '(none)';
     counts[label] = (counts[label] ?? 0) + 1;
   }
   return counts;
@@ -2610,7 +2607,7 @@ export function markPurchaseOrderLineAvailability(
 
 export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): string {
   const po = purchaseOrderNumber || 'the PO';
-  return `Invoice lines that matched lines on ${po} already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.`;
+  return `Invoice lines that matched lines on ${po} already fully invoiced or closed were coded from the PO but not linked to PO lines.`;
 }
 
 export function purchaseOrderLineFallbackNote(label: string, purchaseOrderNumber?: string): string | undefined {

@@ -61,7 +61,7 @@ export const poLineSelectionPromptRules = `
 PO line selection by status and service dates. The input also has these fields:
 - **invoiceDate** (optional): Invoice date from the document (YYYY-MM-DD when known)
 - **invoiceServicePeriod** (optional): Service or billing period from the document, as written (e.g. "2026 - September", "Q3 2026", "Jul 1 - Sep 30, 2026")
-- Each **purchaseOrderLines** entry also has startDate/endDate (the line's service window, YYYY-MM-DD, when set) and availableForInvoicing (false when the line is already fully invoiced, fully paid, or closed)
+- Each **purchaseOrderLines** entry also has startDate/endDate (the line's service window, YYYY-MM-DD, when set) and availableForInvoicing (false when the line is already fully invoiced or closed)
 
 When several PO lines fit an extracted line's description equally (for example monthly or quarterly lines for the same service), use service dates to choose:
    - Find the period each invoice line covers. A month name, quarter, or date range in that extracted line's own description applies to that line only and wins over invoiceServicePeriod; invoiceServicePeriod applies to lines whose description states no period. Read month names ("June", "Jul"), quarters ("Q3" = Jul 1 - Sep 30), and ranges; assume the invoice's year when the year is omitted.

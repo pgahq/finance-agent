@@ -1204,12 +1204,12 @@ describe('enrich_invoice', () => {
     expect(mergeCall[7]).toEqual({ invoiceDate: '2026-10-02', servicePeriod: 'Q4 2026' });
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.omitPurchaseOrderLineReference).toBeUndefined();
-    const notes = params.buildNotes([{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' }]);
-    expect(notes).toContain('Invoice lines that matched lines on PO-413898 already fully invoiced, fully paid, or closed were coded from the PO but not linked to PO lines.');
+    const notes = params.buildNotes([{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' }]);
+    expect(notes).toContain('Invoice lines that matched lines on PO-413898 already fully invoiced or closed were coded from the PO but not linked to PO lines.');
 
     const bothNotes = params.buildNotes([
       { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
-      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced, fully paid, or closed)' },
+      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
     ]);
     expect(bothNotes.match(/Purchase order lines: /g)).toHaveLength(2);
     expect(bothNotes).not.toContain('Fallback values applied');
