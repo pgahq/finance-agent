@@ -745,10 +745,10 @@ function toIsoDate(value?: string | null): string | undefined {
 // merge model must honor, so the invoice-date guard leaves it alone. Over-matching only keeps
 // the model pick; under-matching would let the guard override a stated period.
 const SERVICE_PERIOD_PATTERN = new RegExp([
-  String.raw`\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`,
-  String.raw`\bq[1-4]\b|\bquarter\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+qtr\b`,
+  String.raw`\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?=\d|\b)`,
+  String.raw`\bq[1-4]\b|\bh[12]\b|\bquarter\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+qtr\b`,
   String.raw`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b`,
-  String.raw`\b\d{1,2}[/-]\d{4}\b|\b\d{4}[/-]\d{1,2}(?:[/-]\d{1,2})?\b`,
+  String.raw`\b\d{1,2}[/-]\d{4}\b|\b\d{4}[/.-]\d{1,2}(?:[/.-]\d{1,2})?\b`,
   String.raw`\b\d{1,2}\.\d{1,2}\.\d{2,4}\b`,
 ].join('|'), 'i');
 

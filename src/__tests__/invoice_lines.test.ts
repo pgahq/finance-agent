@@ -1212,11 +1212,15 @@ describe('statesServicePeriod', () => {
     '9/1 - 9/30',
     '2026-09-01 to 2026-09-30',
     '09.01.2026 - 09.30.2026',
+    'AUG2026 retainer',
+    'Retainer Sep26',
+    'Retainer 2026.08',
+    'H2 2026',
   ])('recognizes "%s" as a stated period', (text) => {
     expect(statesServicePeriod(text)).toBe(true);
   });
 
-  it.each(['Monthly retainer', 'Annual services', 'Mayfield maintenance', 'Consulting 1.5 hours', '', null])(
+  it.each(['Monthly retainer', 'Annual services', 'Consulting retainer', 'Version 2.5 license', 'Mayfield maintenance', 'Consulting 1.5 hours', '', null])(
     'does not treat "%s" as a stated period',
     (text) => {
       expect(statesServicePeriod(text)).toBe(false);
