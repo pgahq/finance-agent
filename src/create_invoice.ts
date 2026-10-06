@@ -46,8 +46,10 @@ import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  chargeReconciliationLogSummary,
   chargeReconciliationMessages,
-  formatChargeReconciliationNotes,
+  CHARGE_RECONCILIATION_FALLBACK_FIELD,
+  formatAmountCheckNotes,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
@@ -750,7 +752,7 @@ async function processInvoiceCluster(
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
-    if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
+    if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
     const candidateLines = withComposedLineDescriptions(charges.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
@@ -874,11 +876,21 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatChargeReconciliationNotes(chargeReconciliation) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
+    const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => [
+      ...chargeCheck,
+      ...appliedFallbacks.filter(isAmountCheck).map(f => f.label),
+    ];
+    const submittedSlackAmountCheck = (appliedFallbacks: AppliedFallback[]) => {
+      const lines = amountCheckLines(appliedFallbacks);
+      return lines.length ? { chargeCheck: lines } : {};
+    };
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
+      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
       return baseNotes
+        + formatAmountCheckNotes(amountCheckLines(appliedFallbacks))
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
@@ -942,7 +954,6 @@ async function processInvoiceCluster(
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },
-      ...(chargeCheck.length ? { chargeCheck } : {}),
       lineCount: finalLines.length,
     };
 
@@ -1086,8 +1097,8 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
-          return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
+          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
+          return `${baseNotes}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
@@ -1141,7 +1152,8 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
+          ...submittedSlackAmountCheck(updateOutcome.appliedFallbacks),
+          appliedFallbacks: updateOutcome.appliedFallbacks.filter(f => !isAmountCheck(f)).map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
@@ -1219,7 +1231,8 @@ async function processInvoiceCluster(
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
+      ...submittedSlackAmountCheck(createOutcome.appliedFallbacks),
+      appliedFallbacks: createOutcome.appliedFallbacks.filter(f => !isAmountCheck(f)).map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));

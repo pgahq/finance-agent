@@ -84,11 +84,30 @@ function appendPriorFailureBlocks(
   });
 }
 
+const CHARGE_CHECK_LINE_LIMIT = 500;
+const CHARGE_CHECK_MAX_SECTIONS = 4;
+
+function escapeSlackMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Lines quote supplier-controlled invoice descriptions, so each is escaped, capped, and given its
+// own section. The section count is bounded and the last line (the submit-time check) is always kept.
 function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): void {
   if (chargeCheck.length === 0) return;
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: truncateSlackText(`*Amount Check*\n${chargeCheck.map((line) => `• ${line}`).join('\n')}`) }
+  const shown = chargeCheck.length > CHARGE_CHECK_MAX_SECTIONS
+    ? [
+        ...chargeCheck.slice(0, CHARGE_CHECK_MAX_SECTIONS - 2),
+        `${chargeCheck.length - (CHARGE_CHECK_MAX_SECTIONS - 1)} more amount-check notes are in the Workday note.`,
+        chargeCheck[chargeCheck.length - 1],
+      ]
+    : chargeCheck;
+  shown.forEach((line, index) => {
+    const bullet = `• ${escapeSlackMrkdwn(truncateSlackText(line, CHARGE_CHECK_LINE_LIMIT))}`;
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: index === 0 ? `*Amount Check*\n${bullet}` : bullet }
+    });
   });
 }
 
@@ -626,7 +645,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
   }
 
-  if (canModify) appendChargeCheckBlock(blocks, chargeCheck ?? []);
+  appendChargeCheckBlock(blocks, chargeCheck ?? []);
 
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {

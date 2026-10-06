@@ -2283,6 +2283,195 @@ describe('Workday utilities', () => {
       ]);
     });
 
+    const mockUpdateClient = (invoiceData: Record<string, unknown>) => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn((_request: any, callback: any) => {
+          callback(null, { Response_Data: { Supplier_Invoice: { Supplier_Invoice_Data: {
+            Invoice_Number: '12345',
+            Company_Reference: { ID: 'company-wid' },
+            Currency_Reference: { ID: 'USD' },
+            Invoice_Date: '2024-01-01',
+            ...invoiceData,
+          } } } });
+        }),
+        Submit_Supplier_Invoice: jest.fn(),
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      const captured: { request?: any } = {};
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        captured.request = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+      return () => captured.request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+    };
+
+    it('drops an OCR line that repeats header tax when no final lines were built', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '106.00',
+        Tax_Amount: '6.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting', Quantity: '1', Unit_Cost: '100', Extended_Amount: '100' },
+          { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Sales Tax', Quantity: '1', Unit_Cost: '6', Extended_Amount: '6' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Tax_Amount).toBe('6.00');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting']);
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Removed invoice line "Sales Tax" ($6.00): that amount is already on the header Tax_Amount.',
+      }]));
+    });
+
+    it('keeps the coded freight line of an all-freight invoice on a resubmit without final lines', async () => {
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+        Quantity: '0',
+        Unit_Cost: '0',
+        Extended_Amount: '4595',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
+      };
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [freightLine],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+          Extended_Amount: '4595',
+          Spend_Category_Reference: freightLine.Spend_Category_Reference,
+        })
+      ]);
+    });
+
+    it.each([
+      ['($110.00)', '-100.00', '($10.00)', '0.00'],
+      ['110.00-', '100.00-', '10.00-', '0.00'],
+      ['\u2212110.00', '\u2212100.00', '0.00', '\u221210.00'],
+    ])('does not flag a credit with control %s, line %s, freight %s, tax %s', async (control, line, freight, tax) => {
+      mockUpdateClient({
+        Control_Amount_Total: control,
+        Freight_Amount: freight,
+        Tax_Amount: tax,
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Returned widgets', Quantity: '1', Unit_Cost: line, Extended_Amount: line },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+    });
+
+    it('flags rather than removes a negative freight credit that repeats on an OCR line', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '-110.00',
+        Freight_Amount: '-10.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Returned widgets', Quantity: '1', Unit_Cost: '-100', Extended_Amount: '-100.00' },
+          { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Freight credit for return 9', Quantity: '1', Unit_Cost: '-10', Extended_Amount: '-10.00' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(getData().Invoice_Line_Replacement_Data).toHaveLength(2);
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Lines -$110.00 + freight -$10.00 + tax $0.00 = -$120.00, but the amount due is -$110.00. Review lines and header charges.',
+      }]));
+    });
+
+    it('never sends an unparseable Workday Freight_Amount on a goods invoice', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '100.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting', Quantity: '1', Unit_Cost: '100', Extended_Amount: '100' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      expect(getData()).not.toHaveProperty('Freight_Amount');
+    });
+
+    it('does not report a header-freight fallback when a resubmit keeps coded OCR freight lines', async () => {
+      mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({ freightAsLines: true });
+
+      expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+    });
+
+    it('zeroes an unparseable header freight when a resubmit keeps coded freight lines', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
+    it('flags header freight that disagrees with the control total on an update with no lines', async () => {
+      mockUpdateClient({ Control_Amount_Total: '100.00', Freight_Amount: '15.00', Tax_Amount: '0.00' });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Lines $0.00 + freight $15.00 + tax $0.00 = $15.00, but the amount due is $100.00. Review lines and header charges.',
+      }]));
+    });
+
+    it('zeroes an unparseable OCR Freight_Amount when freightAsLines is set', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '15.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        freightAsLines: true,
+        finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+      });
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+    });
+
     it('keeps freight lines and zeroes the OCR Freight_Amount when freightAsLines is set on update', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
@@ -5578,39 +5767,106 @@ describe('Workday utilities', () => {
         ]);
       });
 
-      it('without freightAsLines, drops a single line that repeats header freight instead of counting it twice', async () => {
+      it('drops a final tax line that repeats header tax and reports it for the amount check', async () => {
         const getData = captureCreate();
+        const buildNotes = jest.fn().mockReturnValue('');
 
-        await submitNewSupplierInvoiceForTest({
-          extractedAmountDue: '$4,595.00',
-          extractedFreightAmount: '$4,595.00',
-          invoiceLineQuantityDisplayed: false,
-          finalLines: [
-            { lineOrder: 1, description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: 0, extendedAmount: 4595 },
-          ],
-        });
-
-        const data = getData();
-        expect(data.Control_Amount_Total).toBe(4595);
-        expect(data.Freight_Amount).toBe(4595);
-        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
-      });
-
-      it('drops a freight-worded line that repeats header freight and keeps merchandise', async () => {
-        const getData = captureCreate();
-
-        await submitNewSupplierInvoiceForTest({
-          extractedAmountDue: '$115.00',
-          extractedFreightAmount: '$15.00',
+        const result = await submitNewSupplierInvoiceForTest({
+          buildNotes,
+          extractedAmountDue: '$106.00',
+          extractedTaxAmount: '$6.00',
           finalLines: [
             { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
-            { lineOrder: 2, description: 'Freight for order 88', quantity: 1, unitCost: 15, extendedAmount: 15 },
+            { lineOrder: 2, description: 'Sales Tax', quantity: 1, unitCost: 6, extendedAmount: 6 },
           ],
         });
 
         const data = getData();
-        expect(data.Freight_Amount).toBe(15);
+        expect(data.Tax_Amount).toBe(6);
         expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting Services']);
+        const removal = {
+          field: 'chargeReconciliation',
+          label: 'Removed invoice line "Sales Tax" ($6.00): that amount is already on the header Tax_Amount.',
+        };
+        expect(buildNotes).toHaveBeenCalledWith(expect.arrayContaining([removal]), []);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([removal]));
+      });
+
+      it('submits a freight row as the line with no raw unparseable Freight_Amount', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$15.00',
+          extractedFreightAmount: 'n/a',
+          freightAsLines: true,
+          finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        });
+
+        const data = getData();
+        expect(data).not.toHaveProperty('Freight_Amount');
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+      });
+
+      it('falls back to header freight when freightAsLines is set but no line survived merge', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,595.00',
+          extractedFreightAmount: '$4,595.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        expect(getData().Freight_Amount).toBe(4595);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.',
+        }]));
+      });
+
+      it('reports header freight that exceeds the amount due when no lines are submitted', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$40.00',
+          extractedFreightAmount: '$50.00',
+          finalLines: [],
+        });
+
+        expect(getData().Invoice_Line_Replacement_Data).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Lines $0.00 + freight $50.00 + tax $0.00 = $50.00, but the amount due is $40.00. Review lines and header charges.',
+        }]));
+      });
+
+      it('does not flag an extracted credit, whose amount due and final lines are both parsed unsigned', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '-$110.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Returned widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Restocking credit', quantity: 1, unitCost: 10, extendedAmount: 10 },
+          ],
+        });
+
+        expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+      });
+
+      it('reports submitted lines + freight + tax that do not equal the amount due', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$100.00',
+          extractedFreightAmount: '$15.00',
+          finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 }],
+        });
+
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Lines $100.00 + freight $15.00 + tax $0.00 = $115.00, but the amount due is $100.00. Review lines and header charges.',
+        }]));
       });
 
       it('keeps header-only freight and every line when the totals already reconcile', async () => {

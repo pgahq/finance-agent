@@ -28,8 +28,12 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
+  chargeReconciliationLogSummary,
   chargeReconciliationMessages,
-  formatChargeReconciliationNotes,
+  CHARGE_RECONCILIATION_FALLBACK_FIELD,
+  extractedChargeCheck,
+  extractedChargeReconciliation,
+  formatAmountCheckNotes,
   normalizeSupplierInvoiceLineAmounts,
   prepareInvoiceCharges,
   resolveInvoiceLineQuantityDisplayed,
@@ -235,16 +239,25 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
+    const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
+    const extractedCharges = { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount };
+    const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
     const charges = prepareInvoiceCharges(
-      canModifyInvoice
-        ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
-        : [],
-      { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount },
-      { allowFreightAsLines: canModifyInvoice && Boolean(targetSupplierWID) }
+      canModifyInvoice ? extractedLines : [],
+      extractedCharges,
+      { allowFreightAsLines: submitsLines }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
-    const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
-    if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
+    // Without a submit, buildSubmitInvoiceData never runs its amount check, so check the extracted totals here.
+    const checkedReconciliation = submitsLines
+      ? chargeReconciliation
+      : extractedChargeReconciliation(extractedLines, extractedCharges);
+    const chargeCheck = submitsLines
+      ? chargeReconciliationMessages(chargeReconciliation)
+      : extractedChargeCheck(extractedLines, extractedCharges);
+    if (chargeCheck.length) {
+      debug('Invoice amount check', { ...chargeReconciliationLogSummary(checkedReconciliation), annotateOnly: !submitsLines });
+    }
     const candidateLines = withComposedLineDescriptions(charges.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
@@ -295,13 +308,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatChargeReconciliationNotes(chargeReconciliation) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
       return baseNotes
+        + formatAmountCheckNotes([...chargeCheck, ...(merged.chargeReconciliationLabels ?? [])])
         + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
         + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
@@ -391,7 +405,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
-      ...(chargeCheck.length ? { chargeCheck } : {}),
+      ...(chargeCheck.length || fallbacks.chargeReconciliationLabels?.length
+        ? { chargeCheck: [...chargeCheck, ...(fallbacks.chargeReconciliationLabels ?? [])] }
+        : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
         : undefined,
@@ -455,6 +471,7 @@ interface Fallbacks extends UpfrontFallbacks {
   purchaseOrderLineNotes: string[];
   poPassthroughWorktagsOmitted: boolean;
   duplicateWorktagsLabel?: string;
+  chargeReconciliationLabels?: string[];
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
@@ -481,6 +498,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
       .filter((note): note is string => !!note))],
     poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
     duplicateWorktagsLabel: submissionFallbacks.find(f => f.field === 'duplicateWorktags')?.label,
+    chargeReconciliationLabels: submissionFallbacks.filter(f => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD).map(f => f.label),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
