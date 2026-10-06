@@ -55,3 +55,22 @@ Guidelines:
 - Cost center IDs and fund IDs must come from matched PO lines only. Never copy a number or token from the email body into costCenterId or fundId — those values are resolved and applied outside this step
 - Spend category IDs come from PO lines only — never construct them from email text
 - Set null for any worktag field you cannot confidently determine from the available sources`;
+
+export const poLineSelectionPromptRules = `
+
+PO line selection by status and service dates. The input also has these fields:
+- **invoiceDate** (optional): Invoice date from the document (YYYY-MM-DD when known)
+- **invoiceServicePeriod** (optional): Service or billing period from the document, as written (e.g. "2026 - September", "Q3 2026", "Jul 1 - Sep 30, 2026")
+- Each **purchaseOrderLines** entry also has startDate/endDate (the line's service window, YYYY-MM-DD, when set) and availableForInvoicing (false when the line is already fully invoiced or closed)
+
+When several PO lines fit an extracted line's description equally (for example monthly or quarterly lines for the same service), use service dates to choose:
+   - Find the period each invoice line covers. A month name, quarter, or date range in that extracted line's own description applies to that line only and wins over invoiceServicePeriod; invoiceServicePeriod applies to lines whose description states no period. Read month names ("June", "Jul"), quarters ("Q3" = Jul 1 - Sep 30), and ranges; assume the invoice's year when the year is omitted.
+   - Choose the PO line whose startDate-endDate window contains that period. A missing startDate or endDate leaves that side of the window open.
+   - Only when no period is stated for the line, or the stated period cannot be mapped to dates (e.g. "Annual services"), choose the PO line whose window contains invoiceDate.
+   - Never choose a PO line whose window clearly excludes the stated period when another PO line covers it. If an invoice lists several periods on separate lines, match each line to its own PO line.
+   - availableForInvoicing does not change which line matches by period or date. If the line whose window covers the period has availableForInvoicing false, still choose it and copy its purchaseOrderLineId and coding; never move to a different period's line because the matching one is unavailable. The reference is dropped downstream.
+   - Only when nothing distinguishes the candidate lines (no period, no usable invoiceDate), prefer a line with availableForInvoicing true.`;
+
+export function mergeInvoiceLinesPromptFor(poLineSelectionEnabled: boolean): string {
+  return poLineSelectionEnabled ? mergeInvoiceLinesPrompt + poLineSelectionPromptRules : mergeInvoiceLinesPrompt;
+}

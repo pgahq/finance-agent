@@ -1,9 +1,10 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   asArray,
@@ -17,12 +18,15 @@ import {
   type RelatedLob,
 } from './related_worktags.js';
 import {
+  collapseWorktagsToOnePerType,
   firstNonEmptyPoLineArray,
   mapPoSplitsToSupplierInvoiceSplitLineData,
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
   passthroughWorktagsForSplitInvoiceLine,
   replaceCostCenterWorktagsWithFallback,
+  worktagIdValuesFromReferences,
+  type OrgWorktagKind,
   type PurchaseOrderLineSplit,
 } from './po_worktags.js';
 
@@ -474,6 +478,12 @@ export interface PurchaseOrderLine {
   lineLevelWorktagsReference?: any[];
   splitLineData?: PurchaseOrderLineSplit[];
   shipToAddressId?: string | null;
+  startDate?: string;
+  endDate?: string;
+  invoiceStatus?: PurchaseOrderDocumentStatus;
+  paymentStatus?: PurchaseOrderDocumentStatus;
+  closeStatus?: PurchaseOrderDocumentStatus;
+  availableForInvoicing?: boolean;
 }
 
 export interface PurchaseOrderCompany {
@@ -514,6 +524,9 @@ interface buildSubmitInvoiceDataOptions {
   applyRelatedLob?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
+  orgWorktagKinds?: Map<string, OrgWorktagKind>;
+  resolveOrgWorktagKinds?: (ids: string[]) => Promise<Map<string, OrgWorktagKind>>;
+  omitPoPassthroughWorktags?: boolean;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -532,10 +545,12 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
+export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
+export const OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL = 'omitted PO pass-through worktags (kept PO split rows)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
 export interface AppliedFallback {
@@ -631,11 +646,122 @@ function submittedLinesCarryTaxApplicability(options: buildSubmitInvoiceDataOpti
   return lines.some((line: any) => line.Tax_Applicability_Reference);
 }
 
+// Counts how many lines of the invoice being updated already link to each PO line.
+function currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice: any): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of ([] as any[]).concat(currentInvoice?.Invoice_Line_Replacement_Data ?? [])) {
+    const ids = new Set<string>();
+    for (const ref of ([] as any[]).concat(line?.Purchase_Order_Line_Reference ?? [])) {
+      for (const id of ([] as any[]).concat(ref?.ID ?? [])) {
+        if (id?.$attributes?.type === 'Purchase_Order_Line_ID' && id.$value) ids.add(String(id.$value));
+      }
+    }
+    for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// A line matched to a consumed PO line drops its reference, unless the invoice being updated
+// already links to that PO line: this invoice may be what consumed it. Each existing link can
+// be kept by at most as many submitted lines as held it before, so an extra line matched to
+// the same consumed PO line still drops its reference. Mutates the remaining budget.
+function lineKeepsPurchaseOrderLineReference(
+  line: { purchaseOrderLineId?: string | null; omitPurchaseOrderLineReference?: boolean },
+  selfReferenceBudget: Map<string, number>
+): boolean {
+  if (!line.omitPurchaseOrderLineReference) return true;
+  const remaining = line.purchaseOrderLineId ? selfReferenceBudget.get(line.purchaseOrderLineId) ?? 0 : 0;
+  if (remaining <= 0) return false;
+  selfReferenceBudget.set(line.purchaseOrderLineId as string, remaining - 1);
+  return true;
+}
+
+function countSubmittedPurchaseOrderLineReferences(options: buildSubmitInvoiceDataOptions): number {
+  return ([] as any[])
+    .concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? [])
+    .filter((line: any) => line.Purchase_Order_Line_Reference)
+    .length;
+}
+
+// True only when the consumed-line flags removed at least one reference from the payload.
+function finalLinesDropConsumedPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
+  if (options.omitPurchaseOrderLineReference || options.finalLines === undefined) return false;
+  const finalLines = ([] as any[]).concat(options.finalLines as any);
+  if (!finalLines.some((line: any) => line.omitPurchaseOrderLineReference)) return false;
+  const unflagged = {
+    ...options,
+    finalLines: finalLines.map((line: any) => ({ ...line, omitPurchaseOrderLineReference: false })),
+  };
+  return countSubmittedPurchaseOrderLineReferences(unflagged) > countSubmittedPurchaseOrderLineReferences(options);
+}
+
 function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
   const lines = ([] as any[]).concat(
     buildSubmitInvoiceData({ ...options, omitPurchaseOrderLineReference: false }).Invoice_Line_Replacement_Data ?? []
   );
   return lines.some((line: any) => line.Purchase_Order_Line_Reference);
+}
+
+function linesCarryPoPassthroughWorktags(options: buildSubmitInvoiceDataOptions): boolean {
+  return (options.finalLines ?? []).some(line => Boolean(line.poPassthroughWorktagsReference?.length));
+}
+
+function poPassthroughWorktagIds(lines: FinalInvoiceLine[] | undefined): string[] {
+  return [...new Set((lines ?? []).flatMap(line => worktagIdValuesFromReferences([
+    ...(line.poPassthroughWorktagsReference ?? []),
+    ...(line.supplierInvoiceSplitLineData ?? []).flatMap(split => split.worktagReference ?? []),
+  ])))];
+}
+
+async function ensureOrgWorktagKinds(options: buildSubmitInvoiceDataOptions): Promise<buildSubmitInvoiceDataOptions> {
+  if (options.orgWorktagKinds || !options.resolveOrgWorktagKinds) return options;
+  const ids = poPassthroughWorktagIds(options.finalLines);
+  if (ids.length === 0) return options;
+  try {
+    return { ...options, orgWorktagKinds: await options.resolveOrgWorktagKinds(ids) };
+  } catch (error) {
+    debug('Failed to look up cached organization worktag kinds; submitting without them:', error);
+    return options;
+  }
+}
+
+const DUPLICATE_WORKTAG_LABEL_MAX_VALUES = 5;
+
+function worktagDisplayValue(tag: any): string {
+  const ids = ([] as any[]).concat(tag?.ID ?? []);
+  const primary = ids.find((id: any) => id?.$attributes?.type && id.$attributes.type !== 'WID') ?? ids[0];
+  return String(primary?.$value ?? '');
+}
+
+function duplicateWorktagsLabel(options: buildSubmitInvoiceDataOptions): string | undefined {
+  if (!options.finalLines?.length) return undefined;
+  const diagnostics: SubmitInvoiceDataDiagnostics = { droppedWorktags: [], droppedTags: [] };
+  buildSubmitInvoiceData(options, diagnostics);
+  const values = [...new Set(diagnostics.droppedTags.map(worktagDisplayValue).filter(Boolean))];
+  if (values.length === 0) return undefined;
+  const shown = values.slice(0, DUPLICATE_WORKTAG_LABEL_MAX_VALUES).join(', ');
+  const more = values.length > DUPLICATE_WORKTAG_LABEL_MAX_VALUES ? ` +${values.length - DUPLICATE_WORKTAG_LABEL_MAX_VALUES} more` : '';
+  return `kept one worktag per type (dropped ${shown}${more})`;
+}
+
+function formatWorktagForLog(tag: any): string {
+  return ([] as any[]).concat(tag?.ID ?? [])
+    .map((id: any) => `${id?.$attributes?.type ?? '?'}=${id?.$value ?? ''}`)
+    .join('|');
+}
+
+function summarizeSubmittedLineWorktags(invoiceData: Record<string, unknown>): unknown[] {
+  return ([] as any[]).concat(invoiceData.Invoice_Line_Replacement_Data ?? []).map((line: any) => ({
+    line: line.Line_Order,
+    worktags: ([] as any[]).concat(line.Worktags_Reference ?? []).map(formatWorktagForLog),
+    ...(line.Supplier_Invoice_Split_Line_Data
+      ? {
+          splits: ([] as any[]).concat(line.Supplier_Invoice_Split_Line_Data).map((split: any) =>
+            ([] as any[]).concat(split.Worktag_Reference ?? []).map(formatWorktagForLog)
+          ),
+        }
+      : {}),
+  }));
 }
 
 function submittedConversationUrlField(options: buildSubmitInvoiceDataOptions): boolean {
@@ -722,6 +848,17 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
 
   if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
     fallbacks.push({ field: 'purchaseOrderLine', label: OMITTED_PO_LINE_REFERENCE_LABEL });
+  } else if (finalLinesDropConsumedPurchaseOrderLineReference(options)) {
+    fallbacks.push({ field: 'consumedPurchaseOrderLine', label: CONSUMED_PO_LINE_REFERENCE_LABEL });
+  }
+
+  if (options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
+    fallbacks.push({ field: 'poPassthroughWorktags', label: OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL });
+  }
+
+  const droppedWorktagsLabel = duplicateWorktagsLabel(options);
+  if (droppedWorktagsLabel) {
+    fallbacks.push({ field: 'duplicateWorktags', label: droppedWorktagsLabel });
   }
 
   if (options.omitConversationUrlField) {
@@ -898,6 +1035,17 @@ async function getValidationFallbackField(
   if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {
     debug('Validation references a Closed or Pending Close PO line; retrying without Purchase_Order_Line_Reference');
     return 'purchaseOrderLine';
+  }
+
+  // The fault names no worktag type, so the classifier cannot map it and a fallback
+  // cost center would only add another tag. Retry once on the line's own coding.
+  if (isDuplicateWorktagTypeError(validationText)) {
+    if (!options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
+      debug('Validation is a duplicate worktag type; retrying without PO pass-through worktags (PO split rows kept)');
+      return 'poPassthroughWorktags';
+    }
+    debug('Validation is a duplicate worktag type but no PO pass-through worktags remain; skipping fallback retry');
+    return undefined;
   }
 
   if (isTaxApplicabilityValidationError(validationText) && submittedLinesCarryTaxApplicability(options)) {
@@ -1082,6 +1230,13 @@ function getFallbackRetryBuildOptions(
     };
   }
 
+  if (field === 'poPassthroughWorktags' && !options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
+    return {
+      buildOptions: { ...options, omitPoPassthroughWorktags: true },
+      fallbackLabel: OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL,
+    };
+  }
+
   if (field === 'conversationUrl' && submittedConversationUrlField(options)) {
     return {
       buildOptions: { ...options, omitConversationUrlField: true },
@@ -1092,8 +1247,30 @@ function getFallbackRetryBuildOptions(
   return undefined;
 }
 
-function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference } = options;
+interface SubmitInvoiceDataDiagnostics {
+  droppedWorktags: Array<{ line?: number; split?: number; worktag: string }>;
+  droppedTags: any[];
+}
+
+function lineWorktagTypeContext(
+  line: FinalInvoiceLine,
+  orgWorktagKinds: Map<string, OrgWorktagKind> | undefined,
+  relatedLob: RelatedLob | undefined
+) {
+  const orgKinds = new Map(orgWorktagKinds ?? []);
+  const setKind = (value: string | null | undefined, kind: OrgWorktagKind) => {
+    if (!value) return;
+    orgKinds.set(value, kind);
+    orgKinds.set(value.toLowerCase(), kind);
+  };
+  setKind(line.lineOfBusinessId, 'lob');
+  setKind(line.eventWid, 'event');
+  setKind(line.eventId, 'event');
+  return { relatedLob, lineOfBusinessId: line.lineOfBusinessId ?? null, orgKinds };
+}
+
+function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnostics?: SubmitInvoiceDataDiagnostics): any {
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1105,6 +1282,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
+  const selfReferenceBudget = currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice);
   const invoiceHadExistingLines = ocrLines.length > 0;
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
@@ -1199,7 +1377,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
   };
 
   const mappedMerchandiseFinalLines = merchandiseFinalLines.map(line => {
-    const hasSplitRows = Boolean(line.supplierInvoiceSplitLineData?.length);
+    const poPassthrough = omitPoPassthroughWorktags ? undefined : line.poPassthroughWorktagsReference;
+    const poSplits = line.supplierInvoiceSplitLineData;
+    const hasSplitRows = Boolean(poSplits?.length);
     const eventWorktags = !omitEventWorktag
       ? (line.eventWid ? [createReference('WID', line.eventWid)] : line.eventId ? [createReference('Organization_Reference_ID', line.eventId)] : [])
       : [];
@@ -1219,29 +1399,46 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
     const scalarWorktags = hasSplitRows
       ? eventWorktags
       : withFallbackWorktags([...allocationWorktags, ...eventWorktags], line.costCenterId, line.lineOfBusinessId);
-    const isDiscountOverride = line.hasDiscount === true;
+    const isDiscountOverride = isDiscountLine(line);
     const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
     const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
     const orgPassthroughContext = {
       relatedLob: relatedLobByCostCenter?.get(line.costCenterId ?? ''),
       lineOfBusinessId: line.lineOfBusinessId ?? null,
       lockFallbackCostCenter: Boolean(applyCostCenterFallback),
+      orgKinds: orgWorktagKinds,
     };
     const passthrough = passthroughWorktagsForSplitInvoiceLine(
-      line.poPassthroughWorktagsReference,
-      line.supplierInvoiceSplitLineData,
+      poPassthrough,
+      poSplits,
       orgPassthroughContext
     );
     const mergedWorktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
     const mappedSplits = mapPoSplitsToSupplierInvoiceSplitLineData(
-      line.supplierInvoiceSplitLineData,
+      poSplits,
       extendedAmountForSoap ?? line.extendedAmount,
       passthrough,
       orgPassthroughContext
     );
-    const { worktags, supplierInvoiceSplitLineData } = applyCostCenterFallback && fallbackCostCenterRef
+    const withCostCenterFallback = applyCostCenterFallback && fallbackCostCenterRef
       ? replaceCostCenterWorktagsWithFallback(mergedWorktags, mappedSplits, fallbackCostCenterRef)
       : { worktags: mergedWorktags, supplierInvoiceSplitLineData: mappedSplits };
+    const typeContext = lineWorktagTypeContext(line, orgWorktagKinds, orgPassthroughContext.relatedLob);
+    const parent = collapseWorktagsToOnePerType(withCostCenterFallback.worktags, typeContext);
+    const worktags = parent.worktags;
+    diagnostics?.droppedWorktags.push(
+      ...parent.dropped.map(tag => ({ line: line.lineOrder, worktag: formatWorktagForLog(tag) }))
+    );
+    diagnostics?.droppedTags.push(...parent.dropped);
+    const supplierInvoiceSplitLineData = withCostCenterFallback.supplierInvoiceSplitLineData?.map((split: any, index: number) => {
+      const { Worktag_Reference: splitWorktags, ...rest } = split;
+      const collapsed = collapseWorktagsToOnePerType(([] as any[]).concat(splitWorktags ?? []), typeContext);
+      diagnostics?.droppedWorktags.push(
+        ...collapsed.dropped.map(tag => ({ line: line.lineOrder, split: index + 1, worktag: formatWorktagForLog(tag) }))
+      );
+      diagnostics?.droppedTags.push(...collapsed.dropped);
+      return collapsed.worktags.length ? { ...rest, Worktag_Reference: collapsed.worktags } : rest;
+    });
     return {
       Line_Order: line.lineOrder,
       Item_Description: line.description,
@@ -1266,7 +1463,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions): any {
         Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
       }),
       ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && lineKeepsPurchaseOrderLineReference(line, selfReferenceBudget) && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
       ...(line.memo && { Memo: line.memo }),
     };
   });
@@ -1669,9 +1866,9 @@ async function submitSupplierInvoiceWithRepair({
 }> {
   const invoiceLabel = invoiceWorkdayID ?? '(new invoice)';
   const relatedLines = linesWithRelatedLob(buildOptions);
-  let attemptBuildOptions = relatedLines
+  let attemptBuildOptions = await ensureOrgWorktagKinds(relatedLines
     ? { ...buildOptions, finalLines: relatedLines }
-    : { ...buildOptions };
+    : { ...buildOptions });
   const failedRequestFingerprints = new Set<string>();
   const validationTriggeredFields = new Set<FallbackField>();
   const priorFailures: SupplierInvoiceSubmitPriorFailure[] = [];
@@ -1681,9 +1878,13 @@ async function submitSupplierInvoiceWithRepair({
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
     );
     const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks, [...priorFailures]) };
-    const invoiceData = buildSubmitInvoiceData(optionsWithNotes) as Record<string, unknown>;
+    const diagnostics: SubmitInvoiceDataDiagnostics = { droppedWorktags: [], droppedTags: [] };
+    const invoiceData = buildSubmitInvoiceData(optionsWithNotes, diagnostics) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
 
+    if (diagnostics.droppedWorktags.length) {
+      debug(`Dropped duplicate worktag types before submitting invoice ${invoiceLabel}: ${JSON.stringify(diagnostics.droppedWorktags)}`);
+    }
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
     }
@@ -1696,6 +1897,8 @@ async function submitSupplierInvoiceWithRepair({
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
         throw sanitizeSoapError(error, priorFailures);
       }
+
+      debug(`Submitted line worktags for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${JSON.stringify(summarizeSubmittedLineWorktags(invoiceData))}`);
 
       const validationError = summarizeValidationError(error);
       appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -2123,6 +2326,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
+  resolveOrgWorktagKinds?: (ids: string[]) => Promise<Map<string, OrgWorktagKind>>;
   paymentTermsId?: string;
   omitPurchaseOrderLineReference?: boolean;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
@@ -2146,6 +2350,7 @@ export async function submitSupplierInvoiceUpdate(
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
+    resolveOrgWorktagKinds,
     paymentTermsId,
     omitPurchaseOrderLineReference,
     attachments,
@@ -2209,6 +2414,7 @@ export async function submitSupplierInvoiceUpdate(
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
+      resolveOrgWorktagKinds,
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true,
       omitPurchaseOrderLineReference,
@@ -2251,6 +2457,7 @@ export interface SubmitNewSupplierInvoiceParams {
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
   resolveCostCenterWorkdayIds?: (costCenterIds: string[]) => Promise<Map<string, string>>;
+  resolveOrgWorktagKinds?: (ids: string[]) => Promise<Map<string, OrgWorktagKind>>;
   paymentTermsId?: string;
   attachments: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
@@ -2278,6 +2485,7 @@ export async function submitNewSupplierInvoice(
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
     resolveCostCenterWorkdayIds,
+    resolveOrgWorktagKinds,
     paymentTermsId,
     attachments,
     assigneeWID,
@@ -2331,6 +2539,7 @@ export async function submitNewSupplierInvoice(
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds,
+      resolveOrgWorktagKinds,
       paymentTermsWID: paymentTermsId,
       attachments,
       assigneeWID,
@@ -2454,10 +2663,17 @@ function parsePurchaseOrderCompany(poData: any): PurchaseOrderCompany | undefine
 }
 
 function parsePurchaseOrderDocumentStatus(poData: any): PurchaseOrderDocumentStatus | undefined {
-  const ref = ([] as any[]).concat(poData?.Purchase_Order_Document_Status_Reference ?? [])[0];
+  return parseStatusReference(poData?.Purchase_Order_Document_Status_Reference, 'Document_Status_ID');
+}
+
+function parseStatusReference(raw: any, idType: string): PurchaseOrderDocumentStatus | undefined {
+  const refs = ([] as any[]).concat(raw ?? []);
+  const ref = refs.find((candidate: any) =>
+    ([] as any[]).concat(candidate?.ID ?? []).some((entry: any) => entry?.$attributes?.type === idType)
+  ) ?? refs[0];
   if (!ref) return undefined;
   const ids = ([] as any[]).concat(ref.ID ?? []);
-  const id = ids.find((entry: any) => entry.$attributes?.type === 'Document_Status_ID')?.$value;
+  const id = ids.find((entry: any) => entry.$attributes?.type === idType)?.$value;
   const descriptor = ref.descriptor ?? ref.$attributes?.Descriptor;
   if (!id && !descriptor) return undefined;
   return {
@@ -2494,9 +2710,94 @@ export function isPurchaseOrderClosedForInvoicing(po: Pick<ParsedPurchaseOrder, 
     || CLOSED_FOR_INVOICING_STATUSES.has(normalizeDocumentStatus(status.descriptor));
 }
 
+// Production Get_Purchase_Orders responses carry line invoice status as a Document_Status_ID
+// value with no descriptor: "Fully Invoiced" / "Partially Invoiced".
+const FULLY_INVOICED_LINE_STATUSES = new Set(['fullyinvoiced', 'overinvoiced']);
+
+function statusMatches(status: PurchaseOrderDocumentStatus | undefined, values: Set<string>): boolean {
+  if (!status) return false;
+  return values.has(normalizeDocumentStatus(status.id)) || values.has(normalizeDocumentStatus(status.descriptor));
+}
+
+// Fully invoiced or closed PO lines cannot take another invoice line. Payment status is
+// parsed and logged but not used: production lines are FULLY PAID only when also Fully
+// Invoiced. Status IDs vary by tenant, so descriptors are checked too; a missing status reads
+// as available.
+export function isPurchaseOrderLineAvailableForInvoicing(
+  line: Pick<PurchaseOrderLine, 'invoiceStatus' | 'closeStatus'>
+): boolean {
+  return !statusMatches(line.invoiceStatus, FULLY_INVOICED_LINE_STATUSES)
+    && !statusMatches(line.closeStatus, CLOSED_FOR_INVOICING_STATUSES);
+}
+
+function countLineStatuses(
+  lines: PurchaseOrderLine[],
+  field: 'invoiceStatus' | 'paymentStatus' | 'closeStatus'
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const line of lines) {
+    const status = line[field];
+    const label = status ? (status.descriptor ?? status.id ?? '(unnamed)') : '(none)';
+    counts[label] = (counts[label] ?? 0) + 1;
+  }
+  return counts;
+}
+
+// Consumed lines stay in the list so line matching still sees their service windows and
+// coding; an invoice line matched to one is coded from it but submitted without its reference.
+export function markPurchaseOrderLineAvailability(
+  lines: PurchaseOrderLine[] | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): PurchaseOrderLine[] | undefined {
+  if (!lines?.length) return lines;
+  const enabled = isPoLineSelectionEnabled(env);
+  debug('PO line status counts:', {
+    invoiceStatus: countLineStatuses(lines, 'invoiceStatus'),
+    paymentStatus: countLineStatuses(lines, 'paymentStatus'),
+    closeStatus: countLineStatuses(lines, 'closeStatus'),
+    unavailableLines: lines.filter((line) => !isPurchaseOrderLineAvailableForInvoicing(line)).length,
+    poLineSelectionEnabled: enabled,
+  });
+  if (!enabled) return lines;
+  return lines.map((line) => ({ ...line, availableForInvoicing: isPurchaseOrderLineAvailableForInvoicing(line) }));
+}
+
+export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): string {
+  const po = purchaseOrderNumber || 'the PO';
+  return `Invoice lines that matched lines on ${po} already fully invoiced or closed were coded from the PO but not linked to PO lines.`;
+}
+
+export function purchaseOrderLineFallbackNote(label: string, purchaseOrderNumber?: string): string | undefined {
+  if (label === OMITTED_PO_LINE_REFERENCE_LABEL) return closedPurchaseOrderLineNote(purchaseOrderNumber);
+  if (label === CONSUMED_PO_LINE_REFERENCE_LABEL) return consumedPurchaseOrderLinesNote(purchaseOrderNumber);
+  return undefined;
+}
+
+export function isPurchaseOrderLineFallback(fallback: Pick<AppliedFallback, 'field'>): boolean {
+  return fallback.field === 'purchaseOrderLine' || fallback.field === 'consumedPurchaseOrderLine';
+}
+
+export function formatPurchaseOrderLineFallbackNotes(fallbacks: AppliedFallback[], purchaseOrderNumber?: string): string {
+  const notes = [...new Set(fallbacks
+    .filter(isPurchaseOrderLineFallback)
+    .map((fallback) => purchaseOrderLineFallbackNote(fallback.label, purchaseOrderNumber))
+    .filter((note): note is string => !!note))];
+  return notes.map((note) => `\n\nPurchase order lines: ${note}`).join('');
+}
+
 export function closedPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
   const po = purchaseOrderNumber || 'The PO';
   return `${po} is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.`;
+}
+
+function summarizePurchaseOrderLineWorktags(lines: PurchaseOrderLine[]): unknown[] {
+  return lines.map(line => ({
+    line: line.purchaseOrderLineId,
+    worktags: ([] as any[]).concat(line.lineLevelWorktagsReference ?? line.worktagsReference ?? []).map(formatWorktagForLog),
+    ...(line.splitLineData?.length
+      ? { splits: line.splitLineData.map(split => split.worktagReference.map(formatWorktagForLog)) }
+      : {}),
+  }));
 }
 
 export async function loadPurchaseOrder(
@@ -2506,6 +2807,9 @@ export async function loadPurchaseOrder(
   try {
     const response = await getPurchaseOrder(context, purchaseOrderNumber);
     const parsed = parsePurchaseOrder(response);
+    if (parsed?.lines.length) {
+      debug(`PO ${purchaseOrderNumber} line worktags: ${JSON.stringify(summarizePurchaseOrderLineWorktags(parsed.lines))}`);
+    }
     if (!parsed || parsed.documentNumber !== purchaseOrderNumber) {
       debug(`PO ${purchaseOrderNumber} not found in Workday (returned: ${parsed?.documentNumber ?? 'none'}) - skipping PO processing`);
       return undefined;
@@ -2559,6 +2863,8 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
       lineLevelWorktagsReference,
       splitLineData,
       shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+      ...parsePurchaseOrderLineServiceWindow(line),
+      ...parsePurchaseOrderLineStatuses(line),
     };
   });
 
@@ -2581,10 +2887,42 @@ export function parsePurchaseOrderLines(poResponse: any): PurchaseOrderLine[] {
       lineLevelWorktagsReference,
       splitLineData,
       shipToAddressId: extractShipToAddressId(line.Ship_To_Address_Reference),
+      ...parsePurchaseOrderLineStatuses(line),
     };
   });
 
   return [...parsedServiceLines, ...parsedGoodsLines].sort((a, b) => a.lineOrder - b.lineOrder);
+}
+
+// An unparseable bound is kept as its raw text so service-date matching treats the window as
+// unknown; dropping it would read as an open-ended window.
+function parseServiceWindowBound(raw: unknown): string | undefined {
+  const normalized = normalizeInvoiceDate(raw);
+  if (normalized) return normalized;
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  return text || undefined;
+}
+
+function parsePurchaseOrderLineServiceWindow(line: any): Pick<PurchaseOrderLine, 'startDate' | 'endDate'> {
+  const startDate = parseServiceWindowBound(line.Start_Date);
+  const endDate = parseServiceWindowBound(line.End_Date);
+  return {
+    ...(startDate ? { startDate } : {}),
+    ...(endDate ? { endDate } : {}),
+  };
+}
+
+function parsePurchaseOrderLineStatuses(
+  line: any
+): Pick<PurchaseOrderLine, 'invoiceStatus' | 'paymentStatus' | 'closeStatus'> {
+  const invoiceStatus = parseStatusReference(line.Invoice_Status_Reference, 'Document_Status_ID');
+  const paymentStatus = parseStatusReference(line.Payment_Status_Reference, 'Document_Payment_Status_ID');
+  const closeStatus = parseStatusReference(line.Close_Status_Reference, 'Document_Status_ID');
+  return {
+    ...(invoiceStatus ? { invoiceStatus } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
+    ...(closeStatus ? { closeStatus } : {}),
+  };
 }
 
 export async function getPurchaseOrder(

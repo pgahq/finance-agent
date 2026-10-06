@@ -1,7 +1,8 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { PurchaseOrderLine } from './workday.js';
-import { mergeInvoiceLinesPrompt, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
+import { mergeInvoiceLinesPromptFor, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
+import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
@@ -129,8 +130,19 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  /** Matched PO line is fully invoiced or closed: keep its coding, drop its reference. */
+  omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
+}
+
+// Extraction sets hasDiscount on merchandise rows that print a discounted net price.
+// Only a row that credits money back is a discount line; a positive row is merchandise
+// and must keep its quantity and PO line link so Workday records the PO as invoiced.
+export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'extendedAmount' | 'unitCost'>): boolean {
+  if (line.hasDiscount !== true) return false;
+  const amount = line.extendedAmount ?? line.unitCost;
+  return amount == null || amount <= 0;
 }
 
 export interface LineFallbacks {
@@ -309,7 +321,7 @@ function extractSpendCategoryId(spendCategoryReference: any): string | null {
   return match?.$value ?? null;
 }
 
-interface ParsedPoLineWorktags {
+export interface ParsedPoLineWorktags {
   purchaseOrderLineId: string | null;
   lineOfBusinessId: string | null;
   costCenterId: string | null;
@@ -322,6 +334,9 @@ interface ParsedPoLineWorktags {
   memo: string | null;
   shipToAddressId: string | null;
   splitLineData: PurchaseOrderLineSplit[];
+  startDate?: string | null;
+  endDate?: string | null;
+  availableForInvoicing?: boolean;
 }
 
 function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPoLineWorktags[] {
@@ -344,6 +359,9 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
+      startDate: line.startDate ?? null,
+      endDate: line.endDate ?? null,
+      availableForInvoicing: line.availableForInvoicing !== false,
     };
   });
 }
@@ -593,6 +611,7 @@ export function applyDefaultCompanyLineWorktags(
     spendCategoryId: fallbackIds.spendCategoryId ?? null,
     lineOfBusinessId: fallbackIds.lineOfBusinessId ?? null,
     purchaseOrderLineId: null,
+    omitPurchaseOrderLineReference: undefined,
     eventId: null,
     eventWid: null,
     shipToAddressId: null,
@@ -657,14 +676,27 @@ export function applyMissingQuantityColumnLines(
 ): FinalInvoiceLine[] {
   if (invoiceLineQuantityDisplayed) return lines;
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     return asAmountOnlyLine(line, finalLineExtendedAmount(line));
   });
 }
 
+// Workday only counts PO quantity as invoiced when the linked line keeps its quantity.
+// A PO-linked discount line (printed price before discount) submits the net unit price
+// when that price reproduces the printed line total. The WSDL allows six decimal places
+// on Unit_Cost; we round to four, which covers ordinary percentage discounts that do not
+// divide evenly to cents (e.g. 7 × $29.88 at 10% off = $188.24 → $26.8914).
+function netUnitCostForDiscountedPurchaseOrderLine(line: FinalInvoiceLine, extendedAmount: number): number | null {
+  const quantity = line.quantity;
+  if (line.hasDiscount !== true || !line.purchaseOrderLineId || quantity == null || quantity <= 0) return null;
+  const netUnitCost = Math.round((extendedAmount / quantity) * 10000) / 10000;
+  if (line.unitCost != null && netUnitCost >= line.unitCost) return null;
+  return toCents(quantity * netUnitCost) === toCents(extendedAmount) ? netUnitCost : null;
+}
+
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     if (line.quantity === 0 && line.unitCost === 0) return line;
 
     const extendedAmount = line.extendedAmount ?? null;
@@ -676,6 +708,8 @@ export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): Fina
     }
 
     if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
+      const netUnitCost = netUnitCostForDiscountedPurchaseOrderLine(line, extendedAmount);
+      if (netUnitCost != null) return { ...line, unitCost: netUnitCost };
       return asAmountOnlyLine(line, extendedAmount);
     }
 
@@ -703,13 +737,141 @@ export function lineHasQuantityOrUnitAndExtended(line: FinalInvoiceLine): boolea
 
 export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(line => {
-    if (line.hasDiscount === true) return line;
+    if (isDiscountLine(line)) return line;
     if (!lineHasQuantityOrUnitAndExtended(line)) return line;
     return {
       ...line,
       quantity: 0,
       unitCost: 0,
     };
+  });
+}
+
+export interface InvoiceDateContext {
+  invoiceDate?: string | null;
+  servicePeriod?: string | null;
+}
+
+function isValidIsoDate(iso: string): boolean {
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso;
+}
+
+function toIsoDate(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const iso = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return isValidIsoDate(iso[1]) ? iso[1] : undefined;
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split('T')[0];
+}
+
+// Month names, quarters, and numeric dates or month-years. Text that matches is a period the
+// merge model must honor, so the invoice-date guard leaves it alone. Over-matching only keeps
+// the model pick; under-matching would let the guard override a stated period.
+const SERVICE_PERIOD_PATTERN = new RegExp([
+  String.raw`\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?=\d|\b)`,
+  String.raw`\bq[1-4]\b|\bh[12]\b|\bquarter\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+qtr\b`,
+  String.raw`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b`,
+  String.raw`\b\d{1,2}[/-]\d{4}\b|\b\d{4}[/.-]\d{1,2}(?:[/.-]\d{1,2})?\b`,
+  String.raw`\b\d{1,2}\.\d{1,2}\.\d{2,4}\b`,
+].join('|'), 'i');
+
+export function statesServicePeriod(text?: string | null): boolean {
+  return !!text && SERVICE_PERIOD_PATTERN.test(text);
+}
+
+// A missing Start_Date or End_Date leaves that side of the window open. An unparseable or
+// inverted window is unknown, so it neither triggers nor receives a relink.
+function poLineCoversDate(line: Pick<ParsedPoLineWorktags, 'startDate' | 'endDate'>, isoDate: string): boolean | undefined {
+  const startDate = toIsoDate(line.startDate);
+  const endDate = toIsoDate(line.endDate);
+  if ((line.startDate && !startDate) || (line.endDate && !endDate)) return undefined;
+  if (!startDate && !endDate) return undefined;
+  if (startDate && endDate && startDate > endDate) return undefined;
+  return (!startDate || startDate <= isoDate) && (!endDate || isoDate <= endDate);
+}
+
+function worktagIdentityKey(worktags: any[]): string {
+  const identities = worktags
+    .map(worktagIdentity)
+    .filter((identity): identity is string => !!identity);
+  return [...new Set(identities)].sort().join('|');
+}
+
+function poLineCodingKey(line: ParsedPoLineWorktags): string {
+  const passthrough = worktagIdentityKey(passthroughForPoLine(line));
+  if (!passthrough) return '';
+  const splits = line.splitLineData.map(split => worktagIdentityKey(split.worktagReference ?? [])).sort();
+  return JSON.stringify([
+    line.costCenterId,
+    line.fundId,
+    line.spendCategoryId,
+    line.lineOfBusinessId,
+    passthrough,
+    splits,
+  ]);
+}
+
+// A relink changes only the PO line reference, so it is allowed only between lines whose
+// scalar IDs, passthrough worktags, and split worktags all match; every PO-derived field the
+// merge copied from the original line is then also true of the target. Lines with no
+// worktags never qualify.
+function poLinesShareCoding(a: ParsedPoLineWorktags, b: ParsedPoLineWorktags): boolean {
+  const key = poLineCodingKey(a);
+  return key !== '' && key === poLineCodingKey(b);
+}
+
+// Stated service periods are left to the merge model. This only corrects a pick whose
+// Start-End window excludes the invoice date when exactly one unclaimed PO line with the
+// same coding covers it, so multi-month invoices that already split across lines are untouched.
+export function alignPoLinesToInvoiceDate(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[],
+  invoiceDate?: string | null
+): FinalInvoiceLine[] {
+  const isoDate = toIsoDate(invoiceDate);
+  if (!isoDate || poLines.length < 2) return lines;
+  const poLinesById = new Map(
+    poLines
+      .filter((line): line is ParsedPoLineWorktags & { purchaseOrderLineId: string } => !!line.purchaseOrderLineId)
+      .map(line => [line.purchaseOrderLineId, line])
+  );
+  const claimed = new Set(lines.map(line => line.purchaseOrderLineId).filter((id): id is string => !!id));
+  return lines.map(line => {
+    const picked = line.purchaseOrderLineId ? poLinesById.get(line.purchaseOrderLineId) : undefined;
+    if (!picked || statesServicePeriod(line.description) || poLineCoversDate(picked, isoDate) !== false) return line;
+    const covering = [...poLinesById.values()].filter(candidate =>
+      !claimed.has(candidate.purchaseOrderLineId)
+      && poLineCoversDate(candidate, isoDate) === true
+      && poLinesShareCoding(candidate, picked)
+    );
+    if (covering.length !== 1) return line;
+    const target = covering[0];
+    claimed.add(target.purchaseOrderLineId);
+    debug(`Invoice date ${isoDate} is outside PO line ${picked.purchaseOrderLineId} (${picked.startDate} to ${picked.endDate}); linking line ${line.lineOrder} to ${target.purchaseOrderLineId} (${target.startDate} to ${target.endDate}) instead`);
+    return {
+      ...line,
+      purchaseOrderLineId: target.purchaseOrderLineId,
+      shipToAddressId: target.shipToAddressId,
+    };
+  });
+}
+
+export function markConsumedPoLineReferences(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  const consumedIds = new Set(
+    poLines
+      .filter(line => line.availableForInvoicing === false && line.purchaseOrderLineId)
+      .map(line => line.purchaseOrderLineId as string)
+  );
+  if (consumedIds.size === 0) return lines;
+  return lines.map(line => {
+    if (!line.purchaseOrderLineId || !consumedIds.has(line.purchaseOrderLineId)) return line;
+    debug(`Invoice line ${line.lineOrder} matched consumed PO line ${line.purchaseOrderLineId}; coding from it without Purchase_Order_Line_Reference`);
+    return { ...line, omitPurchaseOrderLineReference: true };
   });
 }
 
@@ -720,11 +882,19 @@ export async function buildFinalInvoiceLines(
   fallbackIds: InvoiceLineFallbackIds,
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup,
-  invoiceLineQuantityDisplayed?: boolean
+  invoiceLineQuantityDisplayed?: boolean,
+  invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
+  // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
+  const poLineSelectionEnabled = isPoLineSelectionEnabled() && invoiceContext !== undefined;
+  const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
+    ...(poLineSelectionEnabled ? {
+      invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
+      invoiceServicePeriod,
+    } : {}),
     extractedInvoiceLines: extractedLines,
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
@@ -738,6 +908,11 @@ export async function buildFinalInvoiceLines(
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
       splitLineData: line.splitLineData ?? [],
+      ...(poLineSelectionEnabled ? {
+        startDate: line.startDate,
+        endDate: line.endDate,
+        availableForInvoicing: line.availableForInvoicing,
+      } : {}),
     })),
     emailBody: emailBody ?? null,
   };
@@ -745,7 +920,7 @@ export async function buildFinalInvoiceLines(
   let mergeResult: MergeInvoiceLinesResult;
   try {
     mergeResult = await getAiResponse({
-      prompt: mergeInvoiceLinesPrompt,
+      prompt: mergeInvoiceLinesPromptFor(poLineSelectionEnabled),
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
@@ -763,8 +938,19 @@ export async function buildFinalInvoiceLines(
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
+  const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  // invoiceServicePeriod covers every line that states no period of its own, so when it
+  // names a period no line is left for the invoice-date fallback.
+  const selectedLines = !poLineSelectionEnabled
+    ? pinnedLines
+    : markConsumedPoLineReferences(
+      statesServicePeriod(invoiceServicePeriod)
+        ? pinnedLines
+        : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate),
+      parsedPoLines
+    );
   return finalizeInvoiceLines(
-    pinExtractedLineDescriptions(lines, extractedLines),
+    selectedLines,
     appliedFallbacks,
     parsedPoLines,
     emailWorktags,

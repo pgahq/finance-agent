@@ -491,7 +491,7 @@ describe('notifyEnrichmentResult', () => {
       canModify: true,
       supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
       extracted: { purchaseOrderNumber: 'PO-413898' },
-      fallbacks: { defaultSupplier: false, closedPurchaseOrderLines: closedNote },
+      fallbacks: { defaultSupplier: false, purchaseOrderLineNotes: closedNote },
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
