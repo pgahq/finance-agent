@@ -487,10 +487,11 @@ export function formatChargeReconciliationNotes(reconciliation: SubmittedChargeR
   return formatAmountCheckNotes(chargeReconciliationMessages(reconciliation));
 }
 
-// A blank or unparseable extracted freight (`'n/a'`) is missing, so the freight recovered from
-// freight rows is used instead.
+// A blank, unparseable (`'n/a'`), or zero extracted freight does not override freight rows that
+// carry an amount; otherwise the stripped rows would vanish from both the lines and the header.
 function documentFreight(extracted: string | undefined, freightAmountFromLines: number | undefined): string | undefined {
-  if (extracted?.trim() && chargeAmount(extracted) != null) return extracted;
+  const parsed = extracted?.trim() ? chargeAmount(extracted) : undefined;
+  if (parsed != null && (parsed !== 0 || !freightAmountFromLines)) return extracted;
   return freightAmountFromLines != null ? String(freightAmountFromLines) : undefined;
 }
 

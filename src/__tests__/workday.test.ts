@@ -2415,6 +2415,23 @@ describe('Workday utilities', () => {
       expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
     });
 
+    it('uses freight from the new rows over the old header when the extracted freight is unparseable', async () => {
+      const getData = mockUpdateClient({ Control_Amount_Total: '115.00', Freight_Amount: '40.00', Tax_Amount: '0.00' });
+
+      await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$115.00',
+        extractedFreightAmount: 'n/a',
+        finalLines: [
+          { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ],
+      });
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(15);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+    });
+
     it('never sends an unparseable Workday Freight_Amount on a goods invoice', async () => {
       const getData = mockUpdateClient({
         Control_Amount_Total: '100.00',
@@ -5822,6 +5839,19 @@ describe('Workday utilities', () => {
         const data = getData();
         expect(data).not.toHaveProperty('Freight_Amount');
         expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+      });
+
+      it('does not claim a header-freight fallback when the header freight is zero', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$0.00',
+          extractedFreightAmount: '$0.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
       });
 
       it('does not claim a header-freight fallback when no freight amount is sent', async () => {

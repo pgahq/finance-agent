@@ -1326,6 +1326,15 @@ describe('prepareInvoiceCharges', () => {
     expect(prepared.freightAmount).toBe('15');
   });
 
+  it('does not let a zero extracted freight discard a freight row that has an amount', () => {
+    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
+    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$15.00', freight: '$0.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([shipping]);
+    expect(prepared.freightAmount).toBe('15');
+  });
+
   it('treats a blank extracted freight as missing and uses the freight rows', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
     const prepared = prepareInvoiceCharges([shipping], { amountDue: '$15.00', freight: ' ' });

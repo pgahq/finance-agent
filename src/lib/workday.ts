@@ -1303,10 +1303,12 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
 
   // An unparseable Workday value (`'n/a'`) is not a freight amount and never reaches the payload.
   const parseableCurrentFreight = soapAmount(currentFreightAmount) != null ? currentFreightAmount : undefined;
+  // An unparseable extracted freight still says this extraction read freight, so freight recovered
+  // from the new rows wins over the old Workday header.
   const freightAmount = freightSubmittedAsLines
     ? undefined
     : extractedFreightAmount
-      ? (parseExtractedAmount(extractedFreightAmount) ?? parseableCurrentFreight ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
+      ? (parseExtractedAmount(extractedFreightAmount) ?? recoveredFreightAmount ?? parseableCurrentFreight ?? splitOcrLines?.freightAmountFromLines)
       : (parseableCurrentFreight ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
   // Submit replaces the whole invoice; an OCR Freight_Amount left in place would count the freight lines twice.
   const clearsExistingFreight = freightSubmittedAsLines && currentFreightAmount != null && currentFreightAmount !== '';
@@ -1357,7 +1359,7 @@ function signedSoapAmount(value: unknown): string | number | undefined {
 function chargeReconciliationFallbacks(options: buildSubmitInvoiceDataOptions, submittedCharges: SubmittedCharges): AppliedFallback[] {
   const { reconciliations } = submittedCharges;
   const freightLinesMissing = Boolean(options.freightAsLines) && !submittedCharges.freightSubmittedAsLines
-    && Boolean(submittedCharges.freightAmount);
+    && (soapAmount(submittedCharges.freightAmount) ?? 0) !== 0;
   return [
     ...(freightLinesMissing
       ? ['All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.']
