@@ -42,7 +42,7 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
-import { annotateSupplierInvoice, closedPurchaseOrderLineNote, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -216,6 +216,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         } else if (isPurchaseOrderClosedForInvoicing(parsedPo)) {
           poClosedForInvoicing = true;
           debug(`PO ${extractedPurchaseOrderNumber} is ${parsedPo?.documentStatus?.descriptor ?? parsedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+        } else {
+          poLines = markPurchaseOrderLineAvailability(poLines);
         }
       } catch (poError) {
         debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
@@ -262,7 +264,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         },
         emailWorktags,
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
-        invoiceLineQuantityDisplayed
+        invoiceLineQuantityDisplayed,
+        // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -293,9 +297,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
       return baseNotes
-        + (merged.purchaseOrderLineOmitted
-          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
-          : '')
+        + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
         + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
     };
@@ -333,7 +335,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
         return;
       }
-      fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
+      fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks, extractedPurchaseOrderNumber);
       priorFailures = updateOutcome.priorFailures;
       submittedSuppliersInvoiceNumber = updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber;
       invoiceNumberFallbackLabels = updateOutcome.appliedFallbacks
@@ -392,8 +394,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
         fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
-        closedPurchaseOrderLines: fallbacks.purchaseOrderLineOmitted
-          ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)
+        purchaseOrderLineNotes: fallbacks.purchaseOrderLineNotes.length
+          ? fallbacks.purchaseOrderLineNotes.join(' ')
           : undefined,
       },
       ...(invoiceNumberFallbackLabels.length ? { appliedFallbackLabels: invoiceNumberFallbackLabels } : {}),
@@ -443,13 +445,13 @@ interface UpfrontFallbacks {
 
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
-  purchaseOrderLineOmitted: boolean;
+  purchaseOrderLineNotes: string[];
   poPassthroughWorktagsOmitted: boolean;
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
 
-function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
+function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[], purchaseOrderNumber?: string): Fallbacks {
   const omittedWorktags: string[] = [];
   if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
   if (submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.startsWith('omitted'))) {
@@ -465,7 +467,10 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     lineOfBusiness: upfront.lineOfBusiness || submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.includes('fallback')),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
-    purchaseOrderLineOmitted: submissionFallbacks.some(f => f.field === 'purchaseOrderLine'),
+    purchaseOrderLineNotes: [...new Set(submissionFallbacks
+      .filter(isPurchaseOrderLineFallback)
+      .map(f => purchaseOrderLineFallbackNote(f.label, purchaseOrderNumber))
+      .filter((note): note is string => !!note))],
     poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,

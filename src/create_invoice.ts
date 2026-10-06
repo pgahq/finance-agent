@@ -75,11 +75,13 @@ import {
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
 import {
-  closedPurchaseOrderLineNote,
+  formatPurchaseOrderLineFallbackNotes,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
+  isPurchaseOrderLineFallback,
   loadPurchaseOrder,
-  OMITTED_PO_LINE_REFERENCE_LABEL,
+  markPurchaseOrderLineAvailability,
+  purchaseOrderLineFallbackNote,
   submitNewSupplierInvoice,
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
@@ -723,11 +725,14 @@ async function processInvoiceCluster(
     const companyReferenceType = selectedCompany.companyReferenceType;
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
-    const poLines = usedDefaultCompany ? undefined : matchedPo?.lines;
-    const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const matchedPoLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const poClosedForInvoicing = Boolean(matchedPoLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const poLines = poClosedForInvoicing ? matchedPoLines : markPurchaseOrderLineAvailability(matchedPoLines);
     if (poClosedForInvoicing) {
       debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
     }
+    const purchaseOrderLineFallbackLabel = (label: string) =>
+      purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -775,7 +780,9 @@ async function processInvoiceCluster(
       fallbackIds,
       emailWorktags,
       relatedLobLookup,
-      invoiceLineQuantityDisplayed
+      invoiceLineQuantityDisplayed,
+      // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -867,16 +874,14 @@ async function processInvoiceCluster(
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
-        + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-          ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
-          : '')
+        + formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber)
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -1077,12 +1082,10 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
           return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
-            (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-              ? `\n\nPurchase order lines: ${closedPurchaseOrderLineNote(extractedPurchaseOrderNumber)}`
-              : '') +
+            formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
@@ -1133,7 +1136,7 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),
+          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
         }, conversationId, intercomAppId));
@@ -1210,9 +1213,7 @@ async function processInvoiceCluster(
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
-        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? closedPurchaseOrderLineNote(extractedPurchaseOrderNumber) : f.label
-      ),
+      appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
     }, conversationId, intercomAppId));

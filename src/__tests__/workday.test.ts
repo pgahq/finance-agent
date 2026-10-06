@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
@@ -3123,6 +3124,133 @@ describe('Workday utilities', () => {
           );
         });
 
+        it('drops the reference only on lines matched to a consumed PO line', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              { ...poCodedLine, omitPurchaseOrderLineReference: true },
+              { ...poCodedLine, lineOrder: 2, purchaseOrderLineId: 'POL-002', supplierInvoiceSplitLineData: undefined },
+            ],
+          });
+
+          const [consumed, open] = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(consumed.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(consumed.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
+          expect(open.Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-002' }] });
+          expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+            { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
+          ]));
+        });
+
+        it('keeps the reference to a consumed PO line the invoice being updated already links to', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [{
+                      Supplier_Invoice_Line_ID: 'LINE-1',
+                      Item_Description: 'Consulting Services',
+                      Extended_Amount: '500',
+                      Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] },
+                    }]
+                  }
+                }
+              }
+            });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, omitPurchaseOrderLineReference: true }],
+          });
+
+          const line = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0];
+          expect(line.Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] });
+          expect(result.appliedFallbacks.some((f) => f.field === 'consumedPurchaseOrderLine')).toBe(false);
+        });
+
+        it('keeps a self-referenced consumed line and drops a newly matched consumed line on the same update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [{
+                      Supplier_Invoice_Line_ID: 'LINE-1',
+                      Item_Description: 'Consulting Services',
+                      Extended_Amount: '500',
+                      Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] },
+                    }]
+                  }
+                }
+              }
+            });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              { ...poCodedLine, omitPurchaseOrderLineReference: true },
+              { ...poCodedLine, lineOrder: 2, purchaseOrderLineId: 'POL-002', supplierInvoiceSplitLineData: undefined, omitPurchaseOrderLineReference: true },
+            ],
+          });
+
+          const [kept, dropped] = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(kept.Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] });
+          expect(dropped.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(result.appliedFallbacks.some((f) => f.field === 'consumedPurchaseOrderLine')).toBe(true);
+        });
+
+        it('lets only as many lines keep a self-referenced consumed link as the invoice already had', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [
+                      {
+                        Supplier_Invoice_Line_ID: 'LINE-1',
+                        Item_Description: 'Consulting Services',
+                        Extended_Amount: '500',
+                        Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] },
+                      },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Travel', Extended_Amount: '100' },
+                    ]
+                  }
+                }
+              }
+            });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [
+              { ...poCodedLine, omitPurchaseOrderLineReference: true },
+              { ...poCodedLine, lineOrder: 2, supplierInvoiceSplitLineData: undefined, omitPurchaseOrderLineReference: true },
+            ],
+          });
+
+          const [first, second] = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(first.Purchase_Order_Line_Reference).toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-001' }] });
+          expect(second.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(result.appliedFallbacks.some((f) => f.field === 'consumedPurchaseOrderLine')).toBe(true);
+        });
+
+        it('does not report a consumed fallback when the flagged line would not carry a reference anyway', async () => {
+          setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            finalLines: [{ ...poCodedLine, hasDiscount: true, quantity: 1, unitCost: -50, extendedAmount: -50, supplierInvoiceSplitLineData: undefined, omitPurchaseOrderLineReference: true }],
+          });
+
+          expect(result.appliedFallbacks.some((f) => f.field === 'consumedPurchaseOrderLine')).toBe(false);
+        });
+
         it('keeps worktags on unsplit PO-coded lines when omitting the PO line reference', async () => {
           const { getCapturedRequest } = setupMockClient();
 
@@ -5980,6 +6108,203 @@ describe('Workday utilities', () => {
       expect(lines).toHaveLength(1);
       expect(lines[0].purchaseOrderLineId).toBe('POL-99');
       expect(lines[0].worktagsReference).toEqual([makeWorktag('Cost_Center_Reference_ID', 'CC-100')]);
+    });
+
+    const statusRef = (descriptor: string, idType: string, id: string) => ({
+      descriptor,
+      ID: [
+        { $attributes: { type: 'WID' }, $value: `wid-${id}` },
+        { $attributes: { type: idType }, $value: id }
+      ]
+    });
+
+    it('should parse service dates and line statuses on service lines', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 9,
+        Service_Order_Line_ID: 'POL-9',
+        Description: 'Monthly retainer',
+        Start_Date: '2026-09-01-07:00',
+        End_Date: '2026-09-30-07:00',
+        Invoice_Status_Reference: statusRef('Partially Invoiced', 'Document_Status_ID', 'PARTIALLY_INVOICED'),
+        Payment_Status_Reference: statusRef('Unpaid', 'Document_Payment_Status_ID', 'UNPAID'),
+      }));
+
+      expect(line).toEqual(expect.objectContaining({
+        purchaseOrderLineId: 'POL-9',
+        startDate: '2026-09-01',
+        endDate: '2026-09-30',
+        invoiceStatus: { id: 'PARTIALLY_INVOICED', descriptor: 'Partially Invoiced' },
+        paymentStatus: { id: 'UNPAID', descriptor: 'Unpaid' },
+      }));
+      expect(line.closeStatus).toBeUndefined();
+    });
+
+    it('should read the status reference that carries the expected ID type when Workday returns several', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 1,
+        Service_Order_Line_ID: 'POL-1',
+        Invoice_Status_Reference: [
+          { ID: [{ $attributes: { type: 'WID' }, $value: 'wid-only' }] },
+          { ID: [{ $attributes: { type: 'WID' }, $value: 'wid-2' }, { $attributes: { type: 'Document_Status_ID' }, $value: 'Fully Invoiced' }] },
+        ],
+      }));
+
+      expect(line.invoiceStatus).toEqual({ id: 'Fully Invoiced' });
+    });
+
+    it('should keep an unparseable service date as raw text so the window reads as unknown', () => {
+      const [line] = parsePurchaseOrderLines(makePoResponse({
+        Line_Number: 1,
+        Service_Order_Line_ID: 'POL-1',
+        Start_Date: 'TBD',
+        End_Date: '2026-09-30',
+      }));
+
+      expect(line.startDate).toBe('TBD');
+      expect(line.endDate).toBe('2026-09-30');
+    });
+
+    it('should parse line statuses but no service dates on goods lines', () => {
+      const [line] = parsePurchaseOrderLines({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Goods_Line_Data: {
+                Line_Number: 1,
+                Goods_Purchase_Order_Line_ID: 'POL-G1',
+                Item_Description: 'Banners',
+                Invoice_Status_Reference: statusRef('Fully Invoiced', 'Document_Status_ID', 'FULLY_INVOICED'),
+                Close_Status_Reference: statusRef('Closed', 'Document_Status_ID', 'CLOSED'),
+              }
+            }
+          }
+        }
+      });
+
+      expect(line.invoiceStatus).toEqual({ id: 'FULLY_INVOICED', descriptor: 'Fully Invoiced' });
+      expect(line.closeStatus).toEqual({ id: 'CLOSED', descriptor: 'Closed' });
+      expect(line.startDate).toBeUndefined();
+      expect(line.endDate).toBeUndefined();
+    });
+  });
+
+  describe('isPurchaseOrderLineAvailableForInvoicing', () => {
+    const status = (descriptor: string, id = 'DOCUMENT_STATUS-opaque') => ({ id, descriptor });
+
+    it.each([
+      ['fully invoiced', { invoiceStatus: status('Fully Invoiced') }],
+      ['over invoiced', { invoiceStatus: status('Over Invoiced') }],
+      ['closed', { closeStatus: status('Closed') }],
+      ['pending close', { closeStatus: status('Pending Close') }],
+      ['production fully invoiced ID', { invoiceStatus: { id: 'Fully Invoiced' } }],
+      ['production fully invoiced and fully paid IDs', { invoiceStatus: { id: 'Fully Invoiced' }, paymentStatus: { id: 'FULLY PAID' } }],
+    ])('should exclude a %s line', (_label, line) => {
+      expect(isPurchaseOrderLineAvailableForInvoicing(line)).toBe(false);
+    });
+
+    it.each([
+      ['no statuses', {}],
+      ['partially invoiced', { invoiceStatus: status('Partially Invoiced') }],
+      ['not invoiced', { invoiceStatus: status('Not Invoiced') }],
+      ['ambiguous invoiced', { invoiceStatus: status('Invoiced') }],
+      ['production partially invoiced ID', { invoiceStatus: { id: 'Partially Invoiced' } }],
+      ['payment status alone (FULLY PAID)', { paymentStatus: { id: 'FULLY PAID' } }],
+      ['payment status alone (PAID)', { paymentStatus: { id: 'PAID' } }],
+      ['payment status alone (CREDIT_CARD_PAID)', { paymentStatus: { id: 'CREDIT_CARD_PAID' } }],
+      ['partially invoiced and partially paid IDs', { invoiceStatus: { id: 'Partially Invoiced' }, paymentStatus: { id: 'PARTIALLY_PAID' } }],
+      ['production unpaid ID', { paymentStatus: { id: 'UNPAID' } }],
+    ])('should keep a line with %s', (_label, line) => {
+      expect(isPurchaseOrderLineAvailableForInvoicing(line as PurchaseOrderLine)).toBe(true);
+    });
+  });
+
+  describe('formatPurchaseOrderLineFallbackNotes', () => {
+    it('renders the closed-PO and consumed-line notes once each', () => {
+      const notes = formatPurchaseOrderLineFallbackNotes([
+        { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
+        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
+        { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
+        { field: 'assignee', label: 'omitted assignee' },
+      ], 'PO-414498');
+
+      expect(notes).toBe(
+        '\n\nPurchase order lines: PO-414498 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.'
+        + '\n\nPurchase order lines: Invoice lines that matched lines on PO-414498 already fully invoiced or closed were coded from the PO but not linked to PO lines.'
+      );
+    });
+  });
+
+  describe('markPurchaseOrderLineAvailability', () => {
+    const poLine = (id: string, invoiced = false) => ({
+      lineOrder: Number(id.replace(/\D/g, '')),
+      purchaseOrderLineId: id,
+      purchaseOrderDocumentNumber: 'PO-404770',
+      ...(invoiced ? { invoiceStatus: { descriptor: 'Fully Invoiced' } } : {}),
+    });
+
+    const enabledEnv = { PO_LINE_SELECTION_ENABLED: 'true' };
+
+    it('should leave lines unflagged when PO line availability is off', () => {
+      const lines = [poLine('POL-1', true), poLine('POL-2')];
+
+      expect(markPurchaseOrderLineAvailability(lines, {})).toBe(lines);
+      expect(markPurchaseOrderLineAvailability(lines, { PO_LINE_SELECTION_ENABLED: 'shadow' })).toBe(lines);
+    });
+
+    it('should keep every line and flag the ones that can no longer be invoiced', () => {
+      const result = markPurchaseOrderLineAvailability([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')], enabledEnv);
+
+      expect(result?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+        ['POL-1', false],
+        ['POL-2', true],
+        ['POL-3', true],
+      ]);
+    });
+
+    it('should pass through a missing PO', () => {
+      expect(markPurchaseOrderLineAvailability(undefined)).toBeUndefined();
+    });
+
+    it('should flag fully invoiced and closed lines, not paid-only lines, from a parsed Get_Purchase_Orders response', () => {
+      const ref = (descriptor: string, idType: string) => ({ descriptor, ID: [{ $attributes: { type: idType }, $value: `opaque-${descriptor}` }] });
+      const parsed = parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-404770',
+              Service_Line_Replacement_Data: [
+                {
+                  Line_Number: 1,
+                  Service_Order_Line_ID: 'POL-1',
+                  Payment_Status_Reference: { ID: [
+                    { $attributes: { type: 'WID' }, $value: 'd9e43706446c11de98360015c5e6daf6' },
+                    { $attributes: { type: 'Document_Payment_Status_ID' }, $value: 'FULLY PAID' },
+                  ] },
+                },
+                { Line_Number: 2, Service_Order_Line_ID: 'POL-2', Payment_Status_Reference: ref('Partially Paid', 'Document_Payment_Status_ID') },
+                { Line_Number: 5, Service_Order_Line_ID: 'POL-5', Payment_Status_Reference: ref('Fully Paid', 'Document_Payment_Status_ID') },
+                { Line_Number: 6, Service_Order_Line_ID: 'POL-6', Close_Status_Reference: ref('Pending Close', 'Document_Status_ID') },
+              ],
+              Goods_Line_Replacement_Data: [
+                { Line_Number: 3, Goods_Purchase_Order_Line_ID: 'POL-3', Close_Status_Reference: ref('Closed', 'Document_Status_ID') },
+                { Line_Number: 4, Goods_Purchase_Order_Line_ID: 'POL-4', Invoice_Status_Reference: ref('Not Invoiced', 'Document_Status_ID') },
+                { Line_Number: 7, Goods_Purchase_Order_Line_ID: 'POL-7', Invoice_Status_Reference: ref('Fully Invoiced', 'Document_Status_ID') },
+              ],
+            }
+          }
+        }
+      });
+
+      expect(markPurchaseOrderLineAvailability(parsed?.lines, enabledEnv)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+        ['POL-1', true],
+        ['POL-2', true],
+        ['POL-3', false],
+        ['POL-4', true],
+        ['POL-5', true],
+        ['POL-6', false],
+        ['POL-7', false],
+      ]);
     });
   });
 
