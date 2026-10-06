@@ -207,9 +207,12 @@ function slackInvoiceDetails(
 }
 
 // Processor function - invoked by trigger_create_invoice
-export const processor = withProcessorHandler(async (context, requests, event) => {
-  const abortSignal = event?.__deadlineSignal as AbortSignal | undefined;
+export const processor = withProcessorHandler(async (context, requests, _event, options) => {
+  const abortSignal = options?.abortSignal;
   for (const request of requests) {
+    if (abortSignal?.aborted) {
+      throw new Error('Processor deadline reached before all records were processed');
+    }
     await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
   }
 });
@@ -832,7 +835,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -853,7 +858,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;

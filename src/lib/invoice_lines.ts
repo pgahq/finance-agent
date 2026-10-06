@@ -928,6 +928,10 @@ export async function buildFinalInvoiceLines(
       abortSignal,
     }) as MergeInvoiceLinesResult;
   } catch (error) {
+    if (abortSignal?.aborted) {
+      debug('Line merge aborted by deadline signal; rethrowing so the processor error path runs');
+      throw error;
+    }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
     return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);

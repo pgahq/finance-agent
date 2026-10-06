@@ -22,6 +22,10 @@ export interface ProcessingContext {
   invoiceValidationFailuresConfig?: InvoiceValidationFailuresConfig;
 }
 
+export interface ProcessorOptions {
+  abortSignal?: AbortSignal;
+}
+
 async function setupContext(): Promise<ProcessingContext> {
   process.env = await loadEnv();
 
@@ -125,60 +129,59 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
 /**
  * Processor Handler - Processes data from query handlers or direct invocation
  * 
- * @param processAction - The function that processes the data
+ * @param processAction - The function that processes the data. Receives the
+ *   processor options as a fourth argument, including the Lambda deadline abort
+ *   signal when one is available.
  * @returns A handler function that can process data
  */
-function createDeadlineAbortSignal(context: Context): AbortSignal | undefined {
+function createDeadlineAbortSignal(context: Context): { signal: AbortSignal; dispose: () => void } | undefined {
   const remaining = context.getRemainingTimeInMillis?.();
   if (!remaining || remaining <= PROCESSOR_DEADLINE_BUFFER_MS) {
-    return undefined;
+    // Fail closed: an already-aborted signal prevents new AI work from starting
+    // inside the reserved buffer.
+    const controller = new AbortController();
+    controller.abort(new Error('Lambda invocation entered the deadline buffer; aborting AI calls'));
+    return { signal: controller.signal, dispose: () => {} };
   }
   const controller = new AbortController();
   const timeoutMs = remaining - PROCESSOR_DEADLINE_BUFFER_MS;
   const timer = setTimeout(() => {
     debug(`Lambda deadline approaching (${remaining}ms remaining); aborting AI calls`);
-    controller.abort();
+    controller.abort(new Error('Processor deadline reached; aborting AI calls'));
   }, timeoutMs);
-  // The runtime will freeze the event loop at the hard limit, so this timer is unlikely to fire twice.
-  // Detach it once aborted so it does not keep the invocation alive.
-  controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
-  return controller.signal;
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 
 export const withProcessorHandler = <T = unknown>(
-  processAction: (context: ProcessingContext, data: T[], event?: any) => Promise<void>,
+  processAction: (context: ProcessingContext, data: T[], event?: any, options?: ProcessorOptions) => Promise<void>,
   options?: { requireCompleteTotal?: boolean }
 ) => async (event: any = {}, lambdaContext?: Context) => {
   const context = await setupContext();
 
-  const deadlineSignal = lambdaContext ? createDeadlineAbortSignal(lambdaContext) : undefined;
-  if (deadlineSignal) {
-    // Attaching a non-enumerable runtime signal to the event for use by processors.
-    Object.defineProperty(event, '__deadlineSignal', {
-      value: deadlineSignal,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  }
+  const deadline = lambdaContext ? createDeadlineAbortSignal(lambdaContext) : undefined;
+  const processorOptions: ProcessorOptions | undefined = deadline ? { abortSignal: deadline.signal } : undefined;
 
-  if (event.query) {
-    // pageSize: null case - processor executes query itself
-    debug(`Executing query directly: ${event.query}`);
-    let data: unknown[];
-    try {
-      const queryResponse = await executeQuery(context, event.query, options);
-      data = queryResponse.data;
-      event.sourceTotal = queryResponse.total;
-    } catch (error) {
-      const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
-      await notifyResult(lambdaName, 'error', undefined, undefined, error);
-      throw error;
+  try {
+    if (event.query) {
+      // pageSize: null case - processor executes query itself
+      debug(`Executing query directly: ${event.query}`);
+      let data: unknown[];
+      try {
+        const queryResponse = await executeQuery(context, event.query, options);
+        data = queryResponse.data;
+        event.sourceTotal = queryResponse.total;
+      } catch (error) {
+        const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
+        await notifyResult(lambdaName, 'error', undefined, undefined, error);
+        throw error;
+      }
+      await processAction(context, data as T[], event, processorOptions);
+    } else {
+      // pageSize: number case - data comes in payload
+      debug(`Processing ${event.data?.length || 0} records from payload`);
+      await processAction(context, event.data as T[], event, processorOptions);
     }
-    await processAction(context, data as T[], event);
-  } else {
-    // pageSize: number case - data comes in payload
-    debug(`Processing ${event.data?.length || 0} records from payload`);
-    await processAction(context, event.data as T[], event);
+  } finally {
+    deadline?.dispose();
   }
 };
