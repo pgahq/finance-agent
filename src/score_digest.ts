@@ -5,6 +5,7 @@ import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusC
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
 import { dailyTouchTrend, touchCalloutBlocks, touchPeriod, weeklyTouchTrend } from './lib/score_touches.js';
+import { refreshTouchDaily } from './lib/touch_reporting.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
@@ -130,9 +131,20 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
 
 // Audit posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL): `{ "mode": "daily" }` after each scoring
 // run, and the weekly digest otherwise.
+/** Keeps the stored daily touch rollup current; a failure is logged and never blocks the post. */
+async function refreshTouchRollup(context: ProcessingContext): Promise<void> {
+  try {
+    const days = await refreshTouchDaily(context.dbConnection);
+    debug('Refreshed agent_invoice_touch_daily', { days });
+  } catch (error) {
+    debug('Could not refresh agent_invoice_touch_daily; posting without it', error);
+  }
+}
+
 export const handler = withHandler(async (context, event?: { mode?: string }) => {
   const startTime = Date.now();
   try {
+    await refreshTouchRollup(context);
     if (event?.mode === 'daily') {
       await postDailySummary(context, new Date());
       return;

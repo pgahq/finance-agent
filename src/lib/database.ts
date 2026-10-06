@@ -1,5 +1,6 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { debug } from '@pga/logger';
+import { ensureTouchReporting } from './touch_reporting.js';
 import { Pool } from 'pg';
 import { parseRelatedLob, type RelatedLob } from './related_worktags.js';
 
@@ -306,6 +307,8 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       const migrationClient = await pool.connect();
       try {
         await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
+        // After agent_invoice_scores exists: touch reporting view and daily rollup table
+        await ensureTouchReporting((sql, params) => migrationClient.query(sql, params));
       } finally {
         migrationClient.release();
       }
