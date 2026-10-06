@@ -633,6 +633,24 @@ describe('buildFinalInvoiceLines', () => {
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
   });
 
+  it('rethrows AI errors when the deadline signal has aborted', async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error('Processor deadline reached'));
+    mockGetAiResponse.mockRejectedValue(new Error('Processor deadline reached'));
+
+    await expect(buildFinalInvoiceLines(
+      extracted,
+      [poLine()],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortController.signal
+    )).rejects.toThrow('Processor deadline reached');
+  });
+
   it('lets email LOB override the PO LOB', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{

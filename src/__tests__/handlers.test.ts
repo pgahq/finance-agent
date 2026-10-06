@@ -348,9 +348,8 @@ describe('handlers', () => {
       await processor(event, lambdaContext);
       expect(mockProcessAction).toHaveBeenCalled();
 
-      // Advance well past the deadline; the disposed timer should not fire.
-      jest.advanceTimersByTime(200_000);
-      expect(mockProcessAction).toHaveBeenCalledTimes(1);
+      // The deadline timer must be cleared after processing finishes.
+      expect(jest.getTimerCount()).toBe(0);
 
       jest.useRealTimers();
     });
