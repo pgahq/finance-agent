@@ -41,7 +41,7 @@ import {
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
-import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
@@ -1105,6 +1105,7 @@ async function processInvoiceCluster(
           relatedLobByCostCenter,
           resolveCostCenterWorkdayIds: (costCenterIds) =>
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+          resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
           paymentTermsId,
           attachments: submitAttachments,
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
@@ -1166,6 +1167,7 @@ async function processInvoiceCluster(
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+      resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),

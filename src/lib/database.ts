@@ -526,6 +526,43 @@ export async function getCostCenterWorkdayIdsByCodes(
   }
 }
 
+/** Map worktag WIDs and LOB reference IDs (lowercased) to their cached organization kind. */
+export async function getOrgWorktagKindsByIds(
+  db: DatabaseConnection,
+  ids: string[]
+): Promise<Map<string, 'lob' | 'event'>> {
+  const byId = new Map<string, 'lob' | 'event'>();
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return byId;
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, type, metadata
+      FROM documents
+      WHERE type IN ('lob', 'event')
+        AND (
+          workday_id = ANY($1::text[])
+          OR LOWER(COALESCE(metadata->>'referenceId', '')) = ANY($2::text[])
+        )
+    `, [unique, unique.map((id) => id.toLowerCase())]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const kind = record.type === 'lob' || record.type === 'event' ? record.type : undefined;
+      if (!kind) continue;
+      if (typeof record.workday_id === 'string' && record.workday_id) byId.set(record.workday_id, kind);
+      const referenceId = asRecord(record.metadata).referenceId;
+      if (typeof referenceId === 'string' && referenceId.trim()) byId.set(referenceId.trim().toLowerCase(), kind);
+    }
+
+    debug(`Found cached organization kinds for ${byId.size} worktag key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cached organization worktag kinds:', error);
+    throw error;
+  }
+}
+
 export async function getDocumentsByType(
   db: DatabaseConnection,
   type: DocumentType

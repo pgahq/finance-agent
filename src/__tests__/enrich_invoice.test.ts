@@ -63,7 +63,8 @@ jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
-  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
+  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -604,6 +605,7 @@ describe('enrich_invoice', () => {
         invoiceLineQuantityDisplayed: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
+        resolveOrgWorktagKinds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );
@@ -723,6 +725,7 @@ describe('enrich_invoice', () => {
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
+        resolveOrgWorktagKinds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );

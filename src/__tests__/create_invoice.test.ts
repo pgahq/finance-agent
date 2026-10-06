@@ -57,6 +57,7 @@ jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map()),
   findCompanyByName: jest.fn().mockResolvedValue({
     workdayId: 'pga-america-wid',
     companyName: 'The Professional Golfers Association of America'

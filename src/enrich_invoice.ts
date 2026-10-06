@@ -25,7 +25,7 @@ import {
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
-import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
   normalizeSupplierInvoiceLineAmounts,
@@ -327,6 +327,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         relatedLobByCostCenter,
         resolveCostCenterWorkdayIds: (costCenterIds) =>
           getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+        resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
         paymentTermsId,
         ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       });
@@ -445,6 +446,8 @@ interface UpfrontFallbacks {
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
   purchaseOrderLineNotes: string[];
+  poPassthroughWorktagsOmitted: boolean;
+  duplicateWorktagsLabel?: string;
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
@@ -469,6 +472,8 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
       .filter(isPurchaseOrderLineFallback)
       .map(f => purchaseOrderLineFallbackNote(f.label, purchaseOrderNumber))
       .filter((note): note is string => !!note))],
+    poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
+    duplicateWorktagsLabel: submissionFallbacks.find(f => f.field === 'duplicateWorktags')?.label,
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
@@ -544,6 +549,12 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
   }
   if (fallbacks.omittedWorktags?.length) {
     parts.push(`${fallbacks.omittedWorktags.join(', ')} worktag(s) removed (no fallback available, validation error)`);
+  }
+  if (fallbacks.poPassthroughWorktagsOmitted) {
+    parts.push('PO pass-through worktags removed, PO split rows kept (duplicate worktag type, validation error)');
+  }
+  if (fallbacks.duplicateWorktagsLabel) {
+    parts.push(fallbacks.duplicateWorktagsLabel);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;
