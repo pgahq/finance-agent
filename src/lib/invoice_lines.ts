@@ -368,7 +368,8 @@ function sameAmount(a: string | undefined, b: string | undefined): boolean {
 
 function conflictingChargeNote(field: 'Freight' | 'Tax', amount: string | undefined, label: string | null | undefined, otherAmount: string | undefined): string {
   const other = field === 'Freight' ? 'tax' : 'freight';
-  return `${field} amount ${amount} is labeled "${label}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
+  const printedLabel = (label ?? '').replace(/["\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return `${field} amount ${amount} is labeled "${printedLabel}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
 }
 
 export function normalizeExtractedFreightAndTax(options: {

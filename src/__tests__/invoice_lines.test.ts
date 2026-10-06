@@ -1790,6 +1790,20 @@ describe('normalizeExtractedFreightAndTax', () => {
     expect(result.taxCleared).toBe(true);
   });
 
+  it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Shipping',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
   it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
     const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
