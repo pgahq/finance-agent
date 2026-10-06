@@ -81,7 +81,8 @@ export async function enrichInvoiceFromAttachments(
   existingCompany?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext'],
   purchaseOrder?: PurchaseOrderEnrichmentContext,
-  attachmentRoles?: InvoiceAttachmentRole[]
+  attachmentRoles?: InvoiceAttachmentRole[],
+  abortSignal?: AbortSignal
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
@@ -160,6 +161,7 @@ export async function enrichInvoiceFromAttachments(
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
       schema: InvoiceEnrichmentSchema,
+      abortSignal,
       messages: [
         {
           role: 'user',

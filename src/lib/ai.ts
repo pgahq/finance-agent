@@ -15,49 +15,41 @@ export async function getAiResponse({
   schema,
   model = defaultModel,
   tools,
+  abortSignal,
 }: {
   prompt: string;
   messages: ModelMessage[];
   schema?: z.ZodSchema<any>;
   model?: LanguageModel;
   tools?: Record<string, any>;
+  abortSignal?: AbortSignal;
 }): Promise<unknown> {
   try {
-    // Step 1: Generate text with tools (if needed)
-    let systemPrompt = prompt;
-    
-    // If schema is provided, append schema information to encourage JSON format
-    if (schema) {
-      try {
-        const schemaShape = (schema as any)._def?.shape?.();
-        if (schemaShape) {
-          systemPrompt += '\n\n## Output Format\nPlease provide your response in JSON format that matches this structure:\n' + 
-            JSON.stringify(schemaShape, null, 2) + 
-            '\n\nFocus on providing accurate data in this JSON structure.';
-        }
-      } catch (error) {
-        // If we can't extract schema shape, just add a general JSON instruction
-        systemPrompt += '\n\n## Output Format\nPlease provide your response in JSON format.';
-      }
-    }
-    
+    const defaultTools = {
+      findSuppliers: findSuppliersTool,
+      findCompanies: findCompaniesTool,
+      findCostCenters: findCostCentersTool,
+      findPaymentTerms: findPaymentTermsTool,
+      findEvents: findEventsTool,
+      findLobs: findLobsTool,
+      findFunds: findFundsTool,
+      findSpendCategories: findSpendCategoriesTool,
+      resolveReferenceCode: resolveReferenceCodeTool,
+    };
+    const toolsToUse = tools === undefined ? defaultTools : tools;
+    const hasTools = Object.keys(toolsToUse).length > 0;
     const generateTextOptions: any = {
       model,
       messages,
-      system: systemPrompt,
+      system: prompt,
       stopWhen: stepCountIs(10),
       temperature: 0.2,
-      tools: tools ?? {
-        findSuppliers: findSuppliersTool,
-        findCompanies: findCompaniesTool,
-        findCostCenters: findCostCentersTool,
-        findPaymentTerms: findPaymentTermsTool,
-        findEvents: findEventsTool,
-        findLobs: findLobsTool,
-        findFunds: findFundsTool,
-        findSpendCategories: findSpendCategoriesTool,
-        resolveReferenceCode: resolveReferenceCodeTool,
-      }
+      abortSignal,
+      ...(hasTools
+        ? { tools: toolsToUse }
+        : schema
+          ? { output: Output.object({ schema }) }
+          : {})
     };
 
     const textResult = await generateText(generateTextOptions);
@@ -67,20 +59,25 @@ export async function getAiResponse({
       return textResult.text;
     }
 
-    // Step 2: Structured output via generateText + Output.object (replaces deprecated generateObject)
-    const structuredResult = await generateText({
-      model,
-      messages: [
-        ...messages,
-        ...textResult.response.messages,
-        { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
-      ],
-      system: prompt,
-      output: Output.object({ schema }),
-      temperature: 0.1
-    });
+    // When tools are provided, the first pass runs the tool loop and returns analysis text.
+    // Run a second pass to coerce the analysis into the requested schema.
+    if (hasTools) {
+      const structuredResult = await generateText({
+        model,
+        messages: [
+          ...messages,
+          ...textResult.response.messages,
+          { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
+        ],
+        system: prompt,
+        output: Output.object({ schema }),
+        temperature: 0.1,
+        abortSignal,
+      });
+      return structuredResult.output;
+    }
 
-    return structuredResult.output;
+    return textResult.output;
 
   } catch (error) {
     debug(`AI call error: ${error}`);

@@ -47,13 +47,13 @@ describe('AI utilities', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.OPENAI_API_KEY = 'test-key';
-    
+
     // Setup default mocks
     mockGenerateText.mockResolvedValue({
       text: '{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}',
       toolResults: []
     });
-    
+
     mockStepCountIs.mockReturnValue('mocked-step-count-is');
     mockOutputObject.mockReturnValue('mocked-output-object');
     mockNoObjectGeneratedError.isInstance.mockReturnValue(false);
@@ -65,7 +65,8 @@ describe('AI utilities', () => {
       const result = await getAiResponse({
         prompt: 'Test prompt',
         schema: undefined,
-        messages: [{ role: 'user', content: 'Test message' }]
+        messages: [{ role: 'user', content: 'Test message' }],
+        tools: {},
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
@@ -74,16 +75,30 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        tools: expect.objectContaining({
-          findSuppliers: expect.any(Object),
-          resolveReferenceCode: expect.any(Object)
-        })
+        abortSignal: undefined,
       });
 
       expect(result).toEqual('{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}');
     });
 
-    it('should use a supplied LanguageModel for both generation passes', async () => {
+    it('should use a supplied LanguageModel for the single generation pass when no tools are needed', async () => {
+      const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
+      mockGenerateText.mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+        model: customModel,
+        tools: {},
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateText.mock.calls[0][0].model).toBe(customModel);
+      expect(mockGenerateText.mock.calls[0][0].output).toBe('mocked-output-object');
+    });
+
+    it('should use a supplied LanguageModel for both generation passes when tools are provided', async () => {
       const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
       mockGenerateText
         .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
@@ -105,7 +120,8 @@ describe('AI utilities', () => {
       await getAiResponse({
         prompt: 'System prompt',
         schema: undefined,
-        messages: [{ role: 'user', content: 'User message' }]
+        messages: [{ role: 'user', content: 'User message' }],
+        tools: {},
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
@@ -114,14 +130,11 @@ describe('AI utilities', () => {
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        tools: expect.objectContaining({
-          findSuppliers: expect.any(Object),
-          resolveReferenceCode: expect.any(Object)
-        })
+        abortSignal: undefined,
       });
     });
 
-    it('should return structured output when schema is provided', async () => {
+    it('should return structured output via a single pass when no tools are needed', async () => {
       const mockSchema = {
         _def: {
           shape: jest.fn().mockReturnValue({
@@ -133,8 +146,55 @@ describe('AI utilities', () => {
         }
       } as any;
 
-      // Mock Step 1: generateText with tools
-      // Mock Step 2: generateText with Output.object
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        output: {
+          supplierId: 'test-id',
+          supplierName: 'Test Supplier',
+          confidence: 0.9,
+          reasoning: 'Test reasoning'
+        }
+      });
+
+      const result = await getAiResponse({
+        prompt: 'Test prompt',
+        schema: mockSchema,
+        messages: [{ role: 'user', content: 'Test message' }],
+        tools: {},
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateText).toHaveBeenCalledWith({
+        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        messages: [{ role: 'user', content: 'Test message' }],
+        system: 'Test prompt',
+        stopWhen: 'mocked-step-count-is',
+        temperature: 0.2,
+        abortSignal: undefined,
+        output: 'mocked-output-object',
+      });
+      expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
+
+      expect(result).toEqual({
+        supplierId: 'test-id',
+        supplierName: 'Test Supplier',
+        confidence: 0.9,
+        reasoning: 'Test reasoning'
+      });
+    });
+
+    it('should return structured output via two passes when tools are provided', async () => {
+      const mockSchema = {
+        _def: {
+          shape: jest.fn().mockReturnValue({
+            supplierId: { type: 'string' },
+            supplierName: { type: 'string' },
+            confidence: { type: 'number' },
+            reasoning: { type: 'string' }
+          })
+        }
+      } as any;
+
       mockGenerateText
         .mockResolvedValueOnce({
           text: 'JSON response with supplier data',
@@ -157,16 +217,17 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }]
       });
 
-      // Verify Step 1: generateText was called with enhanced system prompt
+      // Verify Step 1: generateText was called with tools
       expect(mockGenerateText).toHaveBeenCalledWith({
         model: expect.objectContaining({ modelId: 'gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
-        system: expect.stringContaining('Test prompt'),
+        system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
+        abortSignal: undefined,
         tools: expect.objectContaining({
           findSuppliers: expect.any(Object),
-          resolveReferenceCode: expect.any(Object)
+          resolveReferenceCode: expect.any(Object),
         })
       });
 
@@ -177,9 +238,10 @@ describe('AI utilities', () => {
           expect.objectContaining({ role: 'user' }),
           expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
         ]),
-        system: expect.any(String),
+        system: 'Test prompt',
         output: 'mocked-output-object',
-        temperature: 0.1
+        temperature: 0.1,
+        abortSignal: undefined,
       });
       expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
 

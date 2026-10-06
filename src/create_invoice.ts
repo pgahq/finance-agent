@@ -207,9 +207,10 @@ function slackInvoiceDetails(
 }
 
 // Processor function - invoked by trigger_create_invoice
-export const processor = withProcessorHandler(async (context, requests) => {
+export const processor = withProcessorHandler(async (context, requests, event) => {
+  const abortSignal = event?.__deadlineSignal as AbortSignal | undefined;
   for (const request of requests) {
-    await processNewInvoice(context, request as CreateInvoiceRequest);
+    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
   }
 });
 
@@ -240,14 +241,19 @@ async function fanOutCluster(
   }));
 }
 
-async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function reportShadowClustering(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
   const attachments = request.attachments ?? [];
   const details = { mode: 'shadow', attachments: requestFilenames(request) };
   try {
     const { clustering } = await parseAndClusterInvoiceAttachments(
       attachments,
-      (key) => getBinaryFromS3(context.s3Config, key)
+      (key) => getBinaryFromS3(context.s3Config, key),
+      { abortSignal }
     );
     const describe = (file: ClassifiedAttachment) =>
       `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
@@ -275,10 +281,14 @@ async function reportShadowClustering(context: ProcessingContext, request: Creat
   }
 }
 
-async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function processNewInvoice(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   if (request.shadow) {
     // A shadow record never writes to Workday or the registry, whatever this container's flag says.
-    await reportShadowClustering(context, request);
+    await reportShadowClustering(context, request, abortSignal);
     return;
   }
   const startTime = Date.now();
@@ -328,7 +338,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           const buffer = await getBinaryFromS3(context.s3Config, key);
           preloadedBuffers.set(key, buffer);
           return buffer;
-        }
+        },
+        { abortSignal }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -400,7 +411,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         plan: { planId, clusterIndex: 0 },
         startTime,
         clustered: true,
-      });
+      }, abortSignal);
     } finally {
       if (undispatched.length) {
         await notifyResult(
@@ -440,7 +451,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         : {}),
       startTime,
       clustered: true,
-    });
+    }, abortSignal);
     return;
   }
 
@@ -457,7 +468,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         conversationPdf,
         startTime: Date.now(),
         clustered: false,
-      });
+      }, abortSignal);
     }
     return;
   }
@@ -481,7 +492,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     conversationPdf,
     startTime,
     clustered: false,
-  });
+  }, abortSignal);
 }
 
 interface ClusterInvoiceInput {
@@ -531,7 +542,11 @@ function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<strin
   }));
 }
 
-async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
+async function createInvoiceFromCluster(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const { plan } = input;
   if (plan && !(await claimInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex))) {
     debug('Invoice cluster already done or being processed by another run; skipping', plan);
@@ -539,7 +554,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
   }
   const run: ClusterRunState = {};
   try {
-    await processInvoiceCluster(context, input, run);
+    await processInvoiceCluster(context, input, run, abortSignal);
     if (plan && run.invoiceClaimContended) {
       await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
         .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
@@ -594,7 +609,8 @@ async function markInvoiceClusterDone(
 async function processInvoiceCluster(
   context: ProcessingContext,
   input: ClusterInvoiceInput,
-  run: ClusterRunState
+  run: ClusterRunState,
+  abortSignal?: AbortSignal
 ): Promise<void> {
   const {
     files,
@@ -675,7 +691,8 @@ async function processInvoiceCluster(
       stubCompany,
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
-      attachmentRoles
+      attachmentRoles,
+      abortSignal
     );
     debug('Enrichment result:', result);
 
@@ -782,7 +799,8 @@ async function processInvoiceCluster(
       relatedLobLookup,
       invoiceLineQuantityDisplayed,
       // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+      abortSignal
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;

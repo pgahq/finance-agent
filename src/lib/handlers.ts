@@ -9,7 +9,11 @@ import { getS3Config, type S3Config } from './s3.js';
 import { getWorkdayConfig, executeWorkdayQuery, type WorkdayConfig } from './workday.js';
 import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import type { Context } from 'aws-lambda';
 import { notifyResult } from './slack.js';
+
+/** Milliseconds to reserve before the Lambda hard limit so the error path can run. */
+const PROCESSOR_DEADLINE_BUFFER_MS = 20_000;
 
 export interface ProcessingContext {
   workdayConfig: WorkdayConfig;
@@ -124,12 +128,40 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
  * @param processAction - The function that processes the data
  * @returns A handler function that can process data
  */
+function createDeadlineAbortSignal(context: Context): AbortSignal | undefined {
+  const remaining = context.getRemainingTimeInMillis?.();
+  if (!remaining || remaining <= PROCESSOR_DEADLINE_BUFFER_MS) {
+    return undefined;
+  }
+  const controller = new AbortController();
+  const timeoutMs = remaining - PROCESSOR_DEADLINE_BUFFER_MS;
+  const timer = setTimeout(() => {
+    debug(`Lambda deadline approaching (${remaining}ms remaining); aborting AI calls`);
+    controller.abort();
+  }, timeoutMs);
+  // The runtime will freeze the event loop at the hard limit, so this timer is unlikely to fire twice.
+  // Detach it once aborted so it does not keep the invocation alive.
+  controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+  return controller.signal;
+}
+
 export const withProcessorHandler = <T = unknown>(
   processAction: (context: ProcessingContext, data: T[], event?: any) => Promise<void>,
   options?: { requireCompleteTotal?: boolean }
-) => async (event: any = {}) => {
+) => async (event: any = {}, lambdaContext?: Context) => {
   const context = await setupContext();
-  
+
+  const deadlineSignal = lambdaContext ? createDeadlineAbortSignal(lambdaContext) : undefined;
+  if (deadlineSignal) {
+    // Attaching a non-enumerable runtime signal to the event for use by processors.
+    Object.defineProperty(event, '__deadlineSignal', {
+      value: deadlineSignal,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+
   if (event.query) {
     // pageSize: null case - processor executes query itself
     debug(`Executing query directly: ${event.query}`);
