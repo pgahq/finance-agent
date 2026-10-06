@@ -17,6 +17,8 @@ export interface OrgPassthroughContext {
   lineOfBusinessId?: string | null;
   /** When true, keep a fallback cost center instead of letting PO passthrough restore a rejected one. */
   lockFallbackCostCenter?: boolean;
+  /** Cached organization kinds keyed by WID or reference ID, so unprefixed PO LOBs are recognized. */
+  orgKinds?: Map<string, OrgWorktagKind>;
 }
 
 const ORG_WORKTAG_ID_TYPES = new Set([
@@ -80,9 +82,11 @@ function lobValuesMatch(a: string, b: string): boolean {
 export function isLobWorktag(
   tag: any,
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
   for (const value of worktagIdValues(tag)) {
+    if ((orgKinds?.get(value) ?? orgKinds?.get(value.toLowerCase())) === 'lob') return true;
     if (isLineOfBusinessReferenceId(value)) return true;
     if (relatedLob && relatedLobAllowsId(relatedLob, value)) return true;
     if (lineOfBusinessId && (value === lineOfBusinessId || lobValuesMatch(value, lineOfBusinessId))) {
@@ -95,9 +99,10 @@ export function isLobWorktag(
 function baseHasLobWorktag(
   base: any[],
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
-  return base.some(tag => isOrgWorktag(tag) && isLobWorktag(tag, relatedLob, lineOfBusinessId));
+  return base.some(tag => isOrgWorktag(tag) && isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds));
 }
 
 function primaryWorktagValue(tag: any): string | null {
@@ -184,9 +189,10 @@ export function replaceCostCenterWorktagsWithFallback(
 function isFallbackLobTag(
   tag: any,
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
-  if (!isOrgWorktag(tag) || !isLobWorktag(tag, relatedLob, lineOfBusinessId)) return false;
+  if (!isOrgWorktag(tag) || !isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds)) return false;
   return worktagIdValues(tag).some(value => isFallbackLobValue(value));
 }
 
@@ -208,10 +214,11 @@ function splitHasWorktagType(splitWorktags: any[], type: string): boolean {
 function splitHasLobWorktag(
   splitWorktags: any[],
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
   return splitWorktags.some(
-    tag => isOrgWorktag(tag) && isLobWorktag(tag, relatedLob, lineOfBusinessId)
+    tag => isOrgWorktag(tag) && isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds)
   );
 }
 
@@ -222,23 +229,25 @@ function everySplitHasWorktagType(splits: PurchaseOrderLineSplit[], type: string
 function everySplitHasLobWorktag(
   splits: PurchaseOrderLineSplit[],
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
   return (
     splits.length > 0 &&
-    splits.every(split => splitHasLobWorktag(split.worktagReference, relatedLob, lineOfBusinessId))
+    splits.every(split => splitHasLobWorktag(split.worktagReference, relatedLob, lineOfBusinessId, orgKinds))
   );
 }
 
 function isNonAllocationLineLevelTag(
   tag: any,
   relatedLob?: RelatedLob | null,
-  lineOfBusinessId?: string | null
+  lineOfBusinessId?: string | null,
+  orgKinds?: Map<string, OrgWorktagKind>
 ): boolean {
   const type = primaryWorktagType(tag);
   if (!type) return true;
   if (type === 'Fund_ID' || type === 'Cost_Center_Reference_ID') return false;
-  if (isOrgWorktag(tag)) return !isLobWorktag(tag, relatedLob, lineOfBusinessId);
+  if (isOrgWorktag(tag)) return !isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds);
   return true;
 }
 
@@ -256,7 +265,7 @@ function orgWorktagKind(tag: any, context?: WorktagTypeContext): OrgWorktagKind 
     const kind = context?.orgKinds?.get(value) ?? context?.orgKinds?.get(value.toLowerCase());
     if (kind) return kind;
   }
-  return isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId) ? 'lob' : null;
+  return isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId, context?.orgKinds) ? 'lob' : null;
 }
 
 // Workday allows one worktag per Workday type on a line or split row. Non-organization
@@ -269,24 +278,40 @@ function worktagTypeKey(tag: any, context?: WorktagTypeContext): string | null {
   return kind ? `org:${kind}` : null;
 }
 
-/** Keep the first worktag of each Workday type; return the rest as dropped. */
+function isFallbackLobValueTag(tag: any): boolean {
+  return worktagIdValues(tag).some(value => isFallbackLobValue(value));
+}
+
+/** Keep the first worktag of each Workday type, except a real LOB replaces a fallback LOB; return the rest as dropped. */
 export function collapseWorktagsToOnePerType(
   worktags: any[],
   context?: WorktagTypeContext
 ): { worktags: any[]; dropped: any[] } {
-  const seenKeys = new Set<string>();
+  const keptIndexByKey = new Map<string, number>();
   const seenIdentities = new Set<string>();
   const kept: any[] = [];
   const dropped: any[] = [];
   for (const tag of worktags) {
     const identity = worktagIdentity(tag);
-    const key = worktagTypeKey(tag, context);
-    if ((identity && seenIdentities.has(identity)) || (key && seenKeys.has(key))) {
+    if (identity && seenIdentities.has(identity)) {
       dropped.push(tag);
       continue;
     }
+    const key = worktagTypeKey(tag, context);
+    const keptIndex = key ? keptIndexByKey.get(key) : undefined;
+    if (keptIndex !== undefined) {
+      const current = kept[keptIndex];
+      if (key === 'org:lob' && isFallbackLobValueTag(current) && !isFallbackLobValueTag(tag)) {
+        kept[keptIndex] = tag;
+        dropped.push(current);
+        if (identity) seenIdentities.add(identity);
+      } else {
+        dropped.push(tag);
+      }
+      continue;
+    }
     if (identity) seenIdentities.add(identity);
-    if (key) seenKeys.add(key);
+    if (key) keptIndexByKey.set(key, kept.length);
     kept.push(tag);
   }
   return { worktags: kept, dropped };
@@ -360,14 +385,14 @@ export function passthroughWorktagsForSplitInvoiceLine(
   const stripFund = splits == null || everySplitHasWorktagType(splits, 'Fund_ID');
   const stripCostCenter =
     splits == null || everySplitHasWorktagType(splits, 'Cost_Center_Reference_ID');
-  const stripLob = splits == null || everySplitHasLobWorktag(splits, context?.relatedLob, context?.lineOfBusinessId);
+  const stripLob = splits == null || everySplitHasLobWorktag(splits, context?.relatedLob, context?.lineOfBusinessId, context?.orgKinds);
   return passthrough.filter(tag => {
     const type = primaryWorktagType(tag);
     if (!type) return true;
     if (type === 'Fund_ID') return !stripFund;
     if (type === 'Cost_Center_Reference_ID') return !stripCostCenter;
     if (isOrgWorktag(tag)) {
-      if (!isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId)) return true;
+      if (!isLobWorktag(tag, context?.relatedLob, context?.lineOfBusinessId, context?.orgKinds)) return true;
       return !stripLob;
     }
     return true;
@@ -382,6 +407,7 @@ export function mergePassthroughWorktagReferences(
   if (!passthrough?.length) return base;
   const relatedLob = context?.relatedLob;
   const lineOfBusinessId = context?.lineOfBusinessId;
+  const orgKinds = context?.orgKinds;
   const lockFallbackCostCenter = Boolean(context?.lockFallbackCostCenter);
 
   const baseHasRealFund = base.some(
@@ -395,8 +421,8 @@ export function mergePassthroughWorktagReferences(
   const baseHasRealLob = base.some(
     tag =>
       isOrgWorktag(tag) &&
-      isLobWorktag(tag, relatedLob, lineOfBusinessId) &&
-      !isFallbackLobTag(tag, relatedLob, lineOfBusinessId)
+      isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds) &&
+      !isFallbackLobTag(tag, relatedLob, lineOfBusinessId, orgKinds)
   );
 
   const fundOverride = passthrough.find(
@@ -410,8 +436,8 @@ export function mergePassthroughWorktagReferences(
   const lobOverride = passthrough.find(
     tag =>
       isOrgWorktag(tag) &&
-      isLobWorktag(tag, relatedLob, lineOfBusinessId) &&
-      !isFallbackLobTag(tag, relatedLob, lineOfBusinessId)
+      isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds) &&
+      !isFallbackLobTag(tag, relatedLob, lineOfBusinessId, orgKinds)
   );
 
   let remainingBase = base;
@@ -425,7 +451,7 @@ export function mergePassthroughWorktagReferences(
     overridden.push(costCenterOverride);
   }
   if (!baseHasRealLob && lobOverride) {
-    remainingBase = remainingBase.filter(tag => !isFallbackLobTag(tag, relatedLob, lineOfBusinessId));
+    remainingBase = remainingBase.filter(tag => !isFallbackLobTag(tag, relatedLob, lineOfBusinessId, orgKinds));
     overridden.push(lobOverride);
   }
 
@@ -438,7 +464,7 @@ export function mergePassthroughWorktagReferences(
   const baseWids = new Set(
     remainingBase.map(worktagWid).filter((wid): wid is string => Boolean(wid))
   );
-  const remainingHasLob = baseHasLobWorktag(remainingBase, relatedLob, lineOfBusinessId);
+  const remainingHasLob = baseHasLobWorktag(remainingBase, relatedLob, lineOfBusinessId, orgKinds);
   const overriddenSet = new Set(overridden);
   const additions = [...overridden];
 
@@ -457,7 +483,7 @@ export function mergePassthroughWorktagReferences(
       if (identity != null && baseIdentities.has(identity)) continue;
       const wid = worktagWid(tag);
       if (wid != null && baseWids.has(wid)) continue;
-      if (isLobWorktag(tag, relatedLob, lineOfBusinessId)) {
+      if (isLobWorktag(tag, relatedLob, lineOfBusinessId, orgKinds)) {
         if (remainingHasLob || overridden.includes(lobOverride)) continue;
         if (identity != null) baseIdentities.add(identity);
         if (wid != null) baseWids.add(wid);
@@ -492,7 +518,7 @@ export function enrichSplitWorktagsWithLineLevel(
   if (!lineLevelWorktags?.length) return splitWorktags;
   const enriched = [...splitWorktags];
   for (const tag of lineLevelWorktags) {
-    if (!isNonAllocationLineLevelTag(tag, context?.relatedLob, context?.lineOfBusinessId)) continue;
+    if (!isNonAllocationLineLevelTag(tag, context?.relatedLob, context?.lineOfBusinessId, context?.orgKinds)) continue;
     const type = primaryWorktagType(tag);
     if (!type) {
       const wid = worktagWid(tag);

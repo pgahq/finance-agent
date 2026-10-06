@@ -447,6 +447,7 @@ interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
   purchaseOrderLineNotes: string[];
   poPassthroughWorktagsOmitted: boolean;
+  duplicateWorktagsLabel?: string;
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
@@ -472,6 +473,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
       .map(f => purchaseOrderLineFallbackNote(f.label, purchaseOrderNumber))
       .filter((note): note is string => !!note))],
     poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
+    duplicateWorktagsLabel: submissionFallbacks.find(f => f.field === 'duplicateWorktags')?.label,
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
@@ -549,7 +551,10 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
     parts.push(`${fallbacks.omittedWorktags.join(', ')} worktag(s) removed (no fallback available, validation error)`);
   }
   if (fallbacks.poPassthroughWorktagsOmitted) {
-    parts.push('PO split rows and pass-through worktags removed (duplicate worktag type, validation error)');
+    parts.push('PO pass-through worktags removed, PO split rows kept (duplicate worktag type, validation error)');
+  }
+  if (fallbacks.duplicateWorktagsLabel) {
+    parts.push(fallbacks.duplicateWorktagsLabel);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;

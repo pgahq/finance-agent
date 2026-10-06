@@ -272,6 +272,23 @@ describe('po_worktags', () => {
     }
   });
 
+  it('mergePassthroughWorktagReferences lets a cached PO LOB replace fallback LOB', () => {
+    const prev = process.env.FALLBACK_LOB_ID;
+    process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+    try {
+      const fallback = makeWorktag('Organization_Reference_ID', 'LOB-Corporate');
+      const poLob = makeOrgWorktag('Corporate_Communications', 'wid-lob-corporate-comms');
+      const merged = mergePassthroughWorktagReferences([fallback], [poLob], {
+        lineOfBusinessId: 'LOB-Corporate',
+        orgKinds: new Map([['wid-lob-corporate-comms', 'lob']]),
+      });
+      expect(merged).toEqual([poLob]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_LOB_ID;
+      else process.env.FALLBACK_LOB_ID = prev;
+    }
+  });
+
   it('passthroughWorktagsForSplitInvoiceLine keeps shared fund when splits lack it', () => {
     const fund = makeWorktag('Fund_ID', 'FUND-PO');
     const venue = makeOrgWorktag('VENU-Contestant_Indirect');
@@ -356,6 +373,23 @@ describe('po_worktags', () => {
         orgKinds: new Map([['wid-event-a', 'event'], ['wid-event-b', 'event']]),
       });
       expect(worktags).toEqual([cc, eventA]);
+    });
+
+    it('replaces a kept fallback LOB with a later real LOB', () => {
+      const prev = process.env.FALLBACK_LOB_ID;
+      process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+      try {
+        const fallbackLob = { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Corporate' }] };
+        const poLob = makeOrgWorktag('Corporate_Communications', 'wid-lob-corporate-comms');
+        const { worktags, dropped } = collapseWorktagsToOnePerType([fallbackLob, poLob], {
+          orgKinds: new Map([['wid-lob-corporate-comms', 'lob']]),
+        });
+        expect(worktags).toEqual([poLob]);
+        expect(dropped).toEqual([fallbackLob]);
+      } finally {
+        if (prev === undefined) delete process.env.FALLBACK_LOB_ID;
+        else process.env.FALLBACK_LOB_ID = prev;
+      }
     });
 
     it('treats LOB- prefixed organization tags as LOB without the cache', () => {

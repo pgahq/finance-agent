@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
@@ -4932,7 +4932,34 @@ describe('Workday utilities', () => {
         expect(values(line.Worktags_Reference)).toEqual(expect.arrayContaining(['LOB-Communications', 'VENU-Corporate']));
         expect(values(line.Worktags_Reference)).not.toContain('Corporate_Communications');
         expect(values(line.Worktags_Reference).filter(value => value === 'CC-Communications')).toHaveLength(1);
-        expect(debug).toHaveBeenCalledWith(expect.stringContaining('Dropped duplicate worktag types before submitting invoice (new invoice)'));
+      });
+
+      it('lets the PO LOB replace a fallback LOB when only the cache knows the PO LOB', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+
+        await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Communications consulting',
+            quantity: 1,
+            unitCost: 1000,
+            extendedAmount: 1000,
+            costCenterId: 'CC-Communications',
+            lineOfBusinessId: 'LOB-Corporate',
+            poPassthroughWorktagsReference: [org('Corporate_Communications', 'wid-lob-corporate-comms')],
+          }],
+          resolveOrgWorktagKinds: async () => new Map([['wid-lob-corporate-comms', 'lob']]),
+        });
+
+        const [line] = submittedLines(capturedRequest);
+        expect(values(line.Worktags_Reference)).toContain('Corporate_Communications');
+        expect(values(line.Worktags_Reference)).not.toContain('LOB-Corporate');
       });
 
       it('keeps one event on each split row when the PO line and its splits carry different events (PO-414007)', async () => {
@@ -4973,9 +5000,45 @@ describe('Workday utilities', () => {
           expect(splitValues.filter(value => value.startsWith('2026-'))).toEqual(['2026-Womens_PGA_Championship']);
           expect(splitValues.filter(value => value.startsWith('CC-'))).toHaveLength(1);
         }
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining('Dropped duplicate worktag types before submitting invoice (new invoice)'));
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'duplicateWorktags', label: 'kept one worktag per type (dropped 2026-KPMG_Womens_PGA)' }),
+        ]));
       });
 
-      it('retries once without PO split rows and pass-through worktags on the duplicate worktag fault', async () => {
+      it('logs PO line and split worktags, not the raw Get PO response, when loading a PO', async () => {
+        const mockClient: any = mockSoapClient();
+        mockClient.Get_Purchase_Orders = jest.fn((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Purchase_Order: {
+                Purchase_Order_Data: {
+                  Document_Number: 'PO-414007',
+                  Service_Line_Data: {
+                    Line_Number: 1,
+                    Service_Order_Line_ID: 'POL-1',
+                    Description: 'Gas - 2 pass',
+                    Worktags_Reference: [ref('Fund_ID', 'FUND-Championships', 'wid-fund')],
+                    Service_Purchase_Order_Line_Split_Data: [
+                      { Extended_Amount: 100, Worktag_Reference: [ref('Cost_Center_Reference_ID', 'CC-Operations', 'wid-ops')] },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        });
+
+        const parsed = await loadPurchaseOrder(mockContext, 'PO-414007');
+
+        expect(parsed?.documentNumber).toBe('PO-414007');
+        expect(debug).toHaveBeenCalledWith(
+          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]]}]'
+        );
+        expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('PO response for PO-414007'));
+      });
+
+      it('retries once without PO pass-through worktags, keeping PO split rows, on the duplicate worktag fault', async () => {
         const mockClient = mockSoapClient();
         const capturedRequests: any[] = [];
         mockClient.Submit_Supplier_Invoice
@@ -5013,11 +5076,16 @@ describe('Workday utilities', () => {
         expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
         const [firstLine] = submittedLines(capturedRequests[0]);
         const [retryLine] = submittedLines(capturedRequests[1]);
-        expect(firstLine.Supplier_Invoice_Split_Line_Data).toHaveLength(2);
-        expect(retryLine.Supplier_Invoice_Split_Line_Data).toBeUndefined();
-        expect(values(retryLine.Worktags_Reference)).toEqual(['FUND-Championships', 'CC-Operations', 'LOB-Championships']);
+        const splitValues = (line: any) => ([] as any[]).concat(line.Supplier_Invoice_Split_Line_Data ?? [])
+          .map((split: any) => values(split.Worktag_Reference));
+        expect(splitValues(firstLine)).toEqual([
+          ['CC-Operations', 'VENU-Something'],
+          ['CC-Hospitality', 'VENU-Something'],
+        ]);
+        expect(splitValues(retryLine)).toEqual([['CC-Operations'], ['CC-Hospitality']]);
+        expect(values(retryLine.Worktags_Reference)).not.toContain('VENU-Something');
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
-          expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO split rows and pass-through worktags' }),
+          expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO pass-through worktags (kept PO split rows)' }),
         ]));
         expect(debug).toHaveBeenCalledWith(expect.stringContaining(
           'Submitted line worktags for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
