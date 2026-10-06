@@ -150,7 +150,7 @@ describe('buildDailyInvoiceMessages', () => {
 
     expect(messages).toHaveLength(2);
     const first = textOf(messages[0]);
-    expect(first).toContain('*Finance agent audit* · `SUPIN-462665` · submitted with AP edits');
+    expect(first).toContain('*Finance agent audit* · `SUPIN-462665` · submitted with AP edits · *4 touches*');
     expect(first).toContain('*Changed by AP*');
     expect(first).toContain('• Cost center (line 1): `CC72200` → `CC72100`');
     expect(first).toContain('• Other worktags (line 2): `(blank)` → `VENU-Frisco`');
@@ -158,7 +158,7 @@ describe('buildDailyInvoiceMessages', () => {
     expect(first).toContain('*Conventions*');
     expect(first).toContain('• Line memo (line 1): `AC 1. Services` → `Services`');
     expect(first).toContain('1 other change to OCR values the agent left alone (not counted)');
-    expect(textOf(messages[1])).toBe('*Finance agent audit* · `SUPIN-462667` · submitted with no material change');
+    expect(textOf(messages[1])).toBe('*Finance agent audit* · `SUPIN-462667` · submitted with no material change · *0 touches*');
   });
 
   it('shows late changes and how an AP replacement differs from a canceled invoice', () => {
@@ -196,6 +196,19 @@ describe('postSlackBlocks', () => {
     expect(fetchMock).toHaveBeenCalledWith('https://hooks.slack.test/audit', expect.anything());
   });
 
+  it('resends without the chart image when Slack rejects the message', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, statusText: 'invalid_blocks' }).mockResolvedValueOnce({ ok: true });
+    const sent = await postSlackBlocks([
+      { type: 'header', text: { type: 'plain_text', text: 'Lead' } },
+      { type: 'image', image_url: 'https://quickchart.io/chart?c=x', alt_text: 'chart' },
+    ], 'https://hooks.slack.test/audit', 'AUDIT_SLACK_WEBHOOK_URL');
+    expect(sent).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse((fetchMock.mock.calls[1][1] as { body: string }).body) as { text: string; blocks: unknown[] };
+    expect(retried.blocks).toEqual([{ type: 'header', text: { type: 'plain_text', text: 'Lead' } }]);
+    expect(retried.text).toBe('Lead');
+  });
+
   it('never falls back to the per-invoice channel when the audit webhook is unset', async () => {
     process.env.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/per-invoice';
     await postSlackBlocks([{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }], undefined, 'AUDIT_SLACK_WEBHOOK_URL');
@@ -207,8 +220,25 @@ describe('postSlackBlocks', () => {
 describe('score digest handler', () => {
   const fetchMock = jest.fn().mockResolvedValue({ ok: true });
 
+  /** Answer each digest query by what it selects, so adding a query does not shift the others. */
+  function routeQueries(rows: { digest?: unknown[]; unlabeled?: unknown[]; entered?: unknown[]; snapshots?: unknown[] }) {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('label_attribution')) return Promise.resolve(rows.digest ?? []);
+      if (sql.includes("cancel_attribution = 'unattributed'")) return Promise.resolve(rows.unlabeled ?? []);
+      if (sql.includes('WHERE entry_read_at >= $1')) return Promise.resolve(rows.entered ?? []);
+      if (sql.includes('agent_invoice_snapshots')) return Promise.resolve(rows.snapshots ?? []);
+      return Promise.resolve([]);
+    });
+  }
+
+  const payloadOf = (call: number) => JSON.parse((fetchMock.mock.calls[call][1] as { body: string }).body) as {
+    text: string;
+    blocks: Array<{ type: string; text?: { text: string }; elements?: Array<{ text: string }>; image_url?: string }>;
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockQuery.mockReset();
     global.fetch = fetchMock as unknown as typeof fetch;
     process.env.S3_BUCKET_NAME = 'finance-agent-test';
     process.env.AUDIT_SLACK_WEBHOOK_URL = 'https://hooks.slack.test/audit';
@@ -218,53 +248,63 @@ describe('score digest handler', () => {
     delete process.env.AUDIT_SLACK_WEBHOOK_URL;
   });
 
-  it('posts the week to the audit webhook and still posts when the backlog count fails', async () => {
-    mockQuery
-      .mockResolvedValueOnce([{ workday_invoice_wid: 'w1', entry_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], terminal: false }])
-      .mockResolvedValueOnce([]);
+  it('posts the week to the audit webhook, led by the zero-touch callout, and still posts when the backlog count fails', async () => {
+    const entered = [
+      { workday_invoice_wid: 'w1', entry_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
+      { workday_invoice_wid: 'w2', entry_read_at: new Date(Date.now() - 2000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
+    ];
+    routeQueries({ digest: entered, entered });
     (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('No work queue tags found'));
 
     await handler({});
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
-    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
-    expect(payload.text).toContain('Finance agent audit');
+    const payload = payloadOf(0);
+    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: '50% of invoices needed 0 touches this week (1 of 2)' } });
+    expect(payload.text).toBe('50% of invoices needed 0 touches this week (1 of 2)');
+    expect(payload.blocks.some((block) => block.text?.text.startsWith('*Finance agent audit*'))).toBe(true);
   });
 
-  it('in daily mode posts one message per invoice scored in the last day to the audit webhook', async () => {
-    mockQuery.mockResolvedValueOnce([
+  it('in daily mode leads with the touch summary, then posts one message per invoice', async () => {
+    const today = [
       { workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
       { workday_invoice_wid: 'w2', workday_invoice_number: 'SUPIN-2', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
-    ]);
+    ];
+    const earlier = { workday_invoice_wid: 'w0', entry_read_at: new Date(Date.now() - 3 * 86_400_000), outcome: 'submitted_clean', entry_diff: [], terminal: false };
+    routeQueries({ digest: today, entered: [...today, earlier] });
 
     await handler({ mode: 'daily' });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls.every(([url]) => url === 'https://hooks.slack.test/audit')).toBe(true);
-    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { text: string };
-    expect(payload.text).toContain('Finance agent audit · `SUPIN-1` · submitted with AP edits');
+    const lead = payloadOf(0);
+    expect(lead.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: '50% of invoices needed 0 touches today (1 of 2)' } });
+    expect(lead.blocks.some((block) => block.type === 'image' && block.image_url?.startsWith('https://quickchart.io/chart?'))).toBe(true);
+    expect(payloadOf(1).text).toContain('Finance agent audit · `SUPIN-1` · submitted with AP edits · 1 touch');
+    expect(payloadOf(2).text).toContain('`SUPIN-2` · submitted with no material change · 0 touches');
     expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
   });
 
   it('in daily mode posts nothing when no invoice was scored', async () => {
-    mockQuery.mockResolvedValueOnce([]);
+    routeQueries({});
     await handler({ mode: 'daily' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('applies an AP label added after the cancel was scored', async () => {
-    mockQuery
-      .mockResolvedValueOnce([{
+    routeQueries({
+      digest: [{
         workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'canceled',
         cancel_attribution: 'unattributed', cancel_basis: 'early_draft_cancel', label_attribution: 'agent',
-      }])
-      .mockResolvedValueOnce([]);
+      }],
+    });
     (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
 
     await handler({});
 
-    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { blocks: Array<{ text?: { text: string } }> };
+    const payload = payloadOf(0);
+    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: 'No agent invoices reached AP this week' } });
     const cancels = payload.blocks.find((block) => block.text?.text.startsWith('*Cancels*'))?.text?.text;
     expect(cancels).toContain('*Cancels* · 1 agent, 0 business, 0 unattributed');
     expect(cancels).toContain('AP label: 1');
@@ -272,18 +312,17 @@ describe('score digest handler', () => {
 
   it('in a refreshed sandbox, reports invoices the refresh removed apart and skips the pre-snapshot count', async () => {
     process.env.SCORE_TENANT_REFRESH_WEEKDAY = '6';
-    mockQuery
-      .mockResolvedValueOnce([
+    routeQueries({
+      digest: [
         { workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'lost_to_refresh', final_status: 'Lost to tenant refresh' },
         { workday_invoice_wid: 'w2', terminal: true, entry_read_at: new Date(Date.now() - 5000), final_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], final_status: 'Lost to tenant refresh' },
-      ])
-      .mockResolvedValueOnce([]);
+      ],
+    });
 
     await handler({});
 
     expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
-    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { blocks: Array<{ type: string; text?: { text: string } }> };
-    const text = payload.blocks.map((block) => block.text?.text ?? '').join('\n');
+    const text = payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n');
     expect(text).toContain('• 2 removed by the weekly sandbox refresh (not scored)');
     expect(text).toContain('on 0 of 0 invoices closed this week');
     expect(text).toContain('*Cancels* · 0 agent, 0 business, 0 unattributed');
@@ -291,10 +330,7 @@ describe('score digest handler', () => {
   });
 
   it('counts pre-snapshot agent invoices by state and skips ones that have a snapshot', async () => {
-    mockQuery
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ workday_invoice_wid: 'has-snapshot' }]);
+    routeQueries({ snapshots: [{ workday_invoice_wid: 'has-snapshot' }] });
     (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue(['tag-wid']);
     (workday.executeWorkdayQuery as jest.Mock).mockResolvedValue({
       data: [
@@ -307,8 +343,7 @@ describe('score digest handler', () => {
     await handler({});
 
     expect((workday.executeWorkdayQuery as jest.Mock).mock.calls[0][1]).toContain("workQueueTags in ('tag-wid')");
-    const payload = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as { blocks: Array<{ elements?: Array<{ text: string }> }> };
-    const context = payload.blocks.find((block) => block.elements)?.elements?.[0].text;
+    const context = payloadOf(0).blocks.find((block) => block.elements)?.elements?.[0].text;
     expect(context).toBe('Before snapshots (outcome only): 1 approved, 1 canceled');
   });
 });

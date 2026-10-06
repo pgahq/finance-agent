@@ -2,6 +2,7 @@ import { LOST_TO_REFRESH_STATUS, scoreChanges, type CancelBasis, type Outcome, t
 import type { InvoiceScore } from './invoice_scores.js';
 import type { ScoredFieldName } from './invoice_snapshots.js';
 import type { SlackBlock } from './slack.js';
+import { countsForTouches, touchCalloutBlocks, touchCount, type TouchCallout } from './score_touches.js';
 import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
 
 const DAY_MS = 86_400_000;
@@ -64,6 +65,8 @@ export interface DigestSummary {
   worst: InvoiceLink[];
   unattributedCancels: InvoiceLink[];
   backlog?: Partial<Record<string, number>>;
+  /** Lead callout: zero-touch share this week, the bucket breakdown, and the trend. */
+  touches?: TouchCallout;
 }
 
 function within(date: Date | undefined, start: Date, end: Date): boolean {
@@ -277,6 +280,7 @@ const OUTCOME_LABELS: Record<Outcome, string> = {
 export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   const { window } = summary;
   const blocks: SlackBlock[] = [
+    ...(summary.touches ? touchCalloutBlocks(summary.touches) : []),
     section(`*Finance agent audit* · ${shortDate(window.start)} – ${shortDate(window.end)}`),
   ];
 
@@ -366,6 +370,8 @@ export interface DailyScoreLine {
   lateChanges: ScoredChange[];
   /** Enrich invoices only: changes to OCR values the agent left alone. */
   ocrOnlyChanges: number;
+  /** Fields AP had to change, for invoices AP submitted. */
+  touches?: number;
 }
 
 export interface DailySummary {
@@ -416,7 +422,16 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
         lateChanges = againstAgent(score.lateDiff);
       }
     }
-    if (parts.length) lines.push({ ...link, text: parts.join(' → '), entryChanges, lateChanges, ocrOnlyChanges });
+    if (parts.length) {
+      lines.push({
+        ...link,
+        text: parts.join(' → '),
+        entryChanges,
+        lateChanges,
+        ocrOnlyChanges,
+        ...(countsForTouches(score) ? { touches: touchCount(score) } : {}),
+      });
+    }
   }
   return { since, until, lines, lostToRefresh };
 }
@@ -462,7 +477,8 @@ export function buildDailyInvoiceMessages(summary: DailySummary): SlackBlock[][]
       ...changeSections(isCancel ? 'AP replacement differs' : 'Changed by AP', line.entryChanges),
       ...changeSections('Changed after submit', line.lateChanges),
     ];
-    const blocks: SlackBlock[] = [section(`*Finance agent audit* · ${invoiceLink(line)} · ${line.text}`)];
+    const touches = line.touches === undefined ? '' : ` · *${line.touches} ${line.touches === 1 ? 'touch' : 'touches'}*`;
+    const blocks: SlackBlock[] = [section(`*Finance agent audit* · ${invoiceLink(line)} · ${line.text}${touches}`)];
     if (body.length) blocks.push(section(body.join('\n')));
     if (line.ocrOnlyChanges) {
       blocks.push({

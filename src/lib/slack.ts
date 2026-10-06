@@ -21,7 +21,18 @@ interface SlackDividerBlock {
   type: 'divider';
 }
 
-export type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
+interface SlackHeaderBlock {
+  type: 'header';
+  text: { type: 'plain_text'; text: string };
+}
+
+interface SlackImageBlock {
+  type: 'image';
+  image_url: string;
+  alt_text: string;
+}
+
+export type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock | SlackHeaderBlock | SlackImageBlock;
 
 const SLACK_SECTION_TEXT_LIMIT = 2900;
 
@@ -281,17 +292,18 @@ async function sendSlackMessage(
   blocks: SlackBlock[],
   webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
   webhookEnvName = 'SLACK_WEBHOOK_URL'
-): Promise<void> {
+): Promise<boolean> {
   try {
     if (!webhookUrl) {
       debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
-      return;
+      return false;
     }
 
     // Create fallback text from the first section block for notifications
-    const fallbackText = blocks.length > 0 && blocks[0].type === 'section'
-      ? blocks[0].text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
-      : 'Slack notification';
+    const first = blocks[0];
+    const fallbackText = first?.type === 'section'
+      ? first.text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
+      : first?.type === 'header' ? first.text.text : 'Slack notification';
 
     const payload = {
       text: fallbackText, // Fallback for notifications
@@ -313,9 +325,11 @@ async function sendSlackMessage(
     }
 
     debug('Slack notification sent successfully');
+    return true;
   } catch (error) {
     debug('Error sending Slack notification:', error);
     // Don't throw - we don't want Slack failures to break the main process
+    return false;
   }
 }
 
@@ -323,13 +337,18 @@ async function sendSlackMessage(
  * Posts blocks to a specific incoming webhook (for example the audit channel). Never throws, and never
  * falls back to the per-invoice channel when the webhook is not configured.
  */
-export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<void> {
+export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<boolean> {
   // An undefined argument would pick up sendSlackMessage's per-invoice default, so stop here instead.
   if (!webhookUrl) {
     debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
-    return;
+    return false;
   }
-  await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
+  if (await sendSlackMessage(blocks, webhookUrl, webhookEnvName)) return true;
+  // Slack rejects the whole message when it cannot download an image block, so resend without images.
+  const withoutImages = blocks.filter((block) => block.type !== 'image');
+  if (withoutImages.length === blocks.length) return false;
+  debug('Slack rejected a message with an image; resending without it');
+  return sendSlackMessage(withoutImages, webhookUrl, webhookEnvName);
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
