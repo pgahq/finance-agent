@@ -1,9 +1,11 @@
 import { processor } from '../enrich_invoice.js';
 
 // Mock the dependencies
+// The processor replaces process.env with loadEnv(); this suite covers the freight reconciliation
+// behavior, so the flag is on unless a test overrides loadEnv.
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue({})
+  default: jest.fn().mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' })
 }));
 
 jest.mock('@pga/logger', () => ({
@@ -1123,7 +1125,7 @@ describe('enrich_invoice', () => {
     expect(params.extractedFreightAmount).toBe('$4,595.00');
     expect(params.freightAsLines).toBe(true);
     expect(params.finalLines).toEqual([expect.objectContaining({ description: 'PRO 52118 - Linehaul - 42,000 lbs', extendedAmount: 4595 })]);
-    const note = 'All-freight invoice: freight $4,595.00 submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.';
+    const note = 'Header freight equals the only line ($4,595.00), so header Freight_Amount is not set. Check the extracted freight.';
     expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
   });
@@ -1276,7 +1278,7 @@ describe('enrich_invoice', () => {
 
   afterEach(() => {
     delete process.env.PO_LINE_SELECTION_ENABLED;
-    require('@pga/lambda-env').default.mockResolvedValue({});
+    require('@pga/lambda-env').default.mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' });
   });
 
   it.each([
@@ -1286,7 +1288,7 @@ describe('enrich_invoice', () => {
   ])('handles PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability, selectionOn) => {
     if (selectionOn) {
       process.env.PO_LINE_SELECTION_ENABLED = 'true';
-      require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+      require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true', FREIGHT_RECONCILIATION_ENABLED: 'true' });
     }
     const { getAiResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

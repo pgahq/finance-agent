@@ -50,6 +50,7 @@ import {
   chargeReconciliationMessages,
   CHARGE_RECONCILIATION_FALLBACK_FIELD,
   formatAmountCheckNotes,
+  mergeAmountCheckMessages,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
@@ -63,6 +64,7 @@ import {
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
+import { isFreightReconciliationEnabled } from './lib/freight_reconciliation_flag.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
@@ -748,7 +750,8 @@ async function processInvoiceCluster(
 
     const charges = prepareInvoiceCharges(
       (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost)),
-      { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount }
+      { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount },
+      { allowFreightAsLines: isFreightReconciliationEnabled(), removeDuplicates: isFreightReconciliationEnabled() }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
@@ -791,6 +794,23 @@ async function processInvoiceCluster(
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
+
+    // An all-freight invoice must keep its coded freight line; if the PO merge returned none,
+    // build it again without the PO, the way the remainder line below is built.
+    if (finalLines.length === 0 && freightAsLines && candidateLines.length > 0) {
+      debug('PO merge returned no lines for an all-freight invoice; rebuilding the freight line without the PO');
+      const rebuilt = await buildFinalInvoiceLines(
+        candidateLines,
+        undefined,
+        emailContext?.plainTextBody,
+        fallbackIds,
+        emailWorktags,
+        relatedLobLookup,
+        invoiceLineQuantityDisplayed
+      );
+      finalLines = overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines);
+      relatedLobByCostCenter = rebuilt.relatedLobByCostCenter;
+    }
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
     // could be extracted or matched to a PO, synthesize a single line from the merchandise
@@ -878,10 +898,10 @@ async function processInvoiceCluster(
 
     const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
-    const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => [
-      ...chargeCheck,
-      ...appliedFallbacks.filter(isAmountCheck).map(f => f.label),
-    ];
+    const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
+      chargeCheck,
+      appliedFallbacks.filter(isAmountCheck).map(f => f.label)
+    );
     const submittedSlackAmountCheck = (appliedFallbacks: AppliedFallback[]) => {
       const lines = amountCheckLines(appliedFallbacks);
       return lines.length ? { chargeCheck: lines } : {};

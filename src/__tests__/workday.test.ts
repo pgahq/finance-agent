@@ -5,6 +5,9 @@ import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js'
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
+// These suites cover the freight reconciliation behavior; the flag-off path has its own tests.
+process.env.FREIGHT_RECONCILIATION_ENABLED = 'true';
+
 jest.mock('@pga/logger', () => ({
   debug: jest.fn(),
   error: jest.fn(),
@@ -2430,6 +2433,77 @@ describe('Workday utilities', () => {
       const data = getData();
       expect(data.Freight_Amount).toBe(15);
       expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+    });
+
+    describe('with the freight reconciliation flag off', () => {
+      beforeEach(() => { delete process.env.FREIGHT_RECONCILIATION_ENABLED; });
+      afterEach(() => { process.env.FREIGHT_RECONCILIATION_ENABLED = 'true'; });
+
+      it('keeps an OCR line that repeats header tax and flags the mismatch', async () => {
+        const getData = mockUpdateClient({
+          Control_Amount_Total: '106.00',
+          Tax_Amount: '6.00',
+          Invoice_Line_Replacement_Data: [
+            { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting', Quantity: '1', Unit_Cost: '100', Extended_Amount: '100' },
+            { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Sales Tax', Quantity: '1', Unit_Cost: '6', Extended_Amount: '6' },
+          ],
+        });
+
+        const result = await submitSupplierInvoiceUpdateForTest();
+
+        expect(getData().Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting', 'Sales Tax']);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Lines $106.00 + freight $0.00 + tax $6.00 = $112.00, but the amount due is $106.00. Review lines and header charges.',
+        }]));
+      });
+
+      it('ignores freightAsLines from a caller and keeps freight on the header', async () => {
+        const getData = mockUpdateClient({ Control_Amount_Total: '15.00', Tax_Amount: '0.00' });
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedAmountDue: '$15.00',
+          extractedFreightAmount: '$15.00',
+          freightAsLines: true,
+          finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+      });
+
+      it('moves an all-freight OCR invoice back to header freight on a resubmit, as before', async () => {
+        const getData = mockUpdateClient({
+          Control_Amount_Total: '4595.00',
+          Tax_Amount: '0.00',
+          Invoice_Line_Replacement_Data: [
+            { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+          ],
+        });
+
+        await submitSupplierInvoiceUpdateForTest();
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(4595);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Invoice']);
+      });
+    });
+
+    it.each(['n/a', '$0.00', ' '])('keeps coded OCR freight lines when the extracted freight is %p', async (extractedFreightAmount) => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount });
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
     });
 
     it('never sends an unparseable Workday Freight_Amount on a goods invoice', async () => {

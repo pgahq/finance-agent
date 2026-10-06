@@ -3,9 +3,11 @@
 // vars it needs, resets the module registry, and re-requires the module (and its mocked
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
+// The processor replaces process.env with loadEnv(); this suite covers the freight reconciliation
+// behavior, so the flag is on unless a test overrides loadEnv.
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue({})
+  default: jest.fn().mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' })
 }));
 
 jest.mock('@pga/logger', () => ({
@@ -694,6 +696,66 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([allFreightNote]);
     });
 
+    it('rebuilds the coded freight line without the PO when the PO merge returns none', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
+      invoiceLines.buildFinalInvoiceLines
+        .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }, relatedLobByCostCenter: new Map() })
+        .mockResolvedValueOnce(carrierLine);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-myfreightworld-empty-merge/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(2);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][0]).toEqual(myFreightWorldEnrichment.extractedInvoiceLines);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[1][1]).toBeUndefined();
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.freightAsLines).toBe(true);
+      expect(submitArgs.finalLines).toEqual([
+        expect.objectContaining({ description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', extendedAmount: 4595 })
+      ]);
+    });
+
+    it('drops the freight-as-line sentence when submit reports the header-freight fallback', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(carrierLine);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-myfreightworld-fallback/invoice.pdf')]
+      } as any);
+
+      const fallback = {
+        field: 'chargeReconciliation',
+        label: 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.',
+      };
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([fallback]);
+      expect(notes).toContain(`Amount check: ${fallback.label}`);
+      expect(notes).not.toContain(allFreightNote);
+    });
+
+    it('keeps SUPIN-465729 freight on the header when the freight reconciliation flag is off', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({});
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-myfreightworld-flag-off/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.freightAsLines).toBe(false);
+      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
+      expect(submitArgs.finalLines).toEqual([]);
+    });
+
     it('keeps an unrecognized single carrier line that equals header freight as the freight line', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
       const linehaul = { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null };
@@ -711,7 +773,9 @@ describe('create_invoice', () => {
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
       expect(submitArgs.freightAsLines).toBe(true);
-      expect(submitArgs.buildNotes([])).toContain(allFreightNote);
+      expect(submitArgs.buildNotes([])).toContain(
+        'Header freight equals the only line ($4,595.00), so header Freight_Amount is not set. Check the extracted freight.'
+      );
       expect(submitArgs.buildNotes([])).not.toContain('Removed invoice line');
     });
 

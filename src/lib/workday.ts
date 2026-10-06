@@ -3,7 +3,8 @@ import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
+import { isFreightReconciliationEnabled } from './freight_reconciliation_flag.js';
 import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
@@ -1283,7 +1284,9 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const providedFinalLines = finalLines !== undefined;
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
-  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0;
+  // The flag is checked here too, so a caller passing freightAsLines cannot bypass it.
+  const reconcilesFreight = isFreightReconciliationEnabled();
+  const keepFreightLines = reconcilesFreight && Boolean(freightAsLines) && normalizedFinalLines.length > 0;
   const splitFinalLines = providedFinalLines && !keepFreightLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
@@ -1291,9 +1294,12 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const currentFreightAmount: unknown = currentInvoice.Freight_Amount;
   const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
-  // An invoice whose lines are all freight and whose header freight is empty already carries freight
-  // as coded lines (an all-freight invoice this agent submitted); a resubmit without final lines keeps them.
-  const ocrFreightAsLines = !providedFinalLines && !extractedFreightAmount && ocrLines.length > 0
+  // An invoice whose lines are all freight, whose header freight is empty, and whose lines plus tax
+  // equal the control total is an all-freight invoice: keep those lines rather than moving them to
+  // header freight. This covers invoices this agent submitted and Workday OCR drafts of carrier bills.
+  // A blank, zero, or unparseable extracted freight is no freight, as in documentFreight.
+  const extractedFreightUsable = ((extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined) ?? 0) > 0;
+  const ocrFreightAsLines = reconcilesFreight && !providedFinalLines && !extractedFreightUsable && ocrLines.length > 0
     && splitOcrLines?.merchandiseLines.length === 0 && !((chargeAmount(signedSoapAmount(currentFreightAmount)) ?? 0) > 0)
     && reconcileSubmittedCharges(ocrLines, {
       amountDue: signedSoapAmount(controlAmountTotal),
@@ -1323,14 +1329,14 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const finalReconciliation = reconcileSubmittedCharges(
     keepFreightLines ? normalizedFinalLines : (splitFinalLines?.merchandiseLines ?? []),
     headerCharges,
-    { checkWithoutLines: ocrLines.length === 0 }
+    { checkWithoutLines: ocrLines.length === 0, removeDuplicates: reconcilesFreight }
   );
   const submitsOcrLines = ocrLines.length > 0 && (!providedFinalLines || finalReconciliation.lines.length === 0);
   const candidateOcrLines = ocrFreightAsLines
     ? ocrLines
     : (splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined));
   const ocrReconciliation = submitsOcrLines && candidateOcrLines
-    ? reconcileSubmittedCharges(candidateOcrLines, headerCharges)
+    ? reconcileSubmittedCharges(candidateOcrLines, headerCharges, { removeDuplicates: reconcilesFreight })
     : undefined;
 
   return {
@@ -1362,7 +1368,7 @@ function chargeReconciliationFallbacks(options: buildSubmitInvoiceDataOptions, s
     && (soapAmount(submittedCharges.freightAmount) ?? 0) !== 0;
   return [
     ...(freightLinesMissing
-      ? ['All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.']
+      ? [FREIGHT_HEADER_FALLBACK_MESSAGE]
       : []),
     ...reconciliations.flatMap(reconciliation => chargeReconciliationMessages(reconciliation)),
   ].map(label => ({ field: CHARGE_RECONCILIATION_FALLBACK_FIELD, label }));

@@ -9,6 +9,8 @@ import {
   constrainEmailLobToRelatedWorktags,
   extractedChargeCheck,
   formatChargeReconciliationNotes,
+  FREIGHT_HEADER_FALLBACK_MESSAGE,
+  mergeAmountCheckMessages,
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
@@ -20,6 +22,7 @@ import {
   statesServicePeriod,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
+import { isFreightReconciliationEnabled } from '../lib/freight_reconciliation_flag.js';
 import { getAiResponse } from '../lib/ai.js';
 import { mergeInvoiceLinesPromptFor } from '../prompts/merge_invoice_lines_prompt.js';
 import { extractLineOfBusinessId } from '../lib/related_worktags.js';
@@ -1216,6 +1219,13 @@ describe('reconcileSubmittedCharges', () => {
     expect(result.unreconciled).toEqual({ lineTotal: 6, freight: 0, tax: 6, amountDue: 6 });
   });
 
+  it.each(['Sales Tax 6%', 'VAT 20.00%', 'Tax 0.0825'])('drops the rate-printed tax row %s that repeats header tax', (description) => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description, totalPrice: '$6.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$106.00', tax: '$6.00' });
+
+    expect(result.duplicateTaxLines).toEqual([lines[1]]);
+  });
+
   it('drops a sales tax line that repeats header tax', () => {
     const lines = [
       { description: 'Widgets', totalPrice: '$100.00' },
@@ -1274,13 +1284,68 @@ describe('reconcileSubmittedCharges', () => {
   });
 });
 
+describe('isFreightReconciliationEnabled', () => {
+  it.each([
+    ['true', true],
+    ['false', false],
+    ['', false],
+    [undefined, false],
+  ])('reads %p as %p', (value, expected) => {
+    expect(isFreightReconciliationEnabled(value === undefined ? {} : { FREIGHT_RECONCILIATION_ENABLED: value })).toBe(expected);
+  });
+});
+
+describe('mergeAmountCheckMessages', () => {
+  it('drops the freight-as-line sentence when submit fell back to header freight', () => {
+    const extraction = [
+      'All-freight invoice: freight $15.00 submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.',
+      'Removed invoice line "Sales Tax" ($1.00): that amount is already on the header Tax_Amount.',
+    ];
+    expect(mergeAmountCheckMessages(extraction, [FREIGHT_HEADER_FALLBACK_MESSAGE])).toEqual([
+      extraction[1],
+      FREIGHT_HEADER_FALLBACK_MESSAGE,
+    ]);
+    expect(mergeAmountCheckMessages(extraction, [])).toEqual(extraction);
+  });
+});
+
 describe('prepareInvoiceCharges', () => {
+  const ON = { allowFreightAsLines: true, removeDuplicates: true };
+  const prepare = (
+    lines: Parameters<typeof prepareInvoiceCharges>[0],
+    charges: Parameters<typeof prepareInvoiceCharges>[1],
+    options: Parameters<typeof prepareInvoiceCharges>[2] = ON
+  ) => prepareInvoiceCharges(lines, charges, options);
+
+  it('keeps a single goods line equal to a misread header freight and says so plainly', () => {
+    const golfBalls = { description: 'Golf balls', totalPrice: '100.00' };
+    const prepared = prepare([golfBalls], { amountDue: '100.00', freight: '100.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([golfBalls]);
+    expect(chargeReconciliationMessages(prepared.reconciliation)).toEqual([
+      'Header freight equals the only line ($100.00), so header Freight_Amount is not set. Check the extracted freight.',
+    ]);
+  });
+
+  it('keeps freight on the header and every line when the flag is off', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description: 'Sales Tax', totalPrice: '$6.00' }];
+    const prepared = prepare(lines, { amountDue: '$106.00', tax: '$6.00' }, { allowFreightAsLines: false, removeDuplicates: false });
+
+    expect(prepared.lines).toEqual(lines);
+    expect(prepared.reconciliation.duplicateTaxLines).toEqual([]);
+
+    const freightOnly = prepare([{ description: 'Shipping', totalPrice: '$15.00' }], { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false, removeDuplicates: false });
+    expect(freightOnly.freightAsLines).toBe(false);
+    expect(freightOnly.freightAmount).toBe('$15.00');
+  });
+
   const allFreightNote = (amount: string) =>
     `All-freight invoice: freight ${amount} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`;
 
   it('submits the MyFreightWorld carrier row (SUPIN-465729) as the line with no header freight', () => {
     const carrier = { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null };
-    const prepared = prepareInvoiceCharges([carrier], { amountDue: '$4,595.00', freight: '$4,595.00' });
+    const prepared = prepare([carrier], { amountDue: '$4,595.00', freight: '$4,595.00' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([carrier]);
@@ -1290,7 +1355,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('keeps an unrecognized single carrier line as the freight line instead of removing it', () => {
     const linehaul = { description: 'PRO 52118 - Linehaul - 42,000 lbs', totalPrice: '$4595.00' };
-    const prepared = prepareInvoiceCharges([linehaul], { amountDue: '$4,595.00', freight: '$4,595.00' });
+    const prepared = prepare([linehaul], { amountDue: '$4,595.00', freight: '$4,595.00' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([linehaul]);
@@ -1298,7 +1363,7 @@ describe('prepareInvoiceCharges', () => {
   });
 
   it('synthesizes one freight line when freight was only extracted as the header amount', () => {
-    const prepared = prepareInvoiceCharges([], { amountDue: '$4,595.00', freight: '$4,595.00' });
+    const prepared = prepare([], { amountDue: '$4,595.00', freight: '$4,595.00' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([
@@ -1307,7 +1372,7 @@ describe('prepareInvoiceCharges', () => {
   });
 
   it('uses the header freight amount when the freight rows do not add up to it', () => {
-    const prepared = prepareInvoiceCharges(
+    const prepared = prepare(
       [{ description: 'Shipping', totalPrice: '$10.00' }, { description: 'Handling', totalPrice: '$3.00' }],
       { amountDue: '$15.00', freight: '$15.00' }
     );
@@ -1319,7 +1384,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('ignores an unparseable extracted freight and keeps the freight row as the line', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$15.00', freight: 'n/a' });
+    const prepared = prepare([shipping], { amountDue: '$15.00', freight: 'n/a' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([shipping]);
@@ -1328,7 +1393,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('does not let a zero extracted freight discard a freight row that has an amount', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$15.00', freight: '$0.00' });
+    const prepared = prepare([shipping], { amountDue: '$15.00', freight: '$0.00' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([shipping]);
@@ -1337,7 +1402,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('treats a blank extracted freight as missing and uses the freight rows', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$15.00', freight: ' ' });
+    const prepared = prepare([shipping], { amountDue: '$15.00', freight: ' ' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([shipping]);
@@ -1346,7 +1411,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('treats freight plus tax as the whole invoice', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$16.00', freight: '$15.00', tax: '$1.00' });
+    const prepared = prepare([shipping], { amountDue: '$16.00', freight: '$15.00', tax: '$1.00' });
 
     expect(prepared.freightAsLines).toBe(true);
     expect(prepared.lines).toEqual([shipping]);
@@ -1354,7 +1419,7 @@ describe('prepareInvoiceCharges', () => {
 
   it('keeps header freight on a mixed invoice', () => {
     const widgets = { description: 'Widgets', totalPrice: '$100.00' };
-    const prepared = prepareInvoiceCharges(
+    const prepared = prepare(
       [widgets, { description: 'Shipping', totalPrice: '$15.00' }],
       { amountDue: '$115.00' }
     );
@@ -1365,7 +1430,7 @@ describe('prepareInvoiceCharges', () => {
   });
 
   it('keeps header freight when the amount due also covers goods that were not extracted', () => {
-    const prepared = prepareInvoiceCharges(
+    const prepared = prepare(
       [{ description: 'Shipping', totalPrice: '$15.00' }],
       { amountDue: '$115.00', freight: '$15.00' }
     );
@@ -1390,17 +1455,17 @@ describe('prepareInvoiceCharges', () => {
   });
 
   it('does not turn a credit into a freight line', () => {
-    const prepared = prepareInvoiceCharges([], { amountDue: '-$15.00', freight: '-$15.00' });
+    const prepared = prepare([], { amountDue: '-$15.00', freight: '-$15.00' });
 
     expect(prepared.freightAsLines).toBe(false);
     expect(prepared.freightAmount).toBe('-$15.00');
   });
 
   it.each([
-    ['freight as lines is not allowed', { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false }],
+    ['freight as lines is not allowed', { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false, removeDuplicates: false }],
     ['the amount due is missing', { freight: '$15.00' }, undefined],
   ])('keeps header freight when %s', (_label, charges, options) => {
-    const prepared = prepareInvoiceCharges([{ description: 'Shipping', totalPrice: '$15.00' }], charges, options);
+    const prepared = prepare([{ description: 'Shipping', totalPrice: '$15.00' }], charges, options);
 
     expect(prepared.freightAsLines).toBe(false);
     expect(prepared.freightAmount).toBe('$15.00');

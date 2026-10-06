@@ -296,6 +296,11 @@ function isTaxChargeLine(description: string | undefined): boolean {
     && tokens.every(token => TAX_ALLOWED_WORDS.has(token) || /^\d+$/.test(token));
 }
 
+// Tax rows often print the rate (`Sales Tax 6%`, `VAT 20.00%`, `Tax 0.0825`); the rate is not a goods word.
+function isTaxChargeDescription(description: string | undefined): boolean {
+  return isTaxChargeLine(description?.replace(/\d+(?:\.\d+)?\s*%?/g, ' '));
+}
+
 type ChargeLine = Parameters<typeof lineAmount>[0] & {
   description?: string | null;
   Item_Description?: string | null;
@@ -346,6 +351,8 @@ export interface SubmittedChargeReconciliation<T> {
   unreconciled?: ChargeTotals;
   /** All-freight invoice: freight submitted as invoice lines instead of header Freight_Amount. */
   freightLineTotal?: number;
+  /** The kept line is not a freight row: the header freight was probably the invoice total misread. */
+  freightLineIsGoods?: boolean;
 }
 
 interface CentsLine<T> {
@@ -384,7 +391,7 @@ function linesMatchingCharge<T>(
 export function reconcileSubmittedCharges<T extends ChargeLine>(
   lines: T[],
   charges: { amountDue?: ChargeAmount; freight?: ChargeAmount; tax?: ChargeAmount },
-  options: { allowSingleLineFreight?: boolean; checkWithoutLines?: boolean } = {}
+  options: { allowSingleLineFreight?: boolean; checkWithoutLines?: boolean; removeDuplicates?: boolean } = {}
 ): SubmittedChargeReconciliation<T> {
   const unchanged: SubmittedChargeReconciliation<T> = { lines, duplicateFreightLines: [], duplicateTaxLines: [] };
   const amountDue = chargeAmount(charges.amountDue);
@@ -402,9 +409,12 @@ export function reconcileSubmittedCharges<T extends ChargeLine>(
   const taxCents = toCents(tax);
   const excessCents = sumCents(entries) + freightCents + taxCents - toCents(amountDue);
   if (excessCents === 0) return unchanged;
+  if (options.removeDuplicates === false) {
+    return { ...unchanged, unreconciled: { lineTotal: sumCents(entries) / 100, freight, tax, amountDue } };
+  }
 
   const isFreightEntry = (entry: CentsLine<T>) => isFreightOrHandlingLine(lineDescription(entry.line));
-  const isTaxEntry = (entry: CentsLine<T>) => isTaxChargeLine(lineDescription(entry.line));
+  const isTaxEntry = (entry: CentsLine<T>) => isTaxChargeDescription(lineDescription(entry.line));
   let freightDuplicates: CentsLine<T>[] | undefined;
   let taxDuplicates: CentsLine<T>[] | undefined;
   if (freightCents > 0 && excessCents === freightCents) {
@@ -464,7 +474,9 @@ function describeRemovedLines(lines: ChargeLine[]): string {
 export function chargeReconciliationMessages(reconciliation: SubmittedChargeReconciliation<ChargeLine>): string[] {
   const messages: string[] = [];
   if (reconciliation.freightLineTotal != null) {
-    messages.push(`All-freight invoice: freight ${formatChargeDollars(reconciliation.freightLineTotal)} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`);
+    messages.push(reconciliation.freightLineIsGoods
+      ? `${FREIGHT_EQUALS_ONLY_LINE_PREFIX} (${formatChargeDollars(reconciliation.freightLineTotal)}), so header Freight_Amount is not set. Check the extracted freight.`
+      : `${ALL_FREIGHT_LINES_PREFIX} freight ${formatChargeDollars(reconciliation.freightLineTotal)} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`);
   }
   if (reconciliation.duplicateFreightLines.length) {
     messages.push(`Removed invoice line ${describeRemovedLines(reconciliation.duplicateFreightLines)}: that amount is already on the header Freight_Amount.`);
@@ -541,6 +553,21 @@ export interface PreparedInvoiceCharges {
 }
 
 export const CHARGE_RECONCILIATION_FALLBACK_FIELD = 'chargeReconciliation';
+export const ALL_FREIGHT_LINES_PREFIX = 'All-freight invoice:';
+const FREIGHT_EQUALS_ONLY_LINE_PREFIX = 'Header freight equals the only line';
+export const FREIGHT_HEADER_FALLBACK_MESSAGE = 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.';
+
+/**
+ * Amount-check sentences from extraction plus those from submit. When submit fell back to header
+ * freight, the extraction sentences that said freight went out as a line are no longer true.
+ */
+export function mergeAmountCheckMessages(extractionMessages: string[], submitMessages: string[]): string[] {
+  const headerFallback = submitMessages.includes(FREIGHT_HEADER_FALLBACK_MESSAGE);
+  const kept = headerFallback
+    ? extractionMessages.filter(message => !message.startsWith(ALL_FREIGHT_LINES_PREFIX) && !message.startsWith(FREIGHT_EQUALS_ONLY_LINE_PREFIX))
+    : extractionMessages;
+  return [...kept, ...submitMessages];
+}
 
 /** Workday note text for amount-check sentences from extraction and from submit. */
 export function formatAmountCheckNotes(messages: string[]): string {
@@ -584,7 +611,8 @@ function allFreightInvoiceLines(
 export function prepareInvoiceCharges(
   extractedLines: ExtractedInvoiceLine[],
   charges: { amountDue?: string; freight?: string; tax?: string },
-  options: { allowFreightAsLines: boolean } = { allowFreightAsLines: true }
+  // Both behaviors are behind FREIGHT_RECONCILIATION_ENABLED; callers pass them explicitly.
+  options: { allowFreightAsLines: boolean; removeDuplicates: boolean }
 ): PreparedInvoiceCharges {
   const { merchandiseLines, freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
   const freightAmount = documentFreight(charges.freight, freightAmountFromLines);
@@ -592,7 +620,7 @@ export function prepareInvoiceCharges(
     amountDue: charges.amountDue,
     freight: freightAmount,
     tax: charges.tax,
-  }, { allowSingleLineFreight: options.allowFreightAsLines });
+  }, { allowSingleLineFreight: options.allowFreightAsLines, removeDuplicates: options.removeDuplicates });
 
   if (options.allowFreightAsLines && reconciliation.lines.length === 0) {
     const freightRows = new Set([...freightLines, ...reconciliation.duplicateFreightLines]);
@@ -611,6 +639,7 @@ export function prepareInvoiceCharges(
           duplicateFreightLines: [],
           duplicateTaxLines: reconciliation.duplicateTaxLines,
           freightLineTotal: chargeAmount(freightAmount),
+          freightLineIsGoods: lines.some(line => !isFreightOrHandlingLine(line.description)) && !freightLines.length,
         },
       };
     }

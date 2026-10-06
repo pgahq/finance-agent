@@ -34,7 +34,9 @@ import {
   extractedChargeCheck,
   extractedChargeReconciliation,
   formatAmountCheckNotes,
+  mergeAmountCheckMessages,
   normalizeSupplierInvoiceLineAmounts,
+  overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   resolveInvoiceLineQuantityDisplayed,
   withComposedLineDescriptions,
@@ -44,6 +46,7 @@ import {
 } from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
+import { isFreightReconciliationEnabled } from './lib/freight_reconciliation_flag.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
@@ -242,10 +245,12 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
     const extractedCharges = { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount };
     const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
+    // Annotate-only runs never change lines, so both freight behaviors need a submit and the flag.
+    const reconcilesFreight = submitsLines && isFreightReconciliationEnabled();
     const charges = prepareInvoiceCharges(
       canModifyInvoice ? extractedLines : [],
       extractedCharges,
-      { allowFreightAsLines: submitsLines }
+      { allowFreightAsLines: reconcilesFreight, removeDuplicates: reconcilesFreight }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     // Without a submit, buildSubmitInvoiceData never runs its amount check, so check the extracted totals here.
@@ -270,22 +275,39 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
     if (candidateLines.length > 0) {
       debug(`Building final invoice lines from ${candidateLines.length} extracted line(s)`);
-      const built = await buildFinalInvoiceLines(
+      const fallbackIds = {
+        fundId: process.env.FALLBACK_FUND_ID,
+        costCenterId: process.env.FALLBACK_COST_CENTER_ID,
+        spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+        lineOfBusinessId: process.env.FALLBACK_LOB_ID,
+      };
+      const relatedLobLookup = (costCenterIds: string[]) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
+      let built = await buildFinalInvoiceLines(
         candidateLines,
         poLines,
         invoiceData.emailContext?.plainTextBody,
-        {
-          fundId: process.env.FALLBACK_FUND_ID,
-          costCenterId: process.env.FALLBACK_COST_CENTER_ID,
-          spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
-          lineOfBusinessId: process.env.FALLBACK_LOB_ID,
-        },
+        fallbackIds,
         emailWorktags,
-        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
+        relatedLobLookup,
         invoiceLineQuantityDisplayed,
         // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
         poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
       );
+      // An all-freight invoice must keep its coded freight line; if the PO merge returned none,
+      // build it again without the PO.
+      if (built.lines.length === 0 && freightAsLines) {
+        debug('PO merge returned no lines for an all-freight invoice; rebuilding the freight line without the PO');
+        const rebuilt = await buildFinalInvoiceLines(
+          candidateLines,
+          undefined,
+          invoiceData.emailContext?.plainTextBody,
+          fallbackIds,
+          emailWorktags,
+          relatedLobLookup,
+          invoiceLineQuantityDisplayed
+        );
+        built = { ...rebuilt, lines: overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines) };
+      }
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
       relatedLobByCostCenter = built.relatedLobByCostCenter;
@@ -315,7 +337,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
       return baseNotes
-        + formatAmountCheckNotes([...chargeCheck, ...(merged.chargeReconciliationLabels ?? [])])
+        + formatAmountCheckNotes(mergeAmountCheckMessages(chargeCheck, merged.chargeReconciliationLabels ?? []))
         + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
         + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
@@ -406,7 +428,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       },
       poLineCount: poLines?.length,
       ...(chargeCheck.length || fallbacks.chargeReconciliationLabels?.length
-        ? { chargeCheck: [...chargeCheck, ...(fallbacks.chargeReconciliationLabels ?? [])] }
+        ? { chargeCheck: mergeAmountCheckMessages(chargeCheck, fallbacks.chargeReconciliationLabels ?? []) }
         : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]

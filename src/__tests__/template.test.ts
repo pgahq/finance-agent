@@ -40,6 +40,11 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/PO_LINE_SELECTION_ENABLED|PoLineSelectionEnabled/);
   });
 
+  it('reads FREIGHT_RECONCILIATION_ENABLED from SSM at runtime, not a deploy parameter', () => {
+    expect(globals).toMatch(/FREIGHT_RECONCILIATION_ENABLED:\s*ssm:\/finance-agent\/freight-reconciliation-enabled/);
+    expect(circleci).not.toMatch(/FREIGHT_RECONCILIATION_ENABLED|FreightReconciliationEnabled/);
+  });
+
   it('keeps Global SSM references low enough for a single GetParameters call', () => {
     const globalSsmRefs = globals.match(/:\s*ssm:\//g) ?? [];
     const maxFunctionSsmRefs = 2;
