@@ -1,6 +1,6 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
-import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { throwIfDeadlineReached, withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
@@ -121,9 +121,7 @@ export const processor = withProcessorHandler(async (context, invoices, _event, 
   // Process single invoice (invoices will be array with one item)
   const abortSignal = options?.abortSignal;
   for (const invoice of invoices) {
-    if (abortSignal?.aborted) {
-      throw new Error('Processor deadline reached before all records were processed');
-    }
+    await throwIfDeadlineReached(abortSignal);
     await processInvoice(context, invoice as InvoiceData, abortSignal);
   }
 });

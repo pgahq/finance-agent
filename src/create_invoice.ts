@@ -1,7 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
-import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
@@ -210,9 +210,7 @@ function slackInvoiceDetails(
 export const processor = withProcessorHandler(async (context, requests, _event, options) => {
   const abortSignal = options?.abortSignal;
   for (const request of requests) {
-    if (abortSignal?.aborted) {
-      throw new Error('Processor deadline reached before all records were processed');
-    }
+    await throwIfDeadlineReached(abortSignal);
     await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
   }
 });
