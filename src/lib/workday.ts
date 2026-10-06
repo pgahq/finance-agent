@@ -3,7 +3,7 @@ import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
 import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
@@ -1294,7 +1294,7 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   // An invoice whose lines are all freight and whose header freight is empty already carries freight
   // as coded lines (an all-freight invoice this agent submitted); a resubmit without final lines keeps them.
   const ocrFreightAsLines = !providedFinalLines && !extractedFreightAmount && ocrLines.length > 0
-    && splitOcrLines?.merchandiseLines.length === 0 && !((soapAmount(currentFreightAmount) ?? 0) > 0)
+    && splitOcrLines?.merchandiseLines.length === 0 && !((chargeAmount(signedSoapAmount(currentFreightAmount)) ?? 0) > 0)
     && reconcileSubmittedCharges(ocrLines, {
       amountDue: signedSoapAmount(controlAmountTotal),
       tax: signedSoapAmount(taxAmount),
@@ -1356,7 +1356,8 @@ function signedSoapAmount(value: unknown): string | number | undefined {
 // still differ from Control_Amount_Total. Callers show these under "Amount check", not as fallbacks.
 function chargeReconciliationFallbacks(options: buildSubmitInvoiceDataOptions, submittedCharges: SubmittedCharges): AppliedFallback[] {
   const { reconciliations } = submittedCharges;
-  const freightLinesMissing = Boolean(options.freightAsLines) && !submittedCharges.freightSubmittedAsLines;
+  const freightLinesMissing = Boolean(options.freightAsLines) && !submittedCharges.freightSubmittedAsLines
+    && Boolean(submittedCharges.freightAmount);
   return [
     ...(freightLinesMissing
       ? ['All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.']

@@ -2398,6 +2398,23 @@ describe('Workday utilities', () => {
       }]));
     });
 
+    it('keeps a coded freight credit line and clears the matching negative header on resubmit', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '-10.00',
+        Freight_Amount: '-10.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '-10.00' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
     it('never sends an unparseable Workday Freight_Amount on a goods invoice', async () => {
       const getData = mockUpdateClient({
         Control_Amount_Total: '100.00',
@@ -5805,6 +5822,21 @@ describe('Workday utilities', () => {
         const data = getData();
         expect(data).not.toHaveProperty('Freight_Amount');
         expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+      });
+
+      it('does not claim a header-freight fallback when no freight amount is sent', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$15.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        const amountChecks = result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation');
+        expect(amountChecks.map((f: { label: string }) => f.label)).toEqual([
+          'Lines $0.00 + freight $0.00 + tax $0.00 = $0.00, but the amount due is $15.00. Review lines and header charges.',
+        ]);
       });
 
       it('falls back to header freight when freightAsLines is set but no line survived merge', async () => {

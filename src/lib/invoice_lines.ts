@@ -308,7 +308,8 @@ function isPrintedCredit(printed: string): boolean {
   return /^\s*(?:\$\s*)?[-\u2212(]/.test(printed) || /[-\u2212]\s*$/.test(printed);
 }
 
-function chargeAmount(value: ChargeAmount): number | undefined {
+/** Parses an amount the way reconciliation does, keeping a printed credit negative. */
+export function chargeAmount(value: ChargeAmount): number | undefined {
   if (value == null || value === '') return undefined;
   if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined;
   const amount = parseExtractedAmount(value);
