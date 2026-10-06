@@ -5479,6 +5479,86 @@ describe('Workday utilities', () => {
       expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
     });
 
+    describe('header freight already on a line', () => {
+      const captureCreate = () => {
+        const mockClient = mockSoapClient();
+        const captured: { request?: any } = {};
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          captured.request = request;
+          callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+        });
+        return () => captured.request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      };
+
+      it('submits only header freight for an all-freight carrier invoice (SUPIN-465729)', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,595.00',
+          extractedFreightAmount: '$4,595.00',
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [
+            { lineOrder: 1, description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: 0, extendedAmount: 4595 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Control_Amount_Total).toBe(4595);
+        expect(data.Freight_Amount).toBe(4595);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+      });
+
+      it('drops a freight-worded line that repeats header freight and keeps merchandise', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Freight for order 88', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting Services']);
+      });
+
+      it('keeps header-only freight and every line when the totals already reconcile', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+      });
+
+      it('leaves goods lines alone when the extra amount cannot be tied to freight', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,695.00',
+          extractedFreightAmount: '$4,595.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 4595, extendedAmount: 4595 },
+            { lineOrder: 2, description: 'Gadgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(4595);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets', 'Gadgets']);
+      });
+    });
+
     it('includes PO passthrough worktags and split line data on create submit', async () => {
       const mockClient = mockSoapClient();
 

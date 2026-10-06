@@ -28,7 +28,10 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
+  chargeReconciliationMessages,
+  formatChargeReconciliationNotes,
   normalizeSupplierInvoiceLineAmounts,
+  reconcileSubmittedCharges,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -238,9 +241,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
     );
-    const candidateLines = withComposedLineDescriptions(merchandiseLines);
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const chargeReconciliation = reconcileSubmittedCharges(merchandiseLines, {
+      amountDue: extractedAmountDue,
+      freight: extractedFreightAmount,
+      tax: extractedTaxAmount,
+    });
+    const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
+    if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
+    const candidateLines = withComposedLineDescriptions(chargeReconciliation.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -290,7 +300,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatChargeReconciliationNotes(chargeReconciliation) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -385,6 +395,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
+      ...(chargeCheck.length ? { chargeCheck } : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
         : undefined,

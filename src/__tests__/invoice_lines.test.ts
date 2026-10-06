@@ -5,11 +5,14 @@ import {
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
+  chargeReconciliationMessages,
   constrainEmailLobToRelatedWorktags,
+  formatChargeReconciliationNotes,
   isFreightOrHandlingLine,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  reconcileSubmittedCharges,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   statesServicePeriod,
@@ -987,6 +990,8 @@ describe('isFreightOrHandlingLine', () => {
     'Rush Shipping',
     'Local Delivery',
     'Deliveries',
+    'FRN52118A - Freight Charge - 42,000.00 Pounds',
+    'B1234 Freight 1,200 lbs',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
   });
@@ -1000,6 +1005,9 @@ describe('isFreightOrHandlingLine', () => {
     'Delivery truck rental',
     'Consulting Services',
     'Widgets',
+    'SKU123 Shipping Supplies',
+    'A100 Freightliner parts',
+    'PRO 52118 - Linehaul - 42,000 lbs',
   ])('does not treat %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(false);
   });
@@ -1065,6 +1073,129 @@ describe('splitFreightLines', () => {
 
     expect(split.freightLines).toHaveLength(1);
     expect(split.freightAmountFromLines).toBe(30);
+  });
+
+  it('strips the MyFreightWorld carrier row (SUPIN-465729) so it is not also a merchandise line', () => {
+    const split = splitFreightLines([
+      { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00' },
+    ]);
+
+    expect(split.merchandiseLines).toEqual([]);
+    expect(split.freightAmountFromLines).toBe(4595);
+  });
+});
+
+describe('reconcileSubmittedCharges', () => {
+  it('drops a freight-worded line that repeats header freight', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Freight for order 88', totalPrice: '$15.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$115.00', freight: '$15.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateFreightLines).toEqual([lines[1]]);
+    expect(result.unreconciled).toBeUndefined();
+    expect(formatChargeReconciliationNotes(result)).toBe(
+      '\n\nAmount check: Removed invoice line "Freight for order 88" ($15.00): that amount is already on the header Freight_Amount.'
+    );
+  });
+
+  it('drops the only line of an all-freight invoice when it equals header freight and the amount due', () => {
+    const line = { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00' };
+    const result = reconcileSubmittedCharges([line], { amountDue: '$4,595.00', freight: '$4,595.00', tax: null });
+
+    expect(result.lines).toEqual([]);
+    expect(result.duplicateFreightLines).toEqual([line]);
+  });
+
+  it('keeps header-only freight when lines + freight + tax already equal the amount due', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$121.00', freight: '$15.00', tax: '$6.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.duplicateFreightLines).toEqual([]);
+    expect(result.unreconciled).toBeUndefined();
+    expect(chargeReconciliationMessages(result)).toEqual([]);
+  });
+
+  it('reports totals and keeps every line when the extra amount cannot be tied to a charge line', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$4,595.00' },
+      { description: 'Gadgets', totalPrice: '$100.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$4,695.00', freight: '$4,595.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toEqual({ lineTotal: 4695, freight: 4595, tax: 0, amountDue: 4695 });
+    expect(chargeReconciliationMessages(result)).toEqual([
+      'Lines $4,695.00 + freight $4,595.00 + tax $0.00 = $9,290.00, but the amount due is $4,695.00. Submitted as extracted; review lines and header charges.',
+    ]);
+  });
+
+  it('does not collapse a single goods line into tax', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$6.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$6.00', tax: '$6.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toEqual({ lineTotal: 6, freight: 0, tax: 6, amountDue: 6 });
+  });
+
+  it('drops a sales tax line that repeats header tax', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Sales Tax', totalPrice: '$6.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$106.00', tax: '$6.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateTaxLines).toEqual([lines[1]]);
+  });
+
+  it('drops both freight and tax lines when both repeat header charges', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Freight for order 88', totalPrice: '$15.00' },
+      { description: 'State Sales Tax', totalPrice: '$6.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$121.00', freight: '$15.00', tax: '$6.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateFreightLines).toEqual([lines[1]]);
+    expect(result.duplicateTaxLines).toEqual([lines[2]]);
+  });
+
+  it('counts printed credits as negative', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Credit', totalPrice: '-$10.00' },
+      { description: 'Return', totalPrice: '($5.00)' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$100.00', freight: '$15.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toBeUndefined();
+  });
+
+  it('reads SOAP-shaped final lines and numeric header amounts', () => {
+    const lines = [
+      { description: 'Consulting', extendedAmount: 100 },
+      { description: 'Shipping charge for PO 5', extendedAmount: 15 },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: 115, freight: 15, tax: 0 });
+
+    expect(result.lines).toEqual([lines[0]]);
+  });
+
+  it.each([
+    ['no amount due', [{ description: 'Widgets', totalPrice: '$100.00' }], { freight: '$15.00' }],
+    ['no lines', [], { amountDue: '$15.00', freight: '$15.00' }],
+    ['a line without an amount', [{ description: 'Widgets' }], { amountDue: '$15.00', freight: '$15.00' }],
+  ])('skips the check with %s', (_label, lines, charges) => {
+    const result = reconcileSubmittedCharges(lines as Array<{ description: string; totalPrice?: string }>, charges);
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toBeUndefined();
   });
 });
 

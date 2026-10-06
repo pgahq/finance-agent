@@ -282,6 +282,17 @@ describe('notifyResult', () => {
     expect(texts).toContain('"registrySync": "failed"');
   });
 
+  it('renders the amount check on create success', async () => {
+    const removal = 'Removed invoice line "PRO 52118 - Linehaul - 42,000 lbs" ($4,595.00): that amount is already on the header Freight_Amount.';
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      chargeCheck: [removal],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(`*Amount Check*\n• ${removal}`);
+  });
+
   it('omits the Workday invoice number on create when Invoice_Number is missing', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -512,6 +523,22 @@ describe('notifyEnrichmentResult', () => {
     const texts = postedSlackTexts(global.fetch as jest.Mock);
     expect(texts).toContain('*Supplier Invoice #* → 12345');
     expect(texts).toContain('*Fallbacks Applied*\n• default supplier');
+  });
+
+  it('renders the amount check on enrichment success', async () => {
+    const mismatch = 'Lines $4,695.00 + freight $4,595.00 + tax $0.00 = $9,290.00, but the amount due is $4,695.00. Submitted as extracted; review lines and header charges.';
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'INV-1',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      chargeCheck: [mismatch],
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain(`*Amount Check*\n• ${mismatch}`);
   });
 
   it('omits the Workday invoice number when Invoice_Number is missing', async () => {

@@ -3,7 +3,7 @@ import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
 import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
@@ -1278,7 +1278,6 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
   const splitFinalLines = providedFinalLines ? splitFreightLines(normalizedFinalLines) : undefined;
-  const merchandiseFinalLines = splitFinalLines?.merchandiseLines ?? [];
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
@@ -1292,6 +1291,19 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
   const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
   const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
+  const chargeReconciliation = reconcileSubmittedCharges(splitFinalLines?.merchandiseLines ?? [], {
+    amountDue: soapAmount(controlAmountTotal),
+    freight: soapAmount(freightAmount),
+    tax: soapAmount(taxAmount),
+  });
+  if (chargeReconciliation.duplicateFreightLines.length || chargeReconciliation.duplicateTaxLines.length) {
+    const describe = (line: Pick<FinalInvoiceLine, 'description'>): string => line.description;
+    debug('Dropping invoice lines already counted in header freight or tax', {
+      freightLines: chargeReconciliation.duplicateFreightLines.map(describe),
+      taxLines: chargeReconciliation.duplicateTaxLines.map(describe),
+    });
+  }
+  const merchandiseFinalLines = chargeReconciliation.lines;
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
   const fallbackCostCenterId = process.env.FALLBACK_COST_CENTER_ID;

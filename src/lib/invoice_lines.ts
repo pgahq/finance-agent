@@ -177,8 +177,20 @@ const FREIGHT_ALLOWED_WORDS = new Set([
   'air', 'ocean', 'parcel', 'home', 'local', 'rush', 'misc', 'surcharge',
 ]);
 
+const FREIGHT_WEIGHT_WORDS = new Set(['pound', 'pounds', 'lb', 'lbs', 'kg', 'kgs']);
+
 function isAllowedFreightToken(token: string): boolean {
   return FREIGHT_ALLOWED_WORDS.has(token) || /^\d+$/.test(token);
+}
+
+function isFreightAnchorToken(token: string): boolean {
+  return FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token);
+}
+
+// Carrier rows lead with a pro or shipment number and print the billed weight,
+// e.g. `FRN52118A - Freight Charge - 42,000.00 Pounds`.
+function isShipmentReferenceToken(token: string): boolean {
+  return /[a-z]/.test(token) && /\d/.test(token);
 }
 
 function normalizeLineDescription(description: string): string {
@@ -198,8 +210,9 @@ export function isFreightOrHandlingLine(description: string | null | undefined):
   if (!normalized) return false;
   if (normalized === 's and h') return true;
   const tokens = normalized.split(' ');
-  const hasFreightAnchor = tokens.some(token => FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token));
-  return hasFreightAnchor && tokens.every(isAllowedFreightToken);
+  const body = tokens.length > 1 && isShipmentReferenceToken(tokens[0]) ? tokens.slice(1) : tokens;
+  return body.some(isFreightAnchorToken)
+    && body.every(token => isAllowedFreightToken(token) || FREIGHT_WEIGHT_WORDS.has(token));
 }
 
 function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
@@ -260,6 +273,184 @@ export function splitFreightLines<T extends {
     }
   }
   return { merchandiseLines, freightLines, freightAmountFromLines };
+}
+
+const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'gst', 'hst', 'pst', 'qst']);
+const TAX_ALLOWED_WORDS = new Set([
+  ...TAX_CORE_WORDS,
+  'sales', 'use', 'state', 'county', 'city', 'local', 'excise', 'and', 'amount', 'total',
+]);
+
+function descriptionTokens(description: string | undefined): string[] {
+  const normalized = description ? normalizeLineDescription(description) : '';
+  return normalized ? normalized.split(' ') : [];
+}
+
+function mentionsFreight(description: string | undefined): boolean {
+  return descriptionTokens(description).some(isFreightAnchorToken);
+}
+
+function isTaxChargeLine(description: string | undefined): boolean {
+  const tokens = descriptionTokens(description);
+  return tokens.some(token => TAX_CORE_WORDS.has(token))
+    && tokens.every(token => TAX_ALLOWED_WORDS.has(token) || /^\d+$/.test(token));
+}
+
+type ChargeLine = Parameters<typeof lineAmount>[0] & {
+  description?: string | null;
+  Item_Description?: string | null;
+};
+
+type ChargeAmount = string | number | null | undefined;
+
+function chargeAmount(value: ChargeAmount): number | undefined {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined;
+  return parseExtractedAmount(value);
+}
+
+// parseExtractedAmount drops the sign, so a printed credit (`-$10.00`, `($10.00)`) is negated here.
+function signedChargeLineAmount(line: ChargeLine): number | undefined {
+  const amount = lineAmount(line);
+  if (amount == null) return undefined;
+  const printed = line.totalPrice ?? (typeof line.Extended_Amount === 'string' ? line.Extended_Amount : undefined);
+  return printed && /^\s*(?:\$\s*)?[-(]/.test(printed) ? -Math.abs(amount) : amount;
+}
+
+export interface ChargeTotals {
+  lineTotal: number;
+  freight: number;
+  tax: number;
+  amountDue: number;
+}
+
+export interface SubmittedChargeReconciliation<T> {
+  lines: T[];
+  /** Lines removed because header Freight_Amount already counts them. */
+  duplicateFreightLines: T[];
+  /** Lines removed because header Tax_Amount already counts them. */
+  duplicateTaxLines: T[];
+  /** Set when lines + freight + tax still differ from the amount due. */
+  unreconciled?: ChargeTotals;
+}
+
+interface CentsLine<T> {
+  index: number;
+  line: T;
+  cents: number;
+}
+
+function sumCents<T>(entries: CentsLine<T>[]): number {
+  return entries.reduce((total, entry) => total + entry.cents, 0);
+}
+
+function linesMatchingCharge<T>(
+  entries: CentsLine<T>[],
+  chargeCents: number,
+  isChargeLine: (entry: CentsLine<T>) => boolean,
+  allowSingleLine: boolean
+): CentsLine<T>[] | undefined {
+  const labeled = entries.filter(isChargeLine);
+  if (labeled.length && sumCents(labeled) === chargeCents) return labeled;
+  const single = labeled.find(entry => entry.cents === chargeCents);
+  if (single) return [single];
+  // An all-freight carrier invoice can describe its only row with a pro number and weight
+  // the freight matcher does not recognize; that row is the header freight.
+  if (allowSingleLine && entries.length === 1 && entries[0].cents === chargeCents) return entries;
+  return undefined;
+}
+
+/**
+ * Header Freight_Amount and Tax_Amount are added to the line total in Workday, so a charge that
+ * is also an invoice line is counted twice. When lines + freight + tax exceed the amount due by
+ * exactly the header freight and/or tax, drop the lines that repeat it. Otherwise leave every
+ * amount as extracted and report the totals that do not reconcile.
+ */
+export function reconcileSubmittedCharges<T extends ChargeLine>(
+  lines: T[],
+  charges: { amountDue?: ChargeAmount; freight?: ChargeAmount; tax?: ChargeAmount }
+): SubmittedChargeReconciliation<T> {
+  const unchanged: SubmittedChargeReconciliation<T> = { lines, duplicateFreightLines: [], duplicateTaxLines: [] };
+  const amountDue = chargeAmount(charges.amountDue);
+  if (amountDue == null || lines.length === 0) return unchanged;
+  const amounts = lines.map(signedChargeLineAmount);
+  if (amounts.some(amount => amount == null)) return unchanged;
+
+  const freight = chargeAmount(charges.freight) ?? 0;
+  const tax = chargeAmount(charges.tax) ?? 0;
+  const entries: CentsLine<T>[] = lines.map((line, index) => ({ index, line, cents: toCents(amounts[index]!) }));
+  const freightCents = toCents(freight);
+  const taxCents = toCents(tax);
+  const excessCents = sumCents(entries) + freightCents + taxCents - toCents(amountDue);
+  if (excessCents === 0) return unchanged;
+
+  const isFreightEntry = (entry: CentsLine<T>) => mentionsFreight(lineDescription(entry.line));
+  const isTaxEntry = (entry: CentsLine<T>) => isTaxChargeLine(lineDescription(entry.line));
+  let freightDuplicates: CentsLine<T>[] | undefined;
+  let taxDuplicates: CentsLine<T>[] | undefined;
+  if (freightCents > 0 && excessCents === freightCents) {
+    freightDuplicates = linesMatchingCharge(entries, freightCents, isFreightEntry, true);
+  } else if (taxCents > 0 && excessCents === taxCents) {
+    taxDuplicates = linesMatchingCharge(entries, taxCents, isTaxEntry, false);
+  } else if (freightCents > 0 && taxCents > 0 && excessCents === freightCents + taxCents) {
+    const freightMatch = linesMatchingCharge(entries, freightCents, isFreightEntry, false);
+    const remaining = freightMatch ? entries.filter(entry => !freightMatch.includes(entry)) : [];
+    const taxMatch = freightMatch ? linesMatchingCharge(remaining, taxCents, isTaxEntry, false) : undefined;
+    if (freightMatch && taxMatch) {
+      freightDuplicates = freightMatch;
+      taxDuplicates = taxMatch;
+    }
+  }
+
+  if (!freightDuplicates && !taxDuplicates) {
+    return {
+      ...unchanged,
+      unreconciled: { lineTotal: sumCents(entries) / 100, freight, tax, amountDue },
+    };
+  }
+
+  const removed = new Set([...(freightDuplicates ?? []), ...(taxDuplicates ?? [])].map(entry => entry.index));
+  return {
+    lines: lines.filter((_, index) => !removed.has(index)),
+    duplicateFreightLines: (freightDuplicates ?? []).map(entry => entry.line),
+    duplicateTaxLines: (taxDuplicates ?? []).map(entry => entry.line),
+  };
+}
+
+function formatChargeDollars(amount: number): string {
+  const sign = amount < 0 ? '-' : '';
+  return `${sign}$${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function describeRemovedLines(lines: ChargeLine[]): string {
+  return lines
+    .map(line => `"${lineDescription(line) ?? 'Invoice line'}" (${formatChargeDollars(signedChargeLineAmount(line) ?? 0)})`)
+    .join(', ');
+}
+
+/** Plain sentences for the Workday note and Slack; empty when nothing was removed or flagged. */
+export function chargeReconciliationMessages(reconciliation: SubmittedChargeReconciliation<ChargeLine>): string[] {
+  const messages: string[] = [];
+  if (reconciliation.duplicateFreightLines.length) {
+    messages.push(`Removed invoice line ${describeRemovedLines(reconciliation.duplicateFreightLines)}: that amount is already on the header Freight_Amount.`);
+  }
+  if (reconciliation.duplicateTaxLines.length) {
+    messages.push(`Removed invoice line ${describeRemovedLines(reconciliation.duplicateTaxLines)}: that amount is already on the header Tax_Amount.`);
+  }
+  const totals = reconciliation.unreconciled;
+  if (totals) {
+    const submitted = (toCents(totals.lineTotal) + toCents(totals.freight) + toCents(totals.tax)) / 100;
+    messages.push(
+      `Lines ${formatChargeDollars(totals.lineTotal)} + freight ${formatChargeDollars(totals.freight)} + tax ${formatChargeDollars(totals.tax)} = ${formatChargeDollars(submitted)}, `
+      + `but the amount due is ${formatChargeDollars(totals.amountDue)}. Submitted as extracted; review lines and header charges.`
+    );
+  }
+  return messages;
+}
+
+export function formatChargeReconciliationNotes(reconciliation: SubmittedChargeReconciliation<ChargeLine>): string {
+  const messages = chargeReconciliationMessages(reconciliation);
+  return messages.length ? `\n\nAmount check: ${messages.join(' ')}` : '';
 }
 
 function extractWorktagId(worktags: any[], type: string): string | null {

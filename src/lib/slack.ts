@@ -84,6 +84,14 @@ function appendPriorFailureBlocks(
   });
 }
 
+function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): void {
+  if (chargeCheck.length === 0) return;
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Amount Check*\n${chargeCheck.map((line) => `• ${line}`).join('\n')}`) }
+  });
+}
+
 function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
   const changeLines: string[] = [];
   const fallbackLines: string[] = [];
@@ -165,6 +173,11 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       text: { type: 'mrkdwn', text: truncateSlackText(`*Fallbacks Applied*\n${fallbackLines.map((line) => `• ${line}`).join('\n')}`) }
     });
   }
+
+  const chargeCheck = Array.isArray(details.chargeCheck)
+    ? details.chargeCheck.filter((line): line is string => typeof line === 'string')
+    : [];
+  appendChargeCheckBlock(blocks, chargeCheck);
 
   const priorFailures = Array.isArray(details.priorFailures) ? details.priorFailures : [];
   appendPriorFailureBlocks(
@@ -471,6 +484,8 @@ export interface EnrichmentNotification {
     paymentTerms?: string;
   };
   poLineCount?: number;
+  /** Duplicate charge lines removed, or lines + freight + tax that do not match the amount due. */
+  chargeCheck?: string[];
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
@@ -486,7 +501,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -610,6 +625,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
       text: { type: 'mrkdwn', text: `*Fallbacks Applied*\n${fallbackLines.map(l => `• ${l}`).join('\n')}` }
     });
   }
+
+  if (canModify) appendChargeCheckBlock(blocks, chargeCheck ?? []);
 
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {

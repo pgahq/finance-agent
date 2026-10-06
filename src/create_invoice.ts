@@ -46,9 +46,12 @@ import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  chargeReconciliationMessages,
+  formatChargeReconciliationNotes,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  reconcileSubmittedCharges,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -746,9 +749,16 @@ async function processInvoiceCluster(
       (result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
-    const candidateLines = withComposedLineDescriptions(merchandiseLines);
     const extractedFreightAmount = result.extractedFreightAmount
       ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const chargeReconciliation = reconcileSubmittedCharges(merchandiseLines, {
+      amountDue: extractedAmountDue,
+      freight: extractedFreightAmount,
+      tax: extractedTaxAmount,
+    });
+    const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
+    if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
+    const candidateLines = withComposedLineDescriptions(chargeReconciliation.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -871,7 +881,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatChargeReconciliationNotes(chargeReconciliation) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -939,6 +949,7 @@ async function processInvoiceCluster(
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },
+      ...(chargeCheck.length ? { chargeCheck } : {}),
       lineCount: finalLines.length,
     };
 

@@ -597,6 +597,94 @@ describe('create_invoice', () => {
     expect(submitArgs.finalLines).toEqual([]);
   });
 
+  describe('header freight already on an invoice line', () => {
+    const myFreightWorldEnrichment = {
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$4,595.00',
+      extractedSuppliersInvoiceNumber: 'FRN52118INV2',
+      extractedFreightAmount: '$4,595.00',
+      extractedTaxAmount: null,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
+      ]
+    };
+    const noLines = {
+      lines: [],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    };
+
+    it('submits the MyFreightWorld carrier invoice (SUPIN-465729) as header freight only', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(noLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-myfreightworld/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedAmountDue).toBe('$4,595.00');
+      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
+      expect(submitArgs.finalLines).toEqual([]);
+      expect(submitArgs.buildNotes([])).not.toContain('Amount check');
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toBeUndefined();
+    });
+
+    it('drops an unrecognized single carrier line that equals header freight and notes it', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...myFreightWorldEnrichment,
+        extractedInvoiceLines: [
+          { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
+        ]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(noLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-linehaul/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
+      expect(submitArgs.finalLines).toEqual([]);
+      const removal = 'Removed invoice line "PRO 52118 - Linehaul - 42,000 lbs" ($4,595.00): that amount is already on the header Freight_Amount.';
+      expect(submitArgs.buildNotes([])).toContain(`Amount check: ${removal}`);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([removal]);
+    });
+
+    it('submits unreconciled amounts as extracted and flags them', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$4,695.00',
+        extractedFreightAmount: '$4,595.00',
+        extractedInvoiceLines: [
+          { description: 'Widgets', quantity: 1, unitCost: '4595.00', totalPrice: '4595.00', hasDiscount: false },
+          { description: 'Gadgets', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: false }
+        ]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-unreconciled/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Widgets', 'Gadgets']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
+      const mismatch = 'Lines $4,695.00 + freight $4,595.00 + tax $0.00 = $9,290.00, but the amount due is $4,695.00. Submitted as extracted; review lines and header charges.';
+      expect(submitArgs.buildNotes([])).toContain(`Amount check: ${mismatch}`);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([mismatch]);
+    });
+  });
+
   it('should synthesize a merchandise remainder on create when shipping is the only extracted line and amount due is larger', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
