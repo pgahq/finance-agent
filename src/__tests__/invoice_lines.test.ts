@@ -1301,11 +1301,6 @@ describe('buildFinalInvoiceLines service-date matching', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FALLBACK_COST_CENTER_ID;
-    process.env.PO_LINE_SELECTION_ENABLED = 'true';
-  });
-
-  afterEach(() => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
   });
 
   it('uses the legacy merge prompt and input when the caller passes no invoice context (Closed PO)', async () => {
@@ -1326,33 +1321,6 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
     expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
     expect(input).not.toHaveProperty('invoiceDate');
-  });
-
-  it('keeps the pre-selection merge input, prompt, and model pick when PO line selection is off', async () => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
-    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
-
-    const result = await buildFinalInvoiceLines(
-      extracted,
-      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9)],
-      undefined,
-      {},
-      undefined,
-      undefined,
-      true,
-      { invoiceDate: '2026-09-05', servicePeriod: 'September 2026' }
-    );
-
-    const call = mockGetAiResponse.mock.calls[0][0] as any;
-    const input = JSON.parse(call.messages[0].content);
-    expect(input).not.toHaveProperty('invoiceDate');
-    expect(input).not.toHaveProperty('invoiceServicePeriod');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('availableForInvoicing');
-    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
-    expect(call.prompt).not.toContain('availableForInvoicing');
-    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
-    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
   });
 
   it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {

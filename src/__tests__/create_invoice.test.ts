@@ -1030,7 +1030,9 @@ describe('create_invoice', () => {
         memo: undefined
       }]
     });
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(parsedPo.lines);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(
+      parsedPo.lines.map((line) => ({ ...line, availableForInvoicing: true }))
+    );
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
@@ -1111,8 +1113,7 @@ describe('create_invoice', () => {
   });
 
   it('should send every PO line, flagged by availability, with the invoice date and service period, to the line merge', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
@@ -1139,9 +1140,8 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
-  it('should keep every line of a Closed PO as coding context and skip date-based selection even with PO line selection on', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+  it('should keep every line of a Closed PO as coding context and skip date-based selection', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     const lines = monthlyPoLines(8);
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
@@ -1176,30 +1176,8 @@ describe('create_invoice', () => {
     expect(bothNotes).not.toContain('Fallback values applied');
   });
 
-  it('should keep PO lines unflagged when PO line availability is off', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
-    const lines = monthlyPoLines(8);
-    workday.loadPurchaseOrder.mockResolvedValue({
-      documentNumber: 'PO-414498',
-      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
-      lines,
-    });
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
-      ...baseEnrichmentResult,
-      extractedPurchaseOrderNumber: 'PO-414498',
-    });
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [{ ...attachmentRequest('new-invoices/req-flag-off/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
-    } as any);
-
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(lines);
-  });
-
   it('should keep consumed PO lines for coding and report the dropped references by their own note', async () => {
-    const { processor, workday, slack, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     const allInvoiced = monthlyPoLines(12);
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
