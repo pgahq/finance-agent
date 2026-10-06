@@ -117,13 +117,21 @@ export const handler = withHandler(async (context) => {
 });
 
 // Processor function - invoked by query function
-export const processor = withProcessorHandler(async (context, invoices, _event) => {
+export const processor = withProcessorHandler(async (context, invoices, _event, options) => {
   // Process single invoice (invoices will be array with one item)
+  const abortSignal = options?.abortSignal;
   for (const invoice of invoices) {
-    await processInvoice(context, invoice as InvoiceData);
+    if (abortSignal?.aborted) {
+      throw new Error('Processor deadline reached before all records were processed');
+    }
+    await processInvoice(context, invoice as InvoiceData, abortSignal);
   }
 });
-async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
+async function processInvoice(
+  context: ProcessingContext,
+  invoiceData: InvoiceData,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
 
   if (await isInvoiceMarkedForSkip(context.invoiceValidationFailuresConfig, invoiceData.workdayID)) {
@@ -153,7 +161,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
 
     debug(existingSupplier ? 'Enriching invoice with existing supplier' : 'Enriching invoice - no supplier assigned');
-    const result = await enrichInvoiceFromAttachments(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
+    const result = await enrichInvoiceFromAttachments(
+      detailedInvoice,
+      processedAttachments,
+      existingSupplier,
+      existingCompany,
+      invoiceData.emailContext,
+      undefined,
+      undefined,
+      abortSignal
+    );
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -266,7 +283,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
         invoiceLineQuantityDisplayed,
         // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+        abortSignal
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
