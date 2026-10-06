@@ -156,6 +156,33 @@ A label set before the invoice is scored decides its attribution. A label on
 an already-scored cancel leaves the stored score alone, but the digest applies
 it (basis `ap_label`) and drops the invoice from the to-label list.
 
+## Touches (lead of every audit post)
+
+A **touch** is one agent-owned field AP had to change on an invoice AP
+submitted, before submit (`entryDiff`) or after (`lateDiff`); each field on each
+line counts once, and added or removed lines count once each. Changes to OCR
+values the enrich agent left alone do not count. Cancels, deletions, and stuck
+Drafts are not bucketed; they keep their own lines.
+
+Buckets (`TOUCH_BUCKETS` in `src/lib/score_touches.ts`): **0**, **1–3**,
+**4–10**, **11–20**, **21+**. More zero-touch invoices is the goal, so every
+daily and weekly post starts with:
+
+1. A Slack header: `NN% of invoices needed 0 touches today (x of y)`
+   (`this week` for the digest).
+2. The change in zero-touch share against the previous period, then a
+   monospace bar per bucket with count and share.
+3. A trend: one sparkline per bucket (share per period; blank = 0%, `·` = no
+   invoices) over 14 rolling days (daily) or 8 rolling weeks (weekly).
+4. A line chart image of the same shares. The URL is built for QuickChart
+   (`SCORE_CHART_BASE_URL`, default `https://quickchart.io/chart`; `none`
+   turns it off). Slack fetches the image, not the Lambda, and the URL carries
+   only percentages and date labels. If Slack rejects a message because it
+   cannot load the image, `postSlackBlocks` resends it without image blocks.
+
+The daily post's lead is its own message, followed by one message per invoice;
+each invoice headline ends with its touch count.
+
 ## Daily summary
 
 `ScoreDigest` also runs daily at 14:20 UTC with input `{"mode":"daily"}`, after

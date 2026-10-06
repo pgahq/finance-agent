@@ -4,6 +4,7 @@ import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
+import { dailyTouchTrend, touchCalloutBlocks, touchPeriod, weeklyTouchTrend } from './lib/score_touches.js';
 import { notifyResult, postSlackBlocks } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
@@ -90,14 +91,35 @@ function withCancelLabel(row: Record<string, unknown>): InvoiceScore {
   return score;
 }
 
+/** Scores AP entered since `since`, for the touch trend. */
+export async function loadEnteredScores(db: DatabaseConnection, since: Date): Promise<InvoiceScore[]> {
+  const rows = await db.query(
+    'SELECT * FROM agent_invoice_scores WHERE entry_read_at >= $1',
+    [since]
+  ) as Array<Record<string, unknown>>;
+  return rows.map(rowToInvoiceScore);
+}
+
+const DAY_MS = 86_400_000;
+export const DAILY_TREND_DAYS = 14;
+export const WEEKLY_TREND_WEEKS = 8;
+
 async function postDailySummary(context: ProcessingContext, now: Date): Promise<void> {
-  const since = new Date(now.getTime() - 24 * 3_600_000);
+  const since = new Date(now.getTime() - DAY_MS);
   const summary = summarizeDay(await loadDigestScores(context.dbConnection, since), since, now);
   if (!summary.lines.length) {
     debug('No agent invoices scored in the last day; skipping the daily audit post');
     return;
   }
-  const messages = buildDailyInvoiceMessages(summary);
+  const trendScores = await loadEnteredScores(context.dbConnection, new Date(now.getTime() - (DAILY_TREND_DAYS + 1) * DAY_MS));
+  const callout = touchCalloutBlocks({
+    periodName: 'today',
+    previousName: 'yesterday',
+    current: touchPeriod(trendScores, 'today', since, now),
+    previous: touchPeriod(trendScores, 'yesterday', new Date(since.getTime() - DAY_MS), since),
+    trend: dailyTouchTrend(trendScores, now, DAILY_TREND_DAYS),
+  });
+  const messages = [callout, ...buildDailyInvoiceMessages(summary)];
   for (const [index, blocks] of messages.entries()) {
     // Incoming webhooks allow about one message per second.
     if (index > 0) await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
@@ -121,6 +143,14 @@ export const handler = withHandler(async (context, event?: { mode?: string }) =>
       window,
       await loadUnlabeledCancels(context.dbConnection)
     );
+    const trendScores = await loadEnteredScores(context.dbConnection, new Date(window.end.getTime() - (WEEKLY_TREND_WEEKS + 1) * 7 * DAY_MS));
+    summary.touches = {
+      periodName: 'this week',
+      previousName: 'last week',
+      current: touchPeriod(trendScores, 'this week', window.start, window.end),
+      previous: touchPeriod(trendScores, 'last week', window.previousStart, window.start),
+      trend: weeklyTouchTrend(trendScores, window.end, WEEKLY_TREND_WEEKS),
+    };
     // A refreshed sandbox holds production's agent invoices, which would all look like pre-snapshot work.
     if (tenantRefreshWeekday() === undefined) {
       try {
