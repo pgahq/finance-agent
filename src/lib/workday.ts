@@ -530,6 +530,8 @@ interface buildSubmitInvoiceDataOptions {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  /** All-freight invoice: freight rows are submitted as coded lines and header Freight_Amount stays empty. */
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   omitTaxApplicability?: boolean;
   filterInvoiceLines?: boolean;
@@ -1270,14 +1272,15 @@ function lineWorktagTypeContext(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnostics?: SubmitInvoiceDataDiagnostics): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, freightAsLines, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
   const providedFinalLines = finalLines !== undefined;
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
-  const splitFinalLines = providedFinalLines ? splitFreightLines(normalizedFinalLines) : undefined;
+  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0;
+  const splitFinalLines = providedFinalLines && !keepFreightLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
@@ -1286,12 +1289,17 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
 
-  const freightAmount = extractedFreightAmount
-    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
-    : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
+  const currentFreightAmount: unknown = currentInvoice.Freight_Amount;
+  const freightAmount = keepFreightLines
+    ? undefined
+    : extractedFreightAmount
+      ? (parseExtractedAmount(extractedFreightAmount) ?? currentFreightAmount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
+      : (currentFreightAmount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
+  // Submit replaces the whole invoice; an OCR Freight_Amount left in place would count the freight lines twice.
+  const clearsExistingFreight = keepFreightLines && Boolean(soapAmount(currentFreightAmount));
   const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
   const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
-  const chargeReconciliation = reconcileSubmittedCharges(splitFinalLines?.merchandiseLines ?? [], {
+  const chargeReconciliation = reconcileSubmittedCharges(keepFreightLines ? normalizedFinalLines : (splitFinalLines?.merchandiseLines ?? []), {
     amountDue: soapAmount(controlAmountTotal),
     freight: soapAmount(freightAmount),
     tax: soapAmount(taxAmount),
@@ -1563,6 +1571,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     Tax_Amount: taxAmount,
     Default_Tax_Option_Reference: { ID: [{ $attributes: { type: 'Tax_Option_ID' }, $value: 'ENTER_TAX_DUE' }] },
     ...(freightAmount && { Freight_Amount: freightAmount }),
+    ...(clearsExistingFreight && { Freight_Amount: 0 }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
@@ -2333,6 +2342,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
@@ -2357,6 +2367,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
+    freightAsLines,
     extractedTaxAmount,
     finalLines,
     invoiceLineQuantityDisplayed,
@@ -2419,6 +2430,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       finalLines,
       invoiceLineQuantityDisplayed,
@@ -2461,6 +2473,7 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   finalLines: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
@@ -2489,6 +2502,7 @@ export async function submitNewSupplierInvoice(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
+    freightAsLines,
     extractedTaxAmount,
     finalLines,
     invoiceLineQuantityDisplayed,
@@ -2541,6 +2555,7 @@ export async function submitNewSupplierInvoice(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       finalLines,
       invoiceLineQuantityDisplayed,

@@ -147,11 +147,13 @@ Do not add a separate Workday auth path or secret set for create-invoice.
 
 ## Workday supplier invoice payload
 
-Tax and freight/shipping/handling are header amounts, not invoice lines:
+Tax and freight/shipping/handling are header amounts, not invoice lines, on any invoice that also bills goods or services:
 
 - `Tax_Amount` comes from `extractedTaxAmount`
 - `Freight_Amount` comes from `extractedFreightAmount` (PDF labels may be freight, shipping, handling, or delivery)
 - Those charge rows must not appear in `Invoice_Line_Replacement_Data`
+
+All-freight invoices (carrier bills, shipping-only invoices) are the exception: freight is submitted as invoice line(s) and header `Freight_Amount` stays empty. Header freight carries no worktags and Workday only allocates it to lines whose spend category allows it, so with no goods lines the charge would post with no cost center or spend category; a line carries the email or fallback coding (for example `SC-Freight`). `prepareInvoiceCharges` in `src/lib/invoice_lines.ts` makes the call in create and enrich: when no merchandise rows remain and header freight + tax equals the amount due, the freight rows become the lines (one `Freight` line for the header amount when no row was extracted or the rows do not add up to it), and `freightAsLines: true` is passed to submit. `buildSubmitInvoiceData` then skips `splitFreightLines` on `finalLines`, omits `Freight_Amount`, and sends `Freight_Amount: 0` on update when Workday OCR had set one. Freight-only rows whose amount due also covers unextracted goods keep the header freight plus a remainder line. Enrichment that cannot modify the invoice keeps header freight.
 
 When the submitted header `Tax_Amount` is greater than zero (from `extractedTaxAmount`, or the existing Workday `Tax_Amount` when nothing is extracted), each line built from `finalLines` carries `Tax_Applicability_Reference` with `Tax_Applicability_ID` `TAX_APPLICABILITY-3-2` (USA Taxable), including the synthesized update remainder `Invoice` line. Discount lines (`isDiscountLine`) never carry it, and OCR passthrough lines kept on update are left as Workday returned them. The header stays `Default_Tax_Option_Reference` `ENTER_TAX_DUE` with no line tax code. If Workday returns a validation fault that references `Tax_Applicability` (or a line `Tax_Code_Reference` xpath) while a submitted line carries the reference, submit retries once without it and records the `omitted line tax applicability` fallback.
 
@@ -160,10 +162,10 @@ If the PDF lists shipping/handling as a line item, capture the amount on `Freigh
 Workday's gross amount is lines + `Freight_Amount` + `Tax_Amount`, so a charge must not be both a header amount and a line. `reconcileSubmittedCharges` in `src/lib/invoice_lines.ts` runs in create and enrich after `splitFreightLines` (on extracted lines, before merge) and again in `buildSubmitInvoiceData` (on final merchandise lines, against `Control_Amount_Total`):
 
 - Lines + freight + tax equal the amount due: nothing changes. This is how header-only freight stays put.
-- The excess is exactly the header freight: drop the lines that mention freight (freight/shipping/handling/delivery/postage or a carrier) and sum to it, or one such line equal to it. On an invoice with a single line equal to the header freight, drop that line even without a freight word (all-freight carrier invoices). Header `Freight_Amount` stays.
+- The excess is exactly the header freight: drop the lines that mention freight (freight/shipping/handling/delivery/postage or a carrier) and sum to it, or one such line equal to it. On an invoice with a single line equal to the header freight, drop that line even without a freight word. Header `Freight_Amount` stays on a mixed invoice; when nothing else is left, `prepareInvoiceCharges` puts the dropped line back as the all-freight line and clears header freight.
 - The excess is exactly the header tax: drop tax-only lines (`Sales Tax`, `VAT`, `GST`, ...) that sum to it. A single goods line is never collapsed into tax.
 - The excess is freight plus tax: drop both sets only when both are found.
-- Anything else: submit the amounts as extracted, and add an `Amount check:` sentence (lines + freight + tax vs amount due) to the Workday note and an *Amount Check* section in Slack. Removed duplicate lines are reported the same way.
+- Anything else: submit the amounts as extracted, and add an `Amount check:` sentence (lines + freight + tax vs amount due) to the Workday note and an *Amount Check* section in Slack. Removed duplicate lines and all-freight invoices submitted as lines are reported the same way.
 
 The check is skipped when there is no amount due, no lines (the create remainder path already balances), or a line without an amount. Printed credits (`-$10.00`, `($10.00)`) count as negative.
 
@@ -175,8 +177,8 @@ If Workday still rejects submit with `Either Quantity and Unit Cost must equal z
 
 Create vs update when no merchandise lines remain:
 
-- **Create** (`submitNewSupplierInvoice`): omit `Invoice_Line_Replacement_Data` and submit header `Freight_Amount`. If amount due exceeds freight plus tax, synthesize a non-freight remainder line instead of re-including shipping. Create has no OCR lines, so do not send `[]`.
-- **Update** (`submitSupplierInvoiceUpdate`): if `finalLines` are all freight, keep OCR merchandise (freight stripped) so goods are not wiped. When OCR is also all freight, send a remainder `Invoice` line (control minus freight minus tax, floored at 0) so SOAP actually replaces the shipping row — strong-soap drops empty repeating `Invoice_Line_Replacement_Data` arrays, which would leave the OCR shipping line in place. Workday Get may return those header amounts as strings; parse them before subtracting so a string `Freight_Amount` is not treated as 0.
+- **Create** (`submitNewSupplierInvoice`): when freight + tax is the whole amount due, the freight is already the line (`freightAsLines`, above). Otherwise, if amount due exceeds freight plus tax, synthesize a non-freight remainder line and keep header `Freight_Amount`. Without `freightAsLines`, a create whose final lines are all freight still omits `Invoice_Line_Replacement_Data`; create has no OCR lines, so do not send `[]`.
+- **Update** (`submitSupplierInvoiceUpdate`): with `freightAsLines`, the freight `finalLines` replace the OCR lines. Otherwise, if `finalLines` are all freight, keep OCR merchandise (freight stripped) so goods are not wiped. When OCR is also all freight, send a remainder `Invoice` line (control minus freight minus tax, floored at 0) so SOAP actually replaces the shipping row — strong-soap drops empty repeating `Invoice_Line_Replacement_Data` arrays, which would leave the OCR shipping line in place. Workday Get may return those header amounts as strings; parse them before subtracting so a string `Freight_Amount` is not treated as 0.
 
 Workday Get / strong-soap may return a single line as an object rather than an array. Unwrap with `[].concat(...)` before `splitFreightLines` so freight-only create still omits the line payload and freight-only update still replaces that row with a remainder `Invoice` line.
 

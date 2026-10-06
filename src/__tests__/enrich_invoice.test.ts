@@ -600,6 +600,7 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
+        freightAsLines: false,
         extractedTaxAmount: undefined,
         finalLines: undefined,
         invoiceLineQuantityDisplayed: undefined,
@@ -721,6 +722,7 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
+        freightAsLines: false,
         extractedTaxAmount: undefined,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
@@ -976,7 +978,7 @@ describe('enrich_invoice', () => {
     );
   });
 
-  it('drops a carrier line that repeats header freight on update and notes it', async () => {
+  it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
@@ -1007,6 +1009,12 @@ describe('enrich_invoice', () => {
         { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
       ]
     });
+    const builtLine = { lineOrder: 1, description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' };
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [builtLine],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
 
     await expect(processor({
       data: [{
@@ -1018,13 +1026,15 @@ describe('enrich_invoice', () => {
       }]
     } as any)).resolves.not.toThrow();
 
-    expect(invoiceLines.buildFinalInvoiceLines).not.toHaveBeenCalled();
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+      .toEqual(['PRO 52118 - Linehaul - 42,000 lbs']);
     const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
-    expect(params.extractedFreightAmount).toBe('$4,595.00');
-    expect(params.finalLines).toBeUndefined();
-    const removal = 'Removed invoice line "PRO 52118 - Linehaul - 42,000 lbs" ($4,595.00): that amount is already on the header Freight_Amount.';
-    expect(params.buildNotes([])).toContain(`Amount check: ${removal}`);
-    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([removal]);
+    expect(params.extractedFreightAmount).toBeUndefined();
+    expect(params.freightAsLines).toBe(true);
+    expect(params.finalLines).toEqual([expect.objectContaining({ description: 'PRO 52118 - Linehaul - 42,000 lbs', extendedAmount: 4595 })]);
+    const note = 'All-freight invoice: freight $4,595.00 submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.';
+    expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
   });
 
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {

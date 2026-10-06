@@ -51,9 +51,8 @@ import {
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
-  reconcileSubmittedCharges,
+  prepareInvoiceCharges,
   resolveInvoiceLineQuantityDisplayed,
-  splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import {
@@ -745,20 +744,14 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
-      (result.extractedInvoiceLines ?? [])
-        .filter(l => l.description && (l.totalPrice || l.unitCost))
+    const charges = prepareInvoiceCharges(
+      (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost)),
+      { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount }
     );
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
-    const chargeReconciliation = reconcileSubmittedCharges(merchandiseLines, {
-      amountDue: extractedAmountDue,
-      freight: extractedFreightAmount,
-      tax: extractedTaxAmount,
-    });
+    const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
     if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
-    const candidateLines = withComposedLineDescriptions(chargeReconciliation.lines);
+    const candidateLines = withComposedLineDescriptions(charges.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -1110,6 +1103,7 @@ async function processInvoiceCluster(
           extractedAmountDue,
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
           extractedFreightAmount,
+          freightAsLines,
           extractedTaxAmount,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
@@ -1172,6 +1166,7 @@ async function processInvoiceCluster(
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,

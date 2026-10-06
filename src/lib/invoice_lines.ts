@@ -332,6 +332,8 @@ export interface SubmittedChargeReconciliation<T> {
   duplicateTaxLines: T[];
   /** Set when lines + freight + tax still differ from the amount due. */
   unreconciled?: ChargeTotals;
+  /** All-freight invoice: freight submitted as invoice lines instead of header Freight_Amount. */
+  freightLineTotal?: number;
 }
 
 interface CentsLine<T> {
@@ -431,6 +433,9 @@ function describeRemovedLines(lines: ChargeLine[]): string {
 /** Plain sentences for the Workday note and Slack; empty when nothing was removed or flagged. */
 export function chargeReconciliationMessages(reconciliation: SubmittedChargeReconciliation<ChargeLine>): string[] {
   const messages: string[] = [];
+  if (reconciliation.freightLineTotal != null) {
+    messages.push(`All-freight invoice: freight ${formatChargeDollars(reconciliation.freightLineTotal)} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`);
+  }
   if (reconciliation.duplicateFreightLines.length) {
     messages.push(`Removed invoice line ${describeRemovedLines(reconciliation.duplicateFreightLines)}: that amount is already on the header Freight_Amount.`);
   }
@@ -451,6 +456,88 @@ export function chargeReconciliationMessages(reconciliation: SubmittedChargeReco
 export function formatChargeReconciliationNotes(reconciliation: SubmittedChargeReconciliation<ChargeLine>): string {
   const messages = chargeReconciliationMessages(reconciliation);
   return messages.length ? `\n\nAmount check: ${messages.join(' ')}` : '';
+}
+
+export interface PreparedInvoiceCharges {
+  /** Lines to merge and submit, before description composition. */
+  lines: ExtractedInvoiceLine[];
+  /** Header Freight_Amount to submit; undefined when freight is submitted as lines. */
+  freightAmount?: string;
+  freightAsLines: boolean;
+  reconciliation: SubmittedChargeReconciliation<ExtractedInvoiceLine>;
+}
+
+// Freight rows (plus duplicates the reconciliation removed), in document order, that make up
+// the whole invoice. Falls back to one line for the header freight when the rows do not add up
+// to it, or when the document's freight row was only extracted as the header amount.
+function allFreightInvoiceLines(
+  extractedLines: ExtractedInvoiceLine[],
+  freightRows: Set<ExtractedInvoiceLine>,
+  charges: { amountDue?: ChargeAmount; freight?: ChargeAmount; tax?: ChargeAmount }
+): ExtractedInvoiceLine[] | undefined {
+  const freight = chargeAmount(charges.freight);
+  const amountDue = chargeAmount(charges.amountDue);
+  if (freight == null || freight <= 0 || amountDue == null) return undefined;
+  if (toCents(freight) + toCents(chargeAmount(charges.tax) ?? 0) !== toCents(amountDue)) return undefined;
+
+  const rows = extractedLines.filter(line => freightRows.has(line));
+  const amounts = rows.map(signedChargeLineAmount);
+  if (rows.length && amounts.every(amount => amount != null)
+    && amounts.reduce<number>((total, amount) => total + toCents(amount ?? 0), 0) === toCents(freight)) {
+    return rows;
+  }
+  return [{
+    description: rows[0]?.description ?? 'Freight',
+    quantity: null,
+    unitCost: null,
+    totalPrice: String(freight),
+    hasDiscount: null,
+  }];
+}
+
+/**
+ * Splits freight from merchandise and reconciles header charges for create and enrich.
+ * Mixed invoices submit freight on header Freight_Amount. When no merchandise remains and
+ * freight + tax is the whole amount due, freight is submitted as invoice lines instead, so it
+ * carries the line coding (spend category, cost center) and Workday has a line to post.
+ */
+export function prepareInvoiceCharges(
+  extractedLines: ExtractedInvoiceLine[],
+  charges: { amountDue?: string; freight?: string; tax?: string },
+  options: { allowFreightAsLines: boolean } = { allowFreightAsLines: true }
+): PreparedInvoiceCharges {
+  const { merchandiseLines, freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
+  const freightAmount = charges.freight
+    ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+  const reconciliation = reconcileSubmittedCharges(merchandiseLines, {
+    amountDue: charges.amountDue,
+    freight: freightAmount,
+    tax: charges.tax,
+  });
+
+  if (options.allowFreightAsLines && reconciliation.lines.length === 0) {
+    const freightRows = new Set([...freightLines, ...reconciliation.duplicateFreightLines]);
+    const lines = allFreightInvoiceLines(extractedLines, freightRows, {
+      amountDue: charges.amountDue,
+      freight: freightAmount,
+      tax: charges.tax,
+    });
+    if (lines) {
+      return {
+        lines,
+        freightAmount: undefined,
+        freightAsLines: true,
+        reconciliation: {
+          lines,
+          duplicateFreightLines: [],
+          duplicateTaxLines: reconciliation.duplicateTaxLines,
+          freightLineTotal: chargeAmount(freightAmount),
+        },
+      };
+    }
+  }
+
+  return { lines: reconciliation.lines, freightAmount, freightAsLines: false, reconciliation };
 }
 
 function extractWorktagId(worktags: any[], type: string): string | null {

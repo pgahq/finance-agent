@@ -31,9 +31,8 @@ import {
   chargeReconciliationMessages,
   formatChargeReconciliationNotes,
   normalizeSupplierInvoiceLineAmounts,
-  reconcileSubmittedCharges,
+  prepareInvoiceCharges,
   resolveInvoiceLineQuantityDisplayed,
-  splitFreightLines,
   withComposedLineDescriptions,
   type EmailWorktags,
   type FinalInvoiceLine,
@@ -236,21 +235,17 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
+    const charges = prepareInvoiceCharges(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
-        : []
+        : [],
+      { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount },
+      { allowFreightAsLines: canModifyInvoice && Boolean(targetSupplierWID) }
     );
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
-    const chargeReconciliation = reconcileSubmittedCharges(merchandiseLines, {
-      amountDue: extractedAmountDue,
-      freight: extractedFreightAmount,
-      tax: extractedTaxAmount,
-    });
+    const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
     if (chargeCheck.length) debug('Invoice amount check', { chargeCheck });
-    const candidateLines = withComposedLineDescriptions(chargeReconciliation.lines);
+    const candidateLines = withComposedLineDescriptions(charges.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -331,6 +326,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
+        freightAsLines,
         extractedTaxAmount,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,

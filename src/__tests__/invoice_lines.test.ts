@@ -12,6 +12,7 @@ import {
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  prepareInvoiceCharges,
   reconcileSubmittedCharges,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -1196,6 +1197,91 @@ describe('reconcileSubmittedCharges', () => {
 
     expect(result.lines).toBe(lines);
     expect(result.unreconciled).toBeUndefined();
+  });
+});
+
+describe('prepareInvoiceCharges', () => {
+  const allFreightNote = (amount: string) =>
+    `All-freight invoice: freight ${amount} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`;
+
+  it('submits the MyFreightWorld carrier row (SUPIN-465729) as the line with no header freight', () => {
+    const carrier = { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null };
+    const prepared = prepareInvoiceCharges([carrier], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([carrier]);
+    expect(prepared.freightAmount).toBeUndefined();
+    expect(chargeReconciliationMessages(prepared.reconciliation)).toEqual([allFreightNote('$4,595.00')]);
+  });
+
+  it('keeps an unrecognized single carrier line as the freight line instead of removing it', () => {
+    const linehaul = { description: 'PRO 52118 - Linehaul - 42,000 lbs', totalPrice: '$4595.00' };
+    const prepared = prepareInvoiceCharges([linehaul], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([linehaul]);
+    expect(prepared.reconciliation.duplicateFreightLines).toEqual([]);
+  });
+
+  it('synthesizes one freight line when freight was only extracted as the header amount', () => {
+    const prepared = prepareInvoiceCharges([], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([
+      { description: 'Freight', quantity: null, unitCost: null, totalPrice: '4595', hasDiscount: null },
+    ]);
+  });
+
+  it('uses the header freight amount when the freight rows do not add up to it', () => {
+    const prepared = prepareInvoiceCharges(
+      [{ description: 'Shipping', totalPrice: '$10.00' }, { description: 'Handling', totalPrice: '$3.00' }],
+      { amountDue: '$15.00', freight: '$15.00' }
+    );
+
+    expect(prepared.lines).toEqual([
+      { description: 'Shipping', quantity: null, unitCost: null, totalPrice: '15', hasDiscount: null },
+    ]);
+  });
+
+  it('treats freight plus tax as the whole invoice', () => {
+    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
+    const prepared = prepareInvoiceCharges([shipping], { amountDue: '$16.00', freight: '$15.00', tax: '$1.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([shipping]);
+  });
+
+  it('keeps header freight on a mixed invoice', () => {
+    const widgets = { description: 'Widgets', totalPrice: '$100.00' };
+    const prepared = prepareInvoiceCharges(
+      [widgets, { description: 'Shipping', totalPrice: '$15.00' }],
+      { amountDue: '$115.00' }
+    );
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.lines).toEqual([widgets]);
+    expect(prepared.freightAmount).toBe('15');
+  });
+
+  it('keeps header freight when the amount due also covers goods that were not extracted', () => {
+    const prepared = prepareInvoiceCharges(
+      [{ description: 'Shipping', totalPrice: '$15.00' }],
+      { amountDue: '$115.00', freight: '$15.00' }
+    );
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.lines).toEqual([]);
+    expect(prepared.freightAmount).toBe('$15.00');
+  });
+
+  it.each([
+    ['freight as lines is not allowed', { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false }],
+    ['the amount due is missing', { freight: '$15.00' }, undefined],
+  ])('keeps header freight when %s', (_label, charges, options) => {
+    const prepared = prepareInvoiceCharges([{ description: 'Shipping', totalPrice: '$15.00' }], charges, options);
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.freightAmount).toBe('$15.00');
   });
 });
 

@@ -2283,6 +2283,68 @@ describe('Workday utilities', () => {
       ]);
     });
 
+    it('keeps freight lines and zeroes the OCR Freight_Amount when freightAsLines is set on update', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '4595.00',
+                Freight_Amount: '4595.00',
+                Tax_Amount: '0.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'FRN52118A Freight Charge',
+                  Quantity: '1',
+                  Unit_Cost: '4595',
+                  Extended_Amount: '4595'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        freightAsLines: true,
+        finalLines: [
+          { lineOrder: 1, description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' },
+        ],
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+          Extended_Amount: 4595,
+          Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
+        })
+      ]);
+    });
+
     it('should parse SOAP string Freight_Amount when computing a freight-only remainder Invoice line', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
@@ -5490,7 +5552,33 @@ describe('Workday utilities', () => {
         return () => captured.request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
       };
 
-      it('submits only header freight for an all-freight carrier invoice (SUPIN-465729)', async () => {
+      it('submits the SUPIN-465729 carrier row as a coded line with no Freight_Amount when freightAsLines is set', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,595.00',
+          freightAsLines: true,
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [
+            { lineOrder: 1, description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Control_Amount_Total).toBe(4595);
+        expect(data).not.toHaveProperty('Freight_Amount');
+        expect(data.Invoice_Line_Replacement_Data).toEqual([
+          expect.objectContaining({
+            Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+            Quantity: 0,
+            Unit_Cost: 0,
+            Extended_Amount: 4595,
+            Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
+          })
+        ]);
+      });
+
+      it('without freightAsLines, drops a single line that repeats header freight instead of counting it twice', async () => {
         const getData = captureCreate();
 
         await submitNewSupplierInvoiceForTest({

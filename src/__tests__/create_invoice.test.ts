@@ -571,19 +571,19 @@ describe('create_invoice', () => {
     });
   });
 
-  it('should not synthesize a merchandise line that re-includes freight on a freight-only invoice', async () => {
+  it('submits a freight-only invoice as a coded freight line with no header freight', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const shipping = { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false };
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
       extractedAmountDue: '$15.00',
       extractedFreightAmount: '$15.00',
-      extractedInvoiceLines: [
-        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
-      ]
+      extractedInvoiceLines: [shipping]
     });
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
-      lines: [],
-      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false }
+      lines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15, spendCategoryId: 'SC-Freight' }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
     });
 
     await processor({
@@ -591,10 +591,40 @@ describe('create_invoice', () => {
     } as any);
 
     expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([shipping]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.extractedFreightAmount).toBe('$15.00');
-    expect(submitArgs.finalLines).toEqual([]);
+    expect(submitArgs.extractedFreightAmount).toBeUndefined();
+    expect(submitArgs.freightAsLines).toBe(true);
+    expect(submitArgs.finalLines).toEqual([
+      expect.objectContaining({ description: 'Shipping', extendedAmount: 15 })
+    ]);
+  });
+
+  it('submits header-only freight as a synthesized freight line when no rows were extracted', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$4,595.00',
+      extractedFreightAmount: '$4,595.00',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: null
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Freight', quantity: null, unitCost: null, extendedAmount: 4595 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-freight-header-only/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      { description: 'Freight', quantity: null, unitCost: null, totalPrice: '4595', hasDiscount: null }
+    ]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBeUndefined();
+    expect(submitArgs.freightAsLines).toBe(true);
   });
 
   describe('header freight already on an invoice line', () => {
@@ -609,51 +639,79 @@ describe('create_invoice', () => {
         { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
       ]
     };
-    const noLines = {
-      lines: [],
+    const carrierLine = {
+      lines: [{ lineOrder: 1, description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' }],
       appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
       relatedLobByCostCenter: new Map()
     };
+    const allFreightNote = 'All-freight invoice: freight $4,595.00 submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.';
 
-    it('submits the MyFreightWorld carrier invoice (SUPIN-465729) as header freight only', async () => {
+    it('submits the MyFreightWorld carrier invoice (SUPIN-465729) as one coded freight line with no header freight', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
-      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(noLines);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(carrierLine);
 
       await processor({
         data: [attachmentRequest('new-invoices/req-myfreightworld/invoice.pdf')]
       } as any);
 
       expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(myFreightWorldEnrichment.extractedInvoiceLines);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.extractedAmountDue).toBe('$4,595.00');
-      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
-      expect(submitArgs.finalLines).toEqual([]);
-      expect(submitArgs.buildNotes([])).not.toContain('Amount check');
-      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toBeUndefined();
+      expect(submitArgs.extractedFreightAmount).toBeUndefined();
+      expect(submitArgs.freightAsLines).toBe(true);
+      expect(submitArgs.finalLines).toEqual([
+        expect.objectContaining({ description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', extendedAmount: 4595 })
+      ]);
+      expect(submitArgs.buildNotes([])).toContain(`Amount check: ${allFreightNote}`);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([allFreightNote]);
     });
 
-    it('drops an unrecognized single carrier line that equals header freight and notes it', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+    it('keeps an unrecognized single carrier line that equals header freight as the freight line', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const linehaul = { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null };
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...myFreightWorldEnrichment,
-        extractedInvoiceLines: [
-          { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
-        ]
+        extractedInvoiceLines: [linehaul]
       });
-      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(noLines);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(carrierLine);
 
       await processor({
         data: [attachmentRequest('new-invoices/req-linehaul/invoice.pdf')]
       } as any);
 
-      expect(invoiceLines.buildFinalInvoiceLines).toHaveBeenCalledTimes(1);
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([linehaul]);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
-      expect(submitArgs.finalLines).toEqual([]);
-      const removal = 'Removed invoice line "PRO 52118 - Linehaul - 42,000 lbs" ($4,595.00): that amount is already on the header Freight_Amount.';
+      expect(submitArgs.extractedFreightAmount).toBeUndefined();
+      expect(submitArgs.freightAsLines).toBe(true);
+      expect(submitArgs.buildNotes([])).toContain(allFreightNote);
+      expect(submitArgs.buildNotes([])).not.toContain('Removed invoice line');
+    });
+
+    it('keeps header freight and drops the duplicate line when the invoice also has goods', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$115.00',
+        extractedFreightAmount: '$15.00',
+        extractedInvoiceLines: [
+          { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false },
+          { description: 'Freight for order 88', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+        ]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-mixed-duplicate/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Widgets']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedFreightAmount).toBe('$15.00');
+      expect(submitArgs.freightAsLines).toBe(false);
+      const removal = 'Removed invoice line "Freight for order 88" ($15.00): that amount is already on the header Freight_Amount.';
       expect(submitArgs.buildNotes([])).toContain(`Amount check: ${removal}`);
       expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([removal]);
     });
