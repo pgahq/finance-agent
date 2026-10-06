@@ -149,8 +149,10 @@ Do not add a separate Workday auth path or secret set for create-invoice.
 
 Tax and freight/shipping/handling are header amounts, not invoice lines:
 
-- `Tax_Amount` comes from `extractedTaxAmount`
-- `Freight_Amount` comes from `extractedFreightAmount` (PDF labels may be freight, shipping, handling, or delivery)
+- `Tax_Amount` comes from `extractedTaxAmount` (or from a tax charge row when the header field is absent)
+- `Freight_Amount` comes from `extractedFreightAmount` (PDF labels may be freight, shipping, handling, or delivery; or from a freight charge row when the header field is absent)
+- Enrichment also returns `extractedFreightLabel` and `extractedTaxLabel`. `normalizeExtractedFreightAndTax` in `src/lib/invoice_lines.ts` corrects mislabeled amounts: a freight amount labeled "Sales Tax" moves to tax, and a tax amount labeled "Shipping" moves to freight. Valid labeled zeroes explicitly clear the corresponding Workday header; malformed or negative extracted amounts are ignored and do not clear existing headers.
+- `splitFreightLines` classifies freight, shipping, handling, delivery, and tax rows and removes them from merchandise lines before merge/PO matching and SOAP submission; their summed amounts fall back to the corresponding header fields when the extracted header amount is absent.
 - Those charge rows must not appear in `Invoice_Line_Replacement_Data`
 
 When the submitted header `Tax_Amount` is greater than zero (from `extractedTaxAmount`, or the existing Workday `Tax_Amount` when nothing is extracted), each line built from `finalLines` carries `Tax_Applicability_Reference` with `Tax_Applicability_ID` `TAX_APPLICABILITY-3-2` (USA Taxable), including the synthesized update remainder `Invoice` line. Discount lines (`isDiscountLine`) never carry it, and OCR passthrough lines kept on update are left as Workday returned them. The header stays `Default_Tax_Option_Reference` `ENTER_TAX_DUE` with no line tax code. If Workday returns a validation fault that references `Tax_Applicability` (or a line `Tax_Code_Reference` xpath) while a submitted line carries the reference, submit retries once without it and records the `omitted line tax applicability` fallback.

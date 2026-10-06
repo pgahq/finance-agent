@@ -81,8 +81,7 @@ export async function enrichInvoiceFromAttachments(
   existingCompany?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext'],
   purchaseOrder?: PurchaseOrderEnrichmentContext,
-  attachmentRoles?: InvoiceAttachmentRole[],
-  abortSignal?: AbortSignal
+  attachmentRoles?: InvoiceAttachmentRole[]
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
@@ -161,7 +160,6 @@ export async function enrichInvoiceFromAttachments(
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
       schema: InvoiceEnrichmentSchema,
-      abortSignal,
       messages: [
         {
           role: 'user',
@@ -214,14 +212,14 @@ export function formatAmountNotes(result: InvoiceEnrichmentResult): string {
   return `\n\nInvoice Amount (from document): ${result.extractedAmountDue}`;
 }
 
-export function formatFreightAmountNotes(result: InvoiceEnrichmentResult): string {
-  if (!result.extractedFreightAmount) return '';
-  return `\n\nFreight Amount (from document): ${result.extractedFreightAmount}`;
+export function formatFreightAmountNotes(freightAmount?: string | null): string {
+  if (!freightAmount) return '';
+  return `\n\nFreight Amount (from document): ${freightAmount}`;
 }
 
-export function formatTaxAmountNotes(result: InvoiceEnrichmentResult): string {
-  if (!result.extractedTaxAmount) return '';
-  return `\n\nTax Amount (from document): ${result.extractedTaxAmount}`;
+export function formatTaxAmountNotes(taxAmount?: string | null): string {
+  if (!taxAmount) return '';
+  return `\n\nTax Amount (from document): ${taxAmount}`;
 }
 
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {

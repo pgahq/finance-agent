@@ -202,6 +202,181 @@ export function isFreightOrHandlingLine(description: string | null | undefined):
   return hasFreightAnchor && tokens.every(isAllowedFreightToken);
 }
 
+
+const TAX_CORE_WORDS = new Set(['tax', 'vat', 'gst', 'hst']);
+const TAX_COMPOUND_ANCHORS = new Set(['sales tax', 'use tax', 'state tax', 'local tax', 'county tax', 'city tax', 'total tax']);
+const TAX_DISQUALIFIERS = new Set([
+  'rate', 'id', 'number', 'exempt', 'registration', 'code', 'included', 'inclusion',
+  'basis', 'subtotal', 'table', 'schedule', 'jurisdiction', 'percentage', 'percent',
+  'taxable', 'taxability', 'withholding', 'recoverable', 'deductible', 'reclaimable',
+  'payable', 'receivable', 'balance',
+]);
+const TAX_QUALIFIERS = new Set([
+  'sales', 'use', 'state', 'local', 'county', 'city', 'total', 'vat', 'gst', 'hst',
+  'amount', 'due', 'charged', 'charge', 'paid', 'collectible', 'line', 'item',
+]);
+
+function normalizeLabel(label: string | null | undefined): string {
+  if (!label) return '';
+  return label
+    .toLowerCase()
+    .replace(/s\s*[&/]\s*h\b/g, 'shipping and handling')
+    .replace(/[-_/&]+/g, ' ')
+    .replace(/[^\w\s%]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function labelTokens(label: string | null | undefined): string[] {
+  const normalized = normalizeLabel(label);
+  return normalized ? normalized.split(' ') : [];
+}
+
+function labelMatchesFreight(label: string | null | undefined): boolean {
+  const tokens = labelTokens(label);
+  if (tokens.length === 0) return false;
+  if (tokens.some(token => TAX_DISQUALIFIERS.has(token))) return false;
+  const hasFreightAnchor = tokens.some(token => FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token));
+  return hasFreightAnchor && tokens.every(isAllowedFreightToken);
+}
+
+function labelMatchesTax(label: string | null | undefined): boolean {
+  const normalized = normalizeLabel(label);
+  if (!normalized) return false;
+  if (TAX_DISQUALIFIERS.has(normalized)) return false;
+  if (TAX_COMPOUND_ANCHORS.has(normalized)) return true;
+  if (TAX_CORE_WORDS.has(normalized)) return true;
+  const tokens = normalized.split(' ');
+  if (tokens.some(token => TAX_DISQUALIFIERS.has(token))) return false;
+  // Require at least one tax core word (or a known compound anchor as adjacent tokens).
+  const hasAnchor = tokens.some((token, i) => {
+    if (TAX_CORE_WORDS.has(token)) return true;
+    const compound = [token, tokens[i + 1]].filter(Boolean).join(' ');
+    return TAX_COMPOUND_ANCHORS.has(compound);
+  });
+  if (!hasAnchor) return false;
+  // Allow ordinary qualifiers (jurisdiction, total, type, value words) and percentage rates.
+  return tokens.every(token => (
+    TAX_CORE_WORDS.has(token)
+    || TAX_QUALIFIERS.has(token)
+    || /^\d+(\.\d+)?%$/.test(token)
+  ));
+}
+
+export function isTaxChargeLine(description: string | null | undefined): boolean {
+  return labelMatchesTax(description);
+}
+
+const VALID_AMOUNT_PATTERN = /^\s*(?:\$?\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?\s*$/;
+
+function isParsableAmount(value: string | null | undefined): value is string {
+  if (!value) return false;
+  const trimmed = value.trim();
+  // Reject explicit negatives, accounting negatives, and malformed punctuation.
+  if (/[\u2212-]/.test(trimmed)) return false;
+  if (/\(.*\)/.test(trimmed)) return false;
+  if (!VALID_AMOUNT_PATTERN.test(trimmed)) return false;
+  const parsed = parseExtractedAmount(trimmed);
+  return parsed !== undefined && Number.isFinite(parsed) && parsed >= 0;
+}
+
+function isNonZeroParsableAmount(value: string | null | undefined): value is string {
+  return isParsableAmount(value) && parseExtractedAmount(value) !== 0;
+}
+
+export interface NormalizedFreightAndTax {
+  /** The corrected freight amount, or undefined when the field should not be submitted. */
+  extractedFreightAmount: string | undefined;
+  /** The corrected tax amount, or undefined when the field should not be submitted. */
+  extractedTaxAmount: string | undefined;
+  /** True when the freight field was explicitly cleared by a valid zero. */
+  freightCleared: boolean;
+  /** True when the tax field was explicitly cleared by a valid zero. */
+  taxCleared: boolean;
+}
+
+function validLabeledZero(
+  amount: string | undefined,
+  labelMatches: boolean
+): boolean {
+  return Boolean(amount && labelMatches && isParsableAmount(amount) && parseExtractedAmount(amount) === 0);
+}
+
+export function normalizeExtractedFreightAndTax(options: {
+  extractedFreightAmount?: string | null;
+  extractedFreightLabel?: string | null;
+  extractedTaxAmount?: string | null;
+  extractedTaxLabel?: string | null;
+}): NormalizedFreightAndTax {
+  const rawFreightAmount = options.extractedFreightAmount ?? undefined;
+  const rawFreightLabel = options.extractedFreightLabel ?? undefined;
+  const rawTaxAmount = options.extractedTaxAmount ?? undefined;
+  const rawTaxLabel = options.extractedTaxLabel ?? undefined;
+
+  const freightIsTax = Boolean(rawFreightAmount && labelMatchesTax(rawFreightLabel));
+  const taxIsFreight = Boolean(rawTaxAmount && labelMatchesFreight(rawTaxLabel));
+  const freightLabelIsFreight = Boolean(rawFreightAmount && labelMatchesFreight(rawFreightLabel));
+  const taxLabelIsTax = Boolean(rawTaxAmount && labelMatchesTax(rawTaxLabel));
+
+  const freightParsable = isParsableAmount(rawFreightAmount);
+  const taxParsable = isParsableAmount(rawTaxAmount);
+  const freightNonZero = isNonZeroParsableAmount(rawFreightAmount);
+  const taxNonZero = isNonZeroParsableAmount(rawTaxAmount);
+
+  const freightLabeledZero = validLabeledZero(rawFreightAmount, freightLabelIsFreight);
+  const taxLabeledZero = validLabeledZero(rawTaxAmount, taxLabelIsTax);
+
+  let freightAmount: string | undefined = rawFreightAmount;
+  let taxAmount: string | undefined = rawTaxAmount;
+  let freightCleared = false;
+  let taxCleared = false;
+
+  if (freightIsTax && taxIsFreight) {
+    // Both fields are mislabeled: swap the amounts. A destination receives the
+    // other field's amount when that amount is valid; clear flags follow the source state.
+    freightAmount = taxNonZero ? rawTaxAmount : (taxLabeledZero ? '0' : undefined);
+    taxAmount = freightNonZero ? rawFreightAmount : (freightLabeledZero ? '0' : undefined);
+    freightCleared = !freightNonZero;
+    taxCleared = !taxNonZero;
+  } else if (freightIsTax && taxLabelIsTax && taxNonZero) {
+    freightAmount = undefined;
+    freightCleared = true;
+    taxAmount = rawTaxAmount;
+    taxCleared = false;
+  } else if (freightIsTax) {
+    freightAmount = undefined;
+    freightCleared = freightParsable;
+    taxAmount = freightNonZero ? rawFreightAmount : (taxLabeledZero ? '0' : (taxParsable ? rawTaxAmount : undefined));
+    taxCleared = taxLabeledZero;
+  } else if (taxIsFreight && freightLabelIsFreight && freightNonZero) {
+    taxAmount = undefined;
+    taxCleared = true;
+    freightAmount = rawFreightAmount;
+    freightCleared = false;
+  } else if (taxIsFreight) {
+    taxAmount = undefined;
+    taxCleared = taxParsable;
+    freightAmount = taxNonZero ? rawTaxAmount : (freightLabeledZero ? '0' : (freightParsable ? rawFreightAmount : undefined));
+    freightCleared = freightLabeledZero;
+  } else {
+    freightAmount = freightNonZero ? rawFreightAmount : (freightLabeledZero ? '0' : (freightParsable ? rawFreightAmount : undefined));
+    taxAmount = taxNonZero ? rawTaxAmount : (taxLabeledZero ? '0' : (taxParsable ? rawTaxAmount : undefined));
+    freightCleared = freightLabeledZero;
+    taxCleared = taxLabeledZero;
+  }
+
+  // A non-zero destination amount overrides any clear from a zero source.
+  if (freightAmount && isNonZeroParsableAmount(freightAmount)) freightCleared = false;
+  if (taxAmount && isNonZeroParsableAmount(taxAmount)) taxCleared = false;
+
+  return {
+    extractedFreightAmount: isNonZeroParsableAmount(freightAmount) ? freightAmount : undefined,
+    extractedTaxAmount: isNonZeroParsableAmount(taxAmount) ? taxAmount : undefined,
+    freightCleared,
+    taxCleared,
+  };
+}
+
 function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
   return line.description ?? line.Item_Description ?? undefined;
 }
@@ -242,12 +417,15 @@ export function splitFreightLines<T extends {
   Extended_Amount?: number | string | null;
   quantity?: number | null;
   Quantity?: number | string | null;
-}>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
+}>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; taxLines: T[]; freightAmountFromLines?: number; taxAmountFromLines?: number } {
   const merchandiseLines: T[] = [];
   const freightLines: T[] = [];
+  const taxLines: T[] = [];
   for (const line of lines) {
     if (isFreightOrHandlingLine(lineDescription(line))) {
       freightLines.push(line);
+    } else if (isTaxChargeLine(lineDescription(line))) {
+      taxLines.push(line);
     } else {
       merchandiseLines.push(line);
     }
@@ -259,7 +437,14 @@ export function splitFreightLines<T extends {
       freightAmountFromLines = Math.round(((freightAmountFromLines ?? 0) + amount) * 100) / 100;
     }
   }
-  return { merchandiseLines, freightLines, freightAmountFromLines };
+  let taxAmountFromLines: number | undefined;
+  for (const line of taxLines) {
+    const amount = lineAmount(line);
+    if (amount != null) {
+      taxAmountFromLines = Math.round(((taxAmountFromLines ?? 0) + amount) * 100) / 100;
+    }
+  }
+  return { merchandiseLines, freightLines, taxLines, freightAmountFromLines, taxAmountFromLines };
 }
 
 function extractWorktagId(worktags: any[], type: string): string | null {
@@ -883,8 +1068,7 @@ export async function buildFinalInvoiceLines(
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup,
   invoiceLineQuantityDisplayed?: boolean,
-  invoiceContext?: InvoiceDateContext,
-  abortSignal?: AbortSignal
+  invoiceContext?: InvoiceDateContext
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
@@ -925,13 +1109,8 @@ export async function buildFinalInvoiceLines(
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
-      abortSignal,
     }) as MergeInvoiceLinesResult;
   } catch (error) {
-    if (abortSignal?.aborted) {
-      debug('Line merge aborted by deadline signal; rethrowing so the processor error path runs');
-      throw error;
-    }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
     return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);

@@ -637,6 +637,38 @@ describe('create_invoice', () => {
     ]);
   });
 
+
+  it('moves a mislabeled sales-tax amount from freight to tax before submit', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$9,025.24',
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 1, unitCost: '3913.54', totalPrice: '3913.54', hasDiscount: false },
+        { description: 'Gadgets', quantity: 1, unitCost: '3625.00', totalPrice: '3625.00', hasDiscount: false },
+        { description: 'Accessories', quantity: 1, unitCost: '975.84', totalPrice: '975.84', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 3913.54 },
+        { lineOrder: 2, description: 'Gadgets', quantity: 1, unitCost: 3625.00 },
+        { lineOrder: 3, description: 'Accessories', quantity: 1, unitCost: 975.84 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-sales-tax-as-freight/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBeUndefined();
+    expect(submitArgs.extractedTaxAmount).toBe('510.86');
+  });
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
     const venue = {
       ID: [

@@ -46,6 +46,7 @@ import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  normalizeExtractedFreightAndTax,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
@@ -207,13 +208,9 @@ function slackInvoiceDetails(
 }
 
 // Processor function - invoked by trigger_create_invoice
-export const processor = withProcessorHandler(async (context, requests, _event, options) => {
-  const abortSignal = options?.abortSignal;
+export const processor = withProcessorHandler(async (context, requests) => {
   for (const request of requests) {
-    if (abortSignal?.aborted) {
-      throw new Error('Processor deadline reached before all records were processed');
-    }
-    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
+    await processNewInvoice(context, request as CreateInvoiceRequest);
   }
 });
 
@@ -244,19 +241,14 @@ async function fanOutCluster(
   }));
 }
 
-async function reportShadowClustering(
-  context: ProcessingContext,
-  request: CreateInvoiceRequest,
-  abortSignal?: AbortSignal
-): Promise<void> {
+async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   const startTime = Date.now();
   const attachments = request.attachments ?? [];
   const details = { mode: 'shadow', attachments: requestFilenames(request) };
   try {
     const { clustering } = await parseAndClusterInvoiceAttachments(
       attachments,
-      (key) => getBinaryFromS3(context.s3Config, key),
-      { abortSignal }
+      (key) => getBinaryFromS3(context.s3Config, key)
     );
     const describe = (file: ClassifiedAttachment) =>
       `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
@@ -284,14 +276,10 @@ async function reportShadowClustering(
   }
 }
 
-async function processNewInvoice(
-  context: ProcessingContext,
-  request: CreateInvoiceRequest,
-  abortSignal?: AbortSignal
-): Promise<void> {
+async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
   if (request.shadow) {
     // A shadow record never writes to Workday or the registry, whatever this container's flag says.
-    await reportShadowClustering(context, request, abortSignal);
+    await reportShadowClustering(context, request);
     return;
   }
   const startTime = Date.now();
@@ -341,8 +329,7 @@ async function processNewInvoice(
           const buffer = await getBinaryFromS3(context.s3Config, key);
           preloadedBuffers.set(key, buffer);
           return buffer;
-        },
-        { abortSignal }
+        }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -414,7 +401,7 @@ async function processNewInvoice(
         plan: { planId, clusterIndex: 0 },
         startTime,
         clustered: true,
-      }, abortSignal);
+      });
     } finally {
       if (undispatched.length) {
         await notifyResult(
@@ -454,7 +441,7 @@ async function processNewInvoice(
         : {}),
       startTime,
       clustered: true,
-    }, abortSignal);
+    });
     return;
   }
 
@@ -471,7 +458,7 @@ async function processNewInvoice(
         conversationPdf,
         startTime: Date.now(),
         clustered: false,
-      }, abortSignal);
+      });
     }
     return;
   }
@@ -495,7 +482,7 @@ async function processNewInvoice(
     conversationPdf,
     startTime,
     clustered: false,
-  }, abortSignal);
+  });
 }
 
 interface ClusterInvoiceInput {
@@ -545,11 +532,7 @@ function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<strin
   }));
 }
 
-async function createInvoiceFromCluster(
-  context: ProcessingContext,
-  input: ClusterInvoiceInput,
-  abortSignal?: AbortSignal
-): Promise<void> {
+async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
   const { plan } = input;
   if (plan && !(await claimInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex))) {
     debug('Invoice cluster already done or being processed by another run; skipping', plan);
@@ -557,7 +540,7 @@ async function createInvoiceFromCluster(
   }
   const run: ClusterRunState = {};
   try {
-    await processInvoiceCluster(context, input, run, abortSignal);
+    await processInvoiceCluster(context, input, run);
     if (plan && run.invoiceClaimContended) {
       await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
         .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
@@ -612,8 +595,7 @@ async function markInvoiceClusterDone(
 async function processInvoiceCluster(
   context: ProcessingContext,
   input: ClusterInvoiceInput,
-  run: ClusterRunState,
-  abortSignal?: AbortSignal
+  run: ClusterRunState
 ): Promise<void> {
   const {
     files,
@@ -694,8 +676,7 @@ async function processInvoiceCluster(
       stubCompany,
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
-      attachmentRoles,
-      abortSignal
+      attachmentRoles
     );
     debug('Enrichment result:', result);
 
@@ -725,7 +706,19 @@ async function processInvoiceCluster(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
+    const {
+      extractedFreightAmount: normalizedFreightAmount,
+      extractedTaxAmount: normalizedTaxAmount,
+      freightCleared,
+      taxCleared,
+    } = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+    });
+    let extractedTaxAmount = normalizedTaxAmount;
+    const extractedFreightAmountFromResult = normalizedFreightAmount;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
     let matchedPo = parsedPo;
     if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
@@ -762,13 +755,17 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines } = splitFreightLines(
       (result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const extractedFreightAmount = freightCleared
+      ? undefined
+      : (extractedFreightAmountFromResult ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
+    extractedTaxAmount = taxCleared
+      ? undefined
+      : (normalizedTaxAmount ?? (taxAmountFromLines != null ? String(taxAmountFromLines) : undefined));
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -802,8 +799,7 @@ async function processInvoiceCluster(
       relatedLobLookup,
       invoiceLineQuantityDisplayed,
       // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
-      abortSignal
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -835,9 +831,7 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed,
-          undefined,
-          abortSignal
+          invoiceLineQuantityDisplayed
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -858,9 +852,7 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed,
-          undefined,
-          abortSignal
+          invoiceLineQuantityDisplayed
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -896,7 +888,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount) + formatTaxAmountNotes(extractedTaxAmount) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -1125,6 +1117,8 @@ async function processInvoiceCluster(
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
           extractedFreightAmount,
           extractedTaxAmount,
+          freightCleared,
+          taxCleared,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1187,6 +1181,8 @@ async function processInvoiceCluster(
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      freightCleared,
+      taxCleared,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,

@@ -28,6 +28,7 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
+  normalizeExtractedFreightAndTax,
   normalizeSupplierInvoiceLineAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -117,21 +118,13 @@ export const handler = withHandler(async (context) => {
 });
 
 // Processor function - invoked by query function
-export const processor = withProcessorHandler(async (context, invoices, _event, options) => {
+export const processor = withProcessorHandler(async (context, invoices, _event) => {
   // Process single invoice (invoices will be array with one item)
-  const abortSignal = options?.abortSignal;
   for (const invoice of invoices) {
-    if (abortSignal?.aborted) {
-      throw new Error('Processor deadline reached before all records were processed');
-    }
-    await processInvoice(context, invoice as InvoiceData, abortSignal);
+    await processInvoice(context, invoice as InvoiceData);
   }
 });
-async function processInvoice(
-  context: ProcessingContext,
-  invoiceData: InvoiceData,
-  abortSignal?: AbortSignal
-): Promise<void> {
+async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
   const startTime = Date.now();
 
   if (await isInvoiceMarkedForSkip(context.invoiceValidationFailuresConfig, invoiceData.workdayID)) {
@@ -161,16 +154,7 @@ async function processInvoice(
       : undefined;
 
     debug(existingSupplier ? 'Enriching invoice with existing supplier' : 'Enriching invoice - no supplier assigned');
-    const result = await enrichInvoiceFromAttachments(
-      detailedInvoice,
-      processedAttachments,
-      existingSupplier,
-      existingCompany,
-      invoiceData.emailContext,
-      undefined,
-      undefined,
-      abortSignal
-    );
+    const result = await enrichInvoiceFromAttachments(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -207,7 +191,19 @@ async function processInvoice(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
+    const {
+      extractedFreightAmount: normalizedFreightAmount,
+      extractedTaxAmount: normalizedTaxAmount,
+      freightCleared,
+      taxCleared,
+    } = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+    });
+    let extractedTaxAmount = normalizedTaxAmount;
+    const extractedFreightAmountFromResult = normalizedFreightAmount;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -250,14 +246,18 @@ async function processInvoice(
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines } = splitFreightLines(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const extractedFreightAmount = freightCleared
+      ? undefined
+      : (extractedFreightAmountFromResult ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
+    extractedTaxAmount = taxCleared
+      ? undefined
+      : (normalizedTaxAmount ?? (taxAmountFromLines != null ? String(taxAmountFromLines) : undefined));
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -283,8 +283,7 @@ async function processInvoice(
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
         invoiceLineQuantityDisplayed,
         // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
-        abortSignal
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -308,7 +307,7 @@ async function processInvoice(
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount) + formatTaxAmountNotes(extractedTaxAmount) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -340,6 +339,8 @@ async function processInvoice(
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
