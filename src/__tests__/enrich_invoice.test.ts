@@ -180,6 +180,19 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
   });
 
+  it('passes the Lambda deadline signal to the enrichment AI call', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await processor(
+      { data: [{ workdayID: 'test-invoice-id', invoiceStatusAsText: 'Draft' }] } as any,
+      { getRemainingTimeInMillis: () => 120_000 } as any
+    );
+
+    const signal = getAiResponse.mock.calls[0][0].abortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+  });
+
   it('should handle missing supplier and identify supplier', async () => {
     const { executeWorkdayQuery } = require('../lib/workday.js');
     executeWorkdayQuery.mockResolvedValue({

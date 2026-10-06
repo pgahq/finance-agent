@@ -319,20 +319,34 @@ describe('handlers', () => {
       jest.useRealTimers();
     });
 
-    it('should pass an already-aborted signal when remaining time is inside the buffer', async () => {
-      const mockProcessAction = jest.fn().mockImplementation((_ctx, _data, _event, options) => {
-        expect(options?.abortSignal?.aborted).toBe(true);
-        return Promise.resolve();
-      });
+    it('should alert and skip processing when remaining time is inside the buffer', async () => {
+      const { notifyResult } = require('../lib/slack.js');
+      process.env.AWS_LAMBDA_FUNCTION_NAME = 'test-processor-lambda';
+      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
       const processor = withProcessorHandler(mockProcessAction);
 
-      const event = { data: [{ id: '1' }] };
       const lambdaContext = {
-        getRemainingTimeInMillis: jest.fn().mockReturnValue(5_000),
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(20_000),
       } as unknown as Context;
 
-      await processor(event, lambdaContext);
-      expect(mockProcessAction).toHaveBeenCalled();
+      const { getDatabaseConnection } = require('../lib/database.js');
+
+      await expect(processor({ data: [{ id: '1' }] }, lambdaContext)).rejects.toThrow('deadline buffer');
+      expect(mockProcessAction).not.toHaveBeenCalled();
+      expect(getDatabaseConnection).not.toHaveBeenCalled();
+      expect(notifyResult).toHaveBeenCalledWith('test-processor-lambda', 'error', undefined, undefined, expect.any(Error));
+    });
+
+    it('should keep the deadline error when the Slack alert fails', async () => {
+      const { notifyResult } = require('../lib/slack.js');
+      notifyResult.mockRejectedValueOnce(new Error('Slack 500'));
+      const processor = withProcessorHandler(jest.fn().mockResolvedValue(undefined));
+
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(20_000),
+      } as unknown as Context;
+
+      await expect(processor({ data: [{ id: '1' }] }, lambdaContext)).rejects.toThrow('deadline buffer');
     });
 
     it('should dispose the deadline timer after successful processing', async () => {
