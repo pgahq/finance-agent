@@ -1790,6 +1790,54 @@ describe('normalizeExtractedFreightAndTax', () => {
     expect(result.taxCleared).toBe(true);
   });
 
+  it.each([
+    'Sales Tax Amount',
+    'Total Tax Amount',
+    'Sales Tax - Estimated',
+    'Sales Tax (approx.)',
+  ])('moves a freight amount labeled %s to tax', (label) => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('$510.86');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Freight Amount', 'Shipping & Handling Amount', 'Shipping Total'])('moves a tax amount labeled %s to freight', (label) => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('ignores malformed amount %s without clearing headers', (amount) => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it.each(['$8,514.38', '8514.38', '510.86 USD', 'USD 510.86'])('accepts well-formed amount %s', (amount) => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Freight',
+    }).extractedFreightAmount).toBe(amount);
+  });
+
   it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
     const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({

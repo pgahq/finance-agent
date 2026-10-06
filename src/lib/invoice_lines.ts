@@ -279,6 +279,7 @@ const TAX_QUALIFIERS = new Set([
   'sales', 'use', 'state', 'local', 'county', 'city', 'total', 'vat', 'gst', 'hst',
   'provincial', 'municipal', 'amount', 'due', 'charged', 'charge', 'paid', 'collectible',
   'line', 'item', 'included', 'inclusive', 'incl', 'payable', 'on', 'and', 'for', 'of',
+  'estimated', 'estimate', 'est', 'approx', 'approximate',
   'new', 'york', 'california', 'texas', 'florida', 'illinois', 'pennsylvania', 'ohio',
   'georgia', 'north', 'carolina', 'michigan', 'jersey', 'virginia', 'washington', 'arizona',
   'massachusetts', 'tennessee', 'indiana', 'missouri', 'maryland', 'wisconsin', 'colorado',
@@ -302,6 +303,12 @@ function normalizeLabel(label: string | null | undefined): string | undefined {
     .replace(/\s+/g, ' ')
     .trim();
   return normalized || undefined;
+}
+
+function labelMatchesFreight(label: string | null | undefined): boolean {
+  const normalized = normalizeLabel(label);
+  if (!normalized) return false;
+  return isFreightOrHandlingLine(normalized.split(' ').filter(token => token !== 'amount' && token !== 'total').join(' '));
 }
 
 function labelMatchesTax(label: string | null | undefined): boolean {
@@ -343,8 +350,9 @@ function parseCanonicalChargeAmount(value: string | number | null | undefined): 
   if (!/^\d/.test(rest)) return undefined;
   const suffix = rest.replace(/^[\d,.]+/, '').trim();
   if (suffix && !/^(?:\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR))?\s*$/i.test(suffix)) return undefined;
-  const numeric = rest.replace(/[^0-9.]/g, '');
-  if (!numeric || numeric.split('.').length > 2) return undefined;
+  const digits = rest.slice(0, rest.length - suffix.length).trim();
+  if (!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(digits)) return undefined;
+  const numeric = digits.replace(/,/g, '');
   const parsed = parseFloat(numeric);
   if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed < 0) return undefined;
   return Math.round(parsed * 100) / 100;
@@ -384,7 +392,7 @@ export function normalizeExtractedFreightAndTax(options: {
   const taxLabel = options.extractedTaxLabel;
 
   const freightIsTax = labelMatchesTax(freightLabel);
-  const taxIsFreight = !labelMatchesTax(taxLabel) && isFreightOrHandlingLine(taxLabel);
+  const taxIsFreight = !labelMatchesTax(taxLabel) && labelMatchesFreight(taxLabel);
 
   const freightNonZero = rawFreightAmount != null && isValidNonNegativeAmount(rawFreightAmount) && parseExtractedAmount(rawFreightAmount) !== 0;
   const taxNonZero = rawTaxAmount != null && isValidNonNegativeAmount(rawTaxAmount) && parseExtractedAmount(rawTaxAmount) !== 0;
