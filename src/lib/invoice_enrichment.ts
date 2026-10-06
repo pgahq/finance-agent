@@ -10,7 +10,7 @@ import {
   type ResolvedSupplierHint,
 } from './supplier_note_hints.js';
 import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
-import { withComposedLineDescriptions } from './invoice_lines.js';
+import { withComposedLineDescriptions, type ExtractedInvoiceLine } from './invoice_lines.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
@@ -81,7 +81,8 @@ export async function enrichInvoiceFromAttachments(
   existingCompany?: { descriptor: string; id: string },
   emailContext?: InvoiceData['emailContext'],
   purchaseOrder?: PurchaseOrderEnrichmentContext,
-  attachmentRoles?: InvoiceAttachmentRole[]
+  attachmentRoles?: InvoiceAttachmentRole[],
+  abortSignal?: AbortSignal
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
@@ -160,6 +161,7 @@ export async function enrichInvoiceFromAttachments(
     const result = await getAiResponse({
       prompt: invoiceEnrichmentPrompt,
       schema: InvoiceEnrichmentSchema,
+      abortSignal,
       messages: [
         {
           role: 'user',
@@ -212,14 +214,18 @@ export function formatAmountNotes(result: InvoiceEnrichmentResult): string {
   return `\n\nInvoice Amount (from document): ${result.extractedAmountDue}`;
 }
 
-export function formatFreightAmountNotes(freightAmount?: string | null): string {
-  if (!freightAmount) return '';
-  return `\n\nFreight Amount (from document): ${freightAmount}`;
+export function formatFreightAmountNotes(result: InvoiceEnrichmentResult, normalizedFreightAmount?: string, freightCleared?: boolean): string {
+  if (freightCleared) return '\n\nFreight Amount (from document): none';
+  const amount = normalizedFreightAmount ?? result.extractedFreightAmount;
+  if (!amount) return '';
+  return `\n\nFreight Amount (from document): ${amount}`;
 }
 
-export function formatTaxAmountNotes(taxAmount?: string | null): string {
-  if (!taxAmount) return '';
-  return `\n\nTax Amount (from document): ${taxAmount}`;
+export function formatTaxAmountNotes(result: InvoiceEnrichmentResult, normalizedTaxAmount?: string, taxCleared?: boolean): string {
+  if (taxCleared) return '\n\nTax Amount (from document): none';
+  const amount = normalizedTaxAmount ?? result.extractedTaxAmount;
+  if (!amount) return '';
+  return `\n\nTax Amount (from document): ${amount}`;
 }
 
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
@@ -294,10 +300,12 @@ export function formatWorkQueueAssigneeNotes(
 
 export function formatInvoiceLinesNotes(
   result: InvoiceEnrichmentResult,
-  resolvedInvoiceLineQuantityDisplayed?: boolean
+  resolvedInvoiceLineQuantityDisplayed?: boolean,
+  merchandiseLines?: ExtractedInvoiceLine[]
 ): string {
-  if (!result.extractedInvoiceLines?.length) return '';
-  const lineTexts = withComposedLineDescriptions(result.extractedInvoiceLines).map((line, i) => {
+  const lines = merchandiseLines && merchandiseLines.length > 0 ? merchandiseLines : result.extractedInvoiceLines;
+  if (!lines?.length) return '';
+  const lineTexts = withComposedLineDescriptions(lines).map((line, i) => {
     const parts = [line.description];
     if (line.quantity != null) parts.push(`Qty: ${line.quantity}`);
     if (line.unitCost) parts.push(`Unit Cost: ${line.unitCost}`);

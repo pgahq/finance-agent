@@ -208,9 +208,13 @@ function slackInvoiceDetails(
 }
 
 // Processor function - invoked by trigger_create_invoice
-export const processor = withProcessorHandler(async (context, requests) => {
+export const processor = withProcessorHandler(async (context, requests, _event, options) => {
+  const abortSignal = options?.abortSignal;
   for (const request of requests) {
-    await processNewInvoice(context, request as CreateInvoiceRequest);
+    if (abortSignal?.aborted) {
+      throw new Error('Processor deadline reached before all records were processed');
+    }
+    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
   }
 });
 
@@ -241,14 +245,19 @@ async function fanOutCluster(
   }));
 }
 
-async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function reportShadowClustering(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
   const attachments = request.attachments ?? [];
   const details = { mode: 'shadow', attachments: requestFilenames(request) };
   try {
     const { clustering } = await parseAndClusterInvoiceAttachments(
       attachments,
-      (key) => getBinaryFromS3(context.s3Config, key)
+      (key) => getBinaryFromS3(context.s3Config, key),
+      { abortSignal }
     );
     const describe = (file: ClassifiedAttachment) =>
       `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
@@ -276,10 +285,14 @@ async function reportShadowClustering(context: ProcessingContext, request: Creat
   }
 }
 
-async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function processNewInvoice(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   if (request.shadow) {
     // A shadow record never writes to Workday or the registry, whatever this container's flag says.
-    await reportShadowClustering(context, request);
+    await reportShadowClustering(context, request, abortSignal);
     return;
   }
   const startTime = Date.now();
@@ -329,7 +342,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           const buffer = await getBinaryFromS3(context.s3Config, key);
           preloadedBuffers.set(key, buffer);
           return buffer;
-        }
+        },
+        { abortSignal }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -401,7 +415,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         plan: { planId, clusterIndex: 0 },
         startTime,
         clustered: true,
-      });
+      }, abortSignal);
     } finally {
       if (undispatched.length) {
         await notifyResult(
@@ -441,7 +455,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         : {}),
       startTime,
       clustered: true,
-    });
+    }, abortSignal);
     return;
   }
 
@@ -458,7 +472,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         conversationPdf,
         startTime: Date.now(),
         clustered: false,
-      });
+      }, abortSignal);
     }
     return;
   }
@@ -482,7 +496,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     conversationPdf,
     startTime,
     clustered: false,
-  });
+  }, abortSignal);
 }
 
 interface ClusterInvoiceInput {
@@ -532,7 +546,11 @@ function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<strin
   }));
 }
 
-async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
+async function createInvoiceFromCluster(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const { plan } = input;
   if (plan && !(await claimInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex))) {
     debug('Invoice cluster already done or being processed by another run; skipping', plan);
@@ -540,7 +558,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
   }
   const run: ClusterRunState = {};
   try {
-    await processInvoiceCluster(context, input, run);
+    await processInvoiceCluster(context, input, run, abortSignal);
     if (plan && run.invoiceClaimContended) {
       await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
         .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
@@ -595,7 +613,8 @@ async function markInvoiceClusterDone(
 async function processInvoiceCluster(
   context: ProcessingContext,
   input: ClusterInvoiceInput,
-  run: ClusterRunState
+  run: ClusterRunState,
+  abortSignal?: AbortSignal
 ): Promise<void> {
   const {
     files,
@@ -676,7 +695,8 @@ async function processInvoiceCluster(
       stubCompany,
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
-      attachmentRoles
+      attachmentRoles,
+      abortSignal
     );
     debug('Enrichment result:', result);
 
@@ -709,8 +729,8 @@ async function processInvoiceCluster(
     const {
       extractedFreightAmount: normalizedFreightAmount,
       extractedTaxAmount: normalizedTaxAmount,
-      freightCleared,
-      taxCleared,
+      freightCleared: rawFreightCleared,
+      taxCleared: rawTaxCleared,
     } = normalizeExtractedFreightAndTax({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
@@ -760,12 +780,18 @@ async function processInvoiceCluster(
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
+    const hasFreightLine = freightAmountFromLines != null;
+    const hasTaxLine = taxAmountFromLines != null;
+    const hasExtractedFreightHeader = extractedFreightAmountFromResult != null;
+    const hasExtractedTaxHeader = normalizedTaxAmount != null;
+    let freightCleared = rawFreightCleared || (!hasExtractedFreightHeader && hasFreightLine && freightAmountFromLines === 0);
+    let taxCleared = rawTaxCleared || (!hasExtractedTaxHeader && hasTaxLine && taxAmountFromLines === 0);
     const extractedFreightAmount = freightCleared
       ? undefined
-      : (extractedFreightAmountFromResult ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
+      : (extractedFreightAmountFromResult ?? (hasFreightLine ? String(freightAmountFromLines) : undefined));
     extractedTaxAmount = taxCleared
       ? undefined
-      : (normalizedTaxAmount ?? (taxAmountFromLines != null ? String(taxAmountFromLines) : undefined));
+      : (normalizedTaxAmount ?? (hasTaxLine ? String(taxAmountFromLines) : undefined));
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -799,7 +825,8 @@ async function processInvoiceCluster(
       relatedLobLookup,
       invoiceLineQuantityDisplayed,
       // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+      abortSignal
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -831,7 +858,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -852,7 +881,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -888,7 +919,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount) + formatTaxAmountNotes(extractedTaxAmount) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result, extractedFreightAmount, freightCleared) + formatTaxAmountNotes(result, extractedTaxAmount, taxCleared) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed, candidateLines) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -953,6 +984,9 @@ async function processInvoiceCluster(
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },
@@ -1119,6 +1153,8 @@ async function processInvoiceCluster(
           extractedTaxAmount,
           freightCleared,
           taxCleared,
+          freightAmountFromLines,
+          taxAmountFromLines,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1183,6 +1219,8 @@ async function processInvoiceCluster(
       extractedTaxAmount,
       freightCleared,
       taxCleared,
+      freightAmountFromLines,
+      taxAmountFromLines,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,

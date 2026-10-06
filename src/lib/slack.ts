@@ -467,6 +467,9 @@ export interface EnrichmentNotification {
     amountDue?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
+    taxAmount?: string;
+    freightCleared?: boolean;
+    taxCleared?: boolean;
     purchaseOrderNumber?: string;
     paymentTerms?: string;
   };

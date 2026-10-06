@@ -1,6 +1,5 @@
 import {
   alignSupplierInvoiceLineAmounts,
-  normalizeExtractedFreightAndTax,
   applyAmountOnlyLineRetry,
   applyDefaultCompanyLineWorktags,
   applyMissingQuantityColumnLines,
@@ -632,6 +631,24 @@ describe('buildFinalInvoiceLines', () => {
     );
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+  });
+
+  it('rethrows AI errors when the deadline signal has aborted', async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error('Processor deadline reached'));
+    mockGetAiResponse.mockRejectedValue(new Error('Processor deadline reached'));
+
+    await expect(buildFinalInvoiceLines(
+      extracted,
+      [poLine()],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortController.signal
+    )).rejects.toThrow('Processor deadline reached');
   });
 
   it('lets email LOB override the PO LOB', async () => {
@@ -1706,6 +1723,7 @@ describe('buildFinalInvoiceLines service-date matching', () => {
 
 describe('normalizeExtractedFreightAndTax', () => {
   it('moves a sales-tax amount out of freight into tax', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '510.86',
       extractedFreightLabel: 'Sales Tax',
@@ -1719,6 +1737,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('keeps a real freight amount and a real tax amount separate', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '15.00',
       extractedFreightLabel: 'Shipping',
@@ -1727,9 +1746,12 @@ describe('normalizeExtractedFreightAndTax', () => {
     });
     expect(result.extractedFreightAmount).toBe('15.00');
     expect(result.extractedTaxAmount).toBe('5.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
   });
 
   it('moves a freight-labeled tax amount into freight', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: null,
       extractedFreightLabel: null,
@@ -1743,6 +1765,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('swaps freight and tax when both are mislabeled', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
       extractedFreightLabel: 'Sales Tax',
@@ -1754,6 +1777,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('treats labeled zero amounts as explicit clears', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '0.00',
       extractedFreightLabel: 'Freight',
@@ -1767,6 +1791,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('clears freight when a real tax amount already exists alongside a mislabeled freight amount', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
       extractedFreightLabel: 'Sales Tax',
@@ -1780,6 +1805,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('clears tax when a real freight amount already exists alongside a mislabeled tax amount', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '15.00',
       extractedFreightLabel: 'Shipping',
@@ -1793,6 +1819,7 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('rejects negative and malformed amounts without clearing existing headers', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     expect(normalizeExtractedFreightAndTax({
       extractedFreightAmount: '-15.00',
       extractedFreightLabel: 'Shipping',
@@ -1811,5 +1838,34 @@ describe('normalizeExtractedFreightAndTax', () => {
       freightCleared: false,
       taxCleared: false,
     });
+  });
+});
+
+describe('splitFreightLines', () => {
+  it('classifies sales tax rows separately from merchandise and freight', () => {
+    const { splitFreightLines } = require('../lib/invoice_lines.js');
+    const lines = [
+      { description: 'Widgets', totalPrice: '100.00' },
+      { description: 'Sales Tax', totalPrice: '8.50' },
+      { description: 'Shipping', totalPrice: '15.00' },
+    ];
+    const result = splitFreightLines(lines);
+    expect(result.merchandiseLines).toEqual([{ description: 'Widgets', totalPrice: '100.00' }]);
+    expect(result.freightLines).toEqual([{ description: 'Shipping', totalPrice: '15.00' }]);
+    expect(result.taxLines).toEqual([{ description: 'Sales Tax', totalPrice: '8.50' }]);
+    expect(result.freightAmountFromLines).toBe(15);
+    expect(result.taxAmountFromLines).toBe(8.5);
+  });
+
+  it('falls back to tax amount from classified lines when header is absent', () => {
+    const { splitFreightLines } = require('../lib/invoice_lines.js');
+    const lines = [
+      { description: 'Service', totalPrice: '100.00' },
+      { description: 'State Tax', totalPrice: '6.25' },
+    ];
+    const result = splitFreightLines(lines);
+    expect(result.merchandiseLines).toEqual([{ description: 'Service', totalPrice: '100.00' }]);
+    expect(result.taxLines).toEqual([{ description: 'State Tax', totalPrice: '6.25' }]);
+    expect(result.taxAmountFromLines).toBe(6.25);
   });
 });

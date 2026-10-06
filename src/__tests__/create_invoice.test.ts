@@ -637,7 +637,6 @@ describe('create_invoice', () => {
     ]);
   });
 
-
   it('moves a mislabeled sales-tax amount from freight to tax before submit', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -668,7 +667,10 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.extractedFreightAmount).toBeUndefined();
     expect(submitArgs.extractedTaxAmount).toBe('510.86');
+    expect(submitArgs.freightCleared).toBe(true);
+    expect(submitArgs.taxCleared).toBe(false);
   });
+
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
     const venue = {
       ID: [
