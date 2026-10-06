@@ -263,7 +263,7 @@ async function processInvoice(
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid } = splitFreightLines(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
@@ -273,8 +273,8 @@ async function processInvoice(
     const hasTaxLine = taxAmountFromLines != null;
     const hasExtractedFreightHeader = extractedFreightAmountFromResult != null;
     const hasExtractedTaxHeader = normalizedTaxAmount != null;
-    let freightCleared = rawFreightCleared || (!hasExtractedFreightHeader && hasFreightLine && freightAmountFromLines === 0);
-    let taxCleared = rawTaxCleared || (!hasExtractedTaxHeader && hasTaxLine && taxAmountFromLines === 0);
+    let freightCleared = rawFreightCleared || (!freightAmountInvalid && !hasExtractedFreightHeader && hasFreightLine && freightAmountFromLines === 0);
+    let taxCleared = rawTaxCleared || (!taxAmountInvalid && !hasExtractedTaxHeader && hasTaxLine && taxAmountFromLines === 0);
     const extractedFreightAmount = freightCleared
       ? undefined
       : (extractedFreightAmountFromResult ?? (hasFreightLine ? String(freightAmountFromLines) : undefined));

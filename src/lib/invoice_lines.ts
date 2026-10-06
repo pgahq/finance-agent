@@ -211,7 +211,7 @@ const TAX_COMPOUND_ANCHORS = new Set([
 ]);
 const TAX_METADATA_WORDS = new Set([
   'rate', 'id', 'number', 'exempt', 'registration', 'code', 'inclusion',
-  'basis', 'subtotal', 'table', 'schedule', 'jurisdiction',
+  'basis', 'subtotal', 'table', 'schedule', 'jurisdiction', 'percentage', 'percent',
   'taxable', 'taxability', 'withholding', 'recoverable', 'deductible', 'reclaimable',
   'receivable', 'balance',
 ]);
@@ -405,6 +405,8 @@ export function normalizeExtractedFreightAndTax(options: {
       freightCleared = true;
       if (taxNonZero) {
         taxAmount = rawTaxAmount;
+      } else {
+        taxCleared = true;
       }
     } else if (taxNonZero) {
       taxAmount = rawTaxAmount;
@@ -423,6 +425,8 @@ export function normalizeExtractedFreightAndTax(options: {
       taxCleared = true;
       if (freightNonZero) {
         freightAmount = rawFreightAmount;
+      } else {
+        freightCleared = true;
       }
     } else if (freightNonZero) {
       freightAmount = rawFreightAmount;
@@ -457,6 +461,8 @@ export interface SplitFreightLinesResult<T> {
   unresolvedChargeRows: T[];
   freightAmountFromLines?: number;
   taxAmountFromLines?: number;
+  freightAmountInvalid: boolean;
+  taxAmountInvalid: boolean;
 }
 
 export function splitFreightLines<T extends {
@@ -491,38 +497,27 @@ export function splitFreightLines<T extends {
       merchandiseLines.push(line);
     }
   }
-  // Rows we could not confidently classify are kept as merchandise so they are not silently dropped.
-  if (unresolvedChargeRows.length) {
-    merchandiseLines.push(...unresolvedChargeRows);
-  }
   let freightAmountFromLines: number | undefined;
-  const freightRowsWithInvalidAmounts: T[] = [];
+  let freightAmountInvalid = false;
   for (const line of freightLines) {
     const amount = lineAmount(line);
     if (amount != null && Number.isFinite(amount) && amount >= 0) {
       freightAmountFromLines = Math.round(((freightAmountFromLines ?? 0) + amount) * 100) / 100;
     } else {
-      freightRowsWithInvalidAmounts.push(line);
+      freightAmountInvalid = true;
     }
   }
   let taxAmountFromLines: number | undefined;
-  const taxRowsWithInvalidAmounts: T[] = [];
+  let taxAmountInvalid = false;
   for (const line of taxLines) {
     const amount = lineAmount(line);
     if (amount != null && Number.isFinite(amount) && amount >= 0) {
       taxAmountFromLines = Math.round(((taxAmountFromLines ?? 0) + amount) * 100) / 100;
     } else {
-      taxRowsWithInvalidAmounts.push(line);
+      taxAmountInvalid = true;
     }
   }
-  // Classified rows whose amounts we cannot parse are kept as merchandise for review.
-  if (freightRowsWithInvalidAmounts.length) {
-    merchandiseLines.push(...freightRowsWithInvalidAmounts);
-  }
-  if (taxRowsWithInvalidAmounts.length) {
-    merchandiseLines.push(...taxRowsWithInvalidAmounts);
-  }
-  return { merchandiseLines, freightLines, taxLines, unresolvedChargeRows, freightAmountFromLines, taxAmountFromLines };
+  return { merchandiseLines, freightLines, taxLines, unresolvedChargeRows, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid };
 }
 
 function extractWorktagId(worktags: any[], type: string): string | null {

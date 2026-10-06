@@ -101,7 +101,7 @@ export const InvoiceEnrichmentSchema = z.object({
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.')
-  })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
+  })).nullable().describe('Merchandise line items extracted from the invoice document. Exclude lines that represent freight, shipping, handling, delivery, or tax charges — those belong in extractedFreightAmount / extractedTaxAmount whenever possible. Only when a charge has no clear amount at the header level (for example, a "Shipping and Handling" row whose amount cell is blank while a separate "Sales Tax" row has an amount) may that charge row appear here so the downstream classifier can resolve the missing header from the line text. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({
     event: z.object({
@@ -341,6 +341,8 @@ Extract the individual line items from the invoice document:
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
 Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
+
+Exception: when a charge row has no amount in its amount cell (for example, a "Shipping and Handling" row whose amount is blank) and a different charge row on the same invoice clearly carries the amount (for example, a separate "Sales Tax" row with $510.86), include the unlabeled charge row in \`extractedInvoiceLines\` so the code can use its label to place the amount correctly. In that case still capture the amount in the header field that matches the labeled row (Sales Tax → \`extractedTaxAmount\`).
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 
