@@ -18,7 +18,8 @@ import {
   type DatabaseConnection,
 } from '../lib/database.js';
 import type { ProcessingContext } from '../lib/handlers.js';
-import { getInvoiceScore, listPendingScoreInvoices } from '../lib/invoice_scores.js';
+import { getInvoiceScore, listPendingScoreInvoices, upsertInvoiceScore } from '../lib/invoice_scores.js';
+import { ensureTouchReporting, refreshTouchDaily } from '../lib/touch_reporting.js';
 import { getAgentInvoiceSnapshots, snapshotAgentWrite, snapshotEnrichBaseline } from '../lib/invoice_snapshots.js';
 import { buildDigestBlocks, digestWindow, summarizeScores } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
@@ -55,7 +56,8 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
   const [created, duplicate, enriched] = ['a'.repeat(32), 'b'.repeat(32), 'c'.repeat(32)];
 
   beforeAll(async () => {
-    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels');
+    await pool.query('DROP VIEW IF EXISTS agent_invoice_touches');
+    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily');
     await pool.query(CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE);
     for (const sql of CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES) await pool.query(sql);
     await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
@@ -128,5 +130,50 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(summary.late).toEqual({ closed: 1, corrected: 1 });
     const text = buildDigestBlocks(summary).map((block) => (block.type === 'section' ? block.text.text : '')).join('\n');
     expect(text).toContain('• Cost center: 1 (100%)');
+  });
+
+  it('stores touches per invoice and a daily rollup a report can read', async () => {
+    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
+    await ensureTouchReporting(run);
+    await ensureTouchReporting(run);
+
+    const change = (agentOwned: boolean) => ({ field: 'line.fund', line: 0, before: 'a', after: 'b', category: 'material', agentOwned });
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
+    await upsertInvoiceScore(db, {
+      workdayInvoiceWid: 'd'.repeat(32), workdayInvoiceNumber: 'SUPIN-ZERO', terminal: false, entryReadAt: daysAgo(3),
+      outcome: 'submitted_clean', entryDiff: [change(false) as never], releaseSha: 'sha-1',
+    });
+    await upsertInvoiceScore(db, {
+      workdayInvoiceWid: 'e'.repeat(32), workdayInvoiceNumber: 'SUPIN-MANY', terminal: false, entryReadAt: daysAgo(3),
+      outcome: 'submitted_edited', entryDiff: Array.from({ length: 25 }, () => change(true) as never), releaseSha: 'sha-1',
+    });
+
+    const { rows: invoices } = await pool.query(
+      'SELECT workday_invoice_number, touches::int, touch_bucket FROM agent_invoice_touches ORDER BY workday_invoice_number'
+    );
+    expect(invoices).toEqual([
+      { workday_invoice_number: 'SUPIN-100', touches: 3, touch_bucket: '1-3' },
+      { workday_invoice_number: 'SUPIN-MANY', touches: 25, touch_bucket: '21+' },
+      { workday_invoice_number: 'SUPIN-ZERO', touches: 0, touch_bucket: '0' },
+    ]);
+
+    expect(await refreshTouchDaily(db)).toBe(15);
+    const { rows: days } = await pool.query(`
+      SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date - entry_day AS age, invoices, touches_0, touches_1_3,
+             touches_21_plus, total_touches, zero_touch_share::text
+        FROM agent_invoice_touch_daily ORDER BY entry_day`);
+    expect(days).toHaveLength(15);
+    const byAge = new Map(days.map((row) => [Number(row.age), row]));
+    expect(byAge.get(3)).toEqual(expect.objectContaining({ invoices: 2, touches_0: 1, touches_21_plus: 1, total_touches: 25, zero_touch_share: '0.5000' }));
+    expect(byAge.get(1)).toEqual(expect.objectContaining({ invoices: 0, total_touches: 0, zero_touch_share: null }));
+    const created = days.find((row) => Number(row.touches_1_3) === 1);
+    expect(created).toEqual(expect.objectContaining({ invoices: 1, total_touches: 3, zero_touch_share: '0.0000' }));
+
+    const weekly = await pool.query(`
+      SELECT sum(invoices)::int AS invoices, sum(touches_0)::int AS zero
+        FROM agent_invoice_touch_daily WHERE entry_day > (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date - 7`);
+    expect(weekly.rows[0]).toEqual({ invoices: 3, zero: 1 });
+
+    expect(await refreshTouchDaily(db)).toBe(15);
   });
 });

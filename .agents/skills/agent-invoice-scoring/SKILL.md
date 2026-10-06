@@ -183,6 +183,45 @@ daily and weekly post starts with:
 The daily post's lead is its own message, followed by one message per invoice;
 each invoice headline ends with its touch count.
 
+## Stored touch data for reports
+
+Created at cold start (after `agent_invoice_scores`) by `ensureTouchReporting`
+in `src/lib/touch_reporting.ts`, under an advisory lock:
+
+- **`agent_invoice_touches`** (view): one row per invoice AP submitted, with
+  `touches`, `touch_bucket` (`0`, `1-3`, `4-10`, `11-20`, `21+`), `entry_day`
+  (Central calendar date of the entry read), `entry_read_at`, `origin`,
+  `release_sha`, `clustering_mode`, `outcome`, and statuses. Always current; the
+  touch count is computed from `entry_diff` and `late_diff` the same way as the
+  Slack posts.
+- **`agent_invoice_touch_daily`** (table): one row per Central day with
+  `invoices`, `touches_0` … `touches_21_plus`, `total_touches`,
+  `zero_touch_share` (null on a day with no invoices), and `computed_at`. Each
+  `ScoreDigest` run (daily and weekly) recomputes the last 15 days, so late
+  corrections land in recent days and older days keep their stored values. The
+  first run backfills from the earliest entered invoice. A refresh failure is
+  logged and does not block the post.
+
+Report queries:
+
+```sql
+-- Daily trend
+SELECT entry_day, invoices, touches_0, touches_1_3, touches_4_10, touches_11_20, touches_21_plus, zero_touch_share
+FROM agent_invoice_touch_daily ORDER BY entry_day;
+
+-- Weekly trend (Monday weeks)
+SELECT date_trunc('week', entry_day)::date AS week, sum(invoices) AS invoices, sum(touches_0) AS zero_touch,
+       round(sum(touches_0)::numeric / NULLIF(sum(invoices), 0), 4) AS zero_touch_share
+FROM agent_invoice_touch_daily GROUP BY 1 ORDER BY 1;
+
+-- Zero-touch share by release
+SELECT release_sha, count(*) AS invoices, round(avg((touches = 0)::int), 4) AS zero_touch_share
+FROM agent_invoice_touches GROUP BY 1 ORDER BY min(entry_read_at);
+```
+
+The tables live in the finance-agent Aurora cluster inside the VPC, so a
+reporting tool needs a connection to that database (or an export).
+
 ## Daily summary
 
 `ScoreDigest` also runs daily at 14:20 UTC with input `{"mode":"daily"}`, after

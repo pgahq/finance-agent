@@ -62,6 +62,10 @@ Agent invoice scoring adds three more cold-start tables (see the
 - `cancel_labels` (primary key `workday_invoice_wid`; `attribution` agent or
   business, checked). AP's call on a cancel; it overrides the scorer's rules.
 
+Touch reporting adds the `agent_invoice_touches` view and the
+`agent_invoice_touch_daily` table (primary key `entry_day`), created by
+`ensureTouchReporting` after the documents migration on the same client.
+
 None of them is pruned yet.
 
 ## Shared pool lifetime
