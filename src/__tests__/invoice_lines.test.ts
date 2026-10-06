@@ -1790,7 +1790,7 @@ describe('normalizeExtractedFreightAndTax', () => {
     expect(result.taxCleared).toBe(true);
   });
 
-  it('clears freight when a real tax amount already exists alongside a mislabeled freight amount', () => {
+  it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
     const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
@@ -1798,13 +1798,28 @@ describe('normalizeExtractedFreightAndTax', () => {
       extractedTaxAmount: '10.00',
       extractedTaxLabel: 'Sales Tax',
     });
-    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedFreightAmount).toBe('8.00');
     expect(result.extractedTaxAmount).toBe('10.00');
-    expect(result.freightCleared).toBe(true);
+    expect(result.freightCleared).toBe(false);
     expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read. Verify freight and tax against the document.');
   });
 
-  it('clears tax when a real freight amount already exists alongside a mislabeled tax amount', () => {
+  it('drops a tax-labeled freight amount that duplicates the tax amount', () => {
+    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '510.86',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps both amounts and asks for review when a freight-labeled tax amount differs from the freight amount', () => {
     const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '15.00',
@@ -1813,9 +1828,10 @@ describe('normalizeExtractedFreightAndTax', () => {
       extractedTaxLabel: 'Freight',
     });
     expect(result.extractedFreightAmount).toBe('15.00');
-    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('8.00');
     expect(result.freightCleared).toBe(false);
-    expect(result.taxCleared).toBe(true);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain('Tax amount 8.00 is labeled "Freight"');
   });
 
   it('rejects negative and malformed amounts without clearing existing headers', () => {
@@ -1841,72 +1857,3 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 });
 
-describe('splitFreightLines', () => {
-  it('classifies sales tax rows separately from merchandise and freight', () => {
-    const { splitFreightLines } = require('../lib/invoice_lines.js');
-    const lines = [
-      { description: 'Widgets', totalPrice: '100.00' },
-      { description: 'Sales Tax', totalPrice: '8.50' },
-      { description: 'Shipping', totalPrice: '15.00' },
-    ];
-    const result = splitFreightLines(lines);
-    expect(result.merchandiseLines).toEqual([{ description: 'Widgets', totalPrice: '100.00' }]);
-    expect(result.freightLines).toEqual([{ description: 'Shipping', totalPrice: '15.00' }]);
-    expect(result.taxLines).toEqual([{ description: 'Sales Tax', totalPrice: '8.50' }]);
-    expect(result.freightAmountFromLines).toBe(15);
-    expect(result.taxAmountFromLines).toBe(8.5);
-  });
-
-  it('falls back to tax amount from classified lines when header is absent', () => {
-    const { splitFreightLines } = require('../lib/invoice_lines.js');
-    const lines = [
-      { description: 'Service', totalPrice: '100.00' },
-      { description: 'State Tax', totalPrice: '6.25' },
-    ];
-    const result = splitFreightLines(lines);
-    expect(result.merchandiseLines).toEqual([{ description: 'Service', totalPrice: '100.00' }]);
-    expect(result.taxLines).toEqual([{ description: 'State Tax', totalPrice: '6.25' }]);
-    expect(result.taxAmountFromLines).toBe(6.25);
-  });
-
-  it('classifies tax labels that include "amount" as tax rows', () => {
-    const { splitFreightLines } = require('../lib/invoice_lines.js');
-    const result = splitFreightLines([
-      { description: 'Service', totalPrice: '100.00' },
-      { description: 'Sales Tax Amount', totalPrice: '7.00' },
-    ]);
-    expect(result.merchandiseLines).toEqual([{ description: 'Service', totalPrice: '100.00' }]);
-    expect(result.taxAmountFromLines).toBe(7);
-  });
-
-  it('keeps mixed freight/tax rows out of merchandise and reports them as unresolved', () => {
-    const { splitFreightLines } = require('../lib/invoice_lines.js');
-    const mixed = { description: 'UPS GST', totalPrice: '12.00' };
-    const result = splitFreightLines([{ description: 'Widgets', totalPrice: '50.00' }, mixed]);
-    expect(result.merchandiseLines).toEqual([{ description: 'Widgets', totalPrice: '50.00' }]);
-    expect(result.unresolvedChargeRows).toEqual([mixed]);
-  });
-
-  it('voids the line-derived amount when any classified charge row is unreadable', () => {
-    const { splitFreightLines } = require('../lib/invoice_lines.js');
-    const unreadable = { description: 'Sales Tax', totalPrice: 'see attached' };
-    const result = splitFreightLines([
-      { description: 'Widgets', totalPrice: '50.00' },
-      { description: 'State Tax', totalPrice: '3.00' },
-      unreadable,
-    ]);
-    expect(result.merchandiseLines).toEqual([{ description: 'Widgets', totalPrice: '50.00' }]);
-    expect(result.taxAmountFromLines).toBeUndefined();
-    expect(result.taxAmountInvalid).toBe(true);
-    expect(result.unresolvedChargeRows).toEqual([unreadable]);
-  });
-});
-
-describe('formatUnresolvedChargeNotes', () => {
-  it('lists unresolved charge rows for AP review', () => {
-    const { formatUnresolvedChargeNotes } = require('../lib/invoice_enrichment.js');
-    expect(formatUnresolvedChargeNotes([])).toBe('');
-    expect(formatUnresolvedChargeNotes([{ description: 'Freight Tax', totalPrice: '12.00' }]))
-      .toBe('\n\nCharges needing review (not submitted as freight, tax, or invoice lines):\n1. Freight Tax | 12.00');
-  });
-});

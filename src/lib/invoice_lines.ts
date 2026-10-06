@@ -202,6 +202,66 @@ export function isFreightOrHandlingLine(description: string | null | undefined):
   return hasFreightAnchor && tokens.every(isAllowedFreightToken);
 }
 
+function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
+  return line.description ?? line.Item_Description ?? undefined;
+}
+
+function lineAmount(line: {
+  totalPrice?: string | null;
+  unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
+  extendedAmount?: number | null;
+  Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
+}): number | undefined {
+  if (typeof line.extendedAmount === 'number') return line.extendedAmount;
+  if (line.totalPrice) return parseExtractedAmount(line.totalPrice);
+  if (typeof line.Extended_Amount === 'number') return line.Extended_Amount;
+  if (typeof line.Extended_Amount === 'string') return parseExtractedAmount(line.Extended_Amount);
+  const rawUnitCost = line.unitCost ?? line.Unit_Cost;
+  const unitCost = typeof rawUnitCost === 'number'
+    ? rawUnitCost
+    : (typeof rawUnitCost === 'string' ? parseExtractedAmount(rawUnitCost) : undefined);
+  if (unitCost == null) return undefined;
+  const rawQuantity = line.quantity ?? line.Quantity;
+  const quantity = typeof rawQuantity === 'number'
+    ? rawQuantity
+    : (typeof rawQuantity === 'string' ? parseExtractedAmount(rawQuantity) : undefined);
+  const multiplier = quantity != null && Number.isFinite(quantity) ? quantity : 1;
+  return Math.round(unitCost * multiplier * 100) / 100;
+}
+
+export function splitFreightLines<T extends {
+  description?: string | null;
+  Item_Description?: string | null;
+  totalPrice?: string | null;
+  unitCost?: string | number | null;
+  Unit_Cost?: string | number | null;
+  extendedAmount?: number | null;
+  Extended_Amount?: number | string | null;
+  quantity?: number | null;
+  Quantity?: number | string | null;
+}>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
+  const merchandiseLines: T[] = [];
+  const freightLines: T[] = [];
+  for (const line of lines) {
+    if (isFreightOrHandlingLine(lineDescription(line))) {
+      freightLines.push(line);
+    } else {
+      merchandiseLines.push(line);
+    }
+  }
+  let freightAmountFromLines: number | undefined;
+  for (const line of freightLines) {
+    const amount = lineAmount(line);
+    if (amount != null) {
+      freightAmountFromLines = Math.round(((freightAmountFromLines ?? 0) + amount) * 100) / 100;
+    }
+  }
+  return { merchandiseLines, freightLines, freightAmountFromLines };
+}
+
 const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'vats', 'gst', 'hst']);
 const TAX_COMPOUND_ANCHORS = new Set([
   'sales tax', 'sales taxes', 'use tax', 'use taxes', 'state tax', 'state taxes',
@@ -266,53 +326,6 @@ function labelMatchesTax(label: string | null | undefined): boolean {
   ));
 }
 
-export function isTaxChargeLine(description: string | null | undefined): boolean {
-  return labelMatchesTax(description);
-}
-
-function classifyAmbiguousFreightAndTaxLine(description: string | null | undefined): 'freight' | 'tax' | 'ambiguous' | 'merchandise' {
-  if (!description) return 'merchandise';
-  const normalized = normalizeLineDescription(description);
-  if (!normalized) return 'merchandise';
-  const tokens = normalized.split(' ').filter(Boolean);
-  const hasFreightAnchor = tokens.some(token => FREIGHT_CORE_WORDS.has(token) || FREIGHT_CARRIER_WORDS.has(token));
-  const hasTaxAnchor = tokens.some((token, i) => {
-    if (TAX_CORE_WORDS.has(token)) return true;
-    const compound = [token, tokens[i + 1]].filter(Boolean).join(' ');
-    return TAX_COMPOUND_ANCHORS.has(compound);
-  });
-  if (!hasFreightAnchor && !hasTaxAnchor) return 'merchandise';
-  if (!hasFreightAnchor || !hasTaxAnchor) return 'merchandise';
-  // "Tax on Shipping" and similar patterns are unambiguously tax.
-  const taxOnFreightPattern = /\b(tax|taxes)\b.*\b(shipping|handling|freight|delivery)\b|\b(shipping|handling|freight|delivery)\b.*\b(tax|taxes)\b/;
-  if (taxOnFreightPattern.test(normalized)) return 'tax';
-  return 'ambiguous';
-}
-
-function lineDescription(line: { description?: string | null; Item_Description?: string | null }): string | undefined {
-  return line.description ?? line.Item_Description ?? undefined;
-}
-
-function lineAmount(line: {
-  totalPrice?: string | null;
-  unitCost?: string | number | null;
-  Unit_Cost?: string | number | null;
-  extendedAmount?: number | null;
-  Extended_Amount?: number | string | null;
-  quantity?: number | null;
-  Quantity?: number | string | null;
-}): number | undefined {
-  if (typeof line.extendedAmount === 'number') return parseCanonicalChargeAmount(line.extendedAmount);
-  if (line.totalPrice) return parseCanonicalChargeAmount(line.totalPrice);
-  if (typeof line.Extended_Amount === 'number') return parseCanonicalChargeAmount(line.Extended_Amount);
-  if (typeof line.Extended_Amount === 'string') return parseCanonicalChargeAmount(line.Extended_Amount);
-  const unitCost = parseCanonicalChargeAmount(line.unitCost ?? line.Unit_Cost);
-  if (unitCost == null) return undefined;
-  const quantity = parseCanonicalChargeAmount(line.quantity ?? line.Quantity);
-  const multiplier = quantity != null && Number.isFinite(quantity) ? quantity : 1;
-  return Math.round(unitCost * multiplier * 100) / 100;
-}
-
 const SUPPORTED_CURRENCY_PREFIXES = /^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR)?\s*/i;
 
 function parseCanonicalChargeAmount(value: string | number | null | undefined): number | undefined {
@@ -328,7 +341,7 @@ function parseCanonicalChargeAmount(value: string | number | null | undefined): 
   const prefixEnd = prefixMatch ? prefixMatch[0].length : 0;
   const rest = trimmed.slice(prefixEnd).trim();
   if (!/^\d/.test(rest)) return undefined;
-  const suffix = rest.replace(/^[\d,\.]+/, '').trim();
+  const suffix = rest.replace(/^[\d,.]+/, '').trim();
   if (suffix && !/^(?:\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR))?\s*$/i.test(suffix)) return undefined;
   const numeric = rest.replace(/[^0-9.]/g, '');
   if (!numeric || numeric.split('.').length > 2) return undefined;
@@ -346,6 +359,16 @@ export interface NormalizedFreightAndTax {
   extractedTaxAmount?: string;
   freightCleared: boolean;
   taxCleared: boolean;
+  reviewNote?: string;
+}
+
+function sameAmount(a: string | undefined, b: string | undefined): boolean {
+  return a != null && b != null && parseCanonicalChargeAmount(a) === parseCanonicalChargeAmount(b);
+}
+
+function conflictingChargeNote(field: 'Freight' | 'Tax', amount: string | undefined, label: string | null | undefined, otherAmount: string | undefined): string {
+  const other = field === 'Freight' ? 'tax' : 'freight';
+  return `${field} amount ${amount} is labeled "${label}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
 }
 
 export function normalizeExtractedFreightAndTax(options: {
@@ -374,6 +397,7 @@ export function normalizeExtractedFreightAndTax(options: {
   let taxAmount: string | undefined;
   let freightCleared = false;
   let taxCleared = false;
+  let reviewNote: string | undefined;
 
   const labeledFreightZero = freightZero && Boolean(freightLabel);
   const labeledTaxZero = taxZero && Boolean(taxLabel);
@@ -394,13 +418,13 @@ export function normalizeExtractedFreightAndTax(options: {
       freightCleared = Boolean(rawTaxAmount && parseExtractedAmount(rawTaxAmount) === 0);
     }
   } else if (freightIsTax) {
-    if (freightNonZero) {
+    if (freightNonZero && taxNonZero && !sameAmount(rawFreightAmount, rawTaxAmount)) {
+      freightAmount = rawFreightAmount;
+      taxAmount = rawTaxAmount;
+      reviewNote = conflictingChargeNote('Freight', rawFreightAmount, freightLabel, rawTaxAmount);
+    } else if (freightNonZero) {
       freightCleared = true;
-      if (taxNonZero) {
-        taxAmount = rawTaxAmount;
-      } else {
-        taxAmount = rawFreightAmount;
-      }
+      taxAmount = taxNonZero ? rawTaxAmount : rawFreightAmount;
     } else if (freightZero) {
       freightCleared = true;
       if (taxNonZero) {
@@ -414,13 +438,13 @@ export function normalizeExtractedFreightAndTax(options: {
       taxCleared = true;
     }
   } else if (taxIsFreight) {
-    if (taxNonZero) {
+    if (taxNonZero && freightNonZero && !sameAmount(rawTaxAmount, rawFreightAmount)) {
+      freightAmount = rawFreightAmount;
+      taxAmount = rawTaxAmount;
+      reviewNote = conflictingChargeNote('Tax', rawTaxAmount, taxLabel, rawFreightAmount);
+    } else if (taxNonZero) {
       taxCleared = true;
-      if (freightNonZero) {
-        freightAmount = rawFreightAmount;
-      } else {
-        freightAmount = rawTaxAmount;
-      }
+      freightAmount = freightNonZero ? rawFreightAmount : rawTaxAmount;
     } else if (taxZero) {
       taxCleared = true;
       if (freightNonZero) {
@@ -451,78 +475,7 @@ export function normalizeExtractedFreightAndTax(options: {
     extractedTaxAmount: taxAmount,
     freightCleared,
     taxCleared,
-  };
-}
-
-export interface SplitFreightLinesResult<T> {
-  merchandiseLines: T[];
-  freightLines: T[];
-  taxLines: T[];
-  unresolvedChargeRows: T[];
-  freightAmountFromLines?: number;
-  taxAmountFromLines?: number;
-  freightAmountInvalid: boolean;
-  taxAmountInvalid: boolean;
-}
-
-export function splitFreightLines<T extends {
-  description?: string | null;
-  Item_Description?: string | null;
-  totalPrice?: string | null;
-  unitCost?: string | number | null;
-  Unit_Cost?: string | number | null;
-  extendedAmount?: number | null;
-  Extended_Amount?: number | string | null;
-  quantity?: number | null;
-  Quantity?: number | string | null;
-}>(lines: T[]): SplitFreightLinesResult<T> {
-  const merchandiseLines: T[] = [];
-  const freightLines: T[] = [];
-  const taxLines: T[] = [];
-  const unresolvedChargeRows: T[] = [];
-  for (const line of lines) {
-    const description = lineDescription(line);
-    const ambiguousClassification = classifyAmbiguousFreightAndTaxLine(description);
-    if (ambiguousClassification === 'tax') {
-      taxLines.push(line);
-    } else if (ambiguousClassification === 'freight') {
-      freightLines.push(line);
-    } else if (isFreightOrHandlingLine(description)) {
-      freightLines.push(line);
-    } else if (isTaxChargeLine(description)) {
-      taxLines.push(line);
-    } else if (ambiguousClassification === 'ambiguous') {
-      unresolvedChargeRows.push(line);
-    } else {
-      merchandiseLines.push(line);
-    }
-  }
-  const sumChargeLines = (chargeLines: T[]): { total?: number; invalid: boolean } => {
-    let total: number | undefined;
-    let invalid = false;
-    for (const line of chargeLines) {
-      const amount = lineAmount(line);
-      if (amount != null && Number.isFinite(amount) && amount >= 0) {
-        total = Math.round(((total ?? 0) + amount) * 100) / 100;
-      } else {
-        invalid = true;
-        unresolvedChargeRows.push(line);
-      }
-    }
-    // A partial sum would understate the header, so an unreadable row voids the line-derived amount.
-    return { total: invalid ? undefined : total, invalid };
-  };
-  const freight = sumChargeLines(freightLines);
-  const tax = sumChargeLines(taxLines);
-  return {
-    merchandiseLines,
-    freightLines,
-    taxLines,
-    unresolvedChargeRows,
-    freightAmountFromLines: freight.total,
-    taxAmountFromLines: tax.total,
-    freightAmountInvalid: freight.invalid,
-    taxAmountInvalid: tax.invalid,
+    ...(reviewNote && { reviewNote }),
   };
 }
 

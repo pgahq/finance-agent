@@ -5,6 +5,7 @@ import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js'
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
@@ -16,7 +17,6 @@ import {
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
-  formatUnresolvedChargeNotes,
   formatWorkQueueAssigneeNotes,
   type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
@@ -730,16 +730,16 @@ async function processInvoiceCluster(
     const {
       extractedFreightAmount: normalizedFreightAmount,
       extractedTaxAmount: normalizedTaxAmount,
-      freightCleared: rawFreightCleared,
-      taxCleared: rawTaxCleared,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
     } = normalizeExtractedFreightAndTax({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
     });
-    let extractedTaxAmount = normalizedTaxAmount;
-    const extractedFreightAmountFromResult = normalizedFreightAmount;
+    const extractedTaxAmount = taxCleared ? undefined : normalizedTaxAmount;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
     let matchedPo = parsedPo;
     if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
@@ -776,23 +776,16 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid, unresolvedChargeRows } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
       (result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const hasFreightLine = freightAmountFromLines != null;
-    const hasTaxLine = taxAmountFromLines != null;
-    const hasExtractedFreightHeader = extractedFreightAmountFromResult != null;
-    const hasExtractedTaxHeader = normalizedTaxAmount != null;
-    let freightCleared = rawFreightCleared || (!freightAmountInvalid && !hasExtractedFreightHeader && hasFreightLine && freightAmountFromLines === 0);
-    let taxCleared = rawTaxCleared || (!taxAmountInvalid && !hasExtractedTaxHeader && hasTaxLine && taxAmountFromLines === 0);
+    // Line-derived freight only fills a header the document did not show; a rejected header keeps the existing value.
     const extractedFreightAmount = freightCleared
       ? undefined
-      : (extractedFreightAmountFromResult ?? (hasFreightLine ? String(freightAmountFromLines) : undefined));
-    extractedTaxAmount = taxCleared
-      ? undefined
-      : (normalizedTaxAmount ?? (hasTaxLine ? String(taxAmountFromLines) : undefined));
+      : (normalizedFreightAmount
+        ?? (result.extractedFreightAmount == null && freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -920,7 +913,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result, extractedFreightAmount, freightCleared) + formatTaxAmountNotes(result, extractedTaxAmount, taxCleared) + formatUnresolvedChargeNotes(unresolvedChargeRows) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed, candidateLines) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -1154,8 +1147,6 @@ async function processInvoiceCluster(
           extractedTaxAmount,
           freightCleared,
           taxCleared,
-          freightAmountFromLines,
-          taxAmountFromLines,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1220,8 +1211,6 @@ async function processInvoiceCluster(
       extractedTaxAmount,
       freightCleared,
       taxCleared,
-      freightAmountFromLines,
-      taxAmountFromLines,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,

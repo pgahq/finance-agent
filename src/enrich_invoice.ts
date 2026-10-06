@@ -4,6 +4,7 @@ import { withHandler, withProcessorHandler, type ProcessingContext } from './lib
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
@@ -15,7 +16,6 @@ import {
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
-  formatUnresolvedChargeNotes,
 } from './lib/invoice_enrichment.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
@@ -212,16 +212,16 @@ async function processInvoice(
     const {
       extractedFreightAmount: normalizedFreightAmount,
       extractedTaxAmount: normalizedTaxAmount,
-      freightCleared: rawFreightCleared,
-      taxCleared: rawTaxCleared,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
     } = normalizeExtractedFreightAndTax({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
     });
-    let extractedTaxAmount = normalizedTaxAmount;
-    const extractedFreightAmountFromResult = normalizedFreightAmount;
+    const extractedTaxAmount = taxCleared ? undefined : normalizedTaxAmount;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -264,24 +264,17 @@ async function processInvoice(
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid, unresolvedChargeRows } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const hasFreightLine = freightAmountFromLines != null;
-    const hasTaxLine = taxAmountFromLines != null;
-    const hasExtractedFreightHeader = extractedFreightAmountFromResult != null;
-    const hasExtractedTaxHeader = normalizedTaxAmount != null;
-    let freightCleared = rawFreightCleared || (!freightAmountInvalid && !hasExtractedFreightHeader && hasFreightLine && freightAmountFromLines === 0);
-    let taxCleared = rawTaxCleared || (!taxAmountInvalid && !hasExtractedTaxHeader && hasTaxLine && taxAmountFromLines === 0);
+    // Line-derived freight only fills a header the document did not show; a rejected header keeps the existing value.
     const extractedFreightAmount = freightCleared
       ? undefined
-      : (extractedFreightAmountFromResult ?? (hasFreightLine ? String(freightAmountFromLines) : undefined));
-    extractedTaxAmount = taxCleared
-      ? undefined
-      : (normalizedTaxAmount ?? (hasTaxLine ? String(taxAmountFromLines) : undefined));
+      : (normalizedFreightAmount
+        ?? (result.extractedFreightAmount == null && freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -332,7 +325,7 @@ async function processInvoice(
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result, extractedFreightAmount, freightCleared) + formatTaxAmountNotes(result, extractedTaxAmount, taxCleared) + formatUnresolvedChargeNotes(unresolvedChargeRows) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed, candidateLines) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -366,8 +359,6 @@ async function processInvoice(
         extractedTaxAmount,
         freightCleared,
         taxCleared,
-        freightAmountFromLines,
-        taxAmountFromLines,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
