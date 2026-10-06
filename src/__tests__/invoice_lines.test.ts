@@ -1323,6 +1323,27 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(input).not.toHaveProperty('invoiceDate');
   });
 
+  it('uses the legacy merge prompt and input when the invoice has no PO lines', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine(null)] } as any);
+
+    await buildFinalInvoiceLines(
+      extracted,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod: 'September 2026' }
+    );
+
+    const call = mockGetAiResponse.mock.calls[0][0] as any;
+    const input = JSON.parse(call.messages[0].content);
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
+    expect(input).not.toHaveProperty('invoiceDate');
+    expect(input).not.toHaveProperty('invoiceServicePeriod');
+  });
+
   it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {
     mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
 
