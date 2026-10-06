@@ -228,6 +228,15 @@ export function formatTaxAmountNotes(result: InvoiceEnrichmentResult, normalized
   return `\n\nTax Amount (from document): ${amount}`;
 }
 
+export function formatUnresolvedChargeNotes(rows: ExtractedInvoiceLine[] | undefined): string {
+  if (!rows?.length) return '';
+  const rowTexts = withComposedLineDescriptions(rows).map((line, i) => {
+    const amount = line.totalPrice ?? line.unitCost ?? 'no readable amount';
+    return `${i + 1}. ${line.description} | ${amount}`;
+  });
+  return `\n\nCharges needing review (not submitted as freight, tax, or invoice lines):\n${rowTexts.join('\n')}`;
+}
+
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;

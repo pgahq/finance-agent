@@ -497,27 +497,33 @@ export function splitFreightLines<T extends {
       merchandiseLines.push(line);
     }
   }
-  let freightAmountFromLines: number | undefined;
-  let freightAmountInvalid = false;
-  for (const line of freightLines) {
-    const amount = lineAmount(line);
-    if (amount != null && Number.isFinite(amount) && amount >= 0) {
-      freightAmountFromLines = Math.round(((freightAmountFromLines ?? 0) + amount) * 100) / 100;
-    } else {
-      freightAmountInvalid = true;
+  const sumChargeLines = (chargeLines: T[]): { total?: number; invalid: boolean } => {
+    let total: number | undefined;
+    let invalid = false;
+    for (const line of chargeLines) {
+      const amount = lineAmount(line);
+      if (amount != null && Number.isFinite(amount) && amount >= 0) {
+        total = Math.round(((total ?? 0) + amount) * 100) / 100;
+      } else {
+        invalid = true;
+        unresolvedChargeRows.push(line);
+      }
     }
-  }
-  let taxAmountFromLines: number | undefined;
-  let taxAmountInvalid = false;
-  for (const line of taxLines) {
-    const amount = lineAmount(line);
-    if (amount != null && Number.isFinite(amount) && amount >= 0) {
-      taxAmountFromLines = Math.round(((taxAmountFromLines ?? 0) + amount) * 100) / 100;
-    } else {
-      taxAmountInvalid = true;
-    }
-  }
-  return { merchandiseLines, freightLines, taxLines, unresolvedChargeRows, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid };
+    // A partial sum would understate the header, so an unreadable row voids the line-derived amount.
+    return { total: invalid ? undefined : total, invalid };
+  };
+  const freight = sumChargeLines(freightLines);
+  const tax = sumChargeLines(taxLines);
+  return {
+    merchandiseLines,
+    freightLines,
+    taxLines,
+    unresolvedChargeRows,
+    freightAmountFromLines: freight.total,
+    taxAmountFromLines: tax.total,
+    freightAmountInvalid: freight.invalid,
+    taxAmountInvalid: tax.invalid,
+  };
 }
 
 function extractWorktagId(worktags: any[], type: string): string | null {

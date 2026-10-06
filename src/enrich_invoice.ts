@@ -15,6 +15,7 @@ import {
   formatPurchaseOrderNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
+  formatUnresolvedChargeNotes,
 } from './lib/invoice_enrichment.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
@@ -263,7 +264,7 @@ async function processInvoice(
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid } = splitFreightLines(
+    const { merchandiseLines, freightAmountFromLines, taxAmountFromLines, freightAmountInvalid, taxAmountInvalid, unresolvedChargeRows } = splitFreightLines(
       canModifyInvoice
         ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
         : []
@@ -331,7 +332,7 @@ async function processInvoice(
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result, extractedFreightAmount, freightCleared) + formatTaxAmountNotes(result, extractedTaxAmount, taxCleared) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed, candidateLines) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result, extractedFreightAmount, freightCleared) + formatTaxAmountNotes(result, extractedTaxAmount, taxCleared) + formatUnresolvedChargeNotes(unresolvedChargeRows) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed, candidateLines) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
