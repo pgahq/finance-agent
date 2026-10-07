@@ -646,55 +646,20 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).not.toContain('Line total review');
   });
 
-  const levelBlueConsultant = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 };
-  const levelBlueMonthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
-  const levelBlueRepeat = {
-    ...baseEnrichmentResult,
-    extractedAmountDue: '$5,500.00',
-    extractedTaxAmount: '$0.00',
-    extractedTaxLabel: 'Tax',
-    invoiceLineQuantityDisplayed: true,
-    extractedInvoiceLines: [levelBlueConsultant, levelBlueMonthly],
-  };
-
-  it.each([
-    ['missing', {}, false],
-    ['shadow', { REPEATED_LINE_REMOVAL_ENABLED: 'shadow' }, true],
-  ])('should keep both LevelBlue tables and flag the line total when repeated-line removal is %s', async (_mode, env, logged) => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, slack, loadEnv } = freshRequire();
-    const { debug } = require('@pga/logger');
-    loadEnv.mockResolvedValue(env);
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(levelBlueRepeat);
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
-      lines: [
-        { lineOrder: 1, description: levelBlueConsultant.description, quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 },
-        { lineOrder: 2, description: levelBlueMonthly.description, quantity: 1, unitCost: 5500, extendedAmount: 5500 },
-      ],
-      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
-      relatedLobByCostCenter: new Map()
-    });
-
-    await processor({
-      data: [attachmentRequest('new-invoices/req-levelblue-flag-off/invoice.pdf')]
-    } as any);
-
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([levelBlueConsultant, levelBlueMonthly]);
-    const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
-    expect(notes).not.toContain('Repeated line review');
-    expect(notes).toContain('Line total review: Invoice lines total $11,000.00');
-    expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
-      expect.stringMatching(/^Line total review: Invoice lines total \$11,000\.00/),
-    ]);
-    const shadowLogs = debug.mock.calls.filter(([message]: [unknown]) =>
-      String(message).startsWith('Repeated line review (shadow, lines kept): Removed line "PSO-RISK-ADVISORY - Consultant"'));
-    expect(shadowLogs).toHaveLength(logged ? 1 : 0);
-  });
-
   it('should drop the LevelBlue table that repeats the charge and keep the Sep\'26 row', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, slack, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ REPEATED_LINE_REMOVAL_ENABLED: 'true' });
-    const monthly = levelBlueMonthly;
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(levelBlueRepeat);
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+    const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      extractedTaxAmount: '$0.00',
+      extractedTaxLabel: 'Tax',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 },
+        monthly,
+      ]
+    });
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
       lines: [{ lineOrder: 1, description: monthly.description, quantity: 1, unitCost: 5500, extendedAmount: 5500 }],
       appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
@@ -719,8 +684,7 @@ describe('create_invoice', () => {
   });
 
   it('should keep both LevelBlue tables when extraction dropped a row without an amount', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ REPEATED_LINE_REMOVAL_ENABLED: 'true' });
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     const consultantRow = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 };
     const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -753,8 +717,7 @@ describe('create_invoice', () => {
   });
 
   it('should keep every line of a valid multi-line invoice from one table', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, slack, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ REPEATED_LINE_REMOVAL_ENABLED: 'true' });
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
     const extracted = [
       { description: 'Router', quantity: 2, unitCost: '250.00', totalPrice: '500.00', hasDiscount: null, tableNumber: 1 },
       { description: 'Install', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, tableNumber: 1 },
@@ -786,8 +749,7 @@ describe('create_invoice', () => {
   });
 
   it('should create the invoice with every line and flag AP when the line total cannot be reconciled', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, slack, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ REPEATED_LINE_REMOVAL_ENABLED: 'true' });
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
     const extracted = [
       { description: 'Consulting', quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 1 },
       { description: 'Out-of-scope work', quantity: 1, unitCost: '1,250.00', totalPrice: '1,250.00', hasDiscount: null, tableNumber: 2 },
