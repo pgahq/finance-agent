@@ -19,12 +19,12 @@ import {
   type DatabaseConnection,
 } from '../lib/database.js';
 import type { ProcessingContext } from '../lib/handlers.js';
-import { findOtherAgentInvoicesWithSameNumber, getInvoiceScore, listPendingScoreInvoices, upsertInvoiceScore } from '../lib/invoice_scores.js';
+import { findOtherAgentInvoicesWithSameNumber, getInvoiceScore, listPendingScoreInvoices, recordStatusChecks, upsertInvoiceScore } from '../lib/invoice_scores.js';
 import { ensureTouchReporting, refreshTouchDaily } from '../lib/touch_reporting.js';
 import { getAgentInvoiceSnapshots, snapshotAgentWrite, snapshotEnrichBaseline } from '../lib/invoice_snapshots.js';
 import { buildDigestBlocks, digestWindow, summarizeScores } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
-import { loadDigestScores, loadUnlabeledCancels } from '../score_digest.js';
+import { CREATE_AUDIT_POSTS_TABLE, loadDigestScores, loadUnlabeledCancels } from '../score_digest.js';
 import { scoreInvoice } from '../score_invoices_processor.js';
 
 const url = process.env.SCORING_PG_URL;
@@ -58,7 +58,7 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
 
   beforeAll(async () => {
     await pool.query('DROP VIEW IF EXISTS agent_invoice_touches');
-    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily');
+    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily, agent_invoice_status_checks, agent_invoice_audit_posts');
     await pool.query(CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE);
     for (const sql of CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES) await pool.query(sql);
     await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
@@ -186,6 +186,38 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     await snapshotAgentWrite(context, { workdayInvoiceWid: stale, source: 'resend_update', invoice: { ...invoice(), Suppliers_Invoice_Number: 'INV-43' } });
     const matches = await findOtherAgentInvoicesWithSameNumber(db, 'none', 'Supplier_ID=S-1', 'INV-42');
     expect(matches.map((match) => match.workdayInvoiceWid).sort()).toEqual([created, duplicate, enriched]);
+  });
+
+  it('reads pending statuses least recently checked first', async () => {
+    for (const wid of ['1'.repeat(32), '2'.repeat(32)]) {
+      await snapshotAgentWrite(context, { workdayInvoiceWid: wid, source: 'create', invoice: invoice() });
+    }
+    const pending = (await listPendingScoreInvoices(db, 100)).map((row) => row.workdayInvoiceWid);
+    expect(pending.length).toBeGreaterThan(1);
+    await recordStatusChecks(db, [pending[0]], new Date());
+    await recordStatusChecks(db, [pending[0]], new Date());
+    const next = (await listPendingScoreInvoices(db, 100)).map((row) => row.workdayInvoiceWid);
+    expect(next[next.length - 1]).toBe(pending[0]);
+    expect((await listPendingScoreInvoices(db, 1))[0].workdayInvoiceWid).not.toBe(pending[0]);
+  });
+
+  it('keeps an existing touch view instead of replacing it on every cold start', async () => {
+    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
+    await ensureTouchReporting(run);
+    const { rows } = await pool.query("SELECT to_regclass('agent_invoice_touches') IS NOT NULL AS present");
+    expect(rows[0].present).toBe(true);
+  });
+
+  it('stores when the daily audit post last went out', async () => {
+    await pool.query(CREATE_AUDIT_POSTS_TABLE);
+    await pool.query(CREATE_AUDIT_POSTS_TABLE);
+    await pool.query(
+      `INSERT INTO agent_invoice_audit_posts (mode, posted_through) VALUES ('daily', $1)
+       ON CONFLICT (mode) DO UPDATE SET posted_through = EXCLUDED.posted_through`,
+      [new Date('2026-10-07T14:20:00Z')]
+    );
+    const { rows } = await pool.query("SELECT posted_through FROM agent_invoice_audit_posts WHERE mode = 'daily'");
+    expect(rows).toHaveLength(1);
   });
 
   it('never reopens a terminal score', async () => {

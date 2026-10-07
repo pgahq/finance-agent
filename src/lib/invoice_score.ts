@@ -300,10 +300,21 @@ export function attributeCancel(
 const SUPPLIER_VOID_OR_CREDIT_PATTERN =
   /\b(void(ed|ing)?|credit (memo|note)|issued (a|you a) credit|please disregard|disregard (this|the|that|our) invoice|(cancel(l)?ed|cancel(l)?ing|withdraw(n)?) (this|the|that|our) invoice)\b/i;
 
-/** True when a supplier message after the agent's write says the invoice was voided or credited. */
-export function mentionsSupplierVoidOrCredit(messages: Array<{ createdAt?: number; body?: string }>, afterUnixSeconds?: number): boolean {
+/** Intercom author types for the customer side of a conversation (the supplier). */
+const SUPPLIER_AUTHOR_TYPES = new Set(['user', 'lead', 'contact']);
+
+/**
+ * True when a supplier message after the agent's write says the invoice was voided or credited. AP replies, internal
+ * notes, and bot messages never count, so an AP note cannot clear the agent of a cancel it caused.
+ */
+export function mentionsSupplierVoidOrCredit(
+  messages: Array<{ createdAt?: number; body?: string; authorType?: string; partType?: string }>,
+  afterUnixSeconds?: number
+): boolean {
   return messages.some((message) =>
-    (afterUnixSeconds == null || (message.createdAt != null && message.createdAt >= afterUnixSeconds))
+    SUPPLIER_AUTHOR_TYPES.has(message.authorType ?? '')
+    && message.partType !== 'note'
+    && (afterUnixSeconds == null || (message.createdAt != null && message.createdAt >= afterUnixSeconds))
     && SUPPLIER_VOID_OR_CREDIT_PATTERN.test(message.body ?? '')
   );
 }

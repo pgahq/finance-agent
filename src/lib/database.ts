@@ -319,8 +319,13 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       const migrationClient = await pool.connect();
       try {
         await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
-        // After agent_invoice_scores exists: touch reporting view and daily rollup table
-        await ensureTouchReporting((sql, params) => migrationClient.query(sql, params));
+        // After agent_invoice_scores exists: touch reporting view and daily rollup table. Reporting must never
+        // block invoice processing, so a failure here is logged and the pool is still served.
+        try {
+          await ensureTouchReporting((sql, params) => migrationClient.query(sql, params));
+        } catch (reportingError) {
+          debug('Could not create touch reporting objects; continuing without them', reportingError);
+        }
       } finally {
         migrationClient.release();
       }

@@ -116,12 +116,44 @@ async function postAudit(blocks: SlackBlock[]): Promise<boolean> {
   return postSlackBlocks(blocks, process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
 }
 
+/** When each audit post last went out in full; created here so the invoice Lambdas' cold start stays out of it. */
+export const CREATE_AUDIT_POSTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_audit_posts (
+    mode VARCHAR(16) PRIMARY KEY,
+    posted_through TIMESTAMP NOT NULL
+  );
+`;
+export const MAX_DAILY_CATCH_UP_DAYS = 7;
+
+async function lastPostedThrough(db: DatabaseConnection, mode: string): Promise<Date | undefined> {
+  await db.query(CREATE_AUDIT_POSTS_TABLE);
+  const rows = await db.query('SELECT posted_through FROM agent_invoice_audit_posts WHERE mode = $1', [mode]) as Array<{ posted_through?: unknown }>;
+  const value = rows[0]?.posted_through;
+  if (value == null) return undefined;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+async function recordPostedThrough(db: DatabaseConnection, mode: string, at: Date): Promise<void> {
+  await db.query(
+    `INSERT INTO agent_invoice_audit_posts (mode, posted_through) VALUES ($1, $2)
+     ON CONFLICT (mode) DO UPDATE SET posted_through = EXCLUDED.posted_through`,
+    [mode, at]
+  );
+}
+
 async function postDailySummary(context: ProcessingContext, now: Date): Promise<void> {
-  // The invoice messages and the touch lead both cover the Central calendar day so far.
+  const db = context.dbConnection;
   const today = centralDayStart(now);
-  const summary = summarizeDay(await loadDigestScores(context.dbConnection, today), today, now);
+  // Invoice messages cover everything scored since the last full post (processors can finish after it, and a run can
+  // fail), at most a week back; the first post covers today. The touch lead covers the Central day.
+  const lastPosted = await lastPostedThrough(db, 'daily');
+  const floor = addCentralDays(today, -MAX_DAILY_CATCH_UP_DAYS);
+  const since = !lastPosted ? today : lastPosted > floor ? lastPosted : floor;
+  const summary = summarizeDay(await loadDigestScores(db, since), since, now);
   if (!summary.lines.length && !summary.lostToRefresh) {
-    debug('No agent invoices scored today; skipping the daily audit post');
+    debug('No agent invoices scored since the last daily post; skipping it', { since });
+    await recordPostedThrough(db, 'daily', now);
     return;
   }
   const trendScores = await loadEnteredScores(context.dbConnection, addCentralDays(today, -DAILY_TREND_DAYS));
@@ -140,6 +172,7 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
       throw new Error(`Daily audit post stopped at message ${index + 1} of ${messages.length}; the rest were not sent`);
     }
   }
+  await recordPostedThrough(db, 'daily', now);
   debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: messages.length });
 }
 

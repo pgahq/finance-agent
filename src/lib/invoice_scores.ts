@@ -163,16 +163,29 @@ export interface PendingScoreRow {
   outcome?: Outcome;
 }
 
-/** Agent-written invoices that have not reached a terminal score yet, most recently written first. */
+/** When `ScoreInvoices` last read each pending invoice's status; created by that job, not at cold start. */
+export const CREATE_STATUS_CHECKS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_status_checks (
+    workday_invoice_wid VARCHAR(255) PRIMARY KEY,
+    checked_at TIMESTAMP NOT NULL
+  );
+`;
+
+/**
+ * Agent-written invoices that have not reached a terminal score yet, least recently checked first (never-checked
+ * first of all), so every pending invoice gets a status read even when more are pending than one run reads.
+ */
 export async function listPendingScoreInvoices(db: DatabaseConnection, limit: number): Promise<PendingScoreRow[]> {
+  await db.query(CREATE_STATUS_CHECKS_TABLE);
   const rows = await db.query(
     `SELECT s.workday_invoice_wid, MAX(s.created_at) AS last_write_at,
             sc.entry_read_at, sc.final_read_at, sc.outcome
        FROM agent_invoice_snapshots s
        LEFT JOIN agent_invoice_scores sc ON sc.workday_invoice_wid = s.workday_invoice_wid
+       LEFT JOIN agent_invoice_status_checks c ON c.workday_invoice_wid = s.workday_invoice_wid
       WHERE s.source = ANY($1::text[]) AND COALESCE(sc.terminal, false) = false
-      GROUP BY s.workday_invoice_wid, sc.entry_read_at, sc.final_read_at, sc.outcome
-      ORDER BY last_write_at DESC
+      GROUP BY s.workday_invoice_wid, sc.entry_read_at, sc.final_read_at, sc.outcome, c.checked_at
+      ORDER BY c.checked_at ASC NULLS FIRST, last_write_at DESC
       LIMIT $2`,
     [[...AGENT_WRITE_SOURCES], limit]
   );
@@ -188,6 +201,17 @@ export async function listPendingScoreInvoices(db: DatabaseConnection, limit: nu
       ...(outcome ? { outcome } : {}),
     };
   });
+}
+
+/** Marks these invoices' statuses as read now, which moves them to the back of the next run's queue. */
+export async function recordStatusChecks(db: DatabaseConnection, workdayInvoiceWids: string[], at: Date): Promise<void> {
+  if (!workdayInvoiceWids.length) return;
+  await db.query(
+    `INSERT INTO agent_invoice_status_checks (workday_invoice_wid, checked_at)
+     SELECT wid, $2 FROM unnest($1::text[]) AS wid
+     ON CONFLICT (workday_invoice_wid) DO UPDATE SET checked_at = EXCLUDED.checked_at`,
+    [workdayInvoiceWids, at]
+  );
 }
 
 export async function getCancelLabel(db: DatabaseConnection, workdayInvoiceWid: string): Promise<'agent' | 'business' | undefined> {

@@ -5,6 +5,7 @@ import {
   fetchInvoiceStatuses,
   findLiveInvoicesWithSuppliersInvoiceNumber,
   listPendingScoreInvoices,
+  recordStatusChecks,
   rowToInvoiceScore,
   STATUS_BATCH_SIZE,
   upsertInvoiceScore,
@@ -59,13 +60,24 @@ describe('score rows', () => {
     expect(params?.[19]).toBe(true);
   });
 
-  it('lists non-terminal agent invoices with their last write time', async () => {
+  it('lists non-terminal agent invoices, least recently status-checked first', async () => {
     const { db, query } = mockDb([{ workday_invoice_wid: 'w', last_write_at: new Date('2026-10-01T00:00:00Z'), entry_read_at: null, final_read_at: null, outcome: null }]);
     await expect(listPendingScoreInvoices(db, 100)).resolves.toEqual([
       { workdayInvoiceWid: 'w', lastWriteAt: new Date('2026-10-01T00:00:00Z') },
     ]);
-    expect(query.mock.calls[0][1]).toEqual([['create', 'resend_update', 'enrich'], 100]);
-    expect(query.mock.calls[0][0]).toContain('ORDER BY last_write_at DESC');
+    expect(query.mock.calls[0][0]).toContain('CREATE TABLE IF NOT EXISTS agent_invoice_status_checks');
+    expect(query.mock.calls[1][1]).toEqual([['create', 'resend_update', 'enrich'], 100]);
+    expect(query.mock.calls[1][0]).toContain('ORDER BY c.checked_at ASC NULLS FIRST, last_write_at DESC');
+  });
+
+  it('records status checks for the invoices read, and skips an empty batch', async () => {
+    const { db, query } = mockDb();
+    const at = new Date('2026-10-07T14:00:00Z');
+    await recordStatusChecks(db, [], at);
+    expect(query).not.toHaveBeenCalled();
+    await recordStatusChecks(db, ['w1', 'w2'], at);
+    expect(query.mock.calls[0][0]).toContain('ON CONFLICT (workday_invoice_wid) DO UPDATE SET checked_at');
+    expect(query.mock.calls[0][1]).toEqual([['w1', 'w2'], at]);
   });
 });
 

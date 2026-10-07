@@ -525,7 +525,7 @@ export function buildDailyInvoiceMessages(summary: DailySummary): SlackBlock[][]
   });
   const footer: string[] = [];
   const more = summary.lines.length - shown.length;
-  if (more > 0) footer.push(`…and ${plural(more, 'more invoice')} scored today; see the weekly digest.`);
+  if (more > 0) footer.push(`…and ${plural(more, 'more invoice')} scored since the last daily post; see the weekly digest.`);
   if (summary.lostToRefresh) footer.push(`${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored).`);
   if (footer.length) messages.push([{ type: 'context', elements: [{ type: 'mrkdwn', text: footer.join(' ') }] }]);
   return messages;

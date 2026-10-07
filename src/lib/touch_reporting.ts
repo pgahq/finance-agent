@@ -55,7 +55,11 @@ export const CREATE_AGENT_INVOICE_TOUCH_DAILY_TABLE = `
   );
 `;
 
-/** Creates the daily table and (re)creates the view under a lock, so concurrent cold starts do not collide. */
+/**
+ * Creates the daily table and, only when it is missing, the view, under a lock so concurrent cold starts do not
+ * collide. An existing view is left alone (no per-cold-start ACCESS EXCLUSIVE lock); Postgres can only append
+ * columns with CREATE OR REPLACE, so changing the view means dropping it in a migration first.
+ */
 export async function ensureTouchReporting(
   query: (sql: string, params?: unknown[]) => Promise<unknown>
 ): Promise<void> {
@@ -63,7 +67,8 @@ export async function ensureTouchReporting(
   try {
     await query(`SELECT pg_advisory_xact_lock(hashtext('finance-agent:agent_invoice_touches'))`);
     await query(CREATE_AGENT_INVOICE_TOUCH_DAILY_TABLE);
-    await query(CREATE_AGENT_INVOICE_TOUCHES_VIEW);
+    const existing = await query(`SELECT to_regclass('agent_invoice_touches') IS NOT NULL AS present`) as { rows?: Array<{ present?: boolean }> };
+    if (!existing.rows?.[0]?.present) await query(CREATE_AGENT_INVOICE_TOUCHES_VIEW);
     await query('COMMIT');
   } catch (error) {
     await query('ROLLBACK');

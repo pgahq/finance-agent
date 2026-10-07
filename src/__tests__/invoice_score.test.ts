@@ -165,10 +165,22 @@ describe('tenant refresh', () => {
 });
 
 describe('mentionsSupplierVoidOrCredit', () => {
+  const supplier = { authorType: 'user', partType: 'comment' };
+
   it('finds a void or credit notice after the agent write and ignores older messages', () => {
-    expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body: 'Please disregard this invoice, we issued a credit memo.' }], 100)).toBe(true);
-    expect(mentionsSupplierVoidOrCredit([{ createdAt: 50, body: 'This invoice was voided.' }], 100)).toBe(false);
-    expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body: 'Attached is the invoice for September.' }], 100)).toBe(false);
-    expect(mentionsSupplierVoidOrCredit([{ body: 'This invoice was voided.' }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ ...supplier, createdAt: 200, body: 'Please disregard this invoice, we issued a credit memo.' }], 100)).toBe(true);
+    expect(mentionsSupplierVoidOrCredit([{ ...supplier, createdAt: 50, body: 'This invoice was voided.' }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ ...supplier, createdAt: 200, body: 'Attached is the invoice for September.' }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ ...supplier, body: 'This invoice was voided.' }], 100)).toBe(false);
+  });
+
+  it('counts only supplier messages, never AP replies, internal notes, or bots', () => {
+    const body = "Please disregard this invoice, it's a duplicate the agent made.";
+    expect(mentionsSupplierVoidOrCredit([{ authorType: 'admin', partType: 'note', createdAt: 200, body }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ authorType: 'admin', partType: 'comment', createdAt: 200, body }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ authorType: 'bot', partType: 'comment', createdAt: 200, body }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ authorType: 'user', partType: 'note', createdAt: 200, body }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ authorType: 'lead', createdAt: 200, body: 'We voided invoice 123.' }], 100)).toBe(true);
   });
 });

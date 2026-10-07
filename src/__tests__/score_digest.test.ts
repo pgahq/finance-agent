@@ -13,7 +13,7 @@ jest.mock('../lib/workday.js', () => ({
 
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
-import { centralWeekStart } from '../lib/score_touches.js';
+import { addCentralDays, centralDayStart, centralWeekStart } from '../lib/score_touches.js';
 import { postSlackBlocks } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
@@ -209,7 +209,7 @@ describe('buildDailyInvoiceMessages', () => {
     many.push(score({ workdayInvoiceWid: 'lost', terminal: true, finalReadAt: today, finalStatus: 'Lost to tenant refresh', outcome: 'lost_to_refresh' }));
     const messages = buildDailyInvoiceMessages(summarizeDay(many, since, until));
     expect(messages).toHaveLength(MAX_DAILY_INVOICE_MESSAGES + 1);
-    expect(textOf(messages[messages.length - 1])).toBe('…and 3 more invoices scored today; see the weekly digest. 1 removed by the weekly sandbox refresh (not scored).');
+    expect(textOf(messages[messages.length - 1])).toBe('…and 3 more invoices scored since the last daily post; see the weekly digest. 1 removed by the weekly sandbox refresh (not scored).');
   });
 });
 
@@ -269,9 +269,10 @@ describe('score digest handler', () => {
   const lastSunday = new Date(centralWeekStart(new Date()).getTime() - 12 * 3_600_000);
 
   /** Answer each digest query by what it selects, so adding a query does not shift the others. */
-  function routeQueries(rows: { digest?: unknown[]; unlabeled?: unknown[]; entered?: unknown[]; snapshots?: unknown[] }) {
+  function routeQueries(rows: { digest?: unknown[]; unlabeled?: unknown[]; entered?: unknown[]; snapshots?: unknown[]; posted?: unknown[] }) {
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('AS stored FROM agent_invoice_touch_daily')) return Promise.resolve([{ stored: 15 }]);
+      if (sql.includes('SELECT posted_through FROM agent_invoice_audit_posts')) return Promise.resolve(rows.posted ?? []);
       if (sql.includes('label_attribution')) return Promise.resolve(rows.digest ?? []);
       if (sql.includes("cancel_attribution = 'unattributed'")) return Promise.resolve(rows.unlabeled ?? []);
       if (sql.includes('WHERE entry_read_at >= $1')) return Promise.resolve(rows.entered ?? []);
@@ -333,6 +334,27 @@ describe('score digest handler', () => {
     expect(payloadOf(1).text).toContain('Finance agent audit · `SUPIN-1` · submitted with AP edits · 1 touch');
     expect(payloadOf(2).text).toContain('`SUPIN-2` · submitted with no material change · 0 touches');
     expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
+  });
+
+  it('in daily mode includes invoices scored after the previous daily post, then records the new post', async () => {
+    const lastPost = new Date(centralDayStart(new Date()).getTime() - 9 * 3_600_000);
+    const lateScore = new Date(lastPost.getTime() + 30 * 60_000);
+    routeQueries({
+      posted: [{ posted_through: lastPost }],
+      digest: [{ workday_invoice_wid: 'late', workday_invoice_number: 'SUPIN-LATE', entry_read_at: lateScore, outcome: 'submitted_clean', entry_diff: [], terminal: false }],
+    });
+    await handler({ mode: 'daily' });
+    expect(mockQuery.mock.calls.find(([sql]) => String(sql).includes('label_attribution'))?.[1]).toEqual([lastPost]);
+    expect(payloadOf(1).text).toContain('`SUPIN-LATE`');
+    const recorded = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO agent_invoice_audit_posts'));
+    expect(recorded?.[1]?.[0]).toBe('daily');
+  });
+
+  it('in daily mode looks back at most a week after a long gap', async () => {
+    routeQueries({ posted: [{ posted_through: new Date('2020-01-01T00:00:00Z') }] });
+    await handler({ mode: 'daily' });
+    const since = mockQuery.mock.calls.find(([sql]) => String(sql).includes('label_attribution'))?.[1]?.[0] as Date;
+    expect(since).toEqual(addCentralDays(centralDayStart(new Date()), -7));
   });
 
   it('in daily mode posts nothing when no invoice was scored', async () => {

@@ -51,7 +51,9 @@ attachments, and Workday-computed tax are left out on purpose.
 batches and Event-invokes `ScoreInvoicesProcessor` for invoices that reached a
 stage they were not scored for, at most `SCORE_MAX_INVOICES_PER_RUN` (default
 500) per run; the rest are selected again the next day. Status is read for at
-most twice that many pending invoices, most recently written first. A WID
+most twice that many pending invoices, least recently checked first
+(`agent_invoice_status_checks`, created by the job), so every pending invoice gets a
+turn. A WID
 missing from WQL is not in Workday.
 
 `classifyStatus` (`src/lib/invoice_score.ts`) maps status to a stage; any status
@@ -97,7 +99,9 @@ miss:
   `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`, set in `template.yml` on
   `ScoreInvoicesProcessor`. Configured WQL field names must be plain aliases.
 - `duplicate` compares each other invoice's latest agent snapshot only.
-- `supplier_void_or_credit` needs `INTERCOM_ACCESS_TOKEN`.
+- `supplier_void_or_credit` needs `INTERCOM_ACCESS_TOKEN` and counts only
+  supplier messages (Intercom author `user`, `lead`, or `contact`, not notes);
+  AP replies and internal notes never clear the agent.
 
 `template.yml` sets only `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`
 (`suppliersInvoiceNumber`, on `ScoreInvoicesProcessor`) and
@@ -126,9 +130,12 @@ load the chart, `postSlackBlocks` resends once without image blocks; other
 failures are not resent.
 
 `ensureTouchReporting` (`src/lib/touch_reporting.ts`) creates the
-`agent_invoice_touches` view and the `agent_invoice_touch_daily` table at cold
-start. Each `ScoreDigest` run recomputes the last 15 days of the table. Both
-live in the VPC-only Aurora cluster.
+`agent_invoice_touch_daily` table and, only when missing, the
+`agent_invoice_touches` view at cold start. A failure there is logged and never
+blocks invoice processing. Because an existing view is never replaced, changing
+its columns needs a migration that drops it first. Each `ScoreDigest` run
+recomputes the last 15 days of the table. Both live in the VPC-only Aurora
+cluster.
 
 ## Audit posts
 
@@ -138,11 +145,14 @@ operator channel like every other Lambda. A post that does not go through stops
 the run with an error, and so does a failed rollup refresh (after posting).
 Invoice values are escaped, so memo text cannot mention the channel or add links.
 
-- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead, then one message per
-  invoice scored so far that Central day with before → after values, about a
-  second apart. Up to `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing
-  line counts the rest and any sandbox-refresh removals. Nothing is posted when
-  nothing was scored or removed.
+- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead (the Central day), then
+  one message per invoice scored since the last full daily post
+  (`agent_invoice_audit_posts`, created by `ScoreDigest`; at most a week back,
+  today on the first run), so scores from processors that finish after the post
+  go in the next one. Before → after values, about a second apart. Up to
+  `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing line counts the rest
+  and any sandbox-refresh removals. Nothing is posted when nothing was scored or
+  removed.
 - Weekly (Mondays 14:30 UTC): the touch lead, then the last complete
   Monday-to-Sunday Central week against the week before (`digestWindow`), so
   Monday morning's scoring run is reported the following week: outcomes,

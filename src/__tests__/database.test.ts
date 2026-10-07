@@ -207,6 +207,25 @@ describe('Database Library', () => {
       const connection = await getDatabaseConnection(env);
       expect(connection).toBeDefined();
     });
+
+    it('still serves the pool when the touch reporting view cannot be created', async () => {
+      await closeDatabasePool();
+      const env = {
+        DATABASE_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',
+        DATABASE_CLUSTER_ENDPOINT: 'test-cluster.cluster-xyz.us-east-1.rds.amazonaws.com',
+        DATABASE_NAME: 'test_db'
+      };
+      mockSecretsSend.mockResolvedValue({ SecretString: 'plain-password' });
+      mockEnd.mockClear();
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (String(sql).includes('CREATE OR REPLACE VIEW agent_invoice_touches')) throw new Error('cannot drop columns from view');
+        return { rows: [] };
+      });
+
+      await expect(getDatabaseConnection(env)).resolves.toBeDefined();
+      expect(mockEnd).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('ROLLBACK'))).toBe(true);
+    });
   });
 
   describe('insertDocument', () => {

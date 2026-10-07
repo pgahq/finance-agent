@@ -242,7 +242,7 @@ describe('scoreInvoice', () => {
   it('attributes a cancel to the business when the supplier voided the invoice in the thread', async () => {
     process.env.INTERCOM_ACCESS_TOKEN = 'token';
     (intercom.fetchConversationMessages as jest.Mock).mockResolvedValue([
-      { createdAt: Math.floor(now.getTime() / 1000), body: 'We voided that invoice and will resend.' },
+      { createdAt: Math.floor(now.getTime() / 1000), body: 'We voided that invoice and will resend.', authorType: 'user', partType: 'comment' },
     ]);
     const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Canceled', { isCanceled: true }) }, now);
     expect(score).toEqual(expect.objectContaining({ cancelAttribution: 'business', cancelBasis: 'supplier_void_or_credit' }));

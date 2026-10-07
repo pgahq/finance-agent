@@ -2,14 +2,14 @@ import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
 import { withHandler } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type InvoiceStatusRow, type StatusClass } from './lib/invoice_score.js';
-import { fetchInvoiceStatuses, listPendingScoreInvoices, type PendingScoreRow } from './lib/invoice_scores.js';
+import { fetchInvoiceStatuses, listPendingScoreInvoices, recordStatusChecks, type PendingScoreRow } from './lib/invoice_scores.js';
 import { notifyResult } from './lib/slack.js';
 import { DEFAULT_STUCK_DRAFT_DAYS, type ScoreInvoiceItem } from './score_invoices_processor.js';
 
 export const PROCESSOR_BATCH_SIZE = 20;
 /** Invoices past this many wait for the next run, which selects them again because they still need scoring. */
 export const DEFAULT_MAX_INVOICES_PER_RUN = 500;
-/** Status is read for at most this many pending invoices per dispatched slot, newest writes first. */
+/** Status is read for at most this many pending invoices per dispatched slot, least recently checked first. */
 export const STATUS_READS_PER_INVOICE = 2;
 
 /** True when the invoice reached a stage it has not been scored for yet. */
@@ -59,6 +59,7 @@ export const handler = withHandler(async (context) => {
     const pending = await listPendingScoreInvoices(context.dbConnection, maxPending);
     if (pending.length >= maxPending) debug('Pending agent invoices reached the per-run status read limit', { maxPending });
     const statuses = await fetchInvoiceStatuses(context.workdayConfig, pending.map((row) => row.workdayInvoiceWid));
+    await recordStatusChecks(context.dbConnection, pending.map((row) => row.workdayInvoiceWid), now);
     const selected = selectInvoicesToScore(pending, statuses, now, stuckDraftDays);
     const items = selected.slice(0, maxPerRun);
     debug('Agent invoices to score', { pending: pending.length, toScore: selected.length, dispatched: items.length });
