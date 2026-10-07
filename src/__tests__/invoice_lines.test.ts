@@ -2000,19 +2000,42 @@ describe('normalizeExtractedFreightAndTax', () => {
 });
 
 describe('resolveHeaderChargeAmounts', () => {
-  it('moves the BearCom tax-labeled freight to tax and ignores line freight', () => {
+  it('moves the BearCom tax-labeled freight to tax and clears freight when no freight lines exist', () => {
     expect(resolveHeaderChargeAmounts({
       extractedFreightAmount: '510.86',
       extractedFreightLabel: 'Sales Tax',
       extractedTaxAmount: null,
       extractedTaxLabel: null,
-      freightAmountFromLines: 25,
     })).toEqual({
       extractedFreightAmount: undefined,
       extractedTaxAmount: '510.86',
       freightCleared: true,
       taxCleared: false,
     });
+  });
+
+  it.each([
+    ['moved', { extractedFreightAmount: '$510.86', extractedFreightLabel: 'Sales Tax' }],
+    ['a duplicate tax read', { extractedFreightAmount: '510.86', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+    ['a zero tax row', { extractedFreightAmount: '0.00', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+  ])('fills freight from shipping lines when the freight header amount was %s out to tax', (_case, extracted) => {
+    const result = resolveHeaderChargeAmounts({ ...extracted, freightAmountFromLines: 15 });
+    expect(result.extractedFreightAmount).toBe('15');
+    expect(result.freightCleared).toBe(false);
+    expect(parseFloat(result.extractedTaxAmount!.replace('$', ''))).toBe(510.86);
+  });
+
+  it('keeps freight cleared when a tax-field row labeled Shipping printed zero, even with shipping lines', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Shipping',
+      freightAmountFromLines: 15,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.extractedTaxAmount).toBe('510.86');
   });
 
   it('fills freight from lines only when the document showed no freight header', () => {
