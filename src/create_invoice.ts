@@ -69,6 +69,7 @@ import {
   type NotePurchaseOrder,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
+import { repeatedLineRemovalMode } from './lib/repeated_line_removal_flag.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
@@ -975,8 +976,10 @@ async function processInvoiceCluster(
 
     // A withheld charge leaves the submitted header unknown, and a row dropped for a missing
     // description or amount leaves its table's total unknown, so no line can be judged a repeat.
-    const repeatedLines = chargeWithheld || usableRows.length < extractedRows.length
-      ? { lines: extractedCandidateLines, note: undefined }
+    const removalMode = repeatedLineRemovalMode();
+    const keptLines = { lines: extractedCandidateLines, note: undefined };
+    const detectedRepeats = removalMode === 'off' || chargeWithheld || usableRows.length < extractedRows.length
+      ? keptLines
       : removeRepeatedLineTables(extractedCandidateLines, {
         amountDue: extractedAmountDue,
         freightAmount: extractedFreightAmount,
@@ -984,7 +987,10 @@ async function processInvoiceCluster(
         freightCleared,
         taxCleared,
       }, poClosedForInvoicing ? undefined : poLines);
-    if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
+    if (detectedRepeats.note) {
+      debug(`Repeated line review${removalMode === 'on' ? '' : ' (shadow, lines kept)'}: ${detectedRepeats.note}`);
+    }
+    const repeatedLines = removalMode === 'on' ? detectedRepeats : keptLines;
     const candidateLines = repeatedLines.lines;
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(

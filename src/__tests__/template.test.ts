@@ -40,6 +40,11 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/PO_LINE_SELECTION_ENABLED|PoLineSelectionEnabled/);
   });
 
+  it('reads REPEATED_LINE_REMOVAL_ENABLED from SSM at runtime, not a deploy parameter', () => {
+    expect(globals).toMatch(/REPEATED_LINE_REMOVAL_ENABLED:\s*ssm:\/finance-agent\/repeated-line-removal-enabled/);
+    expect(circleci).not.toMatch(/REPEATED_LINE_REMOVAL_ENABLED|RepeatedLineRemovalEnabled/);
+  });
+
   it('keeps Global SSM references low enough for a single GetParameters call', () => {
     const globalSsmRefs = globals.match(/:\s*ssm:\//g) ?? [];
     const maxFunctionSsmRefs = 2;
