@@ -47,7 +47,11 @@ jest.mock('../lib/workday.js', () => ({
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
-  selectInvoiceablePurchaseOrderLines: jest.requireActual('../lib/workday.js').selectInvoiceablePurchaseOrderLines,
+  markPurchaseOrderLineAvailability: jest.requireActual('../lib/workday.js').markPurchaseOrderLineAvailability,
+  formatPurchaseOrderLineFallbackNotes: jest.requireActual('../lib/workday.js').formatPurchaseOrderLineFallbackNotes,
+  isPurchaseOrderLineFallback: jest.requireActual('../lib/workday.js').isPurchaseOrderLineFallback,
+  purchaseOrderLineFallbackNote: jest.requireActual('../lib/workday.js').purchaseOrderLineFallbackNote,
+  CONSUMED_PO_LINE_REFERENCE_LABEL: jest.requireActual('../lib/workday.js').CONSUMED_PO_LINE_REFERENCE_LABEL,
 }));
 
 jest.mock('../lib/database.js', () => ({
@@ -60,7 +64,8 @@ jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceId: jest.fn().mockResolvedValue([]),
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
-  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map())
+  getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
+  getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map())
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -174,6 +179,19 @@ describe('enrich_invoice', () => {
     };
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
+  });
+
+  it('passes the Lambda deadline signal to the enrichment AI call', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await processor(
+      { data: [{ workdayID: 'test-invoice-id', invoiceStatusAsText: 'Draft' }] } as any,
+      { getRemainingTimeInMillis: () => 120_000 } as any
+    );
+
+    const signal = getAiResponse.mock.calls[0][0].abortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
   });
 
   it('should handle missing supplier and identify supplier', async () => {
@@ -597,10 +615,13 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         invoiceLineQuantityDisplayed: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
+        resolveOrgWorktagKinds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );
@@ -717,9 +738,12 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
+        resolveOrgWorktagKinds: expect.any(Function),
         paymentTermsId: undefined,
       }
     );
@@ -1047,6 +1071,84 @@ describe('enrich_invoice', () => {
     );
   });
 
+  describe('mislabeled freight and tax', () => {
+    const enrichmentWith = (charges: Record<string, string | null>) => ({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'BearCom', memo: 'Radios' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...charges,
+    });
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'BearCom', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    it('moves a sales-tax amount read as freight to tax and clears freight on update', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '510.86',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: undefined,
+        extractedTaxAmount: '510.86',
+        freightCleared: true,
+        taxCleared: false,
+      }));
+      const notes = params.buildNotes([]);
+      expect(notes).toContain('Freight Amount (from document): none');
+      expect(notes).toContain('Tax Amount (from document): 510.86');
+      expect(notes).not.toContain('Freight/Tax review');
+    });
+
+    it('keeps both amounts and adds a review note when a tax-labeled freight amount differs from tax', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '8.00',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: '10.00',
+        extractedTaxLabel: 'Sales Tax',
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: '8.00',
+        extractedTaxAmount: '10.00',
+        freightCleared: false,
+        taxCleared: false,
+      }));
+      expect(params.buildNotes([])).toContain('Freight/Tax review: Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read.');
+    });
+  });
+
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -1190,13 +1292,23 @@ describe('enrich_invoice', () => {
     const closedNote = 'PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
     expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain(closedNote);
-    expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.closedPurchaseOrderLines).toBe(closedNote);
+    expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.purchaseOrderLineNotes).toBe(closedNote);
+  });
+
+  afterEach(() => {
+    delete process.env.PO_LINE_SELECTION_ENABLED;
+    require('@pga/lambda-env').default.mockResolvedValue({});
   });
 
   it.each([
-    ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], ['POL-2'], false],
-    ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], ['POL-1', 'POL-2'], true],
-  ])('filters PO lines when %s', async (_label, invoiceStatuses, expectedLineIds, omitted) => {
+    ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], [false, true], true],
+    ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], [false, false], true],
+    ['PO line selection is off', ['Fully Invoiced', 'Partially Invoiced'], [undefined, undefined], false],
+  ])('handles PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability, selectionOn) => {
+    if (selectionOn) {
+      process.env.PO_LINE_SELECTION_ENABLED = 'true';
+      require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+    }
     const { getAiResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -1212,7 +1324,10 @@ describe('enrich_invoice', () => {
               Description: 'Quarterly retainer',
               Start_Date: index === 0 ? '2026-07-01' : '2026-10-01',
               End_Date: index === 0 ? '2026-09-30' : '2026-12-31',
-              Invoice_Status_Reference: { descriptor, ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: `status-${index}` }] },
+              Invoice_Status_Reference: { ID: [
+                { $attributes: { type: 'WID' }, $value: `wid-status-${index}` },
+                { $attributes: { type: 'Document_Status_ID' }, $value: descriptor },
+              ] },
             })),
           }
         }
@@ -1258,14 +1373,22 @@ describe('enrich_invoice', () => {
     } as any);
 
     const mergeCall = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
-    expect(mergeCall[1].map((line: any) => line.purchaseOrderLineId)).toEqual(expectedLineIds);
+    expect(mergeCall[1].map((line: any) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      ['POL-1', expectedAvailability[0]],
+      ['POL-2', expectedAvailability[1]],
+    ]);
     expect(mergeCall[7]).toEqual({ invoiceDate: '2026-10-02', servicePeriod: 'Q4 2026' });
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(Boolean(params.omitPurchaseOrderLineReference)).toBe(omitted);
-    const notes = params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]);
-    if (omitted) {
-      expect(notes).toContain('All lines on PO-413898 are fully invoiced, fully paid, or closed');
-    }
+    expect(params.omitPurchaseOrderLineReference).toBeUndefined();
+    const notes = params.buildNotes([{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' }]);
+    expect(notes).toContain('Invoice lines that matched lines on PO-413898 already fully invoiced or closed were coded from the PO but not linked to PO lines.');
+
+    const bothNotes = params.buildNotes([
+      { field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' },
+      { field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' },
+    ]);
+    expect(bothNotes.match(/Purchase order lines: /g)).toHaveLength(2);
+    expect(bothNotes).not.toContain('Fallback values applied');
   });
 
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {

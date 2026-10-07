@@ -35,6 +35,11 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED|InvoiceAttachmentClusteringEnabled/);
   });
 
+  it('reads PO_LINE_SELECTION_ENABLED from SSM at runtime, not a deploy parameter', () => {
+    expect(globals).toMatch(/PO_LINE_SELECTION_ENABLED:\s*ssm:\/finance-agent\/po-line-selection-enabled/);
+    expect(circleci).not.toMatch(/PO_LINE_SELECTION_ENABLED|PoLineSelectionEnabled/);
+  });
+
   it('keeps Global SSM references low enough for a single GetParameters call', () => {
     const globalSsmRefs = globals.match(/:\s*ssm:\//g) ?? [];
     const maxFunctionSsmRefs = 2;

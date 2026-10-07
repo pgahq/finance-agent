@@ -1,4 +1,5 @@
 import {
+  collapseWorktagsToOnePerType,
   dedupeWorktagReferences,
   enrichSplitWorktagsWithLineLevel,
   firstNonEmptyPoLineArray,
@@ -271,6 +272,23 @@ describe('po_worktags', () => {
     }
   });
 
+  it('mergePassthroughWorktagReferences lets a cached PO LOB replace fallback LOB', () => {
+    const prev = process.env.FALLBACK_LOB_ID;
+    process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+    try {
+      const fallback = makeWorktag('Organization_Reference_ID', 'LOB-Corporate');
+      const poLob = makeOrgWorktag('Corporate_Communications', 'wid-lob-corporate-comms');
+      const merged = mergePassthroughWorktagReferences([fallback], [poLob], {
+        lineOfBusinessId: 'LOB-Corporate',
+        orgKinds: new Map([['wid-lob-corporate-comms', 'lob']]),
+      });
+      expect(merged).toEqual([poLob]);
+    } finally {
+      if (prev === undefined) delete process.env.FALLBACK_LOB_ID;
+      else process.env.FALLBACK_LOB_ID = prev;
+    }
+  });
+
   it('passthroughWorktagsForSplitInvoiceLine keeps shared fund when splits lack it', () => {
     const fund = makeWorktag('Fund_ID', 'FUND-PO');
     const venue = makeOrgWorktag('VENU-Contestant_Indirect');
@@ -323,5 +341,69 @@ describe('po_worktags', () => {
   it('firstNonEmptyPoLineArray prefers first non-empty source', () => {
     expect(firstNonEmptyPoLineArray([], [{ id: 1 }], [{ id: 2 }])).toEqual([{ id: 1 }]);
     expect(firstNonEmptyPoLineArray(undefined, [], [{ id: 2 }])).toEqual([{ id: 2 }]);
+  });
+
+  describe('collapseWorktagsToOnePerType', () => {
+    it('keeps the first worktag of each non-organization SOAP type', () => {
+      const fundA = makeWorktag('Fund_ID', 'FUND-A');
+      const fundB = makeWorktag('Fund_ID', 'FUND-B');
+      const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+      const { worktags, dropped } = collapseWorktagsToOnePerType([fundA, cc, fundB]);
+      expect(worktags).toEqual([fundA, cc]);
+      expect(dropped).toEqual([fundB]);
+    });
+
+    it('drops a PO LOB the cache types as LOB when the line already has an LOB, and keeps venue', () => {
+      const scalarLob = { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Communications' }] };
+      const poLob = makeOrgWorktag('Corporate_Communications', 'wid-lob-corporate-comms');
+      const venue = makeOrgWorktag('VENU-Corporate', 'wid-venue');
+      const { worktags, dropped } = collapseWorktagsToOnePerType([scalarLob, poLob, venue], {
+        lineOfBusinessId: 'LOB-Communications',
+        orgKinds: new Map([['wid-lob-corporate-comms', 'lob']]),
+      });
+      expect(worktags).toEqual([scalarLob, venue]);
+      expect(dropped).toEqual([poLob]);
+    });
+
+    it('keeps one event when two different events are typed by the cache', () => {
+      const eventA = makeOrgWorktag('2026-Womens_PGA_Championship', 'wid-event-a');
+      const eventB = makeOrgWorktag('2026-KPMG_Womens_PGA', 'wid-event-b');
+      const cc = makeWorktag('Cost_Center_Reference_ID', 'CC-A');
+      const { worktags } = collapseWorktagsToOnePerType([cc, eventA, eventB], {
+        orgKinds: new Map([['wid-event-a', 'event'], ['wid-event-b', 'event']]),
+      });
+      expect(worktags).toEqual([cc, eventA]);
+    });
+
+    it('replaces a kept fallback LOB with a later real LOB', () => {
+      const prev = process.env.FALLBACK_LOB_ID;
+      process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+      try {
+        const fallbackLob = { ID: [{ $attributes: { type: 'Organization_Reference_ID' }, $value: 'LOB-Corporate' }] };
+        const poLob = makeOrgWorktag('Corporate_Communications', 'wid-lob-corporate-comms');
+        const { worktags, dropped } = collapseWorktagsToOnePerType([fallbackLob, poLob], {
+          orgKinds: new Map([['wid-lob-corporate-comms', 'lob']]),
+        });
+        expect(worktags).toEqual([poLob]);
+        expect(dropped).toEqual([fallbackLob]);
+      } finally {
+        if (prev === undefined) delete process.env.FALLBACK_LOB_ID;
+        else process.env.FALLBACK_LOB_ID = prev;
+      }
+    });
+
+    it('treats LOB- prefixed organization tags as LOB without the cache', () => {
+      const lobA = makeOrgWorktag('LOB-Technology_Services');
+      const lobB = makeOrgWorktag('LOB-Facilities');
+      expect(collapseWorktagsToOnePerType([lobA, lobB]).worktags).toEqual([lobA]);
+    });
+
+    it('keeps organization tags it cannot type, dropping only exact repeats', () => {
+      const venueA = makeOrgWorktag('VENU-A');
+      const venueB = makeOrgWorktag('VENU-B');
+      const { worktags, dropped } = collapseWorktagsToOnePerType([venueA, venueB, venueA]);
+      expect(worktags).toEqual([venueA, venueB]);
+      expect(dropped).toEqual([venueA]);
+    });
   });
 });

@@ -7,14 +7,18 @@ import {
   buildFinalInvoiceLines,
   constrainEmailLobToRelatedWorktags,
   isFreightOrHandlingLine,
+  normalizeExtractedFreightAndTax,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
+  statesServicePeriod,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
 import { getAiResponse } from '../lib/ai.js';
+import { mergeInvoiceLinesPromptFor } from '../prompts/merge_invoice_lines_prompt.js';
 import { extractLineOfBusinessId } from '../lib/related_worktags.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 
@@ -385,7 +389,30 @@ describe('applyRelatedLobWorktags', () => {
     expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
   });
 
-  it('keeps a LOB that is already allowed for the cost center', () => {
+  it('keeps a line already on the related default while replacing a disallowed LOB', () => {
+    const related = new Map([
+      ['CC-Other Broadcasting', {
+        requiredOnTransaction: true,
+        defaultReferenceId: 'LOB-Other_Broadcasting',
+        allowedReferenceIds: ['LOB-Other_Broadcasting', 'LOB-TV'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [
+        { lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' },
+        { lineOrder: 2, description: 'Studio', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'LOB-Other_Broadcasting' },
+      ],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+    expect(lines[1].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('replaces a rejected in-list LOB with the related default', () => {
     const related = new Map([
       ['CC-Other Broadcasting', {
         requiredOnTransaction: true,
@@ -401,7 +428,26 @@ describe('applyRelatedLobWorktags', () => {
       { anyAllowed: true, replaceDisallowed: true }
     );
 
-    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('rewrites a rejected LOB- alias to the related catalog id', () => {
+    const related = new Map([
+      ['CC-Building Services-PBG', {
+        requiredOnTransaction: true,
+        defaultReferenceId: null,
+        allowedReferenceIds: ['Building Services'],
+      }]
+    ]);
+
+    const lines = applyRelatedLobWorktags(
+      [{ lineOrder: 1, description: 'Janitorial', costCenterId: 'CC-Building Services-PBG', lineOfBusinessId: 'LOB-Building_Services' }],
+      related,
+      undefined,
+      { anyAllowed: true, replaceDisallowed: true }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Building Services');
   });
 
   it('replaces Default_Line_Of_Business with a related allowed LOB', () => {
@@ -469,6 +515,54 @@ describe('constrainEmailLobToRelatedWorktags', () => {
     );
 
     expect(lines[0].lineOfBusinessId).toBe('LOB-Other_Broadcasting');
+  });
+
+  it('keeps an email LOB that matches related allowed ids only by LOB- prefix', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Janitorial', costCenterId: 'CC-Building Services-PBG', lineOfBusinessId: 'LOB-Building_Services' }],
+      new Map([
+        ['CC-Building Services-PBG', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['Building Services'],
+        }]
+      ]),
+      { costCenterId: 'CC-Building Services-PBG', lobReferenceId: 'LOB-Building_Services' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-Building_Services');
+  });
+
+  it('uses the unique allowed LOB when email has a catalog value and there is no default', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      new Map([
+        ['CC-Other Broadcasting', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['LOB-TV'],
+        }]
+      ]),
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('LOB-TV');
+  });
+
+  it('keeps the email LOB when several allowed values exist and there is no default', () => {
+    const lines = constrainEmailLobToRelatedWorktags(
+      [{ lineOrder: 1, description: 'Overtime', costCenterId: 'CC-Other Broadcasting', lineOfBusinessId: 'Event Broadcasting' }],
+      new Map([
+        ['CC-Other Broadcasting', {
+          requiredOnTransaction: true,
+          defaultReferenceId: null,
+          allowedReferenceIds: ['LOB-TV', 'LOB-Radio'],
+        }]
+      ]),
+      { costCenterId: 'CC-Other Broadcasting', lobReferenceId: 'Event Broadcasting' }
+    );
+
+    expect(lines[0].lineOfBusinessId).toBe('Event Broadcasting');
   });
 });
 
@@ -539,6 +633,24 @@ describe('buildFinalInvoiceLines', () => {
     );
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+  });
+
+  it('rethrows AI errors when the deadline signal has aborted', async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error('Processor deadline reached'));
+    mockGetAiResponse.mockRejectedValue(new Error('Processor deadline reached'));
+
+    await expect(buildFinalInvoiceLines(
+      extracted,
+      [poLine()],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortController.signal
+    )).rejects.toThrow('Processor deadline reached');
   });
 
   it('lets email LOB override the PO LOB', async () => {
@@ -1083,10 +1195,28 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     expect(result[0]).toMatchObject({ quantity: 45, unitCost: 43.71, extendedAmount: 1966.95, purchaseOrderLineId: 'POL-001' });
   });
 
+  it('uses four decimal precision for PO-linked discount lines that do not divide to cents', () => {
+    const lines = [{ lineOrder: 1, description: 'Sintra Signs', hasDiscount: true, quantity: 7, unitCost: 29.88, extendedAmount: 188.24, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 7, unitCost: 26.8914, extendedAmount: 188.24, purchaseOrderLineId: 'POL-001' });
+  });
+
   it('submits amount-only for the same line when it is not linked to a PO line', () => {
     const lines = [{ lineOrder: 1, description: 'Titl Pro V1 Cstm', hasDiscount: true, quantity: 45, unitCost: 46.5, extendedAmount: 1966.95 }];
     const result = alignSupplierInvoiceLineAmounts(lines);
     expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1966.95 });
+  });
+
+  it('submits amount-only on a non-discount PO-linked line whose qty times unit does not match the total', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', quantity: 10, unitCost: 5, extendedAmount: 100, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
+  });
+
+  it('submits amount-only on a PO-linked discount line when the net price is not lower', () => {
+    const lines = [{ lineOrder: 1, description: 'Widgets', hasDiscount: true, quantity: 10, unitCost: 5, extendedAmount: 100, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
   });
 
   it('submits amount-only on a PO-linked line when no net unit cost reproduces the extended amount', () => {
@@ -1131,6 +1261,36 @@ describe('applyAmountOnlyLineRetry', () => {
   });
 });
 
+describe('statesServicePeriod', () => {
+  it.each([
+    'September 2026',
+    'Sept retainer',
+    'Q3 2026',
+    'third quarter 2026',
+    'quarter 3 2026',
+    '3rd qtr',
+    '09/2026',
+    '2026-09',
+    '2026/09',
+    '9/1 - 9/30',
+    '2026-09-01 to 2026-09-30',
+    '09.01.2026 - 09.30.2026',
+    'AUG2026 retainer',
+    'Retainer Sep26',
+    'Retainer 2026.08',
+    'H2 2026',
+  ])('recognizes "%s" as a stated period', (text) => {
+    expect(statesServicePeriod(text)).toBe(true);
+  });
+
+  it.each(['Monthly retainer', 'Annual services', 'Consulting retainer', 'Version 2.5 license', 'Mayfield maintenance', 'Consulting 1.5 hours', '', null])(
+    'does not treat "%s" as a stated period',
+    (text) => {
+      expect(statesServicePeriod(text)).toBe(false);
+    }
+  );
+});
+
 describe('buildFinalInvoiceLines service-date matching', () => {
   const monthlyLine = (month: number, overrides: Partial<PurchaseOrderLine> = {}): PurchaseOrderLine => {
     const mm = String(month).padStart(2, '0');
@@ -1167,6 +1327,58 @@ describe('buildFinalInvoiceLines service-date matching', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FALLBACK_COST_CENTER_ID;
+    process.env.PO_LINE_SELECTION_ENABLED = 'true';
+  });
+
+  afterEach(() => {
+    delete process.env.PO_LINE_SELECTION_ENABLED;
+  });
+
+  it('uses the legacy merge prompt and input when the caller passes no invoice context (Closed PO)', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true
+    );
+
+    const call = mockGetAiResponse.mock.calls[0][0] as any;
+    const input = JSON.parse(call.messages[0].content);
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
+    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
+    expect(input).not.toHaveProperty('invoiceDate');
+  });
+
+  it('keeps the pre-selection merge input, prompt, and model pick when PO line selection is off', async () => {
+    delete process.env.PO_LINE_SELECTION_ENABLED;
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod: 'September 2026' }
+    );
+
+    const call = mockGetAiResponse.mock.calls[0][0] as any;
+    const input = JSON.parse(call.messages[0].content);
+    expect(input).not.toHaveProperty('invoiceDate');
+    expect(input).not.toHaveProperty('invoiceServicePeriod');
+    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
+    expect(input.purchaseOrderLines[0]).not.toHaveProperty('availableForInvoicing');
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
+    expect(call.prompt).not.toContain('availableForInvoicing');
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
   });
 
   it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {
@@ -1207,6 +1419,24 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     );
 
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+  });
+
+  it('takes the ship-to address from the relinked PO line, clearing it when that line has none', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine('POL-08'), shipToAddressId: 'ADDR-AUG' }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { shipToAddressId: 'ADDR-AUG' }), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    expect(result.lines[0].shipToAddressId).toBeNull();
   });
 
   it('keeps the model pick when the invoice states a service period', async () => {
@@ -1279,4 +1509,584 @@ describe('buildFinalInvoiceLines service-date matching', () => {
 
     expect(result.lines[0].purchaseOrderLineId).toBe('POL-001');
   });
+
+  it('treats a missing Start_Date or End_Date as an open side of the window', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { startDate: undefined }),
+        monthlyLine(9, { endDate: undefined }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+  });
+
+  it('treats an impossible PO window date as unknown rather than as an open side', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9, { startDate: '2026-02-31' })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('does not relink from or to a PO line whose window is unparseable or inverted', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { startDate: '2026-08-31', endDate: '2026-08-01' }),
+        monthlyLine(9, { endDate: 'not-a-date' }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps the model pick when the line description states its own period', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{ ...mergedLine('POL-08'), description: 'Retainer - August 2026' }],
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps the model pick when only the extracted description states a period', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine('POL-08'), description: 'Retainer' }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].description).toBe('Retainer - August 2026');
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('does not relink to a PO line whose split worktags differ', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+    const split = (costCenter: string) => [{ extendedAmount: 5000, worktagReference: [makeWorktag('Cost_Center_Reference_ID', costCenter)] }];
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [
+        monthlyLine(8, { splitLineData: split('CC-Split-A') }),
+        monthlyLine(9, { splitLineData: split('CC-Split-B') }),
+      ],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it('keeps a line on its consumed period PO line and flags the reference to be dropped', async () => {
+    mockGetAiResponse.mockResolvedValue({
+      lines: [{ ...mergedLine('POL-08'), description: 'Retainer - August 2026' }],
+    } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ ...extracted[0], description: 'Retainer - August 2026' }],
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    const input = JSON.parse((mockGetAiResponse.mock.calls[0][0] as any).messages[0].content);
+    expect(input.purchaseOrderLines.map((line: any) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      ['POL-08', false],
+      ['POL-09', true],
+    ]);
+    expect(result.lines[0]).toEqual(expect.objectContaining({
+      purchaseOrderLineId: 'POL-08',
+      omitPurchaseOrderLineReference: true,
+      costCenterId: 'CC-Building Services-PBG',
+    }));
+  });
+
+  it('relinks to a consumed PO line covering the invoice date instead of an open line for another month', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-08-20' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+    expect(result.lines[0].omitPurchaseOrderLineReference).toBe(true);
+  });
+
+  it('leaves the reference on lines matched to an open PO line', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-09')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9, { availableForInvoicing: true })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  it('does not relink between PO lines that carry no worktags', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8, { worktagsReference: [] }), monthlyLine(9, { worktagsReference: [] })],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05' }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['not mappable to dates', 'Annual services'],
+  ])('still relinks by invoice date when the service period is %s', async (_label, servicePeriod) => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      extracted,
+      [monthlyLine(8), monthlyLine(9)],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      true,
+      { invoiceDate: '2026-09-05', servicePeriod }
+    );
+
+    expect(result.lines[0].purchaseOrderLineId).toBe('POL-09');
+    const input = JSON.parse((mockGetAiResponse.mock.calls[0][0] as any).messages[0].content);
+    expect(input.invoiceServicePeriod).toBe(servicePeriod.trim() || null);
+  });
 });
+
+describe('normalizeExtractedFreightAndTax', () => {
+  it('moves a sales-tax amount out of freight into tax', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps a real freight amount and a real tax amount separate', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '5.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('5.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('moves a freight-labeled tax amount into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: null,
+      extractedFreightLabel: null,
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: 'Shipping & Handling',
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('swaps freight and tax when both are mislabeled', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('10.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+  });
+
+  it('treats labeled zero amounts as explicit clears', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Freight',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each([
+    'Sales Tax Amount',
+    'Total Tax Amount',
+    'Sales Tax - Estimated',
+    'Sales Tax (approx.)',
+  ])('moves a freight amount labeled %s to tax', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('$510.86');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Freight Amount', 'Shipping & Handling Amount', 'Shipping Total'])('moves a tax amount labeled %s to freight', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('withholds malformed amount %s under a crossed label and asks for review', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+      reviewNote: `Could not safely apply freight amount "${amount}" labeled "Sales Tax", so it was not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`,
+    });
+  });
+
+  it('withholds a crossed amount when the other amount is unreadable instead of submitting it under the wrong field', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '1.234,56',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Could not safely apply freight amount "510.86" labeled "Sales Tax" and tax amount "1.234,56" labeled "Sales Tax", so they were not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.');
+  });
+
+  it('withholds only the unreadable amount when labels match and keeps the readable one', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '-4.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('12.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.reviewNote).toContain('tax amount "-4.00" labeled "Sales Tax"');
+  });
+
+  it.each(['510.86 $', '$ 510.86*', '510.86 USD*', '$510.86†'])('accepts correctly labeled amount %s with a trailing symbol or footnote mark', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: amount,
+      extractedTaxAmount: amount,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('moves a trailing-symbol tax amount read into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86 $',
+      extractedFreightLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86 $');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Shipping Amount Due', 'Freight Due', 'Delivery Total Due'])('recognizes freight label %s on a tax amount', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('still clears a correctly labeled zero when the other amount is withheld', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '-4.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+    expect(result.reviewNote).toContain('freight amount "-4.00" labeled "Shipping"');
+  });
+
+  it.each(['', '   '])('treats blank amount %p as not read', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('writes withheld amounts and labels into the review note as a single bounded line', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12,34\u0000\u202e\nInjected',
+      extractedFreightLabel: `Ship"ping\u2028${'x'.repeat(100)}`,
+    });
+    expect(result.reviewNote).toContain('freight amount "12,34 Injected" labeled "Ship ping ');
+    expect(result.reviewNote).toContain('x...", so it was not submitted');
+    expect(result.reviewNote).not.toMatch(/[\p{Cc}\u202e\u2028]/u);
+  });
+
+  it.each(['$8,514.38', '8514.38', '510.86 USD', 'USD 510.86'])('accepts well-formed amount %s', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Freight',
+    }).extractedFreightAmount).toBe(amount);
+  });
+
+  it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Shipping',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('10.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read. Verify freight and tax against the document.');
+  });
+
+  it('drops a tax-labeled freight amount that duplicates the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '510.86',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps both amounts and asks for review when a freight-labeled tax amount differs from the freight amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain('Tax amount 8.00 is labeled "Freight"');
+  });
+
+  it.each([
+    ['-15.00', 'Shipping', 'Freight'],
+    ['N/A', 'Sales Tax', 'Tax'],
+    ['1.234,56', 'Sales Tax', 'Tax'],
+  ])('withholds unparseable amount %s under matching label %s and asks for review', (amount, label, field) => {
+    const result = normalizeExtractedFreightAndTax(field === 'Freight'
+      ? { extractedFreightAmount: amount, extractedFreightLabel: label }
+      : { extractedTaxAmount: amount, extractedTaxLabel: label });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain(`${field.toLowerCase()} amount "${amount}" labeled "${label}"`);
+  });
+});
+
+describe('resolveHeaderChargeAmounts', () => {
+  it('moves the BearCom tax-labeled freight to tax and clears freight when no freight lines exist', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: '510.86',
+      freightCleared: true,
+      taxCleared: false,
+    });
+  });
+
+  it.each([
+    ['moved', { extractedFreightAmount: '$510.86', extractedFreightLabel: 'Sales Tax' }],
+    ['a duplicate tax read', { extractedFreightAmount: '510.86', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+    ['a zero tax row', { extractedFreightAmount: '0.00', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+  ])('fills freight from shipping lines when the freight header amount was %s out to tax', (_case, extracted) => {
+    const result = resolveHeaderChargeAmounts({ ...extracted, freightAmountFromLines: 15 });
+    expect(result.extractedFreightAmount).toBe('15');
+    expect(result.freightCleared).toBe(false);
+    expect(parseFloat(result.extractedTaxAmount!.replace('$', ''))).toBe(510.86);
+  });
+
+  it('keeps freight cleared when a tax-field row labeled Shipping printed zero, even with shipping lines', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Shipping',
+      freightAmountFromLines: 15,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.extractedTaxAmount).toBe('510.86');
+  });
+
+  it('fills freight from lines only when the document showed no freight header', () => {
+    expect(resolveHeaderChargeAmounts({ freightAmountFromLines: 25 }).extractedFreightAmount).toBe('25');
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    }).extractedFreightAmount).toBe('12.00');
+  });
+
+  it.each(['', '   '])('fills freight from lines when the freight header amount is blank (%p)', (amount) => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBe('25');
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps the existing freight instead of line freight when the header amount is withheld', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12,34',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.reviewNote).toContain('freight amount "12,34"');
+  });
+
+  it('does not refill a cleared freight header from lines and drops a cleared tax amount', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+      freightAmountFromLines: 25,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: true,
+      taxCleared: true,
+    });
+  });
+});
+

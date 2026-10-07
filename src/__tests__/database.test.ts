@@ -16,6 +16,7 @@ import {
   migrateDocumentsTypeCheck,
   getCostCenterRelatedLobsByCodes,
   getCostCenterWorkdayIdsByCodes,
+  getOrgWorktagKindsByIds,
 } from '../lib/database.js';
 
 // Mock AWS SDK
@@ -735,6 +736,38 @@ describe('Database Library', () => {
       };
 
       const result = await getCostCenterWorkdayIdsByCodes(mockConnection, []);
+      expect(result.size).toBe(0);
+      expect(mockConnection.query).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getOrgWorktagKindsByIds', () => {
+    it('maps cached LOB and event WIDs and LOB reference IDs to their kind', async () => {
+      const mockConnection = {
+        query: jest.fn().mockResolvedValue([
+          { workday_id: 'lob-wid-1', type: 'lob', metadata: { referenceId: 'LOB-Communications' } },
+          { workday_id: 'event-wid-1', type: 'event', metadata: { name: '2026 Womens PGA Championship' } },
+        ]),
+        close: jest.fn()
+      };
+
+      const result = await getOrgWorktagKindsByIds(mockConnection, ['lob-wid-1', 'event-wid-1', 'LOB-Communications']);
+
+      expect(mockConnection.query).toHaveBeenCalledWith(
+        expect.stringContaining("type IN ('lob', 'event')"),
+        [
+          ['lob-wid-1', 'event-wid-1', 'LOB-Communications'],
+          ['lob-wid-1', 'event-wid-1', 'lob-communications'],
+        ]
+      );
+      expect(result.get('lob-wid-1')).toBe('lob');
+      expect(result.get('lob-communications')).toBe('lob');
+      expect(result.get('event-wid-1')).toBe('event');
+    });
+
+    it('returns an empty map without querying when no ids are provided', async () => {
+      const mockConnection = { query: jest.fn(), close: jest.fn() };
+      const result = await getOrgWorktagKindsByIds(mockConnection, []);
       expect(result.size).toBe(0);
       expect(mockConnection.query).not.toHaveBeenCalled();
     });

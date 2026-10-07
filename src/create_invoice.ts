@@ -1,10 +1,11 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
-import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
@@ -43,7 +44,7 @@ import {
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
-import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
@@ -51,6 +52,7 @@ import {
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -77,13 +79,13 @@ import {
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
 import {
-  closedPurchaseOrderLineNote,
-  consumedPurchaseOrderLinesNote,
+  formatPurchaseOrderLineFallbackNotes,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
+  isPurchaseOrderLineFallback,
   loadPurchaseOrder,
-  OMITTED_PO_LINE_REFERENCE_LABEL,
-  selectInvoiceablePurchaseOrderLines,
+  markPurchaseOrderLineAvailability,
+  purchaseOrderLineFallbackNote,
   submitNewSupplierInvoice,
   submitSupplierInvoiceUpdate,
   type AppliedFallback,
@@ -209,9 +211,11 @@ function slackInvoiceDetails(
 }
 
 // Processor function - invoked by trigger_create_invoice
-export const processor = withProcessorHandler(async (context, requests) => {
+export const processor = withProcessorHandler(async (context, requests, _event, options) => {
+  const abortSignal = options?.abortSignal;
   for (const request of requests) {
-    await processNewInvoice(context, request as CreateInvoiceRequest);
+    await throwIfDeadlineReached(abortSignal);
+    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
   }
 });
 
@@ -242,14 +246,19 @@ async function fanOutCluster(
   }));
 }
 
-async function reportShadowClustering(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function reportShadowClustering(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
   const attachments = request.attachments ?? [];
   const details = { mode: 'shadow', attachments: requestFilenames(request) };
   try {
     const { clustering } = await parseAndClusterInvoiceAttachments(
       attachments,
-      (key) => getBinaryFromS3(context.s3Config, key)
+      (key) => getBinaryFromS3(context.s3Config, key),
+      { abortSignal }
     );
     const describe = (file: ClassifiedAttachment) =>
       `${file.fileName} (${file.kind}${file.supportingKind ? `: ${file.supportingKind}` : ''}${file.invoiceNumber ? `, #${file.invoiceNumber}` : ''})`;
@@ -277,10 +286,14 @@ async function reportShadowClustering(context: ProcessingContext, request: Creat
   }
 }
 
-async function processNewInvoice(context: ProcessingContext, request: CreateInvoiceRequest): Promise<void> {
+async function processNewInvoice(
+  context: ProcessingContext,
+  request: CreateInvoiceRequest,
+  abortSignal?: AbortSignal
+): Promise<void> {
   if (request.shadow) {
     // A shadow record never writes to Workday or the registry, whatever this container's flag says.
-    await reportShadowClustering(context, request);
+    await reportShadowClustering(context, request, abortSignal);
     return;
   }
   const startTime = Date.now();
@@ -330,7 +343,8 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
           const buffer = await getBinaryFromS3(context.s3Config, key);
           preloadedBuffers.set(key, buffer);
           return buffer;
-        }
+        },
+        { abortSignal }
       );
       if (clustering.clusters.length === 0) {
         throw new Error('Invoice attachment clustering returned no clusters');
@@ -402,7 +416,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         plan: { planId, clusterIndex: 0 },
         startTime,
         clustered: true,
-      });
+      }, abortSignal);
     } finally {
       if (undispatched.length) {
         await notifyResult(
@@ -442,7 +456,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         : {}),
       startTime,
       clustered: true,
-    });
+    }, abortSignal);
     return;
   }
 
@@ -459,7 +473,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
         conversationPdf,
         startTime: Date.now(),
         clustered: false,
-      });
+      }, abortSignal);
     }
     return;
   }
@@ -483,7 +497,7 @@ async function processNewInvoice(context: ProcessingContext, request: CreateInvo
     conversationPdf,
     startTime,
     clustered: false,
-  });
+  }, abortSignal);
 }
 
 interface ClusterInvoiceInput {
@@ -533,7 +547,11 @@ function clusterSlackAttachments(files: LoadedClusterFile[]): Array<Record<strin
   }));
 }
 
-async function createInvoiceFromCluster(context: ProcessingContext, input: ClusterInvoiceInput): Promise<void> {
+async function createInvoiceFromCluster(
+  context: ProcessingContext,
+  input: ClusterInvoiceInput,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const { plan } = input;
   if (plan && !(await claimInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex))) {
     debug('Invoice cluster already done or being processed by another run; skipping', plan);
@@ -541,7 +559,7 @@ async function createInvoiceFromCluster(context: ProcessingContext, input: Clust
   }
   const run: ClusterRunState = {};
   try {
-    await processInvoiceCluster(context, input, run);
+    await processInvoiceCluster(context, input, run, abortSignal);
     if (plan && run.invoiceClaimContended) {
       await releaseInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex)
         .catch((error: unknown) => debug('Failed to release contended invoice cluster', { ...plan, error }));
@@ -596,7 +614,8 @@ async function markInvoiceClusterDone(
 async function processInvoiceCluster(
   context: ProcessingContext,
   input: ClusterInvoiceInput,
-  run: ClusterRunState
+  run: ClusterRunState,
+  abortSignal?: AbortSignal
 ): Promise<void> {
   const {
     files,
@@ -683,7 +702,8 @@ async function processInvoiceCluster(
       stubCompany,
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
-      attachmentRoles
+      attachmentRoles,
+      abortSignal
     );
     debug('Enrichment result:', result);
 
@@ -713,7 +733,6 @@ async function processInvoiceCluster(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
     let matchedPo = parsedPo;
     if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
@@ -733,19 +752,14 @@ async function processInvoiceCluster(
     const companyReferenceType = selectedCompany.companyReferenceType;
     const usedDefaultCompany = selectedCompany.source === 'default';
     const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
-    const { lines: poLines, allLinesConsumed: allPoLinesConsumed } = selectInvoiceablePurchaseOrderLines(
-      usedDefaultCompany ? undefined : matchedPo?.lines
-    );
-    const poClosedForInvoicing = Boolean(poLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const matchedPoLines = usedDefaultCompany ? undefined : matchedPo?.lines;
+    const poClosedForInvoicing = Boolean(matchedPoLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
+    const poLines = poClosedForInvoicing ? matchedPoLines : markPurchaseOrderLineAvailability(matchedPoLines);
     if (poClosedForInvoicing) {
       debug(`PO ${matchedPo?.documentNumber} is ${matchedPo?.documentStatus?.descriptor ?? matchedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
-    } else if (allPoLinesConsumed) {
-      debug(`Every line on PO ${matchedPo?.documentNumber} is fully invoiced, fully paid, or closed; coding lines from the PO without Purchase_Order_Line_Reference`);
     }
-    const omitPoLineReferences = poClosedForInvoicing || allPoLinesConsumed;
-    const poLineOmittedNote = !poClosedForInvoicing && allPoLinesConsumed
-      ? consumedPurchaseOrderLinesNote(extractedPurchaseOrderNumber)
-      : closedPurchaseOrderLineNote(extractedPurchaseOrderNumber);
+    const purchaseOrderLineFallbackLabel = (label: string) =>
+      purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -760,8 +774,19 @@ async function processInvoiceCluster(
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -794,7 +819,9 @@ async function processInvoiceCluster(
       emailWorktags,
       relatedLobLookup,
       invoiceLineQuantityDisplayed,
-      { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+      // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+      poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+      abortSignal
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
@@ -826,7 +853,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -847,7 +876,9 @@ async function processInvoiceCluster(
           fallbackIds,
           emailWorktags,
           relatedLobLookup,
-          invoiceLineQuantityDisplayed
+          invoiceLineQuantityDisplayed,
+          undefined,
+          abortSignal
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
@@ -883,19 +914,17 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
       return baseNotes
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
           assigneeSetInWorkday: Boolean(assigneeMatch) && !assigneeOmitted,
         })
-        + (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-          ? `\n\nPurchase order lines: ${poLineOmittedNote}`
-          : '')
+        + formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber)
         + (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
     };
 
@@ -950,6 +979,9 @@ async function processInvoiceCluster(
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },
@@ -1096,12 +1128,10 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => f.field !== 'purchaseOrderLine');
+          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
           return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
-            (appliedFallbacks.some((f) => f.field === 'purchaseOrderLine')
-              ? `\n\nPurchase order lines: ${poLineOmittedNote}`
-              : '') +
+            formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
@@ -1116,14 +1146,17 @@ async function processInvoiceCluster(
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
           extractedFreightAmount,
           extractedTaxAmount,
+          freightCleared,
+          taxCleared,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
           resolveCostCenterWorkdayIds: (costCenterIds) =>
             getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+          resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
           paymentTermsId,
           attachments: submitAttachments,
-          ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         const updateSnapshotSaved = await snapshotAgentWrite(context, {
@@ -1158,7 +1191,7 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => f.label),
+          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
           ...(updateSnapshotSaved ? {} : { snapshotSync: 'failed' }),
@@ -1185,15 +1218,18 @@ async function processInvoiceCluster(
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      freightCleared,
+      taxCleared,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,
       resolveCostCenterWorkdayIds: (costCenterIds) =>
         getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+      resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
       paymentTermsId,
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
-      ...(omitPoLineReferences ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
     });
 
@@ -1244,9 +1280,7 @@ async function processInvoiceCluster(
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f =>
-        f.label === OMITTED_PO_LINE_REFERENCE_LABEL ? poLineOmittedNote : f.label
-      ),
+      appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
       ...(snapshotSaved ? {} : { snapshotSync: 'failed' }),

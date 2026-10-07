@@ -3,6 +3,7 @@ import {
   parseRelatedLob,
   parseRelatedWorktagsResponse,
   relatedLobAllowsId,
+  relatedLobIdsMatch,
   relatedLobSoapReference,
   relatedWorktagsTotalPages,
   resolveRelatedLobId,
@@ -324,6 +325,14 @@ describe('resolveRelatedLobId', () => {
     }, 'CC-001')).toBeNull();
   });
 
+  it('treats an optional LOB- prefix as the same unique allowed value', () => {
+    expect(resolveRelatedLobId({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['LOB-TV', 'TV'],
+    }, 'CC-001')).toBe('LOB-TV');
+  });
+
   it('can use any allowed LOB on the validation retry path', () => {
     expect(resolveRelatedLobId({
       requiredOnTransaction: true,
@@ -386,6 +395,25 @@ describe('relatedLobAllowsId', () => {
     expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
     expect(relatedLobAllowsId(undefined, 'LOB-TV')).toBe(false);
   });
+
+  it('treats an optional LOB- prefix as the same related id', () => {
+    const related = {
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+    };
+
+    expect(relatedLobAllowsId(related, 'LOB-Building_Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'Building Services')).toBe(true);
+    expect(relatedLobAllowsId(related, 'LOB-TV')).toBe(false);
+  });
+});
+
+describe('relatedLobIdsMatch', () => {
+  it('treats an optional LOB- prefix as the same id', () => {
+    expect(relatedLobIdsMatch('LOB-Other_Broadcasting', 'Other Broadcasting')).toBe(true);
+    expect(relatedLobIdsMatch('LOB-TV', 'LOB-Radio')).toBe(false);
+  });
 });
 
 describe('parseRelatedLob', () => {
@@ -445,6 +473,21 @@ describe('relatedLobSoapReference', () => {
     }, 'LOB-Building_Services')).toEqual({
       type: 'Organization_Reference_ID',
       value: 'LOB-Building_Services',
+    });
+  });
+
+  it('matches a LOB- prefixed submit id to the unprefixed catalog value', () => {
+    expect(relatedLobSoapReference({
+      requiredOnTransaction: true,
+      defaultReferenceId: null,
+      allowedReferenceIds: ['Building Services'],
+      allowedIds: [
+        { type: 'Custom_Organization_Reference_ID', value: 'Building Services' },
+        { type: 'Organization_Reference_ID', value: 'Building Services' },
+      ],
+    }, 'LOB-Building_Services')).toEqual({
+      type: 'Organization_Reference_ID',
+      value: 'Building Services',
     });
   });
 

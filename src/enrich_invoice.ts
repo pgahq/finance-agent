@@ -1,9 +1,10 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
-import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { throwIfDeadlineReached, withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
@@ -25,10 +26,11 @@ import {
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
-import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes } from './lib/database.js';
+import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
   normalizeSupplierInvoiceLineAmounts,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -44,7 +46,7 @@ import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
-import { annotateSupplierInvoice, closedPurchaseOrderLineNote, consumedPurchaseOrderLinesNote, executeWorkdayQuery, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, parsePurchaseOrder, selectInvoiceablePurchaseOrderLines, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -123,13 +125,19 @@ export const handler = withHandler(async (context) => {
 });
 
 // Processor function - invoked by query function
-export const processor = withProcessorHandler(async (context, invoices, _event) => {
+export const processor = withProcessorHandler(async (context, invoices, _event, options) => {
   // Process single invoice (invoices will be array with one item)
+  const abortSignal = options?.abortSignal;
   for (const invoice of invoices) {
-    await processInvoice(context, invoice as InvoiceData);
+    await throwIfDeadlineReached(abortSignal);
+    await processInvoice(context, invoice as InvoiceData, abortSignal);
   }
 });
-async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
+async function processInvoice(
+  context: ProcessingContext,
+  invoiceData: InvoiceData,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
 
   if (await isInvoiceMarkedForSkip(context.invoiceValidationFailuresConfig, invoiceData.workdayID)) {
@@ -159,7 +167,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
 
     debug(existingSupplier ? 'Enriching invoice with existing supplier' : 'Enriching invoice - no supplier assigned');
-    const result = await enrichInvoiceFromAttachments(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
+    const result = await enrichInvoiceFromAttachments(
+      detailedInvoice,
+      processedAttachments,
+      existingSupplier,
+      existingCompany,
+      invoiceData.emailContext,
+      undefined,
+      undefined,
+      abortSignal
+    );
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -196,7 +213,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -206,7 +222,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
     let poLines: PurchaseOrderLine[] | undefined;
     let poClosedForInvoicing = false;
-    let allPoLinesConsumed = false;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
       try {
@@ -224,24 +239,13 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
           poClosedForInvoicing = true;
           debug(`PO ${extractedPurchaseOrderNumber} is ${parsedPo?.documentStatus?.descriptor ?? parsedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
         } else {
-          const selected = selectInvoiceablePurchaseOrderLines(poLines);
-          poLines = selected.lines;
-          allPoLinesConsumed = selected.allLinesConsumed;
-          if (allPoLinesConsumed) {
-            debug(`Every line on PO ${extractedPurchaseOrderNumber} is fully invoiced, fully paid, or closed; coding lines from the PO without Purchase_Order_Line_Reference`);
-          } else {
-            debug(`${poLines?.length ?? 0} PO line(s) on ${extractedPurchaseOrderNumber} are available for invoicing`);
-          }
+          poLines = markPurchaseOrderLineAvailability(poLines);
         }
       } catch (poError) {
         debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
         extractedPurchaseOrderNumber = undefined;
       }
     }
-
-    const poLineOmittedNote = () => !poClosedForInvoicing && allPoLinesConsumed
-      ? consumedPurchaseOrderLinesNote(extractedPurchaseOrderNumber)
-      : closedPurchaseOrderLineNote(extractedPurchaseOrderNumber);
 
     const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
       costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
@@ -257,8 +261,19 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         : []
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -283,7 +298,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         emailWorktags,
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
         invoiceLineQuantityDisplayed,
-        { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+        // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+        abortSignal
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -307,16 +324,14 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     }
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
       return baseNotes
-        + (merged.purchaseOrderLineOmitted
-          ? `\n\nPurchase order lines: ${poLineOmittedNote()}`
-          : '')
+        + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
         + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
     };
@@ -347,13 +362,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
         resolveCostCenterWorkdayIds: (costCenterIds) =>
           getCostCenterWorkdayIdsByCodes(context.dbConnection, costCenterIds),
+        resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
         paymentTermsId,
-        ...(poClosedForInvoicing || allPoLinesConsumed ? { omitPurchaseOrderLineReference: true } : {}),
+        ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -367,7 +385,7 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         clusteringMode: invoiceAttachmentClusteringMode(),
       });
       snapshotSyncFailed = !baselineSaved || !writeSaved;
-      fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks);
+      fallbacks = mergeFallbacks(upfrontFallbacks, updateOutcome.appliedFallbacks, extractedPurchaseOrderNumber);
       priorFailures = updateOutcome.priorFailures;
       submittedSuppliersInvoiceNumber = updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber;
       invoiceNumberFallbackLabels = updateOutcome.appliedFallbacks
@@ -413,6 +431,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: submittedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },
@@ -426,8 +447,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         fallbackCostCenter: fallbacks.costCenter ? process.env.FALLBACK_COST_CENTER_ID : undefined,
         fallbackLineOfBusiness: fallbacks.lineOfBusiness ? process.env.FALLBACK_LOB_ID : undefined,
         fallbackPaymentTerms: fallbacks.paymentTerms || undefined,
-        closedPurchaseOrderLines: fallbacks.purchaseOrderLineOmitted
-          ? poLineOmittedNote()
+        purchaseOrderLineNotes: fallbacks.purchaseOrderLineNotes.length
+          ? fallbacks.purchaseOrderLineNotes.join(' ')
           : undefined,
       },
       ...(invoiceNumberFallbackLabels.length ? { appliedFallbackLabels: invoiceNumberFallbackLabels } : {}),
@@ -478,12 +499,14 @@ interface UpfrontFallbacks {
 
 interface Fallbacks extends UpfrontFallbacks {
   paymentTerms: boolean;
-  purchaseOrderLineOmitted: boolean;
+  purchaseOrderLineNotes: string[];
+  poPassthroughWorktagsOmitted: boolean;
+  duplicateWorktagsLabel?: string;
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
 
-function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[]): Fallbacks {
+function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedFallback[], purchaseOrderNumber?: string): Fallbacks {
   const omittedWorktags: string[] = [];
   if (submissionFallbacks.some(f => f.field === 'worktag:event')) omittedWorktags.push('Event');
   if (submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.startsWith('omitted'))) {
@@ -499,7 +522,12 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
     spendCategory: upfront.spendCategory || submissionFallbacks.some(f => f.field === 'worktag:spendCategory'),
     lineOfBusiness: upfront.lineOfBusiness || submissionFallbacks.some(f => f.field === 'worktag:lob' && f.label.includes('fallback')),
     paymentTerms: submissionFallbacks.some(f => f.field === 'paymentTerms'),
-    purchaseOrderLineOmitted: submissionFallbacks.some(f => f.field === 'purchaseOrderLine'),
+    purchaseOrderLineNotes: [...new Set(submissionFallbacks
+      .filter(isPurchaseOrderLineFallback)
+      .map(f => purchaseOrderLineFallbackNote(f.label, purchaseOrderNumber))
+      .filter((note): note is string => !!note))],
+    poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
+    duplicateWorktagsLabel: submissionFallbacks.find(f => f.field === 'duplicateWorktags')?.label,
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };
@@ -575,6 +603,12 @@ function formatFallbackNotes(fallbacks: Fallbacks): string {
   }
   if (fallbacks.omittedWorktags?.length) {
     parts.push(`${fallbacks.omittedWorktags.join(', ')} worktag(s) removed (no fallback available, validation error)`);
+  }
+  if (fallbacks.poPassthroughWorktagsOmitted) {
+    parts.push('PO pass-through worktags removed, PO split rows kept (duplicate worktag type, validation error)');
+  }
+  if (fallbacks.duplicateWorktagsLabel) {
+    parts.push(fallbacks.duplicateWorktagsLabel);
   }
   if (!parts.length) return '';
   return `\n\nFallback values applied: ${parts.join('; ')}`;

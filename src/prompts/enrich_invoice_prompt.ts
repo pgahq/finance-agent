@@ -71,7 +71,11 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedFreightAmount: z.string().nullable().describe('The freight amount as read from the invoice attachment, it may also be labeled as "shipping", "handling", or "delivery" charges. Capture this here even if the invoice presents freight/shipping/handling as a line item — do NOT include those lines in extractedInvoiceLines. Null if no freight amount could be found or if it is ambiguous.'),
 
+  extractedFreightLabel: z.string().nullable().describe('The exact label on the invoice for the freight amount (e.g. "Freight", "Shipping and Handling", "Delivery"). Null if no freight amount was found.'),
+
   extractedTaxAmount: z.string().nullable().describe('The tax amount as read from the invoice attachment, it may also be labeled as "VAT", "GST", "sales tax", or "HST". Capture this here even if the invoice presents the tax as a line item — do NOT include tax lines in extractedInvoiceLines. Null if no tax amount could be found or if it is ambiguous.'),
+
+  extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
@@ -106,7 +110,7 @@ export const InvoiceEnrichmentSchema = z.object({
     }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
     lineOfBusiness: z.object({
       extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
-      referenceId: z.string().nullable().describe('When a cost center was also resolved, the related default (or allowed) LOB referenceId for that cost center — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
+      referenceId: z.string().nullable().describe('When a cost center was also resolved, keep the mentioned LOB if it is in that cost center relatedLob default/allowed set; otherwise the related default or unique allowed id — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
     }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
     fund: z.object({
       extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
@@ -266,13 +270,19 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ## Part 5: Freight Amount
 
-Read the invoice attachment and extract the freight amount. It may be labeled as "Freight", "Shipping", "Handling", "Shipping & Handling", "Delivery", or similar. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00"). If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount can be found or if it is ambiguous, omit the field.
+Read the invoice attachment and extract the freight amount. It may be labeled as "Freight", "Shipping", "Handling", "Shipping & Handling", "Delivery", or similar. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00") and populate \`extractedFreightLabel\` with the exact label you read.
+
+If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
 
 ---
 
 ## Part 5.5: Tax Amount
 
-Read the invoice attachment and extract the tax amount. It may be labeled as "Tax", "VAT", "GST", "HST", "Sales Tax", or similar. Populate \`extractedTaxAmount\` with this value (e.g. "$45.00"). If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no tax amount can be found or if it is ambiguous, omit the field.
+Read the invoice attachment and extract the tax amount. It may be labeled as "Tax", "VAT", "GST", "HST", "Sales Tax", or similar. Populate \`extractedTaxAmount\` with this value (e.g. "$45.00") and populate \`extractedTaxLabel\` with the exact label you read.
+
+CRITICAL: If the invoice shows a "Shipping and Handling" or similar row with no amount, and a separate "Sales Tax" row with an amount, do NOT put the sales tax amount in \`extractedFreightAmount\`. Put the sales tax amount in \`extractedTaxAmount\` with label "Sales Tax", and leave \`extractedFreightAmount\` null. For example, an invoice with Sub-Total $8,514.38, blank Shipping and Handling, Sales Tax $510.86, and Invoice Total $9,025.24 must return extractedFreightAmount null, extractedFreightLabel null, extractedTaxAmount "$510.86", extractedTaxLabel "Sales Tax".
+
+If the invoice presents the tax as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no tax amount could be found or if it is ambiguous, omit both \`extractedTaxAmount\` and \`extractedTaxLabel\`.
 
 ---
 
@@ -349,7 +359,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - Populate emailWorktags.costCenter.extracted with what you found in the email
    - Populate emailWorktags.costCenter.name with the matched cost center name from the top result's metadata
    - Populate emailWorktags.costCenter.code with the matched cost center's code (Cost_Center_Reference_ID) from the top result's metadata
-   - If the email also mentions a Line of Business, use the result's relatedLob (default, then unique allowed). Do not call findLobs.
+   - If the email also mentions a Line of Business, do not call findLobs. Keep the mentioned LOB when it matches relatedLob.defaultReferenceId or relatedLob.allowedReferenceIds; otherwise use relatedLob.defaultReferenceId, then the unique allowed id.
    - If no match is found, set emailWorktags.costCenter.name and emailWorktags.costCenter.code to null
 
 2. **Events**: Look for any mention of an event, occasion, tournament, conference, or activity that might correspond to a Workday event (e.g., "2026 PGA Championship", "Q3 Sales Summit"). You do not need an explicit "Event:" label — use context to infer whether something is likely a Workday event. If found:
@@ -359,7 +369,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.event.workdayId to null
 
 3. **Lines of Business**: Look for any mention of a line of business, business unit, or LOB — whether explicit (e.g., "Golf LOB") or contextual (e.g., the email concerns golf-related services). If found:
-   - If you already resolved a cost center, do **not** call findLobs. Treat the email LOB as that cost center's related Line of Business: use relatedLob.defaultReferenceId when present, otherwise the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that related value.
+   - If you already resolved a cost center, do **not** call findLobs. Keep the mentioned LOB when it is already in that cost center's relatedLob default or allowed ids. Otherwise use relatedLob.defaultReferenceId when present, else the unique allowed id from relatedLob.allowedReferenceIds. Populate emailWorktags.lineOfBusiness.referenceId from that value.
    - Call **findLobs** only when the email mentions an LOB and does not identify a cost center
    - Populate emailWorktags.lineOfBusiness.extracted with what you found in the email
    - If no related or findLobs match is available, set emailWorktags.lineOfBusiness.referenceId to null

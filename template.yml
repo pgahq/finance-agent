@@ -104,6 +104,8 @@ Globals:
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
+        # Read at cold start. `true` turns on PO line selection by status and service dates (consumed PO lines lose their reference); missing leaves it off.
+        PO_LINE_SELECTION_ENABLED: ssm:/finance-agent/po-line-selection-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
@@ -759,7 +761,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
       Handler: dist/create_invoice.processor
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
-      Timeout: 300 # 5 minutes for single invoice
+      Timeout: 420 # 7 minutes for single invoice; must stay below the 15-minute cluster claim lifetime
       MemorySize: 1024
       Environment:
         Variables:
