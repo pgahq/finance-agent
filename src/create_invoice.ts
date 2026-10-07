@@ -12,6 +12,7 @@ import {
   formatInvoiceDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatLineTotalReviewNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
@@ -47,6 +48,7 @@ import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
@@ -952,6 +954,7 @@ async function processInvoiceCluster(
       freightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
+      chargeWithheld,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
@@ -1068,6 +1071,15 @@ async function processInvoiceCluster(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
+    // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
+    const lineTotalReviewNote = chargeWithheld ? undefined : lineTotalMismatchNote(finalLines, {
+      amountDue: extractedAmountDue,
+      freightAmount: extractedFreightAmount,
+      taxAmount: extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+    });
+    if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
@@ -1086,7 +1098,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));

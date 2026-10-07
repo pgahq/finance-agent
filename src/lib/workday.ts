@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
@@ -1061,12 +1061,19 @@ async function getValidationFallbackField(
     return 'conversationUrl';
   }
 
-  if (isQuantityUnitExtendedMismatchError(validationText)) {
+  // Both faults use the document-wide amount-only retry: every eligible merchandise line drops its quantity,
+  // so Workday stops counting PO line quantity as invoiced on that resubmission. Totals and PO links are kept.
+  const lineAmountFault = isQuantityUnitExtendedMismatchError(validationText)
+    ? 'quantity * unit cost vs extended amount'
+    : isLineQuantityOrUnitCostPrecisionError(error, validationText)
+      ? 'quantity or unit cost decimal precision'
+      : undefined;
+  if (lineAmountFault) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
-      debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
+      debug(`Validation is ${lineAmountFault}; retrying with amount-only lines`);
       return 'invoiceLineAmounts';
     }
-    debug('Validation is quantity * unit cost vs extended amount but no eligible lines; skipping amount-only retry');
+    debug(`Validation is ${lineAmountFault} but no eligible lines; skipping amount-only retry`);
     return undefined;
   }
 
