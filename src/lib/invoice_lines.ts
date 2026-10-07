@@ -922,6 +922,34 @@ function normalizeHeaderCharges(options: ExtractedHeaderCharges): { normalized: 
   };
 }
 
+export interface RestoredClearedFreight {
+  /** Freight-row total to submit as header freight, when it replaces a cleared header. */
+  freight?: string;
+  message?: string;
+}
+
+/**
+ * A printed zero freight clears the header (resolveHeaderChargeAmounts). When freight rows carry
+ * an amount and merchandise + those rows + tax is exactly the amount due, the rows are the freight:
+ * they go on the header instead of disappearing from both the lines and the header.
+ */
+export function restoreClearedFreightFromRows(
+  extractedLines: ExtractedInvoiceLine[],
+  charges: { amountDue?: string; tax?: string; freightCleared: boolean }
+): RestoredClearedFreight {
+  if (!charges.freightCleared) return {};
+  const amountDue = chargeAmount(charges.amountDue);
+  const { merchandiseLines, freightAmountFromLines } = splitFreightLines(extractedLines);
+  if (amountDue == null || freightAmountFromLines == null || freightAmountFromLines <= 0) return {};
+  const merchandiseCents = merchandiseLines.reduce((total, line) => total + toCents(signedChargeLineAmount(line) ?? 0), 0);
+  const taxCents = toCents(chargeAmount(charges.tax) ?? 0);
+  if (merchandiseCents + toCents(freightAmountFromLines) + taxCents !== toCents(amountDue)) return {};
+  return {
+    freight: String(freightAmountFromLines),
+    message: `Header freight printed as zero, but the freight rows (${formatChargeDollars(freightAmountFromLines)}) make up the rest of the amount due, so they were submitted as header Freight_Amount.`,
+  };
+}
+
 export function resolveHeaderChargeAmounts(options: {
   extractedFreightAmount?: string | null;
   extractedFreightLabel?: string | null;

@@ -20,6 +20,7 @@ import {
   reconcileSubmittedCharges,
   resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
+  restoreClearedFreightFromRows,
   splitFreightLines,
   statesServicePeriod,
   type FinalInvoiceLine,
@@ -1300,6 +1301,29 @@ describe('reconcileSubmittedCharges', () => {
 
     expect(result.lines).toBe(lines);
     expect(result.unreconciled).toBeUndefined();
+  });
+});
+
+describe('restoreClearedFreightFromRows', () => {
+  const lines = [{ description: 'Radio', totalPrice: '$100.00' }, { description: 'Freight', totalPrice: '$25.00' }];
+
+  it('puts the freight rows on the header when a printed zero freight would lose them', () => {
+    expect(restoreClearedFreightFromRows(lines, { amountDue: '$125.00', freightCleared: true })).toEqual({
+      freight: '25',
+      message: 'Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they were submitted as header Freight_Amount.',
+    });
+  });
+
+  it.each([
+    ['the header freight was not cleared', { amountDue: '$125.00', freightCleared: false }],
+    ['the rows do not close the gap to the amount due', { amountDue: '$100.00', freightCleared: true }],
+    ['there is no amount due', { freightCleared: true }],
+  ])('leaves a cleared freight alone when %s', (_label, charges) => {
+    expect(restoreClearedFreightFromRows(lines, charges)).toEqual({});
+  });
+
+  it('counts tax when checking the amount due', () => {
+    expect(restoreClearedFreightFromRows(lines, { amountDue: '$131.00', tax: '$6.00', freightCleared: true }).freight).toBe('25');
   });
 });
 

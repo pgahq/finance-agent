@@ -57,6 +57,7 @@ import {
   parseExtractedAmount,
   prepareInvoiceCharges,
   resolveHeaderChargeAmounts,
+  restoreClearedFreightFromRows,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -773,7 +774,7 @@ async function processInvoiceCluster(
     const {
       extractedFreightAmount: resolvedFreightAmount,
       extractedTaxAmount,
-      freightCleared,
+      freightCleared: headerFreightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
     } = resolveHeaderChargeAmounts({
@@ -783,13 +784,22 @@ async function processInvoiceCluster(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: splitFreightLines(extractedLines).freightAmountFromLines,
     });
+    const restoredFreight = restoreClearedFreightFromRows(extractedLines, {
+      amountDue: extractedAmountDue,
+      tax: extractedTaxAmount,
+      freightCleared: headerFreightCleared,
+    });
+    const freightCleared = headerFreightCleared && restoredFreight.freight == null;
     const charges = prepareInvoiceCharges(
       extractedLines,
-      { amountDue: extractedAmountDue, freight: resolvedFreightAmount, tax: extractedTaxAmount },
+      { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount },
       { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
-    const chargeCheck = chargeReconciliationMessages(chargeReconciliation);
+    const chargeCheck = [
+      ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...chargeReconciliationMessages(chargeReconciliation),
+    ];
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
     const candidateLines = withComposedLineDescriptions(charges.lines);
 

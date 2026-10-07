@@ -915,6 +915,39 @@ describe('create_invoice', () => {
     expect(submitArgs.taxCleared).toBe(false);
   });
 
+  it('submits freight rows as header freight when the header printed a zero freight', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$125.00',
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Shipping and Handling',
+      extractedInvoiceLines: [
+        { description: 'Radio', quantity: 1, unitCost: '100.00', totalPrice: '$100.00', hasDiscount: false },
+        { description: 'Freight', quantity: 1, unitCost: '25.00', totalPrice: '$25.00', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Radio', quantity: 1, unitCost: 100 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-zero-header-freight/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ description: 'Radio' })
+    ]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBe('25');
+    expect(submitArgs.freightCleared).toBe(false);
+    expect(submitArgs.freightAsLines).toBeFalsy();
+    expect(submitArgs.buildNotes([])).toContain(
+      'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they were submitted as header Freight_Amount.'
+    );
+  });
+
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
     const venue = {
       ID: [

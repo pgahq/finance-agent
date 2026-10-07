@@ -1146,7 +1146,7 @@ describe('enrich_invoice', () => {
   });
 
   describe('mislabeled freight and tax', () => {
-    const enrichmentWith = (charges: Record<string, string | null>) => ({
+    const enrichmentWith = (charges: Record<string, unknown>) => ({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1220,6 +1220,41 @@ describe('enrich_invoice', () => {
         taxCleared: false,
       }));
       expect(params.buildNotes([])).toContain('Freight/Tax review: Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read.');
+    });
+
+    it('submits freight rows as header freight when the header printed a zero freight', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const invoiceLines = require('../lib/invoice_lines.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedAmountDue: '$125.00',
+        extractedFreightAmount: '0.00',
+        extractedFreightLabel: 'Shipping and Handling',
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+        extractedInvoiceLines: [
+          { description: 'Radio', quantity: 1, unitCost: '100.00', totalPrice: '$100.00', hasDiscount: false },
+          { description: 'Freight', quantity: 1, unitCost: '25.00', totalPrice: '$25.00', hasDiscount: false },
+        ],
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: 'Radio', quantity: 1, unitCost: 100, extendedAmount: 100 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Radio']);
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: '25',
+        freightCleared: false,
+      }));
+      expect(params.buildNotes([])).toContain(
+        'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they were submitted as header Freight_Amount.'
+      );
     });
   });
 

@@ -40,6 +40,7 @@ import {
   overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   resolveHeaderChargeAmounts,
+  restoreClearedFreightFromRows,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -264,7 +265,7 @@ async function processInvoice(
     const {
       extractedFreightAmount: resolvedFreightAmount,
       extractedTaxAmount,
-      freightCleared,
+      freightCleared: headerFreightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
     } = resolveHeaderChargeAmounts({
@@ -274,7 +275,14 @@ async function processInvoice(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(extractedLines).freightAmountFromLines : undefined,
     });
-    const extractedCharges = { amountDue: extractedAmountDue, freight: resolvedFreightAmount, tax: extractedTaxAmount };
+    // Annotate-only runs submit nothing, so there is no header freight to restore.
+    const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && targetSupplierWID ? extractedLines : [], {
+      amountDue: extractedAmountDue,
+      tax: extractedTaxAmount,
+      freightCleared: headerFreightCleared,
+    });
+    const freightCleared = headerFreightCleared && restoredFreight.freight == null;
+    const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
     const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
     // Annotate-only runs never change lines, so both freight behaviors need a submit.
     const reconcilesFreight = submitsLines;
@@ -288,9 +296,12 @@ async function processInvoice(
     const checkedReconciliation = submitsLines
       ? chargeReconciliation
       : extractedChargeReconciliation(extractedLines, extractedCharges);
-    const chargeCheck = submitsLines
-      ? chargeReconciliationMessages(chargeReconciliation)
-      : extractedChargeCheck(extractedLines, extractedCharges);
+    const chargeCheck = [
+      ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(submitsLines
+        ? chargeReconciliationMessages(chargeReconciliation)
+        : extractedChargeCheck(extractedLines, extractedCharges)),
+    ];
     if (chargeCheck.length) {
       debug('Invoice amount check', { ...chargeReconciliationLogSummary(checkedReconciliation), annotateOnly: !submitsLines });
     }
