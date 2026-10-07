@@ -2,295 +2,175 @@
 name: agent-invoice-scoring
 description: >-
   Scores finance-agent supplier invoices against what AP finally saved in
-  Workday: snapshots of each agent write, the daily ScoreInvoices job and
-  processor, cancel attribution, and the weekly audit digest posted to
-  #notify-finance-agent-audit. Use when changing agent_invoice_snapshots,
-  agent_invoice_scores, cancel_labels, the scored-field whitelist, material vs
-  convention fields, invoice status classification, CANCEL_REASON_ATTRIBUTION,
-  SCORE_* settings, ScoreInvoices, ScoreDigest, AUDIT_SLACK_WEBHOOK_URL,
-  snapshotSync, or what the create, resend-update, and enrich paths record
-  after a Workday write.
+  Workday: agent write snapshots, the daily ScoreInvoices job and processor,
+  cancel attribution, touch buckets, and the daily and weekly ScoreDigest posts
+  to #notify-finance-agent-audit. Use when changing agent_invoice_snapshots,
+  agent_invoice_scores, cancel_labels, agent_invoice_touches,
+  agent_invoice_touch_daily, snapshotAgentWrite or snapshotEnrichBaseline,
+  the scored-field whitelist, material vs convention fields, invoice status
+  classification, CANCEL_REASON_ATTRIBUTION, SCORE_* settings, ScoreInvoices,
+  ScoreDigest, AUDIT_SLACK_WEBHOOK_URL, or export-eval-cases.
 ---
 
 # Agent invoice scoring
 
 The score is what AP changed in Workday on the fields the agent is responsible
-for entering. Workday's own audit trail is not read: it mixes the agent's
-write, approval steps, and recalculated fields. Instead the agent saves what it
-wrote, and the scorer diffs that against later reads.
+for entering. Workday's audit trail is not read: it mixes the agent's write,
+approval steps, and recalculated fields. The agent saves what it wrote, and the
+scorer diffs that against later reads.
 
 ## Snapshots (write path)
 
-After every agent write, the processor reads the invoice back with
-`Get_Supplier_Invoices` and stores `extractScoredFields` of it in
-`agent_invoice_snapshots` (next `write_seq` per invoice).
+After each agent write the processor reads the invoice back and stores
+`extractScoredFields` of it in `agent_invoice_snapshots`
+(`src/lib/invoice_snapshots.ts`).
 
 | Source | Where | Notes |
 | --- | --- | --- |
-| `create` | `CreateInvoiceProcessor` after `submitNewSupplierInvoice` | Reuses the read-back create already does (`createdInvoice`), no extra call. |
-| `resend_update` | `CreateInvoiceProcessor` after `submitSupplierInvoiceUpdate` on a resend | `previousInvoice` (the live read update already does) is diffed against the latest snapshot and stored as `pre_write_diff`: AP edits the update overwrote. One extra Get after the update. |
-| `enrich_baseline` | `EnrichInvoiceProcessor` before the update | The invoice as OCR left it (`detailedInvoice`). Not an agent write. |
-| `enrich` | `EnrichInvoiceProcessor` after `submitSupplierInvoiceUpdate` | One extra Get. The notes-only `annotateSupplierInvoice` path takes no snapshot. |
+| `create` | `CreateInvoiceProcessor` after `submitNewSupplierInvoice` | Reuses the create read-back (`createdInvoice`). |
+| `resend_update` | `CreateInvoiceProcessor` after a resend update | AP edits the update overwrote are stored as `pre_write_diff`. |
+| `enrich_baseline` | `EnrichInvoiceProcessor` before the update | The invoice as OCR left it. Not an agent write. |
+| `enrich` | `EnrichInvoiceProcessor` after the update | The notes-only `annotateSupplierInvoice` path takes no snapshot. |
 
-A snapshot never fails the invoice: `snapshotAgentWrite` and
-`snapshotEnrichBaseline` catch everything and return false, and the Slack
-message gains `snapshotSync: failed`. Each row carries `release_sha`
-(`RELEASE_SHA` from the `ReleaseSha` template parameter, set to `CIRCLE_SHA1`
-on deploy) and `clustering_mode`.
+A snapshot never fails the invoice: the helpers return false and the Slack
+message gains `snapshotSync: failed`; an invoice with no agent-write snapshot is
+simply not scored. `write_seq` is the next number per invoice, and an insert
+that loses a race for it retries. Every row carries `release_sha`
+(`ReleaseSha` parameter, `CIRCLE_SHA1` on deploy). `create`, `resend_update`,
+and `enrich` rows also carry `clustering_mode`; only create and resend rows
+carry the Intercom conversation and S3 attachments, because enrich starts from
+Workday OCR email.
 
-### Scored fields
-
-`extractScoredFields` is the whitelist. Header: supplier, company, supplier
-invoice number, invoice date, control total, memo. Each line: amount, PO line,
-spend category, cost center, fund, line of business, other worktags (sorted),
-memo, item description. References are keyed by their first non-WID ID
-(`Supplier_ID=S-…`), else the WID. Notes, assignee, tags, attachments, the
-conversation URL field, and Workday-computed tax are left out on purpose.
-
-`diffScoredFields` pairs lines by same position and amount, then same amount
-anywhere, then position; leftovers are `line.added` / `line.removed`. A
-reorder alone is not a change.
+`extractScoredFields` is the scored-field whitelist and `diffScoredFields` the
+line pairing (a reorder alone is not a change). Notes, assignee, tags,
+attachments, and Workday-computed tax are left out on purpose.
 
 ## Daily scoring
 
-`ScoreInvoices` (14:00 UTC) lists snapshots of non-terminal invoices, reads
-status in batches of 50 through WQL (`workdayID in (…)`), and Event-invokes
-`ScoreInvoicesProcessor` in groups of 20 for invoices that reached a stage
-they were not scored for. A WID missing from WQL is treated as not in Workday.
+`ScoreInvoices` (14:00 UTC) reads status for non-terminal agent invoices in WQL
+batches and Event-invokes `ScoreInvoicesProcessor` for invoices that reached a
+stage they were not scored for, at most `SCORE_MAX_INVOICES_PER_RUN` (default
+500) per run; the rest are selected again the next day. Status is read for at
+most twice that many pending invoices, most recently written first. A WID
+missing from WQL is not in Workday.
 
-`classifyStatus` (`src/lib/invoice_score.ts`): canceled flag or status, then
-paid or partially paid, denied, approved, Draft; any other status counts as
-entered by AP. Status text is tenant configuration, so `SCORE_DRAFT_STATUSES`,
-`SCORE_APPROVED_STATUSES`, `SCORE_DENIED_STATUSES`, and
-`SCORE_CANCELED_STATUSES` (comma-separated) override the defaults.
+`classifyStatus` (`src/lib/invoice_score.ts`) maps status to a stage; any status
+that is not Draft, approved, paid, denied, or canceled counts as entered by AP,
+and the processor logs one that is not in `SCORE_ENTRY_STATUSES` either.
+`SCORE_DRAFT_STATUSES`, `SCORE_ENTRY_STATUSES`, `SCORE_APPROVED_STATUSES`,
+`SCORE_DENIED_STATUSES`, and `SCORE_CANCELED_STATUSES` override the confirmed
+defaults (Draft, In Progress, Approved, Canceled; Denied assumed).
 
-| State | What the processor does |
+| Stage | What the processor stores |
 | --- | --- |
-| Draft | Nothing until `SCORE_STUCK_DRAFT_DAYS` (default 14) after the last agent write, then `stuck_draft` (not terminal). |
-| Entered (first non-Draft) | Entry diff against the latest agent snapshot; outcome `submitted_clean` or `submitted_edited`. |
-| Approved, paid, denied | Late diff against the entry read, then terminal. Draft straight to terminal between runs uses the one read for both, with an empty late diff. Denied sets outcome `denied`. |
-| Canceled, not found | Outcome `canceled` or `deleted`, cancel attribution, terminal. |
+| Draft | Nothing until `SCORE_STUCK_DRAFT_DAYS` (default 14), then `stuck_draft` (not terminal). |
+| Entered | Entry diff against the latest agent snapshot: `submitted_clean` or `submitted_edited`. |
+| Approved, paid, denied | Late diff against the entry read, then terminal. |
+| Canceled, not found | `canceled` or `deleted` with cancel attribution, terminal. |
 
-Each stage is written once and terminal rows are never rescored.
+Each stage is written once, and the upsert never reopens a terminal row.
 
-### Material vs convention
-
-Material (counts against the agent): supplier, company, invoice date, control
-total, line amount, PO line, spend category, cost center, fund, line of
-business, other worktags, lines added or removed. Convention (reported apart):
-header memo, supplier invoice number (composed from the HQ convention), line
-memo, item description. An invoice with only convention changes is
-`submitted_clean`.
-
-For an enrich invoice, a change only counts against the agent when the agent
-changed that field from the OCR baseline (`agentOwned`); added or removed lines
-count when the agent changed line amounts or lines. AP fixing OCR text the
-agent left alone is not an agent miss.
+`MATERIAL_FIELDS` count against the agent; `CONVENTION_FIELDS` (memos, item
+description, supplier invoice number) are reported apart, so an invoice with
+only convention changes is `submitted_clean`. On an enrich invoice a change
+counts only when the agent changed that field from the OCR baseline
+(`agentOwned`); without a saved baseline, nothing counts against the agent.
 
 ### Cancel attribution
 
-No Workday cancel reason points at the agent today, so `attributeCancel` relies
-on facts and leaves anything unproven `unattributed`. First match wins:
+No Workday cancel reason points at the agent, so `attributeCancel` relies on
+evidence and leaves anything unproven `unattributed`. The rule order and
+`CancelBasis` values live in `src/lib/invoice_score.ts`. Points that are easy to
+miss:
 
-1. `cancel_labels` row (`ap_label`).
-2. `CANCEL_REASON_ATTRIBUTION` agent reasons or `agentTags` work queue tags.
-3. Business reasons, then duplicate reasons (agent).
-4. `replacement`: a live invoice with the same supplier invoice number (and
-   supplier WID when WQL returns it) that the agent did not write. Its fields
-   are diffed against the agent snapshot so the miss still has a field score.
-   Uses the `suppliersInvoiceNumber` WQL field (`SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`
-   on `ScoreInvoicesProcessor`). The agent submits the printed number when there
-   is one, so AP's re-keyed invoice normally carries the same number; an invoice
-   with no printed number gets an HQ-convention number AP may not reproduce.
-5. `duplicate`: another agent invoice with the same supplier and supplier
-   invoice number that is still live.
-6. `wrong_document`: the primary attachment was classified `supporting` or
-   `unrelated`; `per_pdf_without_clustering`: clustering was not `on` and the
-   conversation produced more than one agent invoice.
-7. `supplier_void_or_credit` (business): a conversation message after the first
-   agent write mentions a void, credit memo or note, or disregarding the invoice.
-   Needs `INTERCOM_ACCESS_TOKEN`; a failed read is skipped.
-8. `early_draft_cancel` stays `unattributed`: canceled without AP submitting,
-   no AP edits, within `SCORE_EARLY_CANCEL_HOURS` (default 72) of detection.
-9. Otherwise `no_signal`.
+- The cancel reason comes from `Invoice_Cancel_Reason_Reference` on the
+  canceled invoice; `SCORE_CANCEL_REASON_WQL_FIELD` is only a fallback.
+- `CANCEL_REASON_ATTRIBUTION` (`CancelReasonAttribution` parameter) maps reason
+  names or IDs. The template default maps Order Canceled and Alternate Payment
+  Method Used to business and Workday's `DUPLICATE` to the agent; Incorrect
+  Supplier and Invoiced in Error stay unmapped. The sandbox shares production's
+  IDs.
+- When the canceled invoice cannot be read and no cancel reason is known, the
+  cancel stays `unattributed` (`invoice_unreadable`) unless AP labeled it.
+- A `replacement` needs the canceled invoice's supplier WID, so no replacement
+  is looked for when that invoice could not be read. The lookup uses
+  `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`, set in `template.yml` on
+  `ScoreInvoicesProcessor`. Configured WQL field names must be plain aliases.
+- `duplicate` compares each other invoice's latest agent snapshot only.
+- `supplier_void_or_credit` needs `INTERCOM_ACCESS_TOKEN`.
 
-The cancel reason comes from the canceled invoice itself:
-`Get_Supplier_Invoices` returns a read-only `Invoice_Cancel_Reason_Reference`
-(name from its `Descriptor`, IDs such as `INVOICE_CANCEL_REASON-3-3`).
-`SCORE_CANCEL_REASON_WQL_FIELD` is only a fallback for when that read fails.
+`template.yml` sets only `SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD`
+(`suppliersInvoiceNumber`, on `ScoreInvoicesProcessor`) and
+`SCORE_TENANT_REFRESH_WEEKDAY` (global). Every other `SCORE_*` setting,
+including `SCORE_HOLD_REASON_WQL_FIELD` and `SCORE_CANCEL_REASON_WQL_FIELD`, is
+unset; add it under `Environment` on both `ScoreInvoicesFunction` and
+`ScoreInvoicesProcessor` when needed.
 
-`CANCEL_REASON_ATTRIBUTION` is the `CancelReasonAttribution` template
-parameter. Entries match a reason's name or any of its IDs, case-insensitively.
-The sandbox is a copy of production, so the IDs are the same in both tenants
-and the template default serves both:
+AP records its call on an unattributed cancel with a `cancel_labels` row
+(`attribution` `agent` or `business`). A label set before scoring decides the
+attribution; a later label is applied by the digest (basis `ap_label`).
 
-| Reason | ID | Mapping |
-| --- | --- | --- |
-| Incorrect Supplier | `INVOICE_CANCEL_REASON-3-1` | unmapped: agent supplier match or supplier billing the wrong entity |
-| Invoiced in Error | `INVOICE_CANCEL_REASON-3-2` | unmapped: supplier mistake or a backup document turned into an invoice |
-| Order Canceled | `INVOICE_CANCEL_REASON-3-3` | business |
-| Alternate Payment Method Used | `INVOICE_CANCEL_REASON-3-4` | business |
-| Duplicate Invoice (Workday-owned) | `DUPLICATE` (`Workday_Invoice_Cancel_Reason`) | duplicate (agent) |
+## Touches
 
-Unmapped reasons fall through to the evidence rules; AP labels on them show
-whether either one should be mapped later. Adding an agent reason or tag is a
-configuration change.
+A touch is one agent-owned field AP changed on an invoice AP submitted, before
+or after submit (`touchCount` in `src/lib/score_touches.ts`). Cancels, deletions,
+and stuck Drafts are not bucketed. Buckets are `TOUCH_BUCKETS` (0, 1–3, 4–10,
+11–20, 21+).
 
-Optional WQL fields stay unset until confirmed in the tenant:
-`SCORE_HOLD_REASON_WQL_FIELD` and the `SCORE_CANCEL_REASON_WQL_FIELD` fallback. Without the hold field the score
-records `On hold` from the Get `On_Hold` flag. Other `SCORE_*` settings are not in
-`template.yml`; add them under `Environment` on `ScoreInvoicesFunction` and
-`ScoreInvoicesProcessor` (both classify status) when needed.
-Status text is confirmed: Draft, In Progress, Approved, Canceled (Denied
-assumed), which the defaults already match.
+Every audit post leads with the zero-touch share, the change from the previous
+period, a bar per bucket, sparklines, and a QuickChart line chart
+(`SCORE_CHART_BASE_URL`, `none` turns it off). Daily periods are Central
+calendar days; weekly periods are complete Monday-to-Sunday Central weeks, so
+the Monday digest leads with last week. If Slack answers 400 because it cannot
+load the chart, `postSlackBlocks` resends once without image blocks; other
+failures are not resent.
 
-To record AP's call on an unattributed cancel:
+`ensureTouchReporting` (`src/lib/touch_reporting.ts`) creates the
+`agent_invoice_touches` view and the `agent_invoice_touch_daily` table at cold
+start. Each `ScoreDigest` run recomputes the last 15 days of the table. Both
+live in the VPC-only Aurora cluster.
 
-```sql
-INSERT INTO cancel_labels (workday_invoice_wid, attribution, note, labeled_by)
-VALUES ('<invoice WID>', 'agent', 'backup PDF became an invoice', 'ap@pgahq.com')
-ON CONFLICT (workday_invoice_wid) DO UPDATE SET attribution = EXCLUDED.attribution, note = EXCLUDED.note;
-```
+## Audit posts
 
-A label set before the invoice is scored decides its attribution. A label on
-an already-scored cancel leaves the stored score alone, but the digest applies
-it (basis `ap_label`) and drops the invoice from the to-label list.
+`ScoreDigest` posts only to `AUDIT_SLACK_WEBHOOK_URL`
+(`/finance-agent/audit-slack-webhook-url`); its own error alerts go to the
+operator channel like every other Lambda. A post that does not go through stops
+the run with an error, and so does a failed rollup refresh (after posting).
+Invoice values are escaped, so memo text cannot mention the channel or add links.
 
-## Touches (lead of every audit post)
-
-A **touch** is one agent-owned field AP had to change on an invoice AP
-submitted, before submit (`entryDiff`) or after (`lateDiff`); each field on each
-line counts once, and added or removed lines count once each. Changes to OCR
-values the enrich agent left alone do not count. Cancels, deletions, and stuck
-Drafts are not bucketed; they keep their own lines.
-
-Buckets (`TOUCH_BUCKETS` in `src/lib/score_touches.ts`): **0**, **1–3**,
-**4–10**, **11–20**, **21+**. More zero-touch invoices is the goal, so every
-daily and weekly post starts with:
-
-1. A Slack header: `NN% of invoices needed 0 touches today (x of y)`
-   (`this week` for the digest).
-2. The change in zero-touch share against the previous period, then a
-   monospace bar per bucket with count and share.
-3. A trend: one sparkline per bucket (share per period; blank = 0%, `·` = no
-   invoices) over 14 rolling days (daily) or 8 rolling weeks (weekly).
-4. A line chart image of the same shares. The URL is built for QuickChart
-   (`SCORE_CHART_BASE_URL`, default `https://quickchart.io/chart`; `none`
-   turns it off). Slack fetches the image, not the Lambda, and the URL carries
-   only percentages and date labels. If Slack rejects a message because it
-   cannot load the image, `postSlackBlocks` resends it without image blocks.
-
-The daily post's lead is its own message, followed by one message per invoice;
-each invoice headline ends with its touch count.
-
-## Stored touch data for reports
-
-Created at cold start (after `agent_invoice_scores`) by `ensureTouchReporting`
-in `src/lib/touch_reporting.ts`, under an advisory lock:
-
-- **`agent_invoice_touches`** (view): one row per invoice AP submitted, with
-  `touches`, `touch_bucket` (`0`, `1-3`, `4-10`, `11-20`, `21+`), `entry_day`
-  (Central calendar date of the entry read), `entry_read_at`, `origin`,
-  `release_sha`, `clustering_mode`, `outcome`, and statuses. Always current; the
-  touch count is computed from `entry_diff` and `late_diff` the same way as the
-  Slack posts.
-- **`agent_invoice_touch_daily`** (table): one row per Central day with
-  `invoices`, `touches_0` … `touches_21_plus`, `total_touches`,
-  `zero_touch_share` (null on a day with no invoices), and `computed_at`. Each
-  `ScoreDigest` run (daily and weekly) recomputes the last 15 days, so late
-  corrections land in recent days and older days keep their stored values. The
-  first run backfills from the earliest entered invoice. A refresh failure is
-  logged and does not block the post.
-
-Report queries:
-
-```sql
--- Daily trend
-SELECT entry_day, invoices, touches_0, touches_1_3, touches_4_10, touches_11_20, touches_21_plus, zero_touch_share
-FROM agent_invoice_touch_daily ORDER BY entry_day;
-
--- Weekly trend (Monday weeks)
-SELECT date_trunc('week', entry_day)::date AS week, sum(invoices) AS invoices, sum(touches_0) AS zero_touch,
-       round(sum(touches_0)::numeric / NULLIF(sum(invoices), 0), 4) AS zero_touch_share
-FROM agent_invoice_touch_daily GROUP BY 1 ORDER BY 1;
-
--- Zero-touch share by release
-SELECT release_sha, count(*) AS invoices, round(avg((touches = 0)::int), 4) AS zero_touch_share
-FROM agent_invoice_touches GROUP BY 1 ORDER BY min(entry_read_at);
-```
-
-The tables live in the finance-agent Aurora cluster inside the VPC, so a
-reporting tool needs a connection to that database (or an export).
-
-## Daily summary
-
-`ScoreDigest` also runs daily at 14:20 UTC with input `{"mode":"daily"}`, after
-the 14:00 scoring run. It posts **one message per invoice** scored in the last
-24 hours to the audit channel, about a second apart (incoming webhooks allow
-roughly one message per second):
-
-- Headline: invoice link and outcome (`submitted with AP edits`, `approved`,
-  `canceled · agent (not an invoice)`, `stuck in Draft`).
-- *Changed by AP*: each agent-owned material field with before → after values
-  (reference IDs shown without their type, for example `CC72200`), and line
-  number. *Conventions* lists memo, description, and invoice-number changes the
-  same way.
-- *Changed after submit* at the final read; *AP replacement differs* for a
-  cancel AP re-keyed.
-- A context line counts enrich changes to OCR values the agent left alone.
-
-At most `MAX_DAILY_INVOICE_MESSAGES` (40) messages per day; the rest are counted
-in a closing line that points to the weekly digest, which also carries the
-sandbox-refresh count. Nothing is posted on a day with nothing scored. Each
-scored invoice is also logged as `Scored agent invoice` with outcome and changed
-field names (no values) in the processor's log group.
-
-## Weekly digest
-
-`ScoreDigest` (Mondays 14:30 UTC) posts to `AUDIT_SLACK_WEBHOOK_URL`
-(`/finance-agent/audit-slack-webhook-url`, `#notify-finance-agent-audit` in
-prod, `#notify-finance-agent-audit-dev` in dev). `postSlackBlocks` never falls
-back to the per-invoice `SLACK_WEBHOOK_URL`. The post covers the trailing seven
-days against the seven before: outcomes, per-field change rates (material
-first), edit rate by release, late corrections, cancels by attribution and
-basis, memo and supplier invoice number rewrite examples, the five worst
-invoices, up to ten unlabeled unattributed cancels (early Draft first), and an
-outcome-only count of `FINAGENT-invoice-modified` invoices with no snapshot.
+- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead, then one message per
+  invoice scored so far that Central day with before → after values, about a
+  second apart. Up to `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing
+  line counts the rest and any sandbox-refresh removals. Nothing is posted when
+  nothing was scored or removed.
+- Weekly (Mondays 14:30 UTC): the touch lead, then the last complete
+  Monday-to-Sunday Central week against the week before (`digestWindow`), so
+  Monday morning's scoring run is reported the following week: outcomes,
+  per-field change rates, edit rate by release, late corrections, cancels,
+  convention examples, worst invoices, unlabeled cancels, and a count of
+  agent-tagged invoices with no snapshot (or a note when that query fails).
 
 ## Sandbox refresh (dev only)
 
-The implementation tenant is overwritten with production every Saturday, so
-every invoice the dev agent wrote that week disappears, and production's
-agent-tagged invoices appear. `SCORE_TENANT_REFRESH_WEEKDAY` (UTC weekday,
-`TenantRefreshWeekday` parameter, `6` on `deploy-to-dev`, `none` on
-`deploy-to-prod`) handles that:
-
-- `ScoreInvoices` skips the refresh day.
-- An invoice missing from WQL whose last agent write was before 00:00 UTC on
-  the latest refresh day closes with final status `Lost to tenant refresh`, with
-  no cancel attribution. One that never left Draft gets outcome
-  `lost_to_refresh`; one AP had submitted keeps its entry score.
-- The digest leaves those out of late corrections and cancels, reports them on
-  their own line, and skips the outcome-only "before snapshots" count.
-
-A real deletion in the sandbox is also treated as lost to the refresh. Dev
-scores prove the jobs and queries work; production carries the real numbers.
+The implementation tenant is overwritten with production every Saturday.
+`SCORE_TENANT_REFRESH_WEEKDAY` (`TenantRefreshWeekday`: `6` in dev, `none` in
+prod) makes `ScoreInvoices` skip that day, closes invoices that vanished in the
+refresh as `Lost to tenant refresh` without cancel attribution, and keeps them
+out of the cancel and pre-snapshot counts. A real deletion in the sandbox is
+also recorded as lost to the refresh, so judge accuracy from production scores.
 
 ## Eval cases
 
-`tsx src/export-eval-cases.ts [--since YYYY-MM-DD] [--out cases.jsonl]` exports
-every `submitted_edited` invoice as a JSON Lines case (`src/lib/eval_cases.ts`):
-the S3 keys and attachment kinds the agent read, its PO lines, what the agent
-submitted, what AP saved at entry, the misses (material and agent-owned), and
-convention changes. With `INTERCOM_ACCESS_TOKEN` set, each case also carries
-the conversation messages. It needs database access, so run it where the
-Lambdas' Aurora cluster is reachable.
+`npm run export:eval-cases -- --out cases.jsonl [--since YYYY-MM-DD] [--include-messages]`
+writes each `submitted_edited` invoice as a JSON Lines case (`src/lib/eval_cases.ts`).
+The file is created owner-only and never overwritten; delete it after the eval
+run. `--include-messages` adds the Intercom conversation and needs
+`INTERCOM_ACCESS_TOKEN`. It needs a route to the Aurora cluster.
 
 ## Gotchas
 
-- The scorer depends on snapshots; invoices written before they shipped only
-  appear in the digest's outcome-only line.
+- Invoices written before snapshots shipped only appear in the weekly
+  outcome-only count.
 - A resend update still overwrites AP edits on a Draft invoice; scoring only
   records them in `pre_write_diff`.
-- The digest Lambda reads `WORKDAY_UI_BASE_URL` and `WORKDAY_TENANT` for
-  invoice links, like the per-invoice Slack messages.
+- Invoice links in the posts need `WORKDAY_UI_BASE_URL` and `WORKDAY_TENANT`.

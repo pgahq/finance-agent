@@ -15,6 +15,8 @@ export interface InvoiceStatusRow {
 
 export interface StatusConfig {
   draft: string[];
+  /** Known in-review statuses; any other non-Draft, non-terminal status still counts as entered but is logged. */
+  entry: string[];
   approved: string[];
   denied: string[];
   canceled: string[];
@@ -32,6 +34,7 @@ function listFromEnv(value: string | undefined, fallback: string[]): string[] {
 export function statusConfigFromEnv(env: NodeJS.ProcessEnv = process.env): StatusConfig {
   return {
     draft: listFromEnv(env.SCORE_DRAFT_STATUSES, ['Draft']),
+    entry: listFromEnv(env.SCORE_ENTRY_STATUSES, ['In Progress']),
     approved: listFromEnv(env.SCORE_APPROVED_STATUSES, ['Approved']),
     denied: listFromEnv(env.SCORE_DENIED_STATUSES, ['Denied']),
     canceled: listFromEnv(env.SCORE_CANCELED_STATUSES, ['Canceled', 'Cancelled']),
@@ -120,14 +123,16 @@ export function countsAgainstAgent(change: ScoredChange): boolean {
   return change.category === 'material' && change.agentOwned;
 }
 
-export type Outcome =
-  | 'submitted_clean'
-  | 'submitted_edited'
-  | 'canceled'
-  | 'deleted'
-  | 'denied'
-  | 'stuck_draft'
-  | 'lost_to_refresh';
+export const OUTCOMES = [
+  'submitted_clean',
+  'submitted_edited',
+  'canceled',
+  'deleted',
+  'denied',
+  'stuck_draft',
+  'lost_to_refresh',
+] as const;
+export type Outcome = typeof OUTCOMES[number];
 
 /** Final status recorded when a sandbox refresh removed an invoice the agent wrote there. */
 export const LOST_TO_REFRESH_STATUS = 'Lost to tenant refresh';
@@ -152,21 +157,25 @@ export function entryOutcome(changes: ScoredChange[]): Outcome {
   return changes.some(countsAgainstAgent) ? 'submitted_edited' : 'submitted_clean';
 }
 
-export type CancelAttribution = 'agent' | 'business' | 'unattributed';
+export const CANCEL_ATTRIBUTIONS = ['agent', 'business', 'unattributed'] as const;
+export type CancelAttribution = typeof CANCEL_ATTRIBUTIONS[number];
 
-export type CancelBasis =
-  | 'ap_label'
-  | 'agent_reason'
-  | 'agent_tag'
-  | 'business_reason'
-  | 'duplicate_reason'
-  | 'replacement'
-  | 'duplicate'
-  | 'wrong_document'
-  | 'per_pdf_without_clustering'
-  | 'supplier_void_or_credit'
-  | 'early_draft_cancel'
-  | 'no_signal';
+export const CANCEL_BASES = [
+  'ap_label',
+  'agent_reason',
+  'agent_tag',
+  'business_reason',
+  'duplicate_reason',
+  'replacement',
+  'duplicate',
+  'wrong_document',
+  'per_pdf_without_clustering',
+  'supplier_void_or_credit',
+  'early_draft_cancel',
+  'invoice_unreadable',
+  'no_signal',
+] as const;
+export type CancelBasis = typeof CANCEL_BASES[number];
 
 export interface CancelReasonMapping {
   business: string[];
@@ -222,6 +231,14 @@ export interface CancelEvidence {
   hoursFromLastAgentWrite?: number;
   /** AP changed scored fields before canceling. */
   apEditedBeforeCancel?: boolean;
+  /** The canceled invoice could not be read from Workday, so its cancel reason and AP edits are unknown. */
+  invoiceReadFailed?: boolean;
+  /** The replacement search failed, so a missing `replacement` does not mean there was none. */
+  replacementLookupFailed?: boolean;
+  /** Workday could not confirm whether another agent invoice with the same number is live. */
+  duplicateCheckFailed?: boolean;
+  /** The Intercom conversation could not be read, so a missing supplier void or credit is unknown. */
+  conversationReadFailed?: boolean;
 }
 
 export interface CancelAttributionResult {
@@ -250,6 +267,8 @@ export function attributeCancel(
   earlyCancelHours = DEFAULT_EARLY_CANCEL_HOURS
 ): CancelAttributionResult {
   if (evidence.apLabel) return { attribution: evidence.apLabel, basis: 'ap_label' };
+  // Without the invoice or a cancel reason, a business cancel would look like an agent one.
+  if (evidence.invoiceReadFailed && !evidence.cancelReason) return { attribution: 'unattributed', basis: 'invoice_unreadable' };
   if (matchesReason(mapping.agent, evidence)) return { attribution: 'agent', basis: 'agent_reason' };
   if ((evidence.workQueueTags ?? []).some((tag) => matches(mapping.agentTags, tag))) {
     return { attribution: 'agent', basis: 'agent_tag' };
@@ -284,7 +303,7 @@ const SUPPLIER_VOID_OR_CREDIT_PATTERN =
 /** True when a supplier message after the agent's write says the invoice was voided or credited. */
 export function mentionsSupplierVoidOrCredit(messages: Array<{ createdAt?: number; body?: string }>, afterUnixSeconds?: number): boolean {
   return messages.some((message) =>
-    (afterUnixSeconds == null || message.createdAt == null || message.createdAt >= afterUnixSeconds)
+    (afterUnixSeconds == null || (message.createdAt != null && message.createdAt >= afterUnixSeconds))
     && SUPPLIER_VOID_OR_CREDIT_PATTERN.test(message.body ?? '')
   );
 }

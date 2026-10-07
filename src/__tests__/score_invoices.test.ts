@@ -190,6 +190,42 @@ describe('scoreInvoice', () => {
     expect((workday.executeWorkdayQuery as jest.Mock).mock.calls[0][1]).toContain("suppliersInvoiceNumber = 'INV-1'");
   });
 
+  it('ignores a replacement candidate with no matching supplier or one Workday cannot return', async () => {
+    process.env.SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD = 'suppliersInvoiceNumber';
+    (workday.executeWorkdayQuery as jest.Mock).mockResolvedValue({
+      data: [
+        { workdayID: 'no-supplier', invoiceNumber: 'SUPIN-2' },
+        { workdayID: 'unreadable', invoiceNumber: 'SUPIN-3', supplier: { id: 'sup-wid' } },
+      ],
+    });
+    (workday.getSupplierInvoice as jest.Mock).mockImplementation(async (_ctx: unknown, id: string) => {
+      if (id === 'unreadable') throw new Error('Workday timeout');
+      return invoice();
+    });
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Draft', { isCanceled: true }) }, now);
+    expect(score?.cancelEvidence?.replacement).toBeUndefined();
+    expect(score?.cancelBasis).not.toBe('replacement');
+    expect(workday.getSupplierInvoice).not.toHaveBeenCalledWith(context, 'no-supplier');
+  });
+
+  it('does not look for a replacement when the canceled invoice could not be read', async () => {
+    process.env.SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD = 'suppliersInvoiceNumber';
+    (workday.getSupplierInvoice as jest.Mock).mockRejectedValue(new Error('Workday timeout'));
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('Draft', { isCanceled: true }) }, now);
+    expect(workday.executeWorkdayQuery).not.toHaveBeenCalled();
+    expect(score?.cancelEvidence?.replacement).toBeUndefined();
+    expect(score).toEqual(expect.objectContaining({ cancelAttribution: 'unattributed', cancelBasis: 'invoice_unreadable' }));
+    expect(score?.cancelEvidence?.invoiceReadFailed).toBe(true);
+  });
+
+  it('counts nothing against the agent on an enrich invoice whose OCR baseline was not saved', async () => {
+    (snapshots.getAgentInvoiceSnapshots as jest.Mock).mockResolvedValue([snapshot({ writeSeq: 1, source: 'enrich' })]);
+    (workday.getSupplierInvoice as jest.Mock).mockResolvedValue(invoice({ costCenter: 'CC9' }));
+    const score = await scoreInvoice(context, { workdayInvoiceWid: wid, status: status('In Progress') }, now);
+    expect(score?.entryDiff).toEqual([expect.objectContaining({ field: 'line.costCenter', agentOwned: false })]);
+    expect(score?.outcome).toBe('submitted_clean');
+  });
+
   it('treats a live agent invoice with the same supplier and number as a duplicate', async () => {
     (scores.findOtherAgentInvoicesWithSameNumber as jest.Mock).mockResolvedValue([{ workdayInvoiceWid: 'other-wid' }]);
     (workday.getSupplierInvoiceEditability as jest.Mock).mockResolvedValue({ found: true, editable: true, isCanceled: false });
@@ -359,5 +395,21 @@ describe('selecting invoices to score', () => {
       InvocationType: 'Event',
     }));
     expect(JSON.parse(mockLambdaSend.mock.calls[2][0].Payload).data).toHaveLength(5);
+  });
+
+  it('dispatches at most SCORE_MAX_INVOICES_PER_RUN invoices and leaves the rest for the next run', async () => {
+    process.env.AWS_STACK_NAME = 'finance-agent';
+    process.env.S3_BUCKET_NAME = 'finance-agent-test';
+    process.env.SCORE_MAX_INVOICES_PER_RUN = '25';
+    const rows = Array.from({ length: 45 }, (_, index) => pending({ workdayInvoiceWid: `wid-${index}` }));
+    (scores.listPendingScoreInvoices as jest.Mock).mockResolvedValue(rows);
+    (workday.executeWorkdayQuery as jest.Mock).mockResolvedValue({ data: [] });
+
+    await handler({});
+
+    const dispatched = mockLambdaSend.mock.calls.flatMap(([command]) => JSON.parse(command.Payload).data as unknown[]);
+    expect(dispatched).toHaveLength(25);
+    expect(scores.listPendingScoreInvoices).toHaveBeenCalledWith(expect.anything(), 50);
+    delete process.env.SCORE_MAX_INVOICES_PER_RUN;
   });
 });

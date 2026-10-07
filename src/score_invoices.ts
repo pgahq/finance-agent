@@ -7,6 +7,10 @@ import { notifyResult } from './lib/slack.js';
 import { DEFAULT_STUCK_DRAFT_DAYS, type ScoreInvoiceItem } from './score_invoices_processor.js';
 
 export const PROCESSOR_BATCH_SIZE = 20;
+/** Invoices past this many wait for the next run, which selects them again because they still need scoring. */
+export const DEFAULT_MAX_INVOICES_PER_RUN = 500;
+/** Status is read for at most this many pending invoices per dispatched slot, newest writes first. */
+export const STATUS_READS_PER_INVOICE = 2;
 
 /** True when the invoice reached a stage it has not been scored for yet. */
 export function needsScoring(row: PendingScoreRow, statusClass: StatusClass, now: Date, stuckDraftDays: number): boolean {
@@ -49,10 +53,15 @@ export const handler = withHandler(async (context) => {
     return;
   }
   try {
-    const pending = await listPendingScoreInvoices(context.dbConnection);
+    const configuredMax = Number(process.env.SCORE_MAX_INVOICES_PER_RUN);
+    const maxPerRun = Number.isSafeInteger(configuredMax) && configuredMax > 0 ? configuredMax : DEFAULT_MAX_INVOICES_PER_RUN;
+    const maxPending = maxPerRun * STATUS_READS_PER_INVOICE;
+    const pending = await listPendingScoreInvoices(context.dbConnection, maxPending);
+    if (pending.length >= maxPending) debug('Pending agent invoices reached the per-run status read limit', { maxPending });
     const statuses = await fetchInvoiceStatuses(context.workdayConfig, pending.map((row) => row.workdayInvoiceWid));
-    const items = selectInvoicesToScore(pending, statuses, now, stuckDraftDays);
-    debug('Agent invoices to score', { pending: pending.length, toScore: items.length });
+    const selected = selectInvoicesToScore(pending, statuses, now, stuckDraftDays);
+    const items = selected.slice(0, maxPerRun);
+    debug('Agent invoices to score', { pending: pending.length, toScore: selected.length, dispatched: items.length });
 
     const lambda = new LambdaClient({ region: process.env.AWS_REGION });
     const processorFunctionName = `${process.env.AWS_STACK_NAME}-ScoreInvoicesProcessor`;

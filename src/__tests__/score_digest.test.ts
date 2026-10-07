@@ -13,6 +13,7 @@ jest.mock('../lib/workday.js', () => ({
 
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
+import { centralWeekStart } from '../lib/score_touches.js';
 import { postSlackBlocks } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
@@ -49,11 +50,19 @@ describe('summarizeScores', () => {
     score({ workdayInvoiceWid: 'u2', workdayInvoiceNumber: 'SUPIN-9', cancelBasis: 'early_draft_cancel' }),
   ]);
 
-  it('counts invoices AP entered this week and last week, and outcomes', () => {
+  it('counts invoices AP entered in the week and the week before, and outcomes', () => {
     expect(summary.entered).toBe(3);
     expect(summary.enteredPrevious).toBe(3);
     expect(summary.outcomes).toEqual({ submitted_edited: 1, submitted_clean: 2, canceled: 2, deleted: 1 });
     expect(summary.stuckDrafts).toBe(1);
+  });
+
+  it('counts an invoice entered and canceled in the same week once', () => {
+    const both = summarizeScores([
+      score({ workdayInvoiceWid: 'same', entryReadAt: thisWeek, finalReadAt: thisWeek, terminal: true, outcome: 'canceled', cancelAttribution: 'business' }),
+    ], window);
+    expect(both.outcomes).toEqual({ canceled: 1 });
+    expect(both.cancels.business).toBe(1);
   });
 
   it('reports per-field change rates against the agent, material first, with last week for comparison', () => {
@@ -85,7 +94,7 @@ describe('summarizeScores', () => {
       .map((block) => (block.type === 'section' ? block.text.text : block.type === 'context' ? block.elements[0].text : ''))
       .join('\n');
     expect(text).toContain('*Finance agent audit*');
-    expect(text).toContain('*3* agent invoices reached AP this week (3 the week before).');
+    expect(text).toContain('*3* agent invoices reached AP last week (3 the week before).');
     expect(text).toContain('• Cost center: 1 (33%) (was 33%)');
     expect(text).toContain('• Header memo: 2 (67%) (was 0%)');
     expect(text).toContain('*Cancels* · 1 agent, 1 business, 1 unattributed');
@@ -132,6 +141,27 @@ describe('buildDailyInvoiceMessages', () => {
   const today = new Date('2026-10-02T14:00:49Z');
   const textOf = (blocks: ReturnType<typeof buildDailyInvoiceMessages>[number]) =>
     blocks.map((block) => (block.type === 'section' ? block.text.text : block.type === 'context' ? block.elements[0].text : '')).join('\n');
+
+  it('says which cancel evidence could not be checked', () => {
+    const messages = buildDailyInvoiceMessages(summarizeDay([
+      score({
+        workdayInvoiceWid: 'w9', workdayInvoiceNumber: 'SUPIN-9', terminal: true, finalReadAt: today, outcome: 'canceled',
+        cancelAttribution: 'unattributed', cancelBasis: 'no_signal',
+        cancelEvidence: { replacementLookupFailed: true, conversationReadFailed: true },
+      }),
+    ], since, until));
+    expect(textOf(messages[0])).toContain('Could not check the replacement search and the Intercom conversation; the attribution may be missing a signal.');
+  });
+
+  it('renders invoice text inertly so it cannot mention the channel, link, or break the code span', () => {
+    const messages = buildDailyInvoiceMessages(summarizeDay([
+      score({
+        workdayInvoiceWid: 'w1', workdayInvoiceNumber: 'SUPIN-1', entryReadAt: today, outcome: 'submitted_clean',
+        entryDiff: [{ field: 'memo', before: 'AC 1 & co', after: '<!here> see `<https://x.test|here>`', category: 'convention', agentOwned: true }],
+      }),
+    ], since, until));
+    expect(textOf(messages[0])).toContain("• Header memo: `AC 1 &amp; co` → `&lt;!here&gt; see '&lt;https://x.test|here&gt;'`");
+  });
 
   it('posts one message per invoice with before and after values for each change', () => {
     const messages = buildDailyInvoiceMessages(summarizeDay([
@@ -197,7 +227,9 @@ describe('postSlackBlocks', () => {
   });
 
   it('resends without the chart image when Slack rejects the message', async () => {
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, statusText: 'invalid_blocks' }).mockResolvedValueOnce({ ok: true });
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 400, statusText: 'Bad Request', text: async () => 'invalid_blocks' })
+      .mockResolvedValueOnce({ ok: true });
     const sent = await postSlackBlocks([
       { type: 'header', text: { type: 'plain_text', text: 'Lead' } },
       { type: 'image', image_url: 'https://quickchart.io/chart?c=x', alt_text: 'chart' },
@@ -207,6 +239,20 @@ describe('postSlackBlocks', () => {
     const retried = JSON.parse((fetchMock.mock.calls[1][1] as { body: string }).body) as { text: string; blocks: unknown[] };
     expect(retried.blocks).toEqual([{ type: 'header', text: { type: 'plain_text', text: 'Lead' } }]);
     expect(retried.text).toBe('Lead');
+  });
+
+  it('does not resend after a server error or network failure, which may have been delivered', async () => {
+    const blocks = [
+      { type: 'header' as const, text: { type: 'plain_text' as const, text: 'Lead' } },
+      { type: 'image' as const, image_url: 'https://quickchart.io/chart?c=x', alt_text: 'chart' },
+    ];
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error', text: async () => '' });
+    expect(await postSlackBlocks(blocks, 'https://hooks.slack.test/audit', 'AUDIT_SLACK_WEBHOOK_URL')).toBe(false);
+    fetchMock.mockRejectedValueOnce(new Error('socket hang up'));
+    expect(await postSlackBlocks(blocks, 'https://hooks.slack.test/audit', 'AUDIT_SLACK_WEBHOOK_URL')).toBe(false);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, statusText: 'Bad Request', text: async () => 'no_text' });
+    expect(await postSlackBlocks(blocks, 'https://hooks.slack.test/audit', 'AUDIT_SLACK_WEBHOOK_URL')).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('never falls back to the per-invoice channel when the audit webhook is unset', async () => {
@@ -219,10 +265,13 @@ describe('postSlackBlocks', () => {
 
 describe('score digest handler', () => {
   const fetchMock = jest.fn().mockResolvedValue({ ok: true });
+  /** Twelve hours before this week's Monday midnight Central: inside the last complete week the digest reports. */
+  const lastSunday = new Date(centralWeekStart(new Date()).getTime() - 12 * 3_600_000);
 
   /** Answer each digest query by what it selects, so adding a query does not shift the others. */
   function routeQueries(rows: { digest?: unknown[]; unlabeled?: unknown[]; entered?: unknown[]; snapshots?: unknown[] }) {
     mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('AS stored FROM agent_invoice_touch_daily')) return Promise.resolve([{ stored: 15 }]);
       if (sql.includes('label_attribution')) return Promise.resolve(rows.digest ?? []);
       if (sql.includes("cancel_attribution = 'unattributed'")) return Promise.resolve(rows.unlabeled ?? []);
       if (sql.includes('WHERE entry_read_at >= $1')) return Promise.resolve(rows.entered ?? []);
@@ -250,8 +299,8 @@ describe('score digest handler', () => {
 
   it('posts the week to the audit webhook, led by the zero-touch callout, and still posts when the backlog count fails', async () => {
     const entered = [
-      { workday_invoice_wid: 'w1', entry_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
-      { workday_invoice_wid: 'w2', entry_read_at: new Date(Date.now() - 2000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
+      { workday_invoice_wid: 'w1', entry_read_at: lastSunday, outcome: 'submitted_clean', entry_diff: [], terminal: false },
+      { workday_invoice_wid: 'w2', entry_read_at: lastSunday, outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
     ];
     routeQueries({ digest: entered, entered });
     (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('No work queue tags found'));
@@ -261,8 +310,8 @@ describe('score digest handler', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.test/audit');
     const payload = payloadOf(0);
-    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: '50% of invoices needed 0 touches this week (1 of 2)' } });
-    expect(payload.text).toBe('50% of invoices needed 0 touches this week (1 of 2)');
+    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: '50% of invoices needed 0 touches last week (1 of 2)' } });
+    expect(payload.text).toBe('50% of invoices needed 0 touches last week (1 of 2)');
     expect(payload.blocks.some((block) => block.text?.text.startsWith('*Finance agent audit*'))).toBe(true);
   });
 
@@ -292,10 +341,55 @@ describe('score digest handler', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('in daily mode still reports a day when the sandbox refresh removed invoices', async () => {
+    routeQueries({
+      digest: [{ workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'lost_to_refresh', final_status: 'Lost to tenant refresh' }],
+    });
+    await handler({ mode: 'daily' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(payloadOf(1).blocks[0].elements?.[0].text).toBe('1 removed by the weekly sandbox refresh (not scored).');
+  });
+
+  it('in daily mode stops at the first failed post instead of sending the rest', async () => {
+    const today = [
+      { workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
+      { workday_invoice_wid: 'w2', workday_invoice_number: 'SUPIN-2', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
+    ];
+    routeQueries({ digest: today, entered: today });
+    fetchMock.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error', text: async () => '' });
+    await expect(handler({ mode: 'daily' })).rejects.toThrow('Daily audit post stopped at message 2 of 3');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('still posts when the stored touch rollup cannot refresh, then fails the run so the error is seen', async () => {
+    routeQueries({});
+    const routed = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((sql: string) =>
+      (sql.includes('INSERT INTO agent_invoice_touch_daily') ? Promise.reject(new Error('lock timeout')) : routed(sql)));
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
+    await expect(handler({})).rejects.toThrow('agent_invoice_touch_daily could not be refreshed: lock timeout');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the pre-snapshot count is missing when the Workday query fails', async () => {
+    routeQueries({});
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('Workday down'));
+    await handler({});
+    const context = payloadOf(0).blocks.find((block) => block.elements)?.elements?.[0].text;
+    expect(context).toBe('Before snapshots (outcome only): unavailable this week; Workday query failed.');
+  });
+
+  it('fails the run when the audit post does not go through', async () => {
+    routeQueries({});
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, statusText: 'Not Found', text: async () => 'no_service' });
+    await expect(handler({})).rejects.toThrow('Could not post the weekly audit digest');
+  });
+
   it('applies an AP label added after the cancel was scored', async () => {
     routeQueries({
       digest: [{
-        workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'canceled',
+        workday_invoice_wid: 'w1', terminal: true, final_read_at: lastSunday, outcome: 'canceled',
         cancel_attribution: 'unattributed', cancel_basis: 'early_draft_cancel', label_attribution: 'agent',
       }],
     });
@@ -304,7 +398,7 @@ describe('score digest handler', () => {
     await handler({});
 
     const payload = payloadOf(0);
-    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: 'No agent invoices reached AP this week' } });
+    expect(payload.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: 'AP submitted no agent invoices last week' } });
     const cancels = payload.blocks.find((block) => block.text?.text.startsWith('*Cancels*'))?.text?.text;
     expect(cancels).toContain('*Cancels* · 1 agent, 0 business, 0 unattributed');
     expect(cancels).toContain('AP label: 1');
@@ -314,8 +408,8 @@ describe('score digest handler', () => {
     process.env.SCORE_TENANT_REFRESH_WEEKDAY = '6';
     routeQueries({
       digest: [
-        { workday_invoice_wid: 'w1', terminal: true, final_read_at: new Date(Date.now() - 1000), outcome: 'lost_to_refresh', final_status: 'Lost to tenant refresh' },
-        { workday_invoice_wid: 'w2', terminal: true, entry_read_at: new Date(Date.now() - 5000), final_read_at: new Date(Date.now() - 1000), outcome: 'submitted_clean', entry_diff: [], final_status: 'Lost to tenant refresh' },
+        { workday_invoice_wid: 'w1', terminal: true, final_read_at: lastSunday, outcome: 'lost_to_refresh', final_status: 'Lost to tenant refresh' },
+        { workday_invoice_wid: 'w2', terminal: true, entry_read_at: lastSunday, final_read_at: lastSunday, outcome: 'submitted_clean', entry_diff: [], final_status: 'Lost to tenant refresh' },
       ],
     });
 
@@ -324,7 +418,7 @@ describe('score digest handler', () => {
     expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
     const text = payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n');
     expect(text).toContain('• 2 removed by the weekly sandbox refresh (not scored)');
-    expect(text).toContain('on 0 of 0 invoices closed this week');
+    expect(text).toContain('on 0 of 0 invoices closed last week');
     expect(text).toContain('*Cancels* · 0 agent, 0 business, 0 unattributed');
     delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
   });

@@ -328,15 +328,23 @@ function buildCloudWatchLogUrl(): string | undefined {
 /**
  * Send a message to Slack using blocks. Defaults to the per-invoice channel webhook.
  */
+interface SlackSendResult {
+  ok: boolean;
+  /** HTTP status when Slack answered; unset for network errors. */
+  status?: number;
+  /** Slack's error body, such as `invalid_blocks`. */
+  error?: string;
+}
+
 async function sendSlackMessage(
   blocks: SlackBlock[],
   webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
   webhookEnvName = 'SLACK_WEBHOOK_URL'
-): Promise<boolean> {
+): Promise<SlackSendResult> {
   try {
     if (!webhookUrl) {
       debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
-      return false;
+      return { ok: false };
     }
 
     // Create fallback text from the first section block for notifications
@@ -350,7 +358,9 @@ async function sendSlackMessage(
       blocks
     };
 
-    debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
+    // Audit posts carry invoice values, so only the per-invoice channel's payloads are logged in full.
+    if (webhookEnvName === 'SLACK_WEBHOOK_URL') debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
+    else debug('Posting Slack message', { webhook: webhookEnvName, blocks: blocks.length });
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
@@ -361,15 +371,17 @@ async function sendSlackMessage(
     });
 
     if (!response.ok) {
-      throw new Error(`Slack webhook request failed: ${response.status} ${response.statusText}`);
+      const error = await response.text().catch(() => '');
+      debug('Slack webhook request failed', { status: response.status, statusText: response.statusText, error });
+      return { ok: false, status: response.status, error };
     }
 
     debug('Slack notification sent successfully');
-    return true;
+    return { ok: true };
   } catch (error) {
     debug('Error sending Slack notification:', error);
     // Don't throw - we don't want Slack failures to break the main process
-    return false;
+    return { ok: false };
   }
 }
 
@@ -383,12 +395,15 @@ export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string |
     debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
     return false;
   }
-  if (await sendSlackMessage(blocks, webhookUrl, webhookEnvName)) return true;
-  // Slack rejects the whole message when it cannot download an image block, so resend without images.
+  const first = await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
+  if (first.ok) return true;
+  // Slack answers 400 and posts nothing when it cannot download an image block; any other failure may have
+  // been delivered, so it is not resent.
   const withoutImages = blocks.filter((block) => block.type !== 'image');
-  if (withoutImages.length === blocks.length) return false;
-  debug('Slack rejected a message with an image; resending without it');
-  return sendSlackMessage(withoutImages, webhookUrl, webhookEnvName);
+  const imageRejected = first.status === 400 && /image|invalid_blocks/i.test(first.error ?? '');
+  if (!imageRejected || withoutImages.length === blocks.length) return false;
+  debug('Slack rejected a message with an image; resending without it', { error: first.error });
+  return (await sendSlackMessage(withoutImages, webhookUrl, webhookEnvName)).ok;
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {

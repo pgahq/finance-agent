@@ -3,7 +3,8 @@ import type { DatabaseConnection } from './database.js';
 import { asArray, extractLineOfBusinessId } from './related_worktags.js';
 import { getSupplierInvoice, type WorkdayConfig } from './workday.js';
 
-export type SnapshotSource = 'create' | 'resend_update' | 'enrich' | 'enrich_baseline';
+export const SNAPSHOT_SOURCES = ['create', 'resend_update', 'enrich', 'enrich_baseline'] as const;
+export type SnapshotSource = typeof SNAPSHOT_SOURCES[number];
 
 /** Snapshot sources that record a finance-agent write (an enrich baseline is the invoice before the agent touched it). */
 export const AGENT_WRITE_SOURCES: readonly SnapshotSource[] = ['create', 'resend_update', 'enrich'];
@@ -287,11 +288,14 @@ function parseJson<T>(value: unknown): T | undefined {
   return value as T;
 }
 
-function rowToSnapshot(row: Record<string, unknown>): AgentInvoiceSnapshot {
+/** Undefined for a row whose source this code does not know. */
+function rowToSnapshot(row: Record<string, unknown>): AgentInvoiceSnapshot | undefined {
+  const source = SNAPSHOT_SOURCES.find((candidate) => candidate === row.source);
+  if (!source) return undefined;
   return {
     workdayInvoiceWid: String(row.workday_invoice_wid),
     writeSeq: Number(row.write_seq),
-    source: row.source as SnapshotSource,
+    source,
     ...(row.workday_invoice_number ? { workdayInvoiceNumber: String(row.workday_invoice_number) } : {}),
     fields: parseJson<ScoredFields>(row.fields) ?? { lines: [] },
     ...(row.conversation_id ? { conversationId: String(row.conversation_id) } : {}),
@@ -320,8 +324,28 @@ export interface RecordSnapshotInput {
   releaseSha?: string;
 }
 
-/** Inserts the next write_seq for the invoice. Concurrent writes to one invoice are already serialized upstream. */
+const SNAPSHOT_INSERT_ATTEMPTS = 5;
+const SNAPSHOT_RETRY_DELAY_MS = 50;
+
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: unknown } | undefined)?.code === '23505';
+}
+
+/** Inserts the next write_seq for the invoice, retrying when a concurrent write took the same sequence. */
 export async function recordAgentInvoiceSnapshot(db: DatabaseConnection, input: RecordSnapshotInput): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await insertAgentInvoiceSnapshot(db, input);
+      return;
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt >= SNAPSHOT_INSERT_ATTEMPTS) throw error;
+      // Jittered backoff so racing writers re-read MAX(write_seq) at different times.
+      await new Promise((resolve) => setTimeout(resolve, SNAPSHOT_RETRY_DELAY_MS * attempt * (1 + Math.random())));
+    }
+  }
+}
+
+async function insertAgentInvoiceSnapshot(db: DatabaseConnection, input: RecordSnapshotInput): Promise<void> {
   await db.query(
     `INSERT INTO agent_invoice_snapshots
        (workday_invoice_wid, write_seq, source, workday_invoice_number, fields, conversation_id,
@@ -349,7 +373,7 @@ export async function getAgentInvoiceSnapshots(db: DatabaseConnection, workdayIn
     `SELECT ${SNAPSHOT_COLUMNS} FROM agent_invoice_snapshots WHERE workday_invoice_wid = $1 ORDER BY write_seq`,
     [workdayInvoiceWid]
   ) as Array<Record<string, unknown>>;
-  return rows.map(rowToSnapshot);
+  return rows.flatMap((row) => rowToSnapshot(row) ?? []);
 }
 
 export async function getLatestAgentWriteSnapshot(

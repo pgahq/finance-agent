@@ -141,6 +141,8 @@ export const CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE = `
 export const CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_conversation ON agent_invoice_snapshots(conversation_id);`,
   `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_created_at ON agent_invoice_snapshots(created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_source_wid ON agent_invoice_snapshots(source, workday_invoice_wid, created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_suppliers_invoice_number ON agent_invoice_snapshots((fields->>'suppliersInvoiceNumber'));`,
 ];
 
 // One row per agent-written invoice: the entry read when AP submits it and the final read at a terminal state.
@@ -170,6 +172,13 @@ export const CREATE_AGENT_INVOICE_SCORES_TABLE = `
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 `;
+
+// The digests and touch rollup select scores by when they were read.
+export const CREATE_AGENT_INVOICE_SCORES_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_entry_read_at ON agent_invoice_scores(entry_read_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_final_read_at ON agent_invoice_scores(final_read_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_last_read ON agent_invoice_scores((COALESCE(entry_read_at, final_read_at, updated_at)));`,
+];
 
 // AP's own call on an unattributed cancel; overrides the scorer's rules for that invoice.
 export const CREATE_CANCEL_LABELS_TABLE = `
@@ -302,6 +311,9 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
         await pool.query(indexSql);
       }
       await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
+      for (const indexSql of CREATE_AGENT_INVOICE_SCORES_INDEXES) {
+        await pool.query(indexSql);
+      }
       await pool.query(CREATE_CANCEL_LABELS_TABLE);
 
       const migrationClient = await pool.connect();

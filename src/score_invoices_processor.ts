@@ -75,22 +75,28 @@ function workQueueTagIds(invoice: unknown): string[] {
   return ids;
 }
 
-/** For an enrich invoice, the fields the agent changed from the OCR baseline it started from. */
+/**
+ * For an enrich invoice, the fields the agent changed from the OCR baseline it started from. Without a
+ * baseline the agent's edits cannot be told apart from OCR values, so none count against the agent.
+ */
 function enrichAgentChangedFields(snapshots: AgentInvoiceSnapshot[], latest: AgentInvoiceSnapshot): ScoredFieldName[] | undefined {
   if (latest.source !== 'enrich') return undefined;
   const baseline = [...snapshots].reverse().find((snapshot) => snapshot.source === 'enrich_baseline' && snapshot.writeSeq < latest.writeSeq);
-  if (!baseline) return undefined;
+  if (!baseline) return [];
   return diffScoredFields(baseline.fields, latest.fields).map((change) => change.field);
 }
 
-async function supplierVoidOrCreditInThread(conversationId: string | undefined, sinceUnixSeconds: number): Promise<boolean | undefined> {
+async function supplierVoidOrCreditInThread(
+  conversationId: string | undefined,
+  sinceUnixSeconds: number
+): Promise<boolean | 'read_failed' | undefined> {
   if (!conversationId || !process.env.INTERCOM_ACCESS_TOKEN) return undefined;
   try {
     const messages = await fetchConversationMessages(getIntercomConfig(process.env), conversationId);
     return mentionsSupplierVoidOrCredit(messages, sinceUnixSeconds);
   } catch (error) {
     debug('Could not read the Intercom conversation for cancel evidence', { conversationId, error });
-    return undefined;
+    return 'read_failed';
   }
 }
 
@@ -141,7 +147,11 @@ async function gatherCancelEvidence(
   const { supplier, suppliersInvoiceNumber } = latest.fields;
   if (supplier && suppliersInvoiceNumber) {
     for (const other of await findOtherAgentInvoicesWithSameNumber(db, score.workdayInvoiceWid, supplier, suppliersInvoiceNumber)) {
-      const editability = await getSupplierInvoiceEditability(context, other.workdayInvoiceWid).catch(() => undefined);
+      const editability = await getSupplierInvoiceEditability(context, other.workdayInvoiceWid).catch((error: unknown) => {
+        debug('Could not check a possible duplicate; scoring the cancel without it', { workdayInvoiceWid: other.workdayInvoiceWid, error });
+        evidence.duplicateCheckFailed = true;
+        return undefined;
+      });
       if (editability?.found && !editability.isCanceled) {
         evidence.duplicate = other;
         break;
@@ -149,29 +159,33 @@ async function gatherCancelEvidence(
     }
   }
 
-  if (!evidence.duplicate && suppliersInvoiceNumber) {
-    const supplierWid = referenceWid((current as { Supplier_Reference?: unknown } | undefined)?.Supplier_Reference);
+  // A replacement must be for the same supplier, so skip the lookup when the canceled invoice could not be read.
+  const supplierWid = referenceWid((current as { Supplier_Reference?: unknown } | undefined)?.Supplier_Reference);
+  if (!evidence.duplicate && suppliersInvoiceNumber && supplierWid) {
     try {
       const live = await findLiveInvoicesWithSuppliersInvoiceNumber(context.workdayConfig, suppliersInvoiceNumber);
       for (const candidate of live) {
-        if (candidate.workdayID === score.workdayInvoiceWid) continue;
-        if (supplierWid && candidate.supplierId && candidate.supplierId !== supplierWid) continue;
+        if (candidate.workdayID === score.workdayInvoiceWid || candidate.supplierId !== supplierWid) continue;
         if (await isAgentWrittenInvoice(db, candidate.workdayID)) continue;
+        // Only a replacement Workday returns counts; an unreadable one proves nothing.
         const replacementInvoice: unknown = await (getSupplierInvoice(context, candidate.workdayID) as Promise<unknown>).catch(() => undefined);
+        if (!replacementInvoice) continue;
         evidence.replacement = {
           workdayInvoiceWid: candidate.workdayID,
           ...(candidate.invoiceNumber ? { workdayInvoiceNumber: candidate.invoiceNumber } : {}),
-          ...(replacementInvoice ? { diff: diffScoredFields(latest.fields, extractScoredFields(replacementInvoice)) } : {}),
+          diff: diffScoredFields(latest.fields, extractScoredFields(replacementInvoice)),
         };
         break;
       }
     } catch (error) {
       debug('Replacement lookup failed; scoring the cancel without it', { workdayInvoiceWid: score.workdayInvoiceWid, error });
+      evidence.replacementLookupFailed = true;
     }
   }
 
   const voided = await supplierVoidOrCreditInThread(latest.conversationId, Math.floor(firstWrite.createdAt.getTime() / 1000));
-  if (voided !== undefined) evidence.supplierVoidOrCreditInThread = voided;
+  if (voided === 'read_failed') evidence.conversationReadFailed = true;
+  else if (voided !== undefined) evidence.supplierVoidOrCreditInThread = voided;
 
   return evidence;
 }
@@ -219,19 +233,25 @@ export async function scoreInvoice(
   score.releaseSha = latest.releaseSha ?? score.releaseSha;
   score.clusteringMode = latest.clusteringMode ?? score.clusteringMode;
 
-  let statusClass: StatusClass = classifyStatus(item.status ?? undefined, statusConfigFromEnv());
+  const statusConfig = statusConfigFromEnv();
+  let statusClass: StatusClass = classifyStatus(item.status ?? undefined, statusConfig);
+  const statusText = item.status?.invoiceStatusAsText;
+  if (statusClass === 'entry' && !statusConfig.entry.includes((statusText ?? '').trim().toLowerCase())) {
+    debug('Unrecognized Workday invoice status; scoring it as entered by AP', { workdayInvoiceWid: item.workdayInvoiceWid, status: statusText });
+  }
   let current: unknown;
+  let invoiceReadFailed = false;
   if (statusClass !== 'not_found') {
     try {
       current = await getSupplierInvoice(context, item.workdayInvoiceWid);
     } catch (error) {
       if (statusClass !== 'canceled') throw error;
+      invoiceReadFailed = true;
       debug('Could not read the canceled invoice; scoring the cancel without its fields', { workdayInvoiceWid: item.workdayInvoiceWid, error });
     }
   }
   if (!current && statusClass !== 'canceled') statusClass = 'not_found';
   const currentFields = current ? extractScoredFields(current) : undefined;
-  const statusText = item.status?.invoiceStatusAsText;
 
   const holdReason = item.status?.holdReason
     ?? (isTruthyFlag((current as { On_Hold?: unknown } | undefined)?.On_Hold) ? 'On hold' : undefined);
@@ -251,6 +271,7 @@ export async function scoreInvoice(
     const evidence = await gatherCancelEvidence(context, {
       score, snapshots, latest, status: item.status, current, currentFields, now,
     });
+    if (invoiceReadFailed) evidence.invoiceReadFailed = true;
     const attribution = attributeCancel(
       evidence,
       cancelReasonMappingFromEnv(),

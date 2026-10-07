@@ -10,6 +10,7 @@ import {
   scoreChanges,
   statusConfigFromEnv,
   type CancelReasonMapping,
+  type StatusClass,
 } from '../lib/invoice_score.js';
 
 const noMapping: CancelReasonMapping = { business: [], duplicate: [], agent: [], agentTags: [] };
@@ -39,7 +40,8 @@ describe('classifyStatus', () => {
   });
 
   it('marks approved, paid, denied, canceled, and missing invoices terminal', () => {
-    expect(['approved', 'paid', 'denied', 'canceled', 'not_found'].every((s) => isTerminalStatus(s as never))).toBe(true);
+    const terminal: StatusClass[] = ['approved', 'paid', 'denied', 'canceled', 'not_found'];
+    expect(terminal.every(isTerminalStatus)).toBe(true);
     expect(isTerminalStatus('draft')).toBe(false);
     expect(isTerminalStatus('entry')).toBe(false);
   });
@@ -120,6 +122,14 @@ describe('attributeCancel', () => {
       .toEqual({ attribution: 'business', basis: 'supplier_void_or_credit' });
   });
 
+  it('leaves a cancel unattributed when the invoice could not be read and no cancel reason is known', () => {
+    expect(attributeCancel({ invoiceReadFailed: true, primaryAttachmentKind: 'supporting' }, mapping))
+      .toEqual({ attribution: 'unattributed', basis: 'invoice_unreadable' });
+    expect(attributeCancel({ invoiceReadFailed: true, cancelReason: 'Supplier Voided' }, mapping))
+      .toEqual({ attribution: 'business', basis: 'business_reason' });
+    expect(attributeCancel({ invoiceReadFailed: true, apLabel: 'agent' }, mapping).basis).toBe('ap_label');
+  });
+
   it('keeps an early Draft cancel unattributed because timing alone is not proof', () => {
     expect(attributeCancel({ canceledWhileDraft: true, hoursFromLastAgentWrite: 4 }, mapping))
       .toEqual({ attribution: 'unattributed', basis: 'early_draft_cancel' });
@@ -159,5 +169,6 @@ describe('mentionsSupplierVoidOrCredit', () => {
     expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body: 'Please disregard this invoice, we issued a credit memo.' }], 100)).toBe(true);
     expect(mentionsSupplierVoidOrCredit([{ createdAt: 50, body: 'This invoice was voided.' }], 100)).toBe(false);
     expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body: 'Attached is the invoice for September.' }], 100)).toBe(false);
+    expect(mentionsSupplierVoidOrCredit([{ body: 'This invoice was voided.' }], 100)).toBe(false);
   });
 });

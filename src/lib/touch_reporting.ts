@@ -3,7 +3,8 @@ import type { DatabaseConnection } from './database.js';
 /**
  * Reporting surfaces for touches, kept in SQL so a report can read them without the app:
  * `agent_invoice_touches` (one row per invoice AP submitted) and `agent_invoice_touch_daily`
- * (one row per Central calendar day). The bucket edges match `TOUCH_BUCKETS` in `score_touches.ts`.
+ * (one row per Central calendar day). The bucket edges match `TOUCH_BUCKETS` in `score_touches.ts`, and
+ * `date_trunc('week', entry_day)` gives the same Monday weeks as the weekly Slack trend.
  */
 
 const AGENT_OWNED_COUNT = (column: string) => `(

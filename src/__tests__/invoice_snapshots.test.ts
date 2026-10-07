@@ -163,6 +163,26 @@ describe('recordAgentInvoiceSnapshot', () => {
       '["new-invoices/r/0-a.pdf"]', '["supplier_invoice"]', 'abc123', 'on', null,
     ]);
   });
+
+  it('retries when a concurrent write took the same sequence, and gives up after five tries', async () => {
+    const duplicateKey = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+    const { db, query } = mockDb();
+    query.mockRejectedValueOnce(duplicateKey);
+    await recordAgentInvoiceSnapshot(db, { workdayInvoiceWid: 'inv-wid', source: 'enrich', fields: { lines: [] } });
+    expect(query).toHaveBeenCalledTimes(2);
+
+    query.mockClear();
+    query.mockRejectedValue(duplicateKey);
+    await expect(recordAgentInvoiceSnapshot(db, { workdayInvoiceWid: 'inv-wid', source: 'enrich', fields: { lines: [] } })).rejects.toBe(duplicateKey);
+    expect(query).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not retry other database errors', async () => {
+    const { db, query } = mockDb();
+    query.mockRejectedValue(new Error('connection refused'));
+    await expect(recordAgentInvoiceSnapshot(db, { workdayInvoiceWid: 'inv-wid', source: 'create', fields: { lines: [] } })).rejects.toThrow('connection refused');
+    expect(query).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('getLatestAgentWriteSnapshot', () => {

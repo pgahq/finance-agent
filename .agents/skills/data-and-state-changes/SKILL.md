@@ -47,25 +47,13 @@ request's clusters before dispatch; each cluster run claims its row before any
 work. Both tables are created at cold start next to the registry; rows are not
 pruned yet.
 
-Agent invoice scoring adds three more cold-start tables (see the
-`agent-invoice-scoring` skill for behavior):
-
-- `agent_invoice_snapshots` (primary key `workday_invoice_wid` plus
-  `write_seq`; `source` create/resend_update/enrich/enrich_baseline, `fields`
-  JSONB of the scored whitelist, `conversation_id`, `s3_keys`,
-  `attachment_kinds`, `release_sha`, `clustering_mode`, `pre_write_diff`).
-  Indexed on `conversation_id` and `created_at`. Writes go through
-  `src/lib/invoice_snapshots.ts`.
-- `agent_invoice_scores` (primary key `workday_invoice_wid`; entry and final
-  reads, outcome, cancel attribution, `terminal`). Writes go through
-  `src/lib/invoice_scores.ts`.
-- `cancel_labels` (primary key `workday_invoice_wid`; `attribution` agent or
-  business, checked). AP's call on a cancel; it overrides the scorer's rules.
-
-Touch reporting adds the `agent_invoice_touches` view and the
-`agent_invoice_touch_daily` table (primary key `entry_day`), created by
+Agent invoice scoring adds `agent_invoice_snapshots`, `agent_invoice_scores`,
+and `cancel_labels` (DDL and indexes in `src/lib/database.ts`), created after
+the cluster plans table, and the `agent_invoice_touches` view plus
+`agent_invoice_touch_daily` table (`src/lib/touch_reporting.ts`), created by
 `ensureTouchReporting` after the documents migration on the same client.
-
+Write only through `src/lib/invoice_snapshots.ts` and
+`src/lib/invoice_scores.ts`; the `agent-invoice-scoring` skill covers behavior.
 None of them is pruned yet.
 
 ## Shared pool lifetime

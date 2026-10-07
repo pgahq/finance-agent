@@ -628,9 +628,11 @@ describe('notifyEnrichmentResult', () => {
       supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
       extracted: {},
       fallbacks: { defaultSupplier: false },
+      snapshotSync: 'failed',
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"snapshotSync": "failed"');
     expect(texts).toContain('processed in 1.50s');
     expect(texts).not.toContain('Workday Invoice');
     expect(texts).not.toContain('Unknown');

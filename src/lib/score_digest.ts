@@ -2,10 +2,8 @@ import { LOST_TO_REFRESH_STATUS, scoreChanges, type CancelBasis, type Outcome, t
 import type { InvoiceScore } from './invoice_scores.js';
 import type { ScoredFieldName } from './invoice_snapshots.js';
 import type { SlackBlock } from './slack.js';
-import { countsForTouches, touchCalloutBlocks, touchCount, type TouchCallout } from './score_touches.js';
+import { addCentralDays, centralWeekStart, countsForTouches, touchCalloutBlocks, touchCount, type TouchCallout } from './score_touches.js';
 import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
-
-const DAY_MS = 86_400_000;
 
 export interface DigestWindow {
   start: Date;
@@ -13,12 +11,10 @@ export interface DigestWindow {
   previousStart: Date;
 }
 
-export function digestWindow(now: Date, days = 7): DigestWindow {
-  return {
-    start: new Date(now.getTime() - days * DAY_MS),
-    end: now,
-    previousStart: new Date(now.getTime() - 2 * days * DAY_MS),
-  };
+/** The last complete Monday-to-Sunday Central week before `now`, and the week before it. */
+export function digestWindow(now: Date): DigestWindow {
+  const end = centralWeekStart(now);
+  return { start: addCentralDays(end, -7), end, previousStart: addCentralDays(end, -14) };
 }
 
 export interface FieldRate {
@@ -65,6 +61,8 @@ export interface DigestSummary {
   worst: InvoiceLink[];
   unattributedCancels: InvoiceLink[];
   backlog?: Partial<Record<string, number>>;
+  /** The pre-snapshot count was attempted and failed, so the digest says it is missing. */
+  backlogUnavailable?: boolean;
   /** Lead callout: zero-touch share this week, the bucket breakdown, and the trend. */
   touches?: TouchCallout;
 }
@@ -113,7 +111,10 @@ export function summarizeScores(
     if (outcome) outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
   };
   for (const score of enteredNow) bump(score.outcome);
-  for (const score of closedNow) if (score.outcome && CANCELED_OUTCOMES.has(score.outcome)) bump(score.outcome);
+  const enteredWids = new Set(enteredNow.map((score) => score.workdayInvoiceWid));
+  for (const score of closedNow) {
+    if (score.outcome && CANCELED_OUTCOMES.has(score.outcome) && !enteredWids.has(score.workdayInvoiceWid)) bump(score.outcome);
+  }
   const stuckDrafts = scores.filter((score) => !score.terminal && score.outcome === 'stuck_draft').length;
 
   const nowCounts = fieldCounts(enteredNow);
@@ -191,7 +192,9 @@ export function summarizeScores(
     .map((score) => ({
       workdayInvoiceWid: score.workdayInvoiceWid,
       ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
-      detail: score.cancelBasis === 'early_draft_cancel' ? 'canceled in Draft soon after the agent wrote it' : 'no signal',
+      detail: score.cancelBasis === 'early_draft_cancel'
+        ? 'canceled in Draft soon after the agent wrote it'
+        : score.cancelBasis === 'invoice_unreadable' ? 'Workday could not return the canceled invoice' : 'no signal',
     }));
 
   return {
@@ -240,6 +243,7 @@ const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
   agent_reason: 'agent cancel reason',
   agent_tag: 'agent error tag',
   ap_label: 'AP label',
+  invoice_unreadable: 'invoice could not be read',
 };
 
 const percent = (rate: number) => `${Math.round(rate * 100)}%`;
@@ -252,14 +256,20 @@ function shortDate(date: Date): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
 }
 
+/** Invoice text in a code span; Slack control characters are escaped so a value cannot mention, link, or end the span. */
 function quote(value: unknown): string {
-  const text = value == null || value === '' ? '(blank)' : String(value);
-  return `\`${text.length > 80 ? `${text.slice(0, 79)}…` : text}\``;
+  const raw = value == null || value === '' ? '(blank)' : String(value);
+  const text = raw.length > 80 ? `${raw.slice(0, 79)}…` : raw;
+  return `\`${escapeSlackText(text).replace(/`/g, "'")}\``;
+}
+
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function invoiceLink(link: { workdayInvoiceWid: string; workdayInvoiceNumber?: string }): string {
-  const label = link.workdayInvoiceNumber ?? link.workdayInvoiceWid;
-  const url = buildWorkdayObjectDeeplink(link.workdayInvoiceWid);
+  const label = escapeSlackText(link.workdayInvoiceNumber ?? link.workdayInvoiceWid).replace(/\|/g, '/').replace(/`/g, "'");
+  const url = buildWorkdayObjectDeeplink(encodeURIComponent(link.workdayInvoiceWid));
   return url ? `<${url}|${label}>` : `\`${label}\``;
 }
 
@@ -281,13 +291,13 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   const { window } = summary;
   const blocks: SlackBlock[] = [
     ...(summary.touches ? touchCalloutBlocks(summary.touches) : []),
-    section(`*Finance agent audit* · ${shortDate(window.start)} – ${shortDate(window.end)}`),
+    section(`*Finance agent audit* · ${shortDate(window.start)} – ${shortDate(new Date(window.end.getTime() - 1))}`),
   ];
 
   const outcomeLines = (Object.keys(OUTCOME_LABELS) as Outcome[])
     .filter((outcome) => outcome !== 'stuck_draft' && outcome !== 'lost_to_refresh' && summary.outcomes[outcome])
     .map((outcome) => `• ${summary.outcomes[outcome]} ${OUTCOME_LABELS[outcome]}`);
-  const enteredLine = `*${summary.entered}* agent invoices reached AP this week (${summary.enteredPrevious} the week before).`;
+  const enteredLine = `*${summary.entered}* agent invoices reached AP last week (${summary.enteredPrevious} the week before).`;
   blocks.push(section([
     enteredLine,
     ...outcomeLines,
@@ -317,7 +327,7 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   }
 
   blocks.push(section(
-    `*Late corrections* · coding changed after AP submitted on ${summary.late.corrected} of ${plural(summary.late.closed, 'invoice')} closed this week.`
+    `*Late corrections* · coding changed after AP submitted on ${summary.late.corrected} of ${plural(summary.late.closed, 'invoice')} closed last week.`
   ));
 
   const { cancels } = summary;
@@ -354,6 +364,8 @@ export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
         text: `Before snapshots (outcome only): ${Object.entries(summary.backlog).map(([state, count]) => `${count} ${state}`).join(', ')}`,
       }],
     });
+  } else if (summary.backlogUnavailable) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Before snapshots (outcome only): unavailable this week; Workday query failed.' }] });
   }
 
   return blocks;
@@ -372,6 +384,22 @@ export interface DailyScoreLine {
   ocrOnlyChanges: number;
   /** Fields AP had to change, for invoices AP submitted. */
   touches?: number;
+  /** Cancel evidence that could not be checked, so the attribution may be missing a signal. */
+  evidenceGaps?: string[];
+}
+
+function listWords(items: string[]): string {
+  return items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+function cancelEvidenceGaps(score: InvoiceScore): string[] {
+  const evidence = score.cancelEvidence;
+  return [
+    ...(evidence?.invoiceReadFailed ? ['the canceled invoice'] : []),
+    ...(evidence?.replacementLookupFailed ? ['the replacement search'] : []),
+    ...(evidence?.duplicateCheckFailed ? ['the duplicate check'] : []),
+    ...(evidence?.conversationReadFailed ? ['the Intercom conversation'] : []),
+  ];
 }
 
 export interface DailySummary {
@@ -430,6 +458,7 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
         lateChanges,
         ocrOnlyChanges,
         ...(countsForTouches(score) ? { touches: touchCount(score) } : {}),
+        ...(closed && cancelEvidenceGaps(score).length ? { evidenceGaps: cancelEvidenceGaps(score) } : {}),
       });
     }
   }
@@ -484,6 +513,12 @@ export function buildDailyInvoiceMessages(summary: DailySummary): SlackBlock[][]
       blocks.push({
         type: 'context',
         elements: [{ type: 'mrkdwn', text: `${plural(line.ocrOnlyChanges, 'other change')} to OCR values the agent left alone (not counted)` }],
+      });
+    }
+    if (line.evidenceGaps?.length) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `Could not check ${listWords(line.evidenceGaps)}; the attribution may be missing a signal.` }],
       });
     }
     return blocks;

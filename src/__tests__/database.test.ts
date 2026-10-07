@@ -169,6 +169,19 @@ describe('Database Library', () => {
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_invoice_claims'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS invoice_cluster_plans'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('UNIQUE (conversation_id, supplier_invoice_number)'))).toBe(true);
+
+      const position = (fragment: string) => initSql.findIndex((sql) => sql.includes(fragment));
+      const scoringSchema = [
+        'CREATE TABLE IF NOT EXISTS agent_invoice_snapshots',
+        'idx_agent_invoice_snapshots_conversation',
+        'CREATE TABLE IF NOT EXISTS agent_invoice_scores',
+        'idx_agent_invoice_scores_entry_read_at',
+        'CREATE TABLE IF NOT EXISTS cancel_labels',
+        'CREATE TABLE IF NOT EXISTS agent_invoice_touch_daily',
+        'CREATE OR REPLACE VIEW agent_invoice_touches',
+      ];
+      for (const fragment of scoringSchema) expect(position(fragment)).toBeGreaterThan(position('invoice_cluster_plans'));
+      expect(position('CREATE OR REPLACE VIEW agent_invoice_touches')).toBeGreaterThan(position('CREATE TABLE IF NOT EXISTS agent_invoice_scores'));
     });
 
     it('resets the pool when schema initialization fails', async () => {
