@@ -305,10 +305,12 @@ function normalizeLabel(label: string | null | undefined): string | undefined {
   return normalized || undefined;
 }
 
+const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
+
 function labelMatchesFreight(label: string | null | undefined): boolean {
   const normalized = normalizeLabel(label);
   if (!normalized) return false;
-  return isFreightOrHandlingLine(normalized.split(' ').filter(token => token !== 'amount' && token !== 'total').join(' '));
+  return isFreightOrHandlingLine(normalized.split(' ').filter(token => !FREIGHT_LABEL_QUALIFIERS.has(token)).join(' '));
 }
 
 function labelMatchesTax(label: string | null | undefined): boolean {
@@ -349,7 +351,7 @@ function parseCanonicalChargeAmount(value: string | number | null | undefined): 
   const rest = trimmed.slice(prefixEnd).trim();
   if (!/^\d/.test(rest)) return undefined;
   const suffix = rest.replace(/^[\d,.]+/, '').trim();
-  if (suffix && !/^(?:\s*(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR))?\s*$/i.test(suffix)) return undefined;
+  if (suffix && !/^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR)?\s*[*†‡]*$/i.test(suffix)) return undefined;
   const digits = rest.slice(0, rest.length - suffix.length).trim();
   if (!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(digits)) return undefined;
   const numeric = digits.replace(/,/g, '');
@@ -375,23 +377,20 @@ function sameAmount(a: string | undefined, b: string | undefined): boolean {
 }
 
 function printable(value: string | null | undefined): string {
-  return (value ?? '').replace(/["\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const singleLine = (value ?? '').replace(/["\p{Cc}\p{Cf}\u2028\u2029]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  return singleLine.length > 60 ? `${singleLine.slice(0, 57)}...` : singleLine;
 }
 
 function conflictingChargeNote(field: 'Freight' | 'Tax', amount: string | undefined, label: string | null | undefined, otherAmount: string | undefined): string {
   const other = field === 'Freight' ? 'tax' : 'freight';
-  return `${field} amount ${amount} is labeled "${printable(label)}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
+  return `${field} amount ${printable(amount)} is labeled "${printable(label)}" and a separate ${other} amount ${printable(otherAmount)} was also read; both were kept as read. Verify freight and tax against the document.`;
 }
 
-function unreadableChargeNote(options: {
-  freightAmount?: string;
-  freightLabel?: string | null;
-  taxAmount?: string;
-  taxLabel?: string | null;
-}): string {
-  const describe = (amount: string | undefined, label: string | null | undefined) =>
-    `${amount == null ? 'none' : `"${printable(amount)}"`}${label ? ` labeled "${printable(label)}"` : ''}`;
-  return `Freight ${describe(options.freightAmount, options.freightLabel)} and tax ${describe(options.taxAmount, options.taxLabel)} look mislabeled, but an amount could not be read cleanly; both were kept as read. Verify freight and tax against the document.`;
+function withheldChargeNote(withheld: { field: 'Freight' | 'Tax'; amount: string; label?: string | null }[]): string {
+  const described = withheld
+    .map(({ field, amount, label }) => `${field.toLowerCase()} amount "${printable(amount)}"${label ? ` labeled "${printable(label)}"` : ''}`)
+    .join(' and ');
+  return `Could not safely apply ${described}, so ${withheld.length > 1 ? 'they were' : 'it was'} not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`;
 }
 
 export function normalizeExtractedFreightAndTax(options: {
@@ -400,8 +399,8 @@ export function normalizeExtractedFreightAndTax(options: {
   extractedTaxAmount?: string | null;
   extractedTaxLabel?: string | null;
 }): NormalizedFreightAndTax {
-  const rawFreightAmount = options.extractedFreightAmount ?? undefined;
-  const rawTaxAmount = options.extractedTaxAmount ?? undefined;
+  const rawFreightAmount = options.extractedFreightAmount?.trim() ? options.extractedFreightAmount : undefined;
+  const rawTaxAmount = options.extractedTaxAmount?.trim() ? options.extractedTaxAmount : undefined;
   const freightLabel = options.extractedFreightLabel;
   const taxLabel = options.extractedTaxLabel;
 
@@ -415,8 +414,8 @@ export function normalizeExtractedFreightAndTax(options: {
 
   const freightValid = freightNonZero || freightZero;
   const taxValid = taxNonZero || taxZero;
-  const freightUnreadable = Boolean(rawFreightAmount?.trim()) && !freightValid;
-  const taxUnreadable = Boolean(rawTaxAmount?.trim()) && !taxValid;
+  const freightUnreadable = rawFreightAmount != null && !freightValid;
+  const taxUnreadable = rawTaxAmount != null && !taxValid;
 
   let freightAmount: string | undefined;
   let taxAmount: string | undefined;
@@ -427,11 +426,25 @@ export function normalizeExtractedFreightAndTax(options: {
   const labeledFreightZero = freightZero && Boolean(freightLabel);
   const labeledTaxZero = taxZero && Boolean(taxLabel);
 
-  // Amounts stay as read (and are parsed leniently downstream) unless a crossed label is backed by cleanly parsed amounts.
-  if ((freightIsTax || taxIsFreight) && (freightUnreadable || taxUnreadable)) {
-    freightAmount = rawFreightAmount;
-    taxAmount = rawTaxAmount;
-    reviewNote = unreadableChargeNote({ freightAmount: rawFreightAmount, freightLabel, taxAmount: rawTaxAmount, taxLabel });
+  // The Workday builder parses leniently (it strips signs and separators), so an amount that does not parse cleanly is
+  // withheld rather than submitted. With one amount unreadable, a crossed label on the other cannot be resolved either.
+  if (freightUnreadable || taxUnreadable) {
+    const withheld: { field: 'Freight' | 'Tax'; amount: string; label?: string | null }[] = [];
+    if (rawFreightAmount != null && (freightUnreadable || freightIsTax)) {
+      withheld.push({ field: 'Freight', amount: rawFreightAmount, label: freightLabel });
+    } else if (labeledFreightZero) {
+      freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
+    }
+    if (rawTaxAmount != null && (taxUnreadable || taxIsFreight)) {
+      withheld.push({ field: 'Tax', amount: rawTaxAmount, label: taxLabel });
+    } else if (labeledTaxZero) {
+      taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
+    }
+    reviewNote = withheldChargeNote(withheld);
   } else if (freightIsTax && taxIsFreight) {
     if (freightValid && taxValid) {
       freightAmount = rawTaxAmount;
@@ -518,8 +531,10 @@ export function resolveHeaderChargeAmounts(options: {
 }): NormalizedFreightAndTax {
   const { freightAmountFromLines, ...extracted } = options;
   const normalized = normalizeExtractedFreightAndTax(extracted);
-  // Line-derived freight only fills a header the document did not show.
-  const lineFreight = freightAmountFromLines != null ? String(freightAmountFromLines) : undefined;
+  // Line-derived freight only fills a header with no amount read; a withheld header amount keeps the existing value.
+  const lineFreight = !options.extractedFreightAmount?.trim() && freightAmountFromLines != null
+    ? String(freightAmountFromLines)
+    : undefined;
   return {
     ...normalized,
     extractedFreightAmount: normalized.freightCleared ? undefined : (normalized.extractedFreightAmount ?? lineFreight),

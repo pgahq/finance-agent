@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
+import { resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -3599,6 +3600,68 @@ describe('Workday utilities', () => {
           const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
           expect(data.Tax_Amount).toBe(0);
           expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
+        it('should keep the existing Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Freight_Amount: '40.00'
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '12,34',
+            extractedFreightLabel: 'Shipping',
+            freightAmountFromLines: 25,
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe('40.00');
+        });
+
+        it('should move the draft OCR freight row to Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [
+                      { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Widgets', Quantity: '1', Unit_Cost: '485', Extended_Amount: '485' },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Shipping', Quantity: '1', Unit_Cost: '15', Extended_Amount: '15' }
+                    ]
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '-15.00',
+            extractedFreightLabel: 'Shipping',
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe(15);
+          expect(data.Invoice_Line_Replacement_Data.map((line: any) => line.Item_Description)).toEqual(['Widgets']);
         });
 
         it('should keep the existing Tax_Amount and OCR tax rows when no tax was extracted', async () => {
