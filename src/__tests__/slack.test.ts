@@ -157,6 +157,19 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Fallbacks Applied*\n• default supplier');
   });
 
+  it('shows corrected tax and cleared freight on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465719',
+      supplier: { status: 'found', resolvedName: 'BearCom', isDefault: false },
+      extracted: { taxAmount: '510.86', freightCleared: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Freight* → none');
+    expect(texts).toContain('*Tax* → 510.86');
+  });
+
   it('lists clustered files and unrelated docs on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -481,6 +494,21 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
+  });
+
+  it('shows corrected tax and cleared freight on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-465719',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'BearCom', isDefault: false },
+      extracted: { taxAmount: '510.86', freightCleared: true },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Freight* → none');
+    expect(texts).toContain('*Tax* → 510.86');
   });
 
   it('lists the closed-PO line note under Fallbacks Applied', async () => {

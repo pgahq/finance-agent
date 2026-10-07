@@ -614,6 +614,8 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         invoiceLineQuantityDisplayed: undefined,
         relatedLobByCostCenter: undefined,
@@ -735,6 +737,8 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
@@ -987,6 +991,84 @@ describe('enrich_invoice', () => {
         finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }]
       })
     );
+  });
+
+  describe('mislabeled freight and tax', () => {
+    const enrichmentWith = (charges: Record<string, string | null>) => ({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'BearCom', memo: 'Radios' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...charges,
+    });
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'BearCom', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    it('moves a sales-tax amount read as freight to tax and clears freight on update', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '510.86',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: undefined,
+        extractedTaxAmount: '510.86',
+        freightCleared: true,
+        taxCleared: false,
+      }));
+      const notes = params.buildNotes([]);
+      expect(notes).toContain('Freight Amount (from document): none');
+      expect(notes).toContain('Tax Amount (from document): 510.86');
+      expect(notes).not.toContain('Freight/Tax review');
+    });
+
+    it('keeps both amounts and adds a review note when a tax-labeled freight amount differs from tax', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '8.00',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: '10.00',
+        extractedTaxLabel: 'Sales Tax',
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: '8.00',
+        extractedTaxAmount: '10.00',
+        freightCleared: false,
+        taxCleared: false,
+      }));
+      expect(params.buildNotes([])).toContain('Freight/Tax review: Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read.');
+    });
   });
 
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
