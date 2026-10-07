@@ -377,7 +377,7 @@ const SUPPORTED_CURRENCY_PREFIXES = /^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CH
 function parseCanonicalChargeAmount(value: string | number | null | undefined): number | undefined {
   if (value == null) return undefined;
   if (typeof value === 'number') {
-    return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : undefined;
+    return Number.isFinite(value) && value >= 0 ? roundToDecimals(value, AMOUNT_DECIMALS) : undefined;
   }
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -394,7 +394,7 @@ function parseCanonicalChargeAmount(value: string | number | null | undefined): 
   const numeric = digits.replace(/,/g, '');
   const parsed = parseFloat(numeric);
   if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed < 0) return undefined;
-  return Math.round(parsed * 100) / 100;
+  return roundToDecimals(parsed, AMOUNT_DECIMALS);
 }
 
 function isValidNonNegativeAmount(value: string | null | undefined): boolean {
@@ -1150,9 +1150,11 @@ export interface LineTotalCharges {
 export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTotalCharges): string | undefined {
   const amountDue = parseCanonicalChargeAmount(charges.amountDue);
   if (amountDue == null || lines.length === 0) return undefined;
+  // A row with no amount, freight-described or not, leaves the subtotal unknown.
+  if (lines.some(line => submittedLineAmount(line) == null)) return undefined;
   const { merchandiseLines, freightAmountFromLines } = splitFreightLines(lines);
+  if (merchandiseLines.length === 0) return undefined;
   const lineAmounts = merchandiseLines.map(submittedLineAmount);
-  if (lineAmounts.some(amount => amount == null)) return undefined;
 
   const freight = submittedHeaderCharge(
     charges.freightAmount,

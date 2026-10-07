@@ -162,6 +162,22 @@ describe('invoice_validation_failures', () => {
     expect(isLineQuantityOrUnitCostPrecisionError(soapError('Extended_Amount'))).toBe(false);
   });
 
+  it('ignores a header precision fault repeated on the error and its strong-soap envelope', () => {
+    const headerFault = {
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Decimal precision of 6 exceeded for Unit Cost: 1.1234567',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Purchase_Order_Reference[1]/wd:Unit_Cost[1]',
+        },
+      },
+    };
+    const error = Object.assign(new Error('Validation error occurred. Decimal precision of 6 exceeded for Unit Cost'), {
+      detail: headerFault,
+      root: { Envelope: { Body: { Fault: { faultstring: 'Validation error occurred', detail: headerFault } } } },
+    });
+    expect(isLineQuantityOrUnitCostPrecisionError(error, 'Decimal precision of 6 exceeded for Unit Cost: 1.1234567')).toBe(false);
+  });
+
   it('matches a placeholder precision fault and reads every validation error on its own', () => {
     const lineXpath = (field: string) => `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:${field}[1]`;
     expect(isLineQuantityOrUnitCostPrecisionError({

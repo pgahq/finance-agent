@@ -1061,6 +1061,8 @@ async function getValidationFallbackField(
     return 'conversationUrl';
   }
 
+  // Both faults use the document-wide amount-only retry: every eligible merchandise line drops its quantity,
+  // so Workday stops counting PO line quantity as invoiced on that resubmission. Totals and PO links are kept.
   const lineAmountFault = isQuantityUnitExtendedMismatchError(validationText)
     ? 'quantity * unit cost vs extended amount'
     : isLineQuantityOrUnitCostPrecisionError(error, validationText)

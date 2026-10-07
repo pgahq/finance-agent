@@ -6,6 +6,7 @@ import {
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
   constrainEmailLobToRelatedWorktags,
+  isDiscountLine,
   isFreightOrHandlingLine,
   lineTotalMismatchNote,
   normalizeExtractedFreightAndTax,
@@ -1283,6 +1284,15 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: 20.25 });
   });
 
+  it.each([
+    [{ hasDiscount: null, unitCost: 10, extendedAmount: -20 }, true],
+    [{ hasDiscount: null, unitCost: -10, extendedAmount: 20 }, false],
+    [{ hasDiscount: null, unitCost: -10, extendedAmount: null }, true],
+    [{ hasDiscount: true, unitCost: 10, extendedAmount: 20 }, false],
+  ])('classifies a line by its extended amount, else its unit cost (%o)', (line, expected) => {
+    expect(isDiscountLine(line)).toBe(expected);
+  });
+
   it('records the quantity total on a credit with no discount marker and no extended amount', () => {
     const lines = [
       { lineOrder: 1, description: 'Credit for returned units', hasDiscount: null, quantity: 2, unitCost: -10, extendedAmount: null },
@@ -1381,6 +1391,16 @@ describe('lineTotalMismatchNote', () => {
     )).toBeUndefined();
   });
 
+  it('skips the check when a freight row has no amount or only freight rows remain', () => {
+    const widgets = { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 };
+    const shipping = { lineOrder: 2, description: 'Shipping', quantity: null, unitCost: null, extendedAmount: null };
+    expect(lineTotalMismatchNote([widgets, shipping], { amountDue: '$110.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+      { amountDue: '$110.00' }
+    )).toBeUndefined();
+  });
+
   it('asks about a missing line or charge when the lines fall short', () => {
     expect(lineTotalMismatchNote([consultant], { amountDue: '$6,000.00' })).toBe(
       'Invoice lines total $5,500.00, but the amount due $6,000.00 less freight $0.00 and tax $0.00 is $6,000.00. Check for a missing line or charge before approving.'
@@ -1404,6 +1424,10 @@ describe('lineTotalMismatchNote', () => {
     expect(lineTotalMismatchNote([consultant], charges)).toBeUndefined();
     expect(lineTotalMismatchNote([consultant], { ...charges, freightAmount: '$20.00' })).toContain('less freight $20.00 and tax $105.00');
     expect(lineTotalMismatchNote([consultant], { ...charges, taxCleared: true })).toContain('less freight $15.00 and tax $0.00');
+  });
+
+  it.each([1.005, '1.005'])('rounds a Workday tax of %p to the same cent whether it is a number or a string', currentTaxAmount => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$5,501.01', currentTaxAmount })).toBeUndefined();
   });
 
   it('moves freight-described lines to freight when no header freight is set', () => {
