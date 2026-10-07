@@ -220,6 +220,17 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('loads an invoice for the digest when it closes long after AP entered it', async () => {
+    const lateClose = '3'.repeat(32);
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
+    await upsertInvoiceScore(db, {
+      workdayInvoiceWid: lateClose, terminal: true, entryReadAt: daysAgo(20), finalReadAt: daysAgo(1),
+      finalStatus: 'Approved', outcome: 'submitted_clean', entryDiff: [],
+    });
+    const loaded = await loadDigestScores(db, daysAgo(7));
+    expect(loaded.map((score) => score.workdayInvoiceWid)).toContain(lateClose);
+  });
+
   it('never reopens a terminal score', async () => {
     await upsertInvoiceScore(db, { workdayInvoiceWid: created, terminal: false, outcome: 'submitted_edited' });
     expect(await getInvoiceScore(db, created)).toEqual(expect.objectContaining({ terminal: true, finalStatus: 'Approved' }));

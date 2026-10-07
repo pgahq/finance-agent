@@ -69,9 +69,9 @@ export async function loadDigestScores(db: DatabaseConnection, since: Date): Pro
     `SELECT s.*, l.attribution AS label_attribution
        FROM agent_invoice_scores s
        LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
-      WHERE COALESCE(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
+      WHERE GREATEST(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
          OR (s.terminal = false AND s.outcome = 'stuck_draft')
-      ORDER BY COALESCE(s.entry_read_at, s.final_read_at, s.updated_at), s.workday_invoice_wid`,
+      ORDER BY GREATEST(s.entry_read_at, s.final_read_at, s.updated_at), s.workday_invoice_wid`,
     [since]
   ) as Array<Record<string, unknown>>;
   return rows.map(withCancelLabel);

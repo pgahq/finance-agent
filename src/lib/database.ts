@@ -177,7 +177,7 @@ export const CREATE_AGENT_INVOICE_SCORES_TABLE = `
 export const CREATE_AGENT_INVOICE_SCORES_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_entry_read_at ON agent_invoice_scores(entry_read_at);`,
   `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_final_read_at ON agent_invoice_scores(final_read_at);`,
-  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_last_read ON agent_invoice_scores((COALESCE(entry_read_at, final_read_at, updated_at)));`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_latest_read ON agent_invoice_scores((GREATEST(entry_read_at, final_read_at, updated_at)));`,
 ];
 
 // AP's own call on an unattributed cancel; overrides the scorer's rules for that invoice.
