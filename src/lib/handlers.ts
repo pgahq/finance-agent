@@ -28,7 +28,10 @@ export interface ProcessorOptions {
 
 async function setupContext(): Promise<ProcessingContext> {
   process.env = await loadEnv();
+  return connectContext();
+}
 
+async function connectContext(): Promise<ProcessingContext> {
   return {
     workdayConfig: getWorkdayConfig(process.env),
     s3Config: getS3Config(process.env),
@@ -126,42 +129,61 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
       }
     };
 
+function createDeadlineAbortSignal(context: Context): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const remaining = context.getRemainingTimeInMillis();
+  if (remaining <= PROCESSOR_DEADLINE_BUFFER_MS) {
+    controller.abort(new Error('Lambda invocation entered the deadline buffer; aborting AI calls'));
+    return { signal: controller.signal, dispose: () => {} };
+  }
+  const timer = setTimeout(() => {
+    debug(`Lambda deadline approaching (${remaining}ms remaining); aborting AI calls`);
+    controller.abort(new Error('Processor deadline reached; aborting AI calls'));
+  }, remaining - PROCESSOR_DEADLINE_BUFFER_MS);
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+
+/**
+ * Posts a Slack error and throws when the deadline signal has fired, so work that never
+ * started is reported the same way as work that failed.
+ */
+export async function throwIfDeadlineReached(abortSignal: AbortSignal | undefined): Promise<void> {
+  if (!abortSignal?.aborted) return;
+  const reason = abortSignal.reason instanceof Error
+    ? abortSignal.reason
+    : new Error('Processor deadline reached');
+  const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
+  try {
+    await notifyResult(lambdaName, 'error', undefined, undefined, reason);
+  } catch (notifyError) {
+    debug('Failed to send deadline Slack alert:', notifyError);
+  }
+  throw reason;
+}
+
 /**
  * Processor Handler - Processes data from query handlers or direct invocation
  * 
  * @param processAction - The function that processes the data. Receives the
  *   processor options as a fourth argument, including the Lambda deadline abort
- *   signal when one is available.
+ *   signal when one is available. The wrapper alerts only when the deadline is
+ *   reached before `processAction` starts; a processor that passes the signal on
+ *   reports its own deadline failures.
  * @returns A handler function that can process data
  */
-function createDeadlineAbortSignal(context: Context): { signal: AbortSignal; dispose: () => void } | undefined {
-  const remaining = context.getRemainingTimeInMillis?.();
-  if (!remaining || remaining <= PROCESSOR_DEADLINE_BUFFER_MS) {
-    // Fail closed: an already-aborted signal prevents new AI work from starting
-    // inside the reserved buffer.
-    const controller = new AbortController();
-    controller.abort(new Error('Lambda invocation entered the deadline buffer; aborting AI calls'));
-    return { signal: controller.signal, dispose: () => {} };
-  }
-  const controller = new AbortController();
-  const timeoutMs = remaining - PROCESSOR_DEADLINE_BUFFER_MS;
-  const timer = setTimeout(() => {
-    debug(`Lambda deadline approaching (${remaining}ms remaining); aborting AI calls`);
-    controller.abort(new Error('Processor deadline reached; aborting AI calls'));
-  }, timeoutMs);
-  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
-}
-
 export const withProcessorHandler = <T = unknown>(
   processAction: (context: ProcessingContext, data: T[], event?: any, options?: ProcessorOptions) => Promise<void>,
   options?: { requireCompleteTotal?: boolean }
 ) => async (event: any = {}, lambdaContext?: Context) => {
-  const context = await setupContext();
-
+  // Start the deadline before setup so environment and database setup count against it.
   const deadline = lambdaContext ? createDeadlineAbortSignal(lambdaContext) : undefined;
   const processorOptions: ProcessorOptions | undefined = deadline ? { abortSignal: deadline.signal } : undefined;
 
   try {
+    process.env = await loadEnv();
+    await throwIfDeadlineReached(deadline?.signal);
+    const context = await connectContext();
+
     if (event.query) {
       // pageSize: null case - processor executes query itself
       debug(`Executing query directly: ${event.query}`);
@@ -175,10 +197,12 @@ export const withProcessorHandler = <T = unknown>(
         await notifyResult(lambdaName, 'error', undefined, undefined, error);
         throw error;
       }
+      await throwIfDeadlineReached(deadline?.signal);
       await processAction(context, data as T[], event, processorOptions);
     } else {
       // pageSize: number case - data comes in payload
       debug(`Processing ${event.data?.length || 0} records from payload`);
+      await throwIfDeadlineReached(deadline?.signal);
       await processAction(context, event.data as T[], event, processorOptions);
     }
   } finally {

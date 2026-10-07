@@ -234,6 +234,23 @@ describe('create_invoice', () => {
     delete process.env.FALLBACK_LOB_ID;
   });
 
+  it('passes the Lambda deadline signal to enrichment and line building', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+    await processor(
+      { data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any,
+      { getRemainingTimeInMillis: () => 120_000 } as any
+    );
+
+    const enrichSignal = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][7];
+    expect(enrichSignal).toBeInstanceOf(AbortSignal);
+    expect(enrichSignal.aborted).toBe(false);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][8]).toBe(enrichSignal);
+  });
+
   it('passes assigneeWID when the AP agent employee cache matches assigneeEmail', async () => {
     process.env.INVOICE_MOD_ENABLED = 'true';
     const { processor, workday, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();

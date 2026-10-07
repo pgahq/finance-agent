@@ -253,6 +253,36 @@ describe('AI utilities', () => {
       });
     });
 
+    it('forwards the abort signal to the single-pass call and to both tool-path calls', async () => {
+      const { signal } = new AbortController();
+      mockGenerateText.mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+        tools: {},
+        abortSignal: signal,
+      });
+
+      expect(mockGenerateText.mock.calls[0][0].abortSignal).toBe(signal);
+
+      mockGenerateText
+        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
+        .mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+        abortSignal: signal,
+      });
+
+      expect(mockGenerateText).toHaveBeenCalledTimes(3);
+      expect(mockGenerateText.mock.calls[1][0].abortSignal).toBe(signal);
+      expect(mockGenerateText.mock.calls[2][0].abortSignal).toBe(signal);
+    });
+
     it('should handle API errors', async () => {
       mockGenerateText.mockRejectedValue(new Error('OpenAI API error: 401 Unauthorized'));
 

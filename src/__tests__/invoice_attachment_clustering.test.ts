@@ -5,9 +5,17 @@ import {
   isInvoiceAttachmentClusteringEnabled,
   joinClassifications,
   normalizeClusterInvoiceNumber,
+  parseAndClusterInvoiceAttachments,
   supplierNamesAgree,
   type ClassifiedAttachment,
 } from '../lib/invoice_attachment_clustering.js';
+import { getAiResponse } from '../lib/ai.js';
+
+jest.mock('../lib/ai.js', () => ({
+  getAiResponse: jest.fn(),
+}));
+
+const mockGetAiResponse = getAiResponse as jest.MockedFunction<typeof getAiResponse>;
 
 function classified(
   overrides: Partial<ClassifiedAttachment> & { fileName: string }
@@ -331,5 +339,20 @@ describe('joinClassifications', () => {
     expect(joined[0].kind).toBe('supplier_invoice');
     expect(joined[1].s3Key).toBe('new-invoices/req-1/2-b.pdf');
     expect(joined[1].kind).toBe('supporting');
+  });
+});
+
+describe('parseAndClusterInvoiceAttachments', () => {
+  it('forwards the abort signal to the classification AI call', async () => {
+    const { signal } = new AbortController();
+    mockGetAiResponse.mockRejectedValueOnce(new Error('stop after the AI call'));
+
+    await expect(parseAndClusterInvoiceAttachments(
+      [{ s3Key: 'new-invoices/req-1/a.pdf', fileName: 'a.pdf', contentType: 'application/pdf' }] as any,
+      async () => Buffer.from('pdf'),
+      { abortSignal: signal }
+    )).rejects.toThrow('stop after the AI call');
+
+    expect(mockGetAiResponse.mock.calls[0][0].abortSignal).toBe(signal);
   });
 });
