@@ -531,6 +531,8 @@ interface buildSubmitInvoiceDataOptions {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  freightCleared?: boolean;
+  taxCleared?: boolean;
   omitTaxApplicability?: boolean;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
@@ -627,7 +629,8 @@ function soapAmount(value: unknown): number | undefined {
   return undefined;
 }
 
-function resolveHeaderTaxAmount(currentInvoice: any, extractedTaxAmount?: string): unknown {
+function resolveHeaderTaxAmount(currentInvoice: any, extractedTaxAmount?: string, taxCleared?: boolean): unknown {
+  if (taxCleared) return 0;
   return extractedTaxAmount
     ? (parseExtractedAmount(extractedTaxAmount) ?? currentInvoice.Tax_Amount ?? 0)
     : (currentInvoice.Tax_Amount ?? 0);
@@ -636,7 +639,7 @@ function resolveHeaderTaxAmount(currentInvoice: any, extractedTaxAmount?: string
 // Workday may reject line applicability without a line tax code, so a validation retry can drop it.
 function linesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boolean {
   if (options.omitTaxApplicability) return false;
-  const tax = soapAmount(resolveHeaderTaxAmount(options.currentInvoice, options.extractedTaxAmount));
+  const tax = soapAmount(resolveHeaderTaxAmount(options.currentInvoice, options.extractedTaxAmount, options.taxCleared));
   return tax != null && tax > 0;
 }
 
@@ -1270,7 +1273,7 @@ function lineWorktagTypeContext(
 }
 
 function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnostics?: SubmitInvoiceDataDiagnostics): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, freightCleared, taxCleared, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
@@ -1287,10 +1290,12 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
 
-  const freightAmount = extractedFreightAmount
-    ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
-    : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
-  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
+  const freightAmount = freightCleared
+    ? 0
+    : extractedFreightAmount
+      ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
+      : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
+  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount, taxCleared);
   const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
@@ -1550,7 +1555,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     Control_Amount_Total: controlAmountTotal,
     Tax_Amount: taxAmount,
     Default_Tax_Option_Reference: { ID: [{ $attributes: { type: 'Tax_Option_ID' }, $value: 'ENTER_TAX_DUE' }] },
-    ...(freightAmount && { Freight_Amount: freightAmount }),
+    // An omitted Freight_Amount can leave the OCR value in place on update, so a clear sends 0.
+    ...((freightAmount || freightCleared) && { Freight_Amount: freightAmount }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
@@ -2322,6 +2328,8 @@ export interface SubmitSupplierInvoiceUpdateParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  freightCleared?: boolean;
+  taxCleared?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -2346,6 +2354,8 @@ export async function submitSupplierInvoiceUpdate(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
+    freightCleared,
+    taxCleared,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2408,6 +2418,8 @@ export async function submitSupplierInvoiceUpdate(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      freightCleared,
+      taxCleared,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,
@@ -2450,6 +2462,8 @@ export interface SubmitNewSupplierInvoiceParams {
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
   extractedTaxAmount?: string;
+  freightCleared?: boolean;
+  taxCleared?: boolean;
   finalLines: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   relatedLobByCostCenter?: Map<string, RelatedLob>;
@@ -2478,6 +2492,8 @@ export async function submitNewSupplierInvoice(
     suppliersInvoiceNumber,
     extractedFreightAmount,
     extractedTaxAmount,
+    freightCleared,
+    taxCleared,
     finalLines,
     invoiceLineQuantityDisplayed,
     relatedLobByCostCenter,
@@ -2530,6 +2546,8 @@ export async function submitNewSupplierInvoice(
       suppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      freightCleared,
+      taxCleared,
       finalLines,
       invoiceLineQuantityDisplayed,
       relatedLobByCostCenter,

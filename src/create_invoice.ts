@@ -5,6 +5,7 @@ import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } 
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
@@ -49,6 +50,7 @@ import {
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -808,7 +810,6 @@ async function processInvoiceCluster(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
     const selectedPo = await selectPurchaseOrder(context, prefetchedPo, notePurchaseOrders, enrichmentPoNumber);
     const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
@@ -855,8 +856,19 @@ async function processInvoiceCluster(
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -984,7 +996,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -1049,6 +1061,9 @@ async function processInvoiceCluster(
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         ...(selectedPo.fromNote && matchedPo ? {
           purchaseOrderSource: 'note',
@@ -1220,6 +1235,8 @@ async function processInvoiceCluster(
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
           extractedFreightAmount,
           extractedTaxAmount,
+          freightCleared,
+          taxCleared,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1283,6 +1300,8 @@ async function processInvoiceCluster(
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
       extractedTaxAmount,
+      freightCleared,
+      taxCleared,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,
