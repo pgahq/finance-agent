@@ -212,6 +212,16 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
 
+  const lineReview = Array.isArray(details.lineReview)
+    ? details.lineReview.filter((note): note is string => typeof note === 'string' && note.length > 0)
+    : [];
+  if (lineReview.length && details.skipped !== true) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Line review*\n${lineReview.map((note) => `• ${note}`).join('\n')}`) }
+    });
+  }
+
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
       type: 'section',

@@ -249,6 +249,34 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Tax* → 510.86');
   });
 
+  it('lists repeated-line and line-total review notes on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [
+        'Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant" ($5,500.00) because table 1 repeats the charges in table 2.',
+        'Line total review: Invoice lines total $6,750.00, but the amount due $5,000.00 less freight $0.00 and tax $0.00 is $5,000.00.',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Line review*\n• Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant"');
+    expect(texts).toContain('\n• Line total review: Invoice lines total $6,750.00');
+    expect(texts).not.toContain('"lineReview"');
+  });
+
+  it('omits the line review section on a skipped resend', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      skipped: true,
+      skipReason: 'No documents newer than the last processing of SUPIN-465991.',
+      lineReview: ['Line total review: Invoice lines total $11,000.00.'],
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).not.toContain('*Line review*');
+  });
+
   it('lists clustered files and unrelated docs on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

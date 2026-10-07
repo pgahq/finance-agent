@@ -20,6 +20,7 @@ export interface ExtractedInvoiceLine {
   unitCost?: string | null;
   totalPrice?: string | null;
   hasDiscount?: boolean | null;
+  tableNumber?: number | null;
 }
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
@@ -1143,39 +1144,201 @@ export interface LineTotalCharges {
   currentTaxAmount?: unknown;
 }
 
+interface ExpectedLineTotal {
+  amountDueCents: number;
+  freightCents: number;
+  taxCents: number;
+  expectedCents: number;
+}
+
+// Credit memos and amounts that do not parse cleanly leave nothing reliable to compare.
+function expectedLineTotal(charges: LineTotalCharges, freightFallbacks: unknown[]): ExpectedLineTotal | undefined {
+  const amountDue = parseCanonicalChargeAmount(charges.amountDue);
+  if (amountDue == null) return undefined;
+  const freight = submittedHeaderCharge(charges.freightAmount, charges.freightCleared, freightFallbacks);
+  const tax = submittedHeaderCharge(charges.taxAmount, charges.taxCleared, [charges.currentTaxAmount]);
+  if (freight === UNREADABLE || tax === UNREADABLE) return undefined;
+  const amountDueCents = toCents(amountDue);
+  const freightCents = toCents(freight);
+  const taxCents = toCents(tax);
+  return { amountDueCents, freightCents, taxCents, expectedCents: amountDueCents - freightCents - taxCents };
+}
+
 // Lines that restate another row (a monthly summary beside its hourly breakdown) would invoice
 // the charge twice, so a line sum that misses the document's amount due is flagged for AP review.
-// Credit memos and amounts that do not parse cleanly leave nothing reliable to compare, so they
-// get no note.
 export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTotalCharges): string | undefined {
-  const amountDue = parseCanonicalChargeAmount(charges.amountDue);
-  if (amountDue == null || lines.length === 0) return undefined;
+  if (lines.length === 0) return undefined;
   // A row with no amount, freight-described or not, leaves the subtotal unknown.
   if (lines.some(line => submittedLineAmount(line) == null)) return undefined;
   const { merchandiseLines, freightAmountFromLines } = splitFreightLines(lines);
   if (merchandiseLines.length === 0) return undefined;
   const lineAmounts = merchandiseLines.map(submittedLineAmount);
 
-  const freight = submittedHeaderCharge(
-    charges.freightAmount,
-    charges.freightCleared,
-    [charges.currentFreightAmount, freightAmountFromLines]
-  );
-  const tax = submittedHeaderCharge(charges.taxAmount, charges.taxCleared, [charges.currentTaxAmount]);
-  if (freight === UNREADABLE || tax === UNREADABLE) return undefined;
+  const expected = expectedLineTotal(charges, [charges.currentFreightAmount, freightAmountFromLines]);
+  if (!expected) return undefined;
+  const { amountDueCents, freightCents, taxCents, expectedCents } = expected;
 
   const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount!), 0);
-  const freightCents = toCents(freight);
-  const taxCents = toCents(tax);
-  const expectedCents = toCents(amountDue) - freightCents - taxCents;
   if (lineCents === expectedCents) return undefined;
 
   const likelyCause = lineCents > expectedCents
     ? 'Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
     : 'Check for a missing line or charge before approving.';
-  return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(toCents(amountDue))}`
+  return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(amountDueCents)}`
     + ` less freight ${formatCents(freightCents)} and tax ${formatCents(taxCents)} is ${formatCents(expectedCents)}.`
     + ` ${likelyCause}`;
+}
+
+const MONTH_TOKEN = String.raw`(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![a-z])`;
+// A two-digit year needs an apostrophe ("Sep'26"), so a day number ("May 15, 2026") is not read as a year.
+const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d{2})(?!\d)|[\s,/-]*(\d{4})(?!\d))`, 'i');
+const YEAR_THEN_MONTH = new RegExp(String.raw`\b(\d{4})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
+const NUMERIC_MONTH_YEAR = /\b(0?[1-9]|1[0-2])\/(\d{4})\b/;
+
+interface StatedMonth {
+  year: number;
+  month: number;
+}
+
+function monthIndex(token: string): number {
+  return ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    .indexOf(token.slice(0, 3).toLowerCase()) + 1;
+}
+
+// Reads one month and year a row bills for, e.g. "Sep'26", "September 2026", "2026 - September", "09/2026".
+function statedMonth(text: string | null | undefined): StatedMonth | undefined {
+  if (!text) return undefined;
+  const monthThenYear = text.match(MONTH_THEN_YEAR);
+  if (monthThenYear) {
+    const year = monthThenYear[2] ? 2000 + Number(monthThenYear[2]) : Number(monthThenYear[3]);
+    return { year, month: monthIndex(monthThenYear[1]) };
+  }
+  const yearThenMonth = text.match(YEAR_THEN_MONTH);
+  if (yearThenMonth) return { year: Number(yearThenMonth[1]), month: monthIndex(yearThenMonth[2]) };
+  const numeric = text.match(NUMERIC_MONTH_YEAR);
+  if (numeric) return { year: Number(numeric[2]), month: Number(numeric[1]) };
+  return undefined;
+}
+
+function poLineCoversMonth(line: Pick<PurchaseOrderLine, 'startDate' | 'endDate'>, { year, month }: StatedMonth): boolean {
+  const startDate = toIsoDate(line.startDate);
+  const endDate = toIsoDate(line.endDate);
+  if (!startDate && !endDate) return false;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const firstDay = `${year}-${pad(month)}-01`;
+  const lastDay = `${year}-${pad(month)}-${pad(new Date(Date.UTC(year, month, 0)).getUTCDate())}`;
+  return (!startDate || startDate <= lastDay) && (!endDate || endDate >= firstDay);
+}
+
+function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
+  if (line.totalPrice) {
+    const amount = parseExtractedLineAmount(line.totalPrice);
+    return amount == null ? undefined : toCents(amount);
+  }
+  const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
+  return unitCost == null ? undefined : toCents(unitCost * (line.quantity ?? 1));
+}
+
+export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost' | 'document_order';
+
+export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
+  lines: T[];
+  removed: T[];
+  keptTable?: number;
+  keepReason?: RepeatedTableKeepReason;
+  note?: string;
+}
+
+const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
+  purchase_order: 'its lines match open PO lines by amount and service period',
+  service_period: 'its lines state the service period',
+  unit_cost: 'its quantities and unit costs reproduce the line totals to the cent',
+  document_order: 'nothing else told the tables apart, so the first table on the document was kept. Verify the kept lines before approving',
+};
+
+interface TableCandidate<T> {
+  tableNumber: number;
+  lines: T[];
+  lineCents: number[];
+}
+
+function keepTable<T extends ExtractedInvoiceLine>(
+  tables: TableCandidate<T>[],
+  purchaseOrderLines: PurchaseOrderLine[]
+): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } {
+  const openPoLines = purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null);
+  const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
+    table.lines.filter((line, index) => matches(line, table.lineCents[index])).length / table.lines.length;
+  const criteria: Array<[RepeatedTableKeepReason, (table: TableCandidate<T>) => number]> = [
+    ['purchase_order', table => share(table, (line, cents) => {
+      const month = statedMonth(line.description);
+      return !!month && openPoLines.some(poLine => toCents(poLine.extendedAmount!) === cents && poLineCoversMonth(poLine, month));
+    })],
+    ['service_period', table => share(table, line => !!statedMonth(line.description))],
+    ['unit_cost', table => share(table, (line, cents) => {
+      const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
+      return unitCost != null && line.quantity != null
+        && roundToDecimals(unitCost, AMOUNT_DECIMALS) === unitCost
+        && toCents(line.quantity * unitCost) === cents;
+    })],
+  ];
+
+  let remaining = tables;
+  for (const [reason, score] of criteria) {
+    const scores = remaining.map(score);
+    const best = Math.max(...scores);
+    remaining = remaining.filter((_, index) => scores[index] === best);
+    if (remaining.length === 1) return { table: remaining[0], reason };
+  }
+  return { table: remaining[0], reason: 'document_order' };
+}
+
+// Some invoices print the same charges twice, for example an hourly line-item table plus a monthly
+// summary table. When extraction numbered the tables and each table on its own totals the amount due
+// less freight and tax, one table restates the other, so only one table is kept. Anything less
+// certain removes nothing and is left to lineTotalMismatchNote.
+export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
+  lines: T[],
+  charges: LineTotalCharges,
+  purchaseOrderLines: PurchaseOrderLine[] = []
+): RepeatedLineTables<T> {
+  const unchanged: RepeatedLineTables<T> = { lines, removed: [] };
+  if (lines.length < 2) return unchanged;
+  if (lines.some(line => typeof line.tableNumber !== 'number' || !Number.isFinite(line.tableNumber))) return unchanged;
+  const lineCents = lines.map(extractedLineCents);
+  if (lineCents.some(cents => cents == null)) return unchanged;
+  const expected = expectedLineTotal(charges, [charges.currentFreightAmount]);
+  if (!expected) return unchanged;
+  const totalCents = lineCents.reduce<number>((sum, cents) => sum + cents!, 0);
+  if (totalCents === expected.expectedCents) return unchanged;
+
+  const byTable = new Map<number, TableCandidate<T>>();
+  lines.forEach((line, index) => {
+    const tableNumber = line.tableNumber as number;
+    const table = byTable.get(tableNumber) ?? { tableNumber, lines: [], lineCents: [] };
+    table.lines.push(line);
+    table.lineCents.push(lineCents[index]!);
+    byTable.set(tableNumber, table);
+  });
+  const tables = [...byTable.values()].sort((a, b) => a.tableNumber - b.tableNumber);
+  if (tables.length < 2) return unchanged;
+  const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
+  if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+
+  const { table: kept, reason } = keepTable(tables, purchaseOrderLines);
+  const keptLines = lines.filter(line => line.tableNumber === kept.tableNumber);
+  const removed = lines.filter(line => line.tableNumber !== kept.tableNumber);
+
+  const removedTables = tables.filter(table => table !== kept).map(table => table.tableNumber);
+  const removedList = removed
+    .map(line => `"${printable(line.description)}" (${formatCents(extractedLineCents(line)!)})`)
+    .join(', ');
+  const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${removedList} because`
+    + ` ${removedTables.length === 1 ? `table ${removedTables[0]} repeats` : `tables ${removedTables.join(', ')} repeat`}`
+    + ` the charges in table ${kept.tableNumber}: each table totals ${formatCents(expected.expectedCents)},`
+    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${KEEP_REASON_TEXT[reason]}.`;
+
+  return { lines: keptLines, removed, keptTable: kept.tableNumber, keepReason: reason, note };
 }
 
 function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {

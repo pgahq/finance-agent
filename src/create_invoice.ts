@@ -16,6 +16,7 @@ import {
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
+  formatRepeatedLineNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
@@ -52,6 +53,7 @@ import {
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  removeRepeatedLineTables,
   resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -956,7 +958,7 @@ async function processInvoiceCluster(
       (result.extractedInvoiceLines ?? [])
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
-    const candidateLines = withComposedLineDescriptions(merchandiseLines);
+    const extractedCandidateLines = withComposedLineDescriptions(merchandiseLines);
     const {
       extractedFreightAmount,
       extractedTaxAmount,
@@ -971,6 +973,19 @@ async function processInvoiceCluster(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines,
     });
+
+    // A withheld charge leaves the submitted header unknown, so no line can be judged a repeat.
+    const repeatedLines = chargeWithheld
+      ? { lines: extractedCandidateLines, note: undefined }
+      : removeRepeatedLineTables(extractedCandidateLines, {
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
+      }, poClosedForInvoicing ? undefined : poLines);
+    if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
+    const candidateLines = repeatedLines.lines;
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -1089,6 +1104,10 @@ async function processInvoiceCluster(
       taxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
+    const lineReview = [
+      repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
+      lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
+    ].filter((note): note is string => Boolean(note));
 
     const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
@@ -1108,7 +1127,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -1190,6 +1209,7 @@ async function processInvoiceCluster(
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
+      ...(lineReview.length ? { lineReview } : {}),
     };
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
