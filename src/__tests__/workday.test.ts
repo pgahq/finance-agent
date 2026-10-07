@@ -1054,6 +1054,82 @@ describe('Workday utilities', () => {
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
     });
 
+    it('should retry unit cost decimal precision faults with amount-only lines that keep the total', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5500.00'
+              }
+            }
+          }
+        });
+      });
+
+      const precisionFault = 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753';
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: precisionFault,
+                Xpath: '/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[1]/ns1:Unit_Cost[1]'
+              }
+            }
+          }, null);
+          return;
+        }
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$5,500.00',
+        finalLines: [{
+          lineOrder: 1,
+          description: 'PSO-RISK-ADVISORY - Consultant',
+          quantity: 24.45,
+          unitCost: 224.9488753,
+          extendedAmount: 5500,
+        }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([{ attempt: 1, message: precisionFault }]);
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' }),
+        ])
+      );
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 5500,
+      });
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Control_Amount_Total).toBe(5500);
+
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2025-02-21T12:00:00Z'));
 

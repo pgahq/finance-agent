@@ -161,9 +161,29 @@ export type InvoiceLineFallbackIds = {
 
 export type RelatedLobLookup = (costCenterIds: string[]) => Promise<Map<string, RelatedLob>>;
 
-export function parseExtractedAmount(raw: string): number | undefined {
+// Decimal limits on Supplier_Invoice_Line_Replacement_Data in the Resource_Management WSDL.
+// Extended_Amount allows three, but line totals are currency and stay in cents.
+const QUANTITY_DECIMALS = 2;
+const UNIT_COST_DECIMALS = 6;
+const AMOUNT_DECIMALS = 2;
+
+function roundToDecimals(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function parseExtractedNumber(raw: string, decimals: number): number | undefined {
   const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
-  return isNaN(parsed) ? undefined : Math.round(parsed * 100) / 100;
+  return isNaN(parsed) ? undefined : roundToDecimals(parsed, decimals);
+}
+
+export function parseExtractedAmount(raw: string): number | undefined {
+  return parseExtractedNumber(raw, AMOUNT_DECIMALS);
+}
+
+// A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
+export function parseExtractedUnitCost(raw: string): number | undefined {
+  return parseExtractedNumber(raw, UNIT_COST_DECIMALS);
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
@@ -779,7 +799,7 @@ function buildFallbackLines(
     lineOrder: idx + 1,
     description: line.description,
     quantity: line.quantity,
-    unitCost: line.unitCost ? (parseExtractedAmount(line.unitCost) ?? null) : null,
+    unitCost: line.unitCost ? (parseExtractedUnitCost(line.unitCost) ?? null) : null,
     extendedAmount: line.totalPrice ? (parseExtractedAmount(line.totalPrice) ?? null) : null,
     hasDiscount: line.hasDiscount ?? null,
     costCenterId: fallbackIds.costCenterId ?? null,
@@ -996,8 +1016,19 @@ function netUnitCostForDiscountedPurchaseOrderLine(line: FinalInvoiceLine, exten
   return toCents(quantity * netUnitCost) === toCents(extendedAmount) ? netUnitCost : null;
 }
 
+// Rounding never moves the line total: the cents check below sees the rounded quantity and unit
+// cost, and a line they no longer reproduce submits amount-only with its extended amount.
+function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
+  return {
+    ...line,
+    ...(line.quantity != null && { quantity: roundToDecimals(line.quantity, QUANTITY_DECIMALS) }),
+    ...(line.unitCost != null && { unitCost: roundToDecimals(line.unitCost, UNIT_COST_DECIMALS) }),
+    ...(line.extendedAmount != null && { extendedAmount: roundToDecimals(line.extendedAmount, AMOUNT_DECIMALS) }),
+  };
+}
+
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
-  return lines.map(line => {
+  return lines.map(limitLineAmountPrecision).map(line => {
     if (isDiscountLine(line)) return line;
     if (line.quantity === 0 && line.unitCost === 0) return line;
 

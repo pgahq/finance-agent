@@ -459,6 +459,10 @@ export function isQuantityUnitExtendedMismatchError(text: unknown): boolean {
   );
 }
 
+export function isLineQuantityOrUnitCostPrecisionError(text: unknown): boolean {
+  return /Decimal precision of \d+ exceeded for (?:Unit Cost|Quantity)\b/i.test(asValidationText(text));
+}
+
 export function isAssigneeValidationError(text: unknown): boolean {
   const validationText = asValidationText(text);
   return (

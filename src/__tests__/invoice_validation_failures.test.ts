@@ -7,6 +7,7 @@ import {
   isDuplicateSuppliersInvoiceNumberError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
+  isLineQuantityOrUnitCostPrecisionError,
   isQuantityUnitExtendedMismatchError,
   isRequiredLineOfBusinessWorktagError,
   isWorkdayTaskNotAuthorizedError,
@@ -84,6 +85,21 @@ describe('invoice_validation_failures', () => {
       'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.'
     )).toBe(true);
     expect(isQuantityUnitExtendedMismatchError('Spend Category is required')).toBe(false);
+  });
+
+  it('detects quantity or unit cost decimal precision faults', () => {
+    expect(isLineQuantityOrUnitCostPrecisionError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753',
+          Detail_Message: 'Decimal precision of !**! exceeded for Unit Cost: !**!. Cause: com.workday.exceptions.ValidationException: Decimal precision of 6 exceeded for Unit Cost: 224.9488753',
+          Xpath: '/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[1]/ns1:Unit_Cost[1]',
+        },
+      },
+    })).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError('Decimal precision of 2 exceeded for Quantity: 1.125')).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError('Decimal precision of 3 exceeded for Extended Amount: 10.0001')).toBe(false);
+    expect(isLineQuantityOrUnitCostPrecisionError('Spend Category is required')).toBe(false);
   });
 
   it('detects configurable attribute (Additional Fields) faults', () => {

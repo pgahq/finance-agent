@@ -11,6 +11,8 @@ import {
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  parseExtractedAmount,
+  parseExtractedUnitCost,
   resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
@@ -635,6 +637,20 @@ describe('buildFinalInvoiceLines', () => {
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
   });
 
+  it('keeps sub-cent unit cost precision when the merge fails and extracted lines are used', async () => {
+    mockGetAiResponse.mockRejectedValue(new Error('merge unavailable'));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null }],
+      undefined,
+      undefined,
+      {}
+    );
+    const [line] = alignSupplierInvoiceLineAmounts(result.lines);
+
+    expect(line).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
+  });
+
   it('rethrows AI errors when the deadline signal has aborted', async () => {
     const abortController = new AbortController();
     abortController.abort(new Error('Processor deadline reached'));
@@ -1222,6 +1238,60 @@ describe('alignSupplierInvoiceLineAmounts', () => {
   it('leaves already amount-only lines unchanged', () => {
     const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 0, extendedAmount: 1250 }];
     expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
+  });
+
+  it('rounds a back-computed unit cost to six decimals and keeps quantity and the line total', () => {
+    const lines = [{ lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500, purchaseOrderLineId: 'POL-001' });
+  });
+
+  it('rounds quantity to two decimals and submits amount-only when the rounded product misses the total', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting hours', quantity: 1.125, unitCost: 200, extendedAmount: 225 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 225 });
+  });
+
+  it('submits amount-only when six-decimal rounding no longer reproduces the total on a very large quantity', () => {
+    const lines = [{ lineOrder: 1, description: 'Envelopes', quantity: 2000000, unitCost: 0.0123456789, extendedAmount: 24691.36 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 24691.36 });
+  });
+
+  it('rounds unit cost on lines without an extended amount', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2, unitCost: 10.12345678, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: null });
+  });
+
+  it('rounds the extended amount on amount-only lines derived from a long unit cost', () => {
+    const lines = applyMissingQuantityColumnLines(
+      [{ lineOrder: 1, description: 'Retainer', quantity: null, unitCost: 224.9488753, extendedAmount: null }],
+      false
+    );
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 224.95 });
+  });
+});
+
+describe('extracted amount parsing', () => {
+  it.each([
+    ['$5,500.00', 5500],
+    ['5,500.00', 5500],
+    ['USD 1,234.567', 1234.57],
+  ])('parses amount %s to cents', (raw, expected) => {
+    expect(parseExtractedAmount(raw)).toBe(expected);
+  });
+
+  it.each([
+    ['$224.9488753', 224.948875],
+    ['$1,224.12', 1224.12],
+    ['0.0123456789', 0.012346],
+  ])('parses unit cost %s to six decimals', (raw, expected) => {
+    expect(parseExtractedUnitCost(raw)).toBe(expected);
+  });
+
+  it('returns undefined for text without a number', () => {
+    expect(parseExtractedAmount('N/A')).toBeUndefined();
+    expect(parseExtractedUnitCost('N/A')).toBeUndefined();
   });
 });
 
