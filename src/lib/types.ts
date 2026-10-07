@@ -53,7 +53,7 @@ export interface InvoiceData {
     plainTextBody?: string;
     /** Intercom conversation part bodies only (no source email); the only text whose Supplier IDs may override the invoice. */
     conversationParts?: string;
-    /** Intercom conversation parts written by teammates (author type admin); the only text whose PO may override the invoice PO. */
+    /** Intercom internal notes written by teammates (part type note, author type admin); the only text whose PO may override the invoice PO. */
     adminConversationParts?: string;
   };
 }

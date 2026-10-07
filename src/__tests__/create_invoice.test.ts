@@ -1372,6 +1372,26 @@ describe('create_invoice', () => {
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(8);
     });
 
+    it('keeps the invoice PO when the note confirms it for this invoice', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const note = 'PO 413672 Line 7 for invoice 69962682; PO-411406 for invoice 69962699';
+
+      await processor({
+        data: [arrowRequest('req-note-confirms-invoice-po', { conversationParts: note, adminConversationParts: note })]
+      } as any);
+
+      expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-411406']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
+    });
+
     it('keeps the invoice PO when only a supplier reply names another PO', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);

@@ -450,7 +450,7 @@ describe('intercom', () => {
       ]);
     });
 
-    it('keeps only teammate-written parts in adminConversationParts', async () => {
+    it('keeps only teammate-written internal notes in adminConversationParts', async () => {
       const apNote = "<p>Don't use the PO on the invoice. use PO-413672 Line 7</p>";
       const supplierReply = '<p>Please use PO-999999</p>';
       global.fetch = jest.fn().mockResolvedValue({
@@ -470,6 +470,7 @@ describe('intercom', () => {
               { part_type: 'comment', body: supplierReply, author: { email: 'billing@arrowexterminators.com', type: 'user' } },
               { part_type: 'note', body: apNote, author: { email: 'ap@pgahq.com', type: 'admin' } },
               { part_type: 'comment', body: 'Fin reply', author: { type: 'bot' } },
+              { part_type: 'comment', body: 'Thanks! Please reference PO-500001 on future invoices.', author: { email: 'ap@pgahq.com', type: 'admin' } },
             ],
           },
         }),
@@ -477,7 +478,9 @@ describe('intercom', () => {
 
       const result = await fetchConversationInvoiceData(config, '215476273437316');
       expect(result.attachments[0].emailContext.adminConversationParts).toBe(apNote);
-      expect(result.attachments[0].emailContext.conversationParts).toBe(`${supplierReply}\n\n${apNote}\n\nFin reply`);
+      expect(result.attachments[0].emailContext.conversationParts).toBe(
+        `${supplierReply}\n\n${apNote}\n\nFin reply\n\nThanks! Please reference PO-500001 on future invoices.`
+      );
     });
 
     it('ignores conversation parts with null or whitespace-only bodies', async () => {

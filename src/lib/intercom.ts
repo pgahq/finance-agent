@@ -193,11 +193,11 @@ export function buildIntercomConversationPartsText(conversation: IntercomConvers
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
-/** Non-empty conversation part bodies written by teammates (author type admin), in API order. */
+/** Non-empty internal notes written by teammates (part type note, author type admin), in API order; excludes replies sent to the customer. */
 export function buildIntercomAdminPartsText(conversation: IntercomConversationResponse): string | undefined {
   const segments: string[] = [];
   for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
-    if (part.author?.type === 'admin') appendConversationPartBody(segments, part.body);
+    if (part.author?.type === 'admin' && part.part_type === 'note') appendConversationPartBody(segments, part.body);
   }
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }

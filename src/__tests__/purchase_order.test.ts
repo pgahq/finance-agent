@@ -123,7 +123,7 @@ describe('findNotePurchaseOrders', () => {
   it('keeps each PO line when the note names two POs', () => {
     expect(findNotePurchaseOrders('use PO-413672 Line 7, not PO 411406 Line 1')).toEqual([
       { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
-      { purchaseOrderNumber: 'PO-411406', lineNumber: 1 },
+      { purchaseOrderNumber: 'PO-411406', lineNumber: 1, rejected: true },
     ]);
   });
 
@@ -146,25 +146,59 @@ describe('findNotePurchaseOrders', () => {
   it('lists each distinct PO once and drops a line number the notes contradict', () => {
     expect(findNotePurchaseOrders('use PO-413672 Line 7\n\nPO-413672 Line 8, not PO 411406')).toEqual([
       { purchaseOrderNumber: 'PO-413672' },
-      { purchaseOrderNumber: 'PO-411406' },
+      { purchaseOrderNumber: 'PO-411406', rejected: true },
     ]);
     expect(findNotePurchaseOrders('PO-413672 Line 7\n\nconfirmed PO-413672 line 7')).toEqual([
       { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+  });
+
+  it('marks a PO the note rejects', () => {
+    for (const note of [
+      'Not PO 411406 — use PO-413672',
+      "Don't use the invoice PO 411406, use PO-413672",
+      'use PO-413672 instead of PO-411406',
+      'PO 411406 is old; use PO-413672',
+      'the old PO 411406 is closed. PO-413672 Line 7',
+    ]) {
+      const found = findNotePurchaseOrders(note);
+      expect(found.find((po) => po.purchaseOrderNumber === 'PO-411406')?.rejected).toBe(true);
+      expect(found.find((po) => po.purchaseOrderNumber === 'PO-413672')?.rejected).toBeUndefined();
+    }
+  });
+
+  it('does not mark the override PO as rejected by wording about the invoice PO', () => {
+    expect(findNotePurchaseOrders("Don't use the PO on the invoice, use PO-413672 Line 7")).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+    expect(findNotePurchaseOrders('PO 413672 Line 7 for invoice 69962682; PO-411406 for invoice 69962699')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+      { purchaseOrderNumber: 'PO-411406' },
     ]);
   });
 });
 
 describe('selectNotePurchaseOrder', () => {
   const note = { purchaseOrderNumber: 'PO-413672', lineNumber: 7 };
-  const invoicePo = { purchaseOrderNumber: 'PO-411406' };
+  const invoicePo = { purchaseOrderNumber: 'PO-411406', rejected: true };
 
   it('uses the only note PO', () => {
     expect(selectNotePurchaseOrder([note], 'PO-411406')).toBe(note);
     expect(selectNotePurchaseOrder([note], undefined)).toBe(note);
   });
 
-  it('picks the note PO that is not the invoice PO', () => {
+  it('picks the note PO that is not the invoice PO when the note rejects the invoice PO', () => {
     expect(selectNotePurchaseOrder([invoicePo, note], 'PO-411406')).toBe(note);
+  });
+
+  it('keeps the invoice PO when the note names it without rejecting it', () => {
+    const confirmed = { purchaseOrderNumber: 'PO-411406' };
+    expect(selectNotePurchaseOrder([note, confirmed], 'PO-411406')).toBeUndefined();
+  });
+
+  it('never uses a PO the note rejects', () => {
+    expect(selectNotePurchaseOrder([invoicePo], undefined)).toBeUndefined();
+    expect(selectNotePurchaseOrder([invoicePo, note, { purchaseOrderNumber: 'PO-500001', rejected: true }], 'PO-411406')).toBe(note);
   });
 
   it('returns undefined when the notes name several POs it cannot tell apart', () => {
