@@ -1414,6 +1414,119 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderSource).toBeUndefined();
     });
 
+    it('falls back to the subject PO when the note PO is not in Workday and the PDF has no PO', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday, { 'PO-411406': invoicePo });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-note-po-missing-subject-po', {
+          subject: 'ARROW EXTERMINATORS INC invoice 69962682 PO-411406',
+          conversationParts: arrowNote,
+          adminConversationParts: arrowNote,
+        })]
+      } as any);
+
+      expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413672', 'PO-411406']);
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][5]).toEqual(
+        expect.objectContaining({ documentNumber: 'PO-411406' })
+      );
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: PO-413672 from the Intercom note was not found in Workday; used PO-411406 instead.'
+      );
+    });
+
+    it('picks the note PO that is not the subject PO when the PDF has no PO', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const note = 'use PO-413672, not PO 411406';
+
+      await processor({
+        data: [arrowRequest('req-note-two-pos-subject-po', {
+          subject: 'ARROW EXTERMINATORS INC invoice 69962682 PO-411406',
+          conversationParts: note,
+          adminConversationParts: note,
+        })]
+      } as any);
+
+      expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413672']);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-413672');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: Used PO-413672 from the Intercom note instead of PO-411406 in the email.'
+      );
+      expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+        purchaseOrderNumber: 'PO-413672',
+        emailPurchaseOrderNumber: 'PO-411406',
+      }));
+    });
+
+    it('does not read note text as the supplier PO when the source body boundary is missing', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const note = 'use PO-413672, not PO 411406';
+
+      await processor({
+        data: [arrowRequest('req-note-two-pos-no-boundary', {
+          plainTextBody: `PO 411406 per AP: ${note}`,
+          conversationParts: note,
+          adminConversationParts: note,
+        })]
+      } as any);
+
+      expect(workday.loadPurchaseOrder).not.toHaveBeenCalled();
+    });
+
+    it('loads neither PO when a note names two and the invoice and email name none', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const note = 'not PO 411406, use PO-413672';
+
+      await processor({
+        data: [arrowRequest('req-note-two-pos-no-invoice-po', {
+          plainTextBody: `Invoice attached\n\n${note}`,
+          conversationParts: note,
+          adminConversationParts: note,
+        })]
+      } as any);
+
+      expect(workday.loadPurchaseOrder).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Intercom note');
+    });
+
+    it('does not claim the note line when the default company codes no PO lines', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { company: _company, ...notePoWithoutCompany } = notePo;
+      loadArrowPos(workday, { 'PO-413672': notePoWithoutCompany, 'PO-411406': invoicePo });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-note-po-default-company', { conversationParts: arrowNote, adminConversationParts: arrowNote })]
+      } as any);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Purchase order: Used PO-413672 from the Intercom note instead of PO-411406 on the invoice.');
+      expect(notes).not.toContain('Line 7');
+      expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'note',
+      }));
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderLine).toBeUndefined();
+    });
+
     it('matches against every note PO line when the named line is not on the PO', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);

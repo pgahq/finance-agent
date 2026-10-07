@@ -159,6 +159,20 @@ describe('notifyResult', () => {
     expect(texts).toContain('*PO #* → PO-413672 Line 7 (from Intercom note; invoice shows PO-411406)');
   });
 
+  it('shows the email PO a note PO replaced when the invoice shows no PO', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: {
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'note',
+        emailPurchaseOrderNumber: 'PO-411406',
+      },
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*PO #* → PO-413672 (from Intercom note; email shows PO-411406)');
+  });
+
   it('says when the PO coded the lines without linking them', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

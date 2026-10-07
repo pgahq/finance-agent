@@ -1,6 +1,7 @@
 import {
   findNotePurchaseOrders,
   findPurchaseOrderNumber,
+  findPurchaseOrderNumbers,
   normalizePurchaseOrderNumber,
   selectNotePurchaseOrder,
 } from '../lib/purchase_order.js';
@@ -28,6 +29,10 @@ describe('findPurchaseOrderNumber', () => {
     expect(findPurchaseOrderNumber(undefined, 'PO-404770.pdf')).toBe('PO-404770');
     expect(findPurchaseOrderNumber('PO 414498 attached')).toBe('PO-414498');
     expect(findPurchaseOrderNumber('Invoice for PO#414498')).toBe('PO-414498');
+  });
+
+  it('lists every PO number in order', () => {
+    expect(findPurchaseOrderNumbers('PO-413672 and PO 411406', 'PO-413672.pdf')).toEqual(['PO-413672', 'PO-411406', 'PO-413672']);
   });
 
   it('does not treat English words as PO numbers', () => {
@@ -59,6 +64,60 @@ describe('findNotePurchaseOrders', () => {
     expect(findNotePurchaseOrders('PO 413672, Ln 12')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineNumber: 12 }]);
     expect(findNotePurchaseOrders('PO number 413672')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
     expect(findNotePurchaseOrders('use PO-413672')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+  });
+
+  it('reads "Line Number N"', () => {
+    expect(findNotePurchaseOrders('PO-413672 Line Number 7')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineNumber: 7 }]);
+  });
+
+  it('does not bind a line from the next sentence, a range, or Line 0', () => {
+    expect(findNotePurchaseOrders('use PO-413672. Line 7 of the invoice is freight')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672; line 7 is wrong')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7-8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 0')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+  });
+
+  it('names no line when the same clause names a second line for the PO', () => {
+    expect(findNotePurchaseOrders('use PO-413672 Line 7, not Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7 and 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7 and Ln 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Lines 7 and 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('PO-413672 Line 7\nPO-413672 Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7, not the PO line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+  });
+
+  it('keeps the line when a later sentence or block names another line', () => {
+    expect(findNotePurchaseOrders('use PO-413672 Line 7! Line 2 of the invoice is freight')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+    expect(findNotePurchaseOrders('<section>use PO-413672 Line 7</section><section>Line 2 is freight</section>')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7<br class="x">Line 2 is freight')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+  });
+
+  it('does not bind a line from a separate block', () => {
+    expect(findNotePurchaseOrders('<div>use PO-413672</div><div>Line 7 is freight</div>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+  });
+
+  it('keeps each PO line when the note names two POs', () => {
+    expect(findNotePurchaseOrders('use PO-413672 Line 7, not PO 411406 Line 1')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+      { purchaseOrderNumber: 'PO-411406', lineNumber: 1 },
+    ]);
+  });
+
+  it('reads PO numbers wrapped in angle brackets', () => {
+    expect(findNotePurchaseOrders('use <PO-413672>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('<p>use &lt;PO-413672&gt;</p>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+  });
+
+  it('keeps plain-text comparisons around a PO', () => {
+    expect(findNotePurchaseOrders('if amount < 100 use PO-413672 Line 7 > otherwise ask')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
   });
 
   it('ignores PO wording with no PO number', () => {

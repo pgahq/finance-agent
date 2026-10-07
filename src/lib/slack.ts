@@ -125,6 +125,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     purchaseOrderSource?: string;
     purchaseOrderLine?: number;
     invoicePurchaseOrderNumber?: string;
+    emailPurchaseOrderNumber?: string;
     purchaseOrderNotLinked?: boolean;
     paymentTerms?: string;
   } | undefined;
@@ -137,11 +138,10 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   else if (extracted?.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
   if (extracted?.purchaseOrderNumber) {
     const line = extracted.purchaseOrderLine ? ` Line ${extracted.purchaseOrderLine}` : '';
-    const source = extracted.purchaseOrderSource === 'note'
-      ? (extracted.invoicePurchaseOrderNumber
-        ? ` (from Intercom note; invoice shows ${extracted.invoicePurchaseOrderNumber})`
-        : ' (from Intercom note)')
-      : '';
+    const replaced = extracted.invoicePurchaseOrderNumber
+      ? `; invoice shows ${extracted.invoicePurchaseOrderNumber}`
+      : extracted.emailPurchaseOrderNumber ? `; email shows ${extracted.emailPurchaseOrderNumber}` : '';
+    const source = extracted.purchaseOrderSource === 'note' ? ` (from Intercom note${replaced})` : '';
     const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
   }
