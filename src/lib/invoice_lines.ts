@@ -1191,9 +1191,12 @@ export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTo
 
 const MONTH_TOKEN = String.raw`(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![a-z])`;
 // A two-digit year needs an apostrophe ("Sep'26"), so a day number ("May 15, 2026") is not read as a year.
-const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d{2})(?!\d)|[\s,/-]*(\d{4})(?!\d))`, 'i');
-const YEAR_THEN_MONTH = new RegExp(String.raw`\b(\d{4})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
-const NUMERIC_MONTH_YEAR = /\b(0?[1-9]|1[0-2])\/(\d{4})\b/;
+// Four-digit years are 20xx so a PO or invoice number ("PO 4500 - March") is not read as a year.
+const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d{2})(?!\d)|[\s,/-]*(20\d{2})(?!\d))`, 'i');
+const YEAR_THEN_MONTH = new RegExp(String.raw`\b(20\d{2})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
+// US dates (MM/DD/YYYY) are read before MM/YYYY, which must not start inside a date ("03/01/2026").
+const NUMERIC_DATE = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(20\d{2})(?![\d/])/;
+const NUMERIC_MONTH_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(20\d{2})(?![\d/])/;
 
 interface StatedMonth {
   year: number;
@@ -1206,8 +1209,10 @@ function monthIndex(token: string): number {
 }
 
 // Reads one month and year a row bills for, e.g. "Sep'26", "September 2026", "2026 - September", "09/2026".
-function statedMonth(text: string | null | undefined): StatedMonth | undefined {
-  if (!text) return undefined;
+function statedMonth(raw: string | null | undefined): StatedMonth | undefined {
+  if (!raw) return undefined;
+  // Collapsing whitespace keeps the overlapping separator patterns below linear on long runs.
+  const text = raw.replace(/\s+/g, ' ');
   const monthThenYear = text.match(MONTH_THEN_YEAR);
   if (monthThenYear) {
     const year = monthThenYear[2] ? 2000 + Number(monthThenYear[2]) : Number(monthThenYear[3]);
@@ -1215,6 +1220,11 @@ function statedMonth(text: string | null | undefined): StatedMonth | undefined {
   }
   const yearThenMonth = text.match(YEAR_THEN_MONTH);
   if (yearThenMonth) return { year: Number(yearThenMonth[1]), month: monthIndex(yearThenMonth[2]) };
+  const date = text.match(NUMERIC_DATE);
+  if (date) {
+    const [year, month, day] = [Number(date[3]), Number(date[1]), Number(date[2])];
+    return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
+  }
   const numeric = text.match(NUMERIC_MONTH_YEAR);
   if (numeric) return { year: Number(numeric[2]), month: Number(numeric[1]) };
   return undefined;
@@ -1302,7 +1312,10 @@ function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
   purchaseOrderLines: PurchaseOrderLine[]
 ): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } {
-  const openPoLines = purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null);
+  // Without PO line selection, PO lines carry no availability, so consumed lines can't be told apart.
+  const openPoLines = isPoLineSelectionEnabled()
+    ? purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null)
+    : [];
   const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
     table.lines.filter((line, index) => matches(line, table.lineCents[index])).length / table.lines.length;
   const criteria: Array<[RepeatedTableKeepReason, (table: TableCandidate<T>) => number]> = [
@@ -1364,6 +1377,14 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
   const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
   if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+  // Tables that state different months (a prior month's balance beside this month's charge) are
+  // separate charges, not a restatement. A table that states no month, like an hourly table, can
+  // still restate one that does.
+  const tableMonths = tables
+    .map(table => [...new Set(table.lines.map(line => statedMonth(line.description)).filter(month => !!month)
+      .map(month => `${month!.year}-${month!.month}`))].sort().join(','))
+    .filter(months => months.length > 0);
+  if (new Set(tableMonths).size > 1) return unchanged;
 
   const { table: kept, reason } = keepTable(tables, purchaseOrderLines);
   const keptLines = lines.filter(line => line.tableNumber === kept.tableNumber);

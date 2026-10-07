@@ -1445,6 +1445,13 @@ describe('lineTotalMismatchNote', () => {
 });
 
 describe('removeRepeatedLineTables', () => {
+  const callerPoLineSelection = process.env.PO_LINE_SELECTION_ENABLED;
+  beforeEach(() => { process.env.PO_LINE_SELECTION_ENABLED = 'true'; });
+  afterEach(() => {
+    if (callerPoLineSelection === undefined) delete process.env.PO_LINE_SELECTION_ENABLED;
+    else process.env.PO_LINE_SELECTION_ENABLED = callerPoLineSelection;
+  });
+
   const consultant = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', tableNumber: 1 };
   const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
   const levelBlueCharges = { amountDue: '$5,500.00', taxAmount: '$0.00' };
@@ -1471,11 +1478,13 @@ describe('removeRepeatedLineTables', () => {
   });
 
   it('prefers a table matching an open PO line over one that only states a period', () => {
-    const october = { ...monthly, description: "PSO-RISK-ADVISORY - Oct'26", tableNumber: 1 };
+    const halves = [
+      { description: 'Risk advisory September 2026 - part 1', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+      { description: 'Risk advisory September 2026 - part 2', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+    ];
     const september = { ...monthly, tableNumber: 2 };
-    const septemberConsumed = levelBluePoLines.map(line => ({ ...line, availableForInvoicing: line.startDate !== '2026-09-01' }));
-    const result = removeRepeatedLineTables([october, september], levelBlueCharges, septemberConsumed);
-    expect(result.lines).toEqual([october]);
+    const result = removeRepeatedLineTables([...halves, september], levelBlueCharges, levelBluePoLines);
+    expect(result.lines).toEqual([september]);
     expect(result.keepReason).toBe('purchase_order');
   });
 
@@ -1573,11 +1582,14 @@ describe('removeRepeatedLineTables', () => {
     const annual = poLine({ purchaseOrderLineId: 'POL-YEAR', extendedAmount: 2750, startDate: '2026-01-01', endDate: '2026-12-31' });
     const septemberOnly = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
     const summaryPo = poLine({ purchaseOrderLineId: 'POL-SUM', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const secondSeptember = { ...september, description: "Risk advisory Sep'26 - part 2" };
     for (const poLines of [[annual, septemberOnly, summaryPo], [septemberOnly, annual, summaryPo]]) {
-      const result = removeRepeatedLineTables([september, october, summary], levelBlueCharges, poLines);
+      const result = removeRepeatedLineTables([september, secondSeptember, summary], levelBlueCharges, poLines);
       expect(result.keepReason).toBe('unit_cost');
-      expect(result.lines).toEqual([september, october]);
+      expect(result.lines).toEqual([september, secondSeptember]);
     }
+    const mixedMonths = [september, october, summary];
+    expect(removeRepeatedLineTables(mixedMonths, levelBlueCharges, [annual, septemberOnly, summaryPo])).toEqual({ lines: mixedMonths, removed: [] });
   });
 
   it('treats a malformed PO service date as unknown rather than as an open side', () => {
@@ -1653,11 +1665,40 @@ describe('removeRepeatedLineTables', () => {
     ['May 15, 2026', false],
     ['Mayfield maintenance 2026', false],
     ['Consultant', false],
+    ['PO 4500 - March retainer', false],
+    ['Invoice 1234 Dec services', false],
+    ['Retainer 03/01/2026 - 03/31/2026', true],
+    ['Retainer 02/30/2026', false],
+    [`may${' '.repeat(40000)}x`, false],
   ])('reads "%s" as a stated month: %p', (description, states) => {
     const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
     const plain = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
     const result = removeRepeatedLineTables([plain, row], levelBlueCharges);
     expect(result.keepReason).toBe(states ? 'service_period' : 'document_order');
+  });
+
+  it('reads the month, not the day, of a US date when matching PO lines', () => {
+    const retainer = { description: 'Retainer 03/01/2026 - 03/31/2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const summary = { description: 'Retainer March 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const january = poLine({ purchaseOrderLineId: 'POL-JAN', extendedAmount: 5500, startDate: '2026-01-01', endDate: '2026-01-31' });
+    const march = poLine({ purchaseOrderLineId: 'POL-MAR', extendedAmount: 5500, startDate: '2026-03-01', endDate: '2026-03-31' });
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [january]).keepReason).toBe('document_order');
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [march]).keepReason).toBe('document_order');
+  });
+
+  it('keeps both tables when they bill different months', () => {
+    const lines = [
+      { description: 'Services Aug 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 },
+      { description: 'Services Sep 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  it('ignores PO lines for the keep choice when PO line selection is off', () => {
+    delete process.env.PO_LINE_SELECTION_ENABLED;
+    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines);
+    expect(result.keepReason).toBe('service_period');
+    expect(result.lines).toEqual([monthly]);
   });
 });
 
