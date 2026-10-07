@@ -363,13 +363,16 @@ function intercomConversationUrl(conversationId?: string, intercomAppId?: string
 function slackInvoiceDetails(
   details: Record<string, unknown>,
   conversationId?: string,
-  intercomAppId?: string
+  intercomAppId?: string,
+  triggeredBy?: { email?: string; name?: string }
 ): Record<string, unknown> {
   const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
   return {
     ...details,
     ...(conversationId ? { conversationId } : {}),
     ...(conversationUrl ? { conversationUrl } : {}),
+    ...(triggeredBy?.email ? { triggeredByEmail: triggeredBy.email } : {}),
+    ...(triggeredBy?.email && triggeredBy.name ? { triggeredByName: triggeredBy.name } : {}),
   };
 }
 
@@ -442,7 +445,7 @@ async function reportShadowClustering(
       'create_invoice_shadow',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails(details, request.conversationId, request.intercomAppId),
+      slackInvoiceDetails(details, request.conversationId, request.intercomAppId, { email: request.assigneeEmail }),
       error
     );
     throw error;
@@ -485,7 +488,12 @@ async function processNewInvoice(
       'create_invoice',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails({ s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) }, conversationId, intercomAppId),
+      slackInvoiceDetails(
+        { s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) },
+        conversationId,
+        intercomAppId,
+        { email: assigneeEmail }
+      ),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     return;
@@ -553,7 +561,7 @@ async function processNewInvoice(
         'create_invoice',
         'error',
         processingTime,
-        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId),
+        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId, { email: assigneeEmail }),
         error
       );
       throw error;
@@ -589,7 +597,7 @@ async function processNewInvoice(
           slackInvoiceDetails({
             planId,
             undispatchedClusters: undispatched.map(({ files }) => files.map((file) => file.fileName)),
-          }, conversationId, intercomAppId),
+          }, conversationId, intercomAppId, { email: assigneeEmail }),
           new Error(
             `${undispatched.length} of ${clusterCount} invoice clusters could not be dispatched and were not processed. ` +
             'Re-trigger the conversation to process them; invoices already created for this conversation are not duplicated.'
@@ -768,7 +776,7 @@ async function markInvoiceClusterDone(
         ...plan,
         ...(workdayInvoiceWid ? { invoiceWID: workdayInvoiceWid } : {}),
         attachments: input.files.map((file) => file.fileName),
-      }, input.conversationId, input.intercomAppId),
+      }, input.conversationId, input.intercomAppId, { email: input.assigneeEmail }),
       new Error('The invoice was processed but its cluster plan row could not be marked done; a later retry of this cluster could process it again.')
     );
   }
@@ -1466,6 +1474,13 @@ async function processInvoiceCluster(
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
+    // The failure may be a database outage, so the name is optional and must never block the alert.
+    const triggeredByMatch = assigneeEmail
+      ? await getEmployeeWidByEmail(context.dbConnection, assigneeEmail).catch((lookupError: unknown) => {
+        debug('Failed to look up trigger person for error notification', { assigneeEmail, error: lookupError });
+        return undefined;
+      })
+      : undefined;
     await notifyResult(
       'create_invoice',
       'error',
@@ -1475,7 +1490,10 @@ async function processInvoiceCluster(
         fileName,
         ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
         ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
-      }, conversationId, intercomAppId),
+      }, conversationId, intercomAppId, {
+        email: assigneeEmail,
+        name: triggeredByMatch ? employeeDisplayName(triggeredByMatch) : undefined,
+      }),
       error
     );
     throw error;
