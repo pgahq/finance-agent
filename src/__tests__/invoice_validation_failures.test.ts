@@ -10,6 +10,7 @@ import {
   isLineQuantityOrUnitCostPrecisionError,
   isQuantityUnitExtendedMismatchError,
   isRequiredLineOfBusinessWorktagError,
+  isSupplierNotAllowedForPurchaseOrderError,
   isWorkdayTaskNotAuthorizedError,
   isWorkdayValidationError,
   parseWorkdayValidationDetails,
@@ -39,6 +40,18 @@ describe('invoice_validation_failures', () => {
       Message: 'Invalid format',
       Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]',
     })).toBe(false);
+  });
+
+  it('detects the supplier-not-allowed-for-PO fault and ignores the duplicate number fault', () => {
+    expect(isSupplierNotAllowedForPurchaseOrderError({
+      Message: "You can't select this supplier to invoice this purchase order.",
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+    })).toBe(true);
+    expect(isSupplierNotAllowedForPurchaseOrderError('You can’t select this supplier to invoice this purchase order.')).toBe(true);
+    expect(isSupplierNotAllowedForPurchaseOrderError(
+      "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice"
+    )).toBe(false);
+    expect(isSupplierNotAllowedForPurchaseOrderError('Validation_Fault: supplier is invalid')).toBe(false);
   });
 
   it('detects the closed or pending close PO line fault', () => {
