@@ -263,6 +263,7 @@ async function processInvoice(
       freightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
+      chargeWithheld,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
@@ -318,11 +319,16 @@ async function processInvoice(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
-    const lineTotalReviewNote = finalLines && lineTotalMismatchNote(finalLines, {
+    // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
+    const lineTotalReviewNote = finalLines && !chargeWithheld ? lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
       freightAmount: extractedFreightAmount,
       taxAmount: extractedTaxAmount,
-    });
+      freightCleared,
+      taxCleared,
+      currentFreightAmount: detailedInvoice.Freight_Amount,
+      currentTaxAmount: detailedInvoice.Tax_Amount,
+    }) : undefined;
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);

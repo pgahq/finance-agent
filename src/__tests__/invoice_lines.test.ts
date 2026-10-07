@@ -13,6 +13,7 @@ import {
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  parseExtractedLineAmount,
   parseExtractedUnitCost,
   resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
@@ -652,6 +653,24 @@ describe('buildFinalInvoiceLines', () => {
     expect(line).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
   });
 
+  it('keeps a printed discount row negative when the merge fails and extracted lines are used', async () => {
+    mockGetAiResponse.mockRejectedValue(new Error('merge unavailable'));
+
+    const result = await buildFinalInvoiceLines(
+      [
+        { description: 'Consulting', quantity: 10, unitCost: '$125.00', totalPrice: '$1,250.00', hasDiscount: null },
+        { description: 'Loyalty discount', quantity: null, unitCost: null, totalPrice: '($250.00)', hasDiscount: true },
+      ],
+      undefined,
+      undefined,
+      {}
+    );
+    const lines = alignSupplierInvoiceLineAmounts(result.lines);
+
+    expect(lines[1]).toMatchObject({ hasDiscount: true, extendedAmount: -250 });
+    expect(lineTotalMismatchNote(lines, { amountDue: '$1,000.00' })).toBeUndefined();
+  });
+
   it('rethrows AI errors when the deadline signal has aborted', async () => {
     const abortController = new AbortController();
     abortController.abort(new Error('Processor deadline reached'));
@@ -1259,12 +1278,48 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 24691.36 });
   });
 
-  it('rounds unit cost on lines without an extended amount', () => {
+  it('rounds unit cost on lines without an extended amount and records the unrounded total', () => {
     const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2, unitCost: 10.12345678, extendedAmount: null }];
-    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: null });
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: 20.25 });
   });
 
-  it('rounds the extended amount on amount-only lines derived from a long unit cost', () => {
+  it('keeps the total of a line with no extended amount when rounding the quantity would move it', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2.555, unitCost: 1000, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 2555 });
+  });
+
+  it('leaves a line with no extended amount untouched when nothing needs rounding', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 3, unitCost: 12.5, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toEqual(lines[0]);
+  });
+
+  it('keeps a three-decimal extended amount as printed', () => {
+    const lines = [{ lineOrder: 1, description: 'Fuel', quantity: 0, unitCost: 0, extendedAmount: 10.005 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0].extendedAmount).toBe(10.005);
+  });
+
+  it('rounds half-cent boundaries on the decimal value in both signs', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Item', quantity: 1, unitCost: 1.0049999, extendedAmount: 1.0045 },
+      { lineOrder: 2, description: 'Item', quantity: 1, unitCost: 1.0000005, extendedAmount: null },
+      { lineOrder: 3, description: 'Credit', quantity: 1, unitCost: -12.3455, extendedAmount: -12.3455 },
+    ];
+    const [first, second, third] = alignSupplierInvoiceLineAmounts(lines);
+    expect(first).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1 });
+    expect(second).toMatchObject({ quantity: 1, unitCost: 1.000001, extendedAmount: 1 });
+    expect(third).toMatchObject({ quantity: 1, unitCost: -12.3455, extendedAmount: -12.35 });
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Item', quantity: 0, unitCost: 0, extendedAmount: 1.005 }],
+      { amountDue: '$1.01' }
+    )).toBeUndefined();
+  });
+
+  it('rounds an extended amount past three decimals to cents so its cent total holds', () => {
+    const lines = [{ lineOrder: 1, description: 'Item', quantity: 0, unitCost: 0, extendedAmount: 1.0049 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0].extendedAmount).toBe(1);
+  });
+
+  it('rounds the extended amount on amount-only lines derived from a long unit cost to cents', () => {
     const lines = applyMissingQuantityColumnLines(
       [{ lineOrder: 1, description: 'Retainer', quantity: null, unitCost: 224.9488753, extendedAmount: null }],
       false
@@ -1315,6 +1370,42 @@ describe('lineTotalMismatchNote', () => {
       { amountDue: '$5,500.00' }
     )).toBeUndefined();
   });
+
+  it('asks about a missing line or charge when the lines fall short', () => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$6,000.00' })).toBe(
+      'Invoice lines total $5,500.00, but the amount due $6,000.00 less freight $0.00 and tax $0.00 is $6,000.00. Check for a missing line or charge before approving.'
+    );
+  });
+
+  it.each([
+    ['a negative amount due', { amountDue: '-$50.00' }],
+    ['a parenthesized credit', { amountDue: '$(1,000.00)' }],
+    ['a malformed amount due', { amountDue: '1.234,56' }],
+    ['an unreadable freight amount', { amountDue: '$5,600.00', freightAmount: 'N/A' }],
+    ['an unreadable freight amount over a Workday freight', { amountDue: '$5,515.00', freightAmount: 'N/A', currentFreightAmount: '15.00' }],
+    ['an unreadable tax amount', { amountDue: '$5,600.00', taxAmount: '12.3.4' }],
+    ['an unreadable Workday tax amount', { amountDue: '$5,600.00', currentTaxAmount: { value: 100 } }],
+  ])('skips the check for %s', (_label, charges) => {
+    expect(lineTotalMismatchNote([consultant], charges)).toBeUndefined();
+  });
+
+  it('uses the Workday invoice freight and tax when none was extracted, as the builder does', () => {
+    const charges = { amountDue: '$5,620.00', currentFreightAmount: '15.00', currentTaxAmount: 105 };
+    expect(lineTotalMismatchNote([consultant], charges)).toBeUndefined();
+    expect(lineTotalMismatchNote([consultant], { ...charges, freightAmount: '$20.00' })).toContain('less freight $20.00 and tax $105.00');
+    expect(lineTotalMismatchNote([consultant], { ...charges, taxCleared: true })).toContain('less freight $15.00 and tax $0.00');
+  });
+
+  it('moves freight-described lines to freight when no header freight is set', () => {
+    const shipping = { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 10, extendedAmount: 10 };
+    expect(lineTotalMismatchNote([consultant, shipping], { amountDue: '$5,510.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote([consultant, shipping], { amountDue: '$5,510.00', freightAmount: '$10.00' })).toBeUndefined();
+  });
+
+  it('counts a discount line once at its unit cost, as the builder submits it', () => {
+    const discount = { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: 2, unitCost: -5, extendedAmount: null };
+    expect(lineTotalMismatchNote([consultant, discount], { amountDue: '$5,495.00' })).toBeUndefined();
+  });
 });
 
 describe('extracted amount parsing', () => {
@@ -1337,6 +1428,23 @@ describe('extracted amount parsing', () => {
   it('returns undefined for text without a number', () => {
     expect(parseExtractedAmount('N/A')).toBeUndefined();
     expect(parseExtractedUnitCost('N/A')).toBeUndefined();
+    expect(parseExtractedLineAmount('N/A')).toBeUndefined();
+  });
+
+  it.each([
+    ['-$250.00', -250],
+    ['$-250.00', -250],
+    ['($1,000.50)', -1000.5],
+    ['\u2212$12.345', -12.345],
+    ['$10.0049', 10.005],
+    ['$250.00', 250],
+  ])('keeps the sign of line amount %s', (raw, expected) => {
+    expect(parseExtractedLineAmount(raw)).toBe(expected);
+  });
+
+  it('keeps the sign of a printed negative unit cost and leaves header amounts unsigned', () => {
+    expect(parseExtractedUnitCost('-$12.3456789')).toBe(-12.345679);
+    expect(parseExtractedAmount('-$250.00')).toBe(250);
   });
 });
 
@@ -1937,7 +2045,21 @@ describe('normalizeExtractedFreightAndTax', () => {
       freightCleared: false,
       taxCleared: false,
       reviewNote: `Could not safely apply freight amount "${amount}" labeled "Sales Tax", so it was not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`,
+      chargeWithheld: true,
     });
+  });
+
+  it('marks only withheld charges, not conflicting charges that are both submitted', () => {
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: 'N/A' }).chargeWithheld).toBe(true);
+    const conflicting = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '$12.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '$30.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(conflicting).toMatchObject({ extractedFreightAmount: '$12.00', extractedTaxAmount: '$30.00' });
+    expect(conflicting.reviewNote).toContain('both were kept as read');
+    expect(conflicting.chargeWithheld).toBeUndefined();
   });
 
   it('withholds a crossed amount when the other amount is unreadable instead of submitting it under the wrong field', () => {

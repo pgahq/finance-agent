@@ -162,28 +162,43 @@ export type InvoiceLineFallbackIds = {
 export type RelatedLobLookup = (costCenterIds: string[]) => Promise<Map<string, RelatedLob>>;
 
 // Decimal limits on Supplier_Invoice_Line_Replacement_Data in the Resource_Management WSDL.
-// Extended_Amount allows three, but line totals are currency and stay in cents.
 const QUANTITY_DECIMALS = 2;
 const UNIT_COST_DECIMALS = 6;
+const EXTENDED_AMOUNT_DECIMALS = 3;
 const AMOUNT_DECIMALS = 2;
 
+// Shifting the exponent in the decimal string rounds 1.005 to 1.01, where Math.round(1.005 * 100)
+// gives 100. Halves round away from zero so credits and charges round alike.
 function roundToDecimals(value: number, decimals: number): number {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
+  const magnitude = Math.abs(value);
+  const shifted = String(magnitude).includes('e')
+    ? magnitude * 10 ** decimals
+    : Number(`${magnitude}e${decimals}`);
+  const rounded = Math.round(shifted) / 10 ** decimals;
+  return value < 0 && rounded !== 0 ? -rounded : rounded;
 }
 
-function parseExtractedNumber(raw: string, decimals: number): number | undefined {
+function parseExtractedNumber(raw: string, decimals: number, signed = false): number | undefined {
   const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
-  return isNaN(parsed) ? undefined : roundToDecimals(parsed, decimals);
+  if (isNaN(parsed)) return undefined;
+  const negative = signed && (/^[^\d]*[-\u2212]/.test(raw) || /^\s*\(.*\)\s*$/.test(raw));
+  return roundToDecimals(negative ? -parsed : parsed, decimals);
 }
 
+// Header totals are unsigned: Control_Amount_Total, freight, and tax parse through here.
 export function parseExtractedAmount(raw: string): number | undefined {
   return parseExtractedNumber(raw, AMOUNT_DECIMALS);
 }
 
+// Line amounts keep a printed credit ("-$250.00" or "($250.00)") negative, so a discount row is not
+// submitted as a charge, and keep the three decimals Extended_Amount allows.
+export function parseExtractedLineAmount(raw: string): number | undefined {
+  return parseExtractedNumber(raw, EXTENDED_AMOUNT_DECIMALS, true);
+}
+
 // A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
 export function parseExtractedUnitCost(raw: string): number | undefined {
-  return parseExtractedNumber(raw, UNIT_COST_DECIMALS);
+  return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
@@ -390,6 +405,8 @@ export interface NormalizedFreightAndTax {
   freightCleared: boolean;
   taxCleared: boolean;
   reviewNote?: string;
+  // A read amount was not submitted, so the header keeps whatever Workday already has.
+  chargeWithheld?: boolean;
 }
 
 function sameAmount(a: string | undefined, b: string | undefined): boolean {
@@ -450,6 +467,7 @@ function normalizeHeaderCharges(options: ExtractedHeaderCharges): { normalized: 
   let taxCleared = false;
   let freightMovedToTax = false;
   let reviewNote: string | undefined;
+  let chargeWithheld = false;
 
   const labeledFreightZero = freightZero && Boolean(freightLabel);
   const labeledTaxZero = taxZero && Boolean(taxLabel);
@@ -473,6 +491,7 @@ function normalizeHeaderCharges(options: ExtractedHeaderCharges): { normalized: 
       taxAmount = rawTaxAmount;
     }
     reviewNote = withheldChargeNote(withheld);
+    chargeWithheld = true;
   } else if (freightIsTax && taxIsFreight) {
     if (freightValid && taxValid) {
       freightAmount = rawTaxAmount;
@@ -551,6 +570,7 @@ function normalizeHeaderCharges(options: ExtractedHeaderCharges): { normalized: 
       freightCleared,
       taxCleared,
       ...(reviewNote && { reviewNote }),
+      ...(chargeWithheld && { chargeWithheld }),
     },
     freightMovedToTax,
   };
@@ -800,7 +820,7 @@ function buildFallbackLines(
     description: line.description,
     quantity: line.quantity,
     unitCost: line.unitCost ? (parseExtractedUnitCost(line.unitCost) ?? null) : null,
-    extendedAmount: line.totalPrice ? (parseExtractedAmount(line.totalPrice) ?? null) : null,
+    extendedAmount: line.totalPrice ? (parseExtractedLineAmount(line.totalPrice) ?? null) : null,
     hasDiscount: line.hasDiscount ?? null,
     costCenterId: fallbackIds.costCenterId ?? null,
     fundId: fallbackIds.fundId ?? null,
@@ -980,7 +1000,7 @@ function finalLineExtendedAmount(line: FinalInvoiceLine): number | null {
 }
 
 function toCents(value: number): number {
-  return Math.round(value * 100);
+  return Math.round(roundToDecimals(value, AMOUNT_DECIMALS) * 100);
 }
 
 function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
@@ -1017,13 +1037,25 @@ function netUnitCostForDiscountedPurchaseOrderLine(line: FinalInvoiceLine, exten
 }
 
 // Rounding never moves the line total: the cents check below sees the rounded quantity and unit
-// cost, and a line they no longer reproduce submits amount-only with its extended amount.
+// cost, and a line they no longer reproduce submits amount-only with its extended amount. A line
+// with no extended amount first records the total Workday would compute from the unrounded values.
 function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
+  const quantity = line.quantity != null ? roundToDecimals(line.quantity, QUANTITY_DECIMALS) : line.quantity;
+  const unitCost = line.unitCost != null ? roundToDecimals(line.unitCost, UNIT_COST_DECIMALS) : line.unitCost;
+  // An extended amount Workday can take is kept as printed; a longer one rounds to cents, so its cent total holds.
+  const extendedAmount = line.extendedAmount != null && roundToDecimals(line.extendedAmount, EXTENDED_AMOUNT_DECIMALS) !== line.extendedAmount
+    ? toCents(line.extendedAmount) / 100
+    : line.extendedAmount;
+  const roundedQuantityOrUnitCost = quantity !== line.quantity || unitCost !== line.unitCost;
+  const computedExtendedAmount = extendedAmount == null && roundedQuantityOrUnitCost && line.unitCost != null && !isDiscountLine(line)
+    ? toCents(line.unitCost * (line.quantity ?? 1)) / 100
+    : undefined;
   return {
     ...line,
-    ...(line.quantity != null && { quantity: roundToDecimals(line.quantity, QUANTITY_DECIMALS) }),
-    ...(line.unitCost != null && { unitCost: roundToDecimals(line.unitCost, UNIT_COST_DECIMALS) }),
-    ...(line.extendedAmount != null && { extendedAmount: roundToDecimals(line.extendedAmount, AMOUNT_DECIMALS) }),
+    ...(quantity != null && { quantity }),
+    ...(unitCost != null && { unitCost }),
+    ...(extendedAmount != null && { extendedAmount }),
+    ...(computedExtendedAmount != null && { extendedAmount: computedExtendedAmount }),
   };
 }
 
@@ -1059,7 +1091,9 @@ export function normalizeSupplierInvoiceLineAmounts(
   );
 }
 
+// Mirrors the Extended_Amount the SOAP builder sends, or Quantity * Unit_Cost when it sends none.
 function submittedLineAmount(line: FinalInvoiceLine): number | undefined {
+  if (isDiscountLine(line)) return line.extendedAmount ?? line.unitCost ?? undefined;
   if (line.extendedAmount != null) return line.extendedAmount;
   if (line.unitCost != null) return line.unitCost * (line.quantity ?? 1);
   return undefined;
@@ -1069,26 +1103,72 @@ function formatCents(cents: number): string {
   return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
+const UNREADABLE = Symbol('unreadable');
+
+function readChargeAmount(value: unknown): number | undefined | typeof UNREADABLE {
+  if (value == null || value === '') return undefined;
+  if (typeof value !== 'string' && typeof value !== 'number') return UNREADABLE;
+  return parseCanonicalChargeAmount(value) ?? UNREADABLE;
+}
+
+// Resolves a header charge the way buildSubmitInvoiceData does: a cleared charge is zero, a read
+// amount wins, and otherwise the value already on the Workday invoice (or line-derived freight) stays.
+function submittedHeaderCharge(
+  extracted: string | undefined,
+  cleared: boolean | undefined,
+  fallbacks: unknown[]
+): number | typeof UNREADABLE {
+  if (cleared) return 0;
+  const read = readChargeAmount(extracted);
+  if (read !== undefined) return read;
+  for (const fallback of fallbacks) {
+    const amount = readChargeAmount(fallback);
+    if (amount !== undefined) return amount;
+  }
+  return 0;
+}
+
+export interface LineTotalCharges {
+  amountDue?: string;
+  freightAmount?: string;
+  taxAmount?: string;
+  freightCleared?: boolean;
+  taxCleared?: boolean;
+  currentFreightAmount?: unknown;
+  currentTaxAmount?: unknown;
+}
+
 // Lines that restate another row (a monthly summary beside its hourly breakdown) would invoice
 // the charge twice, so a line sum that misses the document's amount due is flagged for AP review.
-export function lineTotalMismatchNote(
-  lines: FinalInvoiceLine[],
-  charges: { amountDue?: string; freightAmount?: string; taxAmount?: string }
-): string | undefined {
-  const amountDue = charges.amountDue ? parseExtractedAmount(charges.amountDue) : undefined;
+// Credit memos and amounts that do not parse cleanly leave nothing reliable to compare, so they
+// get no note.
+export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTotalCharges): string | undefined {
+  const amountDue = parseCanonicalChargeAmount(charges.amountDue);
   if (amountDue == null || lines.length === 0) return undefined;
-  const lineAmounts = lines.map(submittedLineAmount);
+  const { merchandiseLines, freightAmountFromLines } = splitFreightLines(lines);
+  const lineAmounts = merchandiseLines.map(submittedLineAmount);
   if (lineAmounts.some(amount => amount == null)) return undefined;
 
+  const freight = submittedHeaderCharge(
+    charges.freightAmount,
+    charges.freightCleared,
+    [charges.currentFreightAmount, freightAmountFromLines]
+  );
+  const tax = submittedHeaderCharge(charges.taxAmount, charges.taxCleared, [charges.currentTaxAmount]);
+  if (freight === UNREADABLE || tax === UNREADABLE) return undefined;
+
   const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount!), 0);
-  const freightCents = toCents((charges.freightAmount ? parseExtractedAmount(charges.freightAmount) : undefined) ?? 0);
-  const taxCents = toCents((charges.taxAmount ? parseExtractedAmount(charges.taxAmount) : undefined) ?? 0);
+  const freightCents = toCents(freight);
+  const taxCents = toCents(tax);
   const expectedCents = toCents(amountDue) - freightCents - taxCents;
   if (lineCents === expectedCents) return undefined;
 
+  const likelyCause = lineCents > expectedCents
+    ? 'Check for a duplicated or summary line before approving.'
+    : 'Check for a missing line or charge before approving.';
   return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(toCents(amountDue))}`
     + ` less freight ${formatCents(freightCents)} and tax ${formatCents(taxCents)} is ${formatCents(expectedCents)}.`
-    + ' Check for a duplicated or summary line before approving.';
+    + ` ${likelyCause}`;
 }
 
 function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {

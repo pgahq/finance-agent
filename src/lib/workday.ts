@@ -1063,7 +1063,7 @@ async function getValidationFallbackField(
 
   const lineAmountFault = isQuantityUnitExtendedMismatchError(validationText)
     ? 'quantity * unit cost vs extended amount'
-    : isLineQuantityOrUnitCostPrecisionError(validationText)
+    : isLineQuantityOrUnitCostPrecisionError(error, validationText)
       ? 'quantity or unit cost decimal precision'
       : undefined;
   if (lineAmountFault) {

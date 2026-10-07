@@ -102,6 +102,89 @@ describe('invoice_validation_failures', () => {
     expect(isLineQuantityOrUnitCostPrecisionError('Spend Category is required')).toBe(false);
   });
 
+  it.each([
+    ['an underscore field name', 'Decimal precision of 6 exceeded for Unit_Cost: 224.9488753', true],
+    ['extra spacing', 'Decimal precision of 6 exceeded for Unit  Cost', true],
+    ['a trailing period', 'Decimal precision of 2 exceeded for Quantity.', true],
+    ['an underscore Extended_Amount', 'Decimal precision of 3 exceeded for Extended_Amount: 10.0001', false],
+    ['an unrelated field', 'Decimal precision of 2 exceeded for Tax Rate: 0.0825', false],
+  ])('matches precision faults with %s', (_label, text, expected) => {
+    expect(isLineQuantityOrUnitCostPrecisionError(text)).toBe(expected);
+  });
+
+  it('reads the field from the fault xpath when the message names none', () => {
+    const fault = (field: string) => ({
+      Message: 'Decimal precision of 6 exceeded',
+      Xpath: `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:${field}[1]`,
+    });
+    expect(isLineQuantityOrUnitCostPrecisionError(fault('Unit_Cost'))).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError(fault('Quantity'))).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError(fault('Extended_Amount'))).toBe(false);
+  });
+
+  it('ignores a named Quantity or Unit Cost precision fault whose xpath is outside the invoice lines', () => {
+    const message = 'Decimal precision of 2 exceeded for Quantity: 1.125';
+    const fault = {
+      Message: message,
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Purchase_Order_Reference[1]/wd:Quantity[1]',
+    };
+    expect(isLineQuantityOrUnitCostPrecisionError(fault)).toBe(false);
+    expect(isLineQuantityOrUnitCostPrecisionError(fault, message)).toBe(false);
+  });
+
+  it('reads the fallback text only when no structured error carries a precision message', () => {
+    expect(isLineQuantityOrUnitCostPrecisionError(new Error('Validation error occurred'), 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753')).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError(new Error('Validation error occurred'), 'Spend Category is required')).toBe(false);
+  });
+
+  it('reads the xpath from a strong-soap Error that carries the parsed fault envelope', () => {
+    const soapError = (field: string) => Object.assign(new Error('Validation error occurred. Decimal precision of 6 exceeded'), {
+      root: {
+        Envelope: {
+          Body: {
+            Fault: {
+              faultcode: 'SOAP-ENV:Client.validationError',
+              faultstring: 'Validation error occurred. Decimal precision of 6 exceeded',
+              detail: {
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: 'Decimal precision of 6 exceeded',
+                    Xpath: `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:${field}[1]`,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(isLineQuantityOrUnitCostPrecisionError(soapError('Unit_Cost'))).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError(soapError('Extended_Amount'))).toBe(false);
+  });
+
+  it('matches a placeholder precision fault and reads every validation error on its own', () => {
+    const lineXpath = (field: string) => `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:${field}[1]`;
+    expect(isLineQuantityOrUnitCostPrecisionError({
+      Validation_Fault: { Validation_Error: { Detail_Message: 'Decimal precision of !**! exceeded for Unit Cost: !**!', Xpath: lineXpath('Unit_Cost') } },
+    })).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError({
+      Validation_Fault: {
+        Validation_Error: [
+          { Message: 'Spend Category is required', Xpath: lineXpath('Spend_Category_Reference') },
+          { Message: 'Decimal precision of 2 exceeded for Quantity: 1.125', Xpath: lineXpath('Quantity') },
+        ],
+      },
+    })).toBe(true);
+    expect(isLineQuantityOrUnitCostPrecisionError({
+      Validation_Fault: {
+        Validation_Error: [
+          { Message: 'Decimal precision of 6 exceeded', Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Exchange_Rate[1]' },
+          { Message: 'Enter a valid quantity', Xpath: lineXpath('Quantity') },
+        ],
+      },
+    })).toBe(false);
+  });
+
   it('detects configurable attribute (Additional Fields) faults', () => {
     expect(isConfigurableAttributeValidationError({
       detail: {

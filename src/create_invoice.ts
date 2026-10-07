@@ -774,6 +774,7 @@ async function processInvoiceCluster(
       freightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
+      chargeWithheld,
     } = resolveHeaderChargeAmounts({
       extractedFreightAmount: result.extractedFreightAmount,
       extractedFreightLabel: result.extractedFreightLabel,
@@ -890,10 +891,13 @@ async function processInvoiceCluster(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
-    const lineTotalReviewNote = lineTotalMismatchNote(finalLines, {
+    // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
+    const lineTotalReviewNote = chargeWithheld ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
       freightAmount: extractedFreightAmount,
       taxAmount: extractedTaxAmount,
+      freightCleared,
+      taxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 

@@ -6,7 +6,7 @@ export const MergeInvoiceLinesSchema = z.object({
     description: z.string().describe('Concatenated line item description from the extracted invoice line. Copy it unchanged — do not shorten to a category or one-sentence summary.'),
     memo: z.string().nullable().describe('A terse 1-sentence memo describing what this line item is for, generated from the concatenated invoice line description (e.g. "Monthly software subscription", "Event catering services"). Write this after the concatenated description is set. If a matched PO line has a memo, use it as context but still generate your own. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after merge. Null only if the description is too vague to summarize.'),
     quantity: z.number().nullable().describe('Quantity for the line item. Null if not stated.'),
-    unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00). Null if not stated. Do not compute from quantity and totalPrice.'),
+    unitCost: z.number().nullable().describe('Unit cost as a decimal number (e.g. 1000.00), keeping every printed decimal (e.g. 224.9488753). Null if not stated. Do not compute from quantity and totalPrice.'),
     extendedAmount: z.number().nullable().describe('Total/extended price as a decimal number. Null if not stated.'),
     costCenterId: z.string().nullable().describe('Cost_Center_Reference_ID from matched PO lines only. Null if no PO line was matched. Never copy a code from the email body.'),
     fundId: z.string().nullable().describe('Fund_ID from matched PO lines only. Null if no PO line was matched. Never copy a code from the email body.'),
@@ -48,7 +48,7 @@ Guidelines:
 - CRITICAL: The output array MUST contain exactly as many lines as extractedInvoiceLines — no more, no fewer. Even if a line has no item name, is missing amounts, or seems like a sub-item or continuation, it is a separate invoice line and must appear as a separate output line. Never collapse, skip, or combine invoice lines.
 - Return the lines in the same order as extractedInvoiceLines
 - Line order is sequential starting at 1
-- Convert unitCost and totalPrice strings to decimal numbers (e.g. "$1,000.00" → 1000.00). Strip currency symbols and commas
+- Convert unitCost and totalPrice strings to decimal numbers (e.g. "$1,000.00" → 1000.00). Strip currency symbols and commas. Keep every decimal printed in unitCost ("$224.9488753" → 224.9488753); do not round it to cents. Keep a credit's sign: a leading minus or accounting parentheses make the number negative ("($250.00)" → -250, "-$12.345" → -12.345)
 - If a PO has fewer lines than the invoice, apply the worktags from the best-matching PO line to each unmatched invoice line
 - If all PO lines share the same worktags, apply those worktags to all invoice lines
 - If the invoice has fewer lines than the PO, match each invoice line to the single best-matching PO line
