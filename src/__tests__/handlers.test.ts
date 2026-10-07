@@ -1,4 +1,5 @@
 import { withHandler, withProcessorHandler, withQueryHandler } from '../lib/handlers.js';
+import type { Context } from 'aws-lambda';
 
 // Mock the dependencies
 jest.mock('@pga/lambda-env', () => ({
@@ -228,7 +229,8 @@ describe('handlers', () => {
           dbConnection: expect.any(Object)
         }),
         expect.any(Array),
-        event
+        event,
+        undefined
       );
     });
 
@@ -249,7 +251,8 @@ describe('handlers', () => {
           dbConnection: expect.any(Object)
         }),
         [{ id: '1', name: 'Test Item' }],
-        event
+        event,
+        undefined
       );
     });
 
@@ -266,7 +269,8 @@ describe('handlers', () => {
       expect(mockProcessAction).toHaveBeenCalledWith(
         expect.any(Object),
         [],
-        event
+        event,
+        undefined
       );
     });
 
@@ -285,6 +289,109 @@ describe('handlers', () => {
 
       expect(notifyResult).toHaveBeenCalledWith('test-processor-lambda', 'error', undefined, undefined, queryError);
       expect(mockProcessAction).not.toHaveBeenCalled();
+    });
+
+    it('should create an abort signal that fires before the Lambda deadline', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+      let capturedSignal: AbortSignal | undefined;
+      const mockProcessAction = jest.fn().mockImplementation((_ctx, _data, _event, options) => {
+        capturedSignal = options?.abortSignal;
+        return new Promise<void>((_resolve, reject) => {
+          capturedSignal?.addEventListener('abort', () => {
+            reject(new Error('Processor deadline reached'));
+          }, { once: true });
+        });
+      });
+      const processor = withProcessorHandler(mockProcessAction);
+
+      const event = { data: [{ id: '1' }] };
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(120_000),
+      } as unknown as Context;
+
+      const promise = processor(event, lambdaContext);
+      await new Promise(resolve => setImmediate(resolve));
+      jest.advanceTimersByTime(99_999);
+      expect(capturedSignal?.aborted).toBe(false);
+      jest.advanceTimersByTime(2);
+      await expect(promise).rejects.toThrow('Processor deadline reached');
+
+      jest.useRealTimers();
+    });
+
+    it('should alert and skip processing when remaining time is inside the buffer', async () => {
+      const { notifyResult } = require('../lib/slack.js');
+      process.env.AWS_LAMBDA_FUNCTION_NAME = 'test-processor-lambda';
+      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
+      const processor = withProcessorHandler(mockProcessAction);
+
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(20_000),
+      } as unknown as Context;
+
+      const { getDatabaseConnection } = require('../lib/database.js');
+
+      await expect(processor({ data: [{ id: '1' }] }, lambdaContext)).rejects.toThrow('deadline buffer');
+      expect(mockProcessAction).not.toHaveBeenCalled();
+      expect(getDatabaseConnection).not.toHaveBeenCalled();
+      expect(notifyResult).toHaveBeenCalledWith('test-processor-lambda', 'error', undefined, undefined, expect.any(Error));
+    });
+
+    it('should keep the deadline error when the Slack alert fails', async () => {
+      const { notifyResult } = require('../lib/slack.js');
+      notifyResult.mockRejectedValueOnce(new Error('Slack 500'));
+      const processor = withProcessorHandler(jest.fn().mockResolvedValue(undefined));
+
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(20_000),
+      } as unknown as Context;
+
+      await expect(processor({ data: [{ id: '1' }] }, lambdaContext)).rejects.toThrow('deadline buffer');
+    });
+
+    it('should dispose the deadline timer after successful processing', async () => {
+      jest.useFakeTimers();
+      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
+      const processor = withProcessorHandler(mockProcessAction);
+
+      const event = { data: [{ id: '1' }] };
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(120_000),
+      } as unknown as Context;
+
+      await processor(event, lambdaContext);
+      expect(mockProcessAction).toHaveBeenCalled();
+
+      // The deadline timer must be cleared after processing finishes.
+      expect(jest.getTimerCount()).toBe(0);
+
+      jest.useRealTimers();
+    });
+
+    it('should pass the signal on both event.query and event.data branches', async () => {
+      const { executeWorkdayQuery } = require('../lib/workday.js');
+      executeWorkdayQuery.mockResolvedValue({
+        total: 1,
+        data: [{ id: '1' }]
+      });
+
+      const receivedOptions: Array<{ abortSignal?: AbortSignal } | undefined> = [];
+      const mockProcessAction = jest.fn().mockImplementation((_ctx, _data, _event, options) => {
+        receivedOptions.push(options);
+        return Promise.resolve();
+      });
+      const processor = withProcessorHandler(mockProcessAction);
+
+      const lambdaContext = {
+        getRemainingTimeInMillis: jest.fn().mockReturnValue(120_000),
+      } as unknown as Context;
+
+      await processor({ query: 'SELECT * FROM test' }, lambdaContext);
+      await processor({ data: [{ id: '2' }] }, lambdaContext);
+
+      expect(receivedOptions).toHaveLength(2);
+      expect(receivedOptions[0]?.abortSignal).toBeInstanceOf(AbortSignal);
+      expect(receivedOptions[1]?.abortSignal).toBeInstanceOf(AbortSignal);
     });
   });
 

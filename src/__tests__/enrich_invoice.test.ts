@@ -181,6 +181,19 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
   });
 
+  it('passes the Lambda deadline signal to the enrichment AI call', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+
+    await processor(
+      { data: [{ workdayID: 'test-invoice-id', invoiceStatusAsText: 'Draft' }] } as any,
+      { getRemainingTimeInMillis: () => 120_000 } as any
+    );
+
+    const signal = getAiResponse.mock.calls[0][0].abortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+  });
+
   it('should handle missing supplier and identify supplier', async () => {
     const { executeWorkdayQuery } = require('../lib/workday.js');
     executeWorkdayQuery.mockResolvedValue({
@@ -602,6 +615,8 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         invoiceLineQuantityDisplayed: undefined,
         relatedLobByCostCenter: undefined,
@@ -723,6 +738,8 @@ describe('enrich_invoice', () => {
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
         extractedTaxAmount: undefined,
+        freightCleared: false,
+        taxCleared: false,
         finalLines: undefined,
         relatedLobByCostCenter: undefined,
         resolveCostCenterWorkdayIds: expect.any(Function),
@@ -1052,6 +1069,84 @@ describe('enrich_invoice', () => {
         finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50 }]
       })
     );
+  });
+
+  describe('mislabeled freight and tax', () => {
+    const enrichmentWith = (charges: Record<string, string | null>) => ({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'BearCom', memo: 'Radios' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...charges,
+    });
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'BearCom', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    it('moves a sales-tax amount read as freight to tax and clears freight on update', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '510.86',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: undefined,
+        extractedTaxAmount: '510.86',
+        freightCleared: true,
+        taxCleared: false,
+      }));
+      const notes = params.buildNotes([]);
+      expect(notes).toContain('Freight Amount (from document): none');
+      expect(notes).toContain('Tax Amount (from document): 510.86');
+      expect(notes).not.toContain('Freight/Tax review');
+    });
+
+    it('keeps both amounts and adds a review note when a tax-labeled freight amount differs from tax', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedFreightAmount: '8.00',
+        extractedFreightLabel: 'Sales Tax',
+        extractedTaxAmount: '10.00',
+        extractedTaxLabel: 'Sales Tax',
+      }));
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: '8.00',
+        extractedTaxAmount: '10.00',
+        freightCleared: false,
+        taxCleared: false,
+      }));
+      expect(params.buildNotes([])).toContain('Freight/Tax review: Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read.');
+    });
   });
 
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
@@ -1411,6 +1506,114 @@ describe('enrich_invoice', () => {
       unitCost: 0,
       extendedAmount: 1105.49,
     });
+  });
+
+  it('should note when invoice lines total more than the amount due', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'LevelBlue, LLC', memo: 'vCISO risk advisory' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$5,500.00',
+      extractedTaxAmount: '$0.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null },
+        { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: 5500, extendedAmount: 5500 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.finalLines[0]).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
+    expect(params.buildNotes([])).toContain(
+      'Line total review: Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00.'
+    );
+  });
+
+  it('should count freight and tax already on the Workday invoice before noting a line total mismatch', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getSupplierInvoiceWithAttachments.mockResolvedValueOnce({
+      invoice: { Invoice_ID: 'test-invoice-id', Freight_Amount: '15.00', Tax_Amount: '5.00' },
+      presignedAttachments: []
+    });
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'LevelBlue, LLC' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$5,520.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.buildNotes([])).not.toContain('Line total review');
   });
 
   it('should put extracted identifiers on the header and line memos', async () => {

@@ -1,15 +1,17 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { debug } from '@pga/logger';
-import { withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { throwIfDeadlineReached, withHandler, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
+  formatChargeReviewNotes,
   formatCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatLineTotalReviewNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
@@ -28,7 +30,9 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
+  lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -123,13 +127,19 @@ export const handler = withHandler(async (context) => {
 });
 
 // Processor function - invoked by query function
-export const processor = withProcessorHandler(async (context, invoices, _event) => {
+export const processor = withProcessorHandler(async (context, invoices, _event, options) => {
   // Process single invoice (invoices will be array with one item)
+  const abortSignal = options?.abortSignal;
   for (const invoice of invoices) {
-    await processInvoice(context, invoice as InvoiceData);
+    await throwIfDeadlineReached(abortSignal);
+    await processInvoice(context, invoice as InvoiceData, abortSignal);
   }
 });
-async function processInvoice(context: ProcessingContext, invoiceData: InvoiceData): Promise<void> {
+async function processInvoice(
+  context: ProcessingContext,
+  invoiceData: InvoiceData,
+  abortSignal?: AbortSignal
+): Promise<void> {
   const startTime = Date.now();
 
   if (await isInvoiceMarkedForSkip(context.invoiceValidationFailuresConfig, invoiceData.workdayID)) {
@@ -159,7 +169,16 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       : undefined;
 
     debug(existingSupplier ? 'Enriching invoice with existing supplier' : 'Enriching invoice - no supplier assigned');
-    const result = await enrichInvoiceFromAttachments(detailedInvoice, processedAttachments, existingSupplier, existingCompany, invoiceData.emailContext);
+    const result = await enrichInvoiceFromAttachments(
+      detailedInvoice,
+      processedAttachments,
+      existingSupplier,
+      existingCompany,
+      invoiceData.emailContext,
+      undefined,
+      undefined,
+      abortSignal
+    );
     debug('Enrichment result:', result);
 
     if (result.supplier.status === 'error') {
@@ -196,7 +215,6 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const extractedTaxAmount = result.extractedTaxAmount ?? undefined;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -245,8 +263,20 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         : []
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    const extractedFreightAmount = result.extractedFreightAmount
-      ?? (freightAmountFromLines != null ? String(freightAmountFromLines) : undefined);
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+      chargeWithheld,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -272,7 +302,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
         invoiceLineQuantityDisplayed,
         // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
-        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod }
+        poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
+        abortSignal
       );
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
@@ -294,9 +325,20 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
+    // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
+    const lineTotalReviewNote = finalLines && !chargeWithheld ? lineTotalMismatchNote(finalLines, {
+      amountDue: extractedAmountDue,
+      freightAmount: extractedFreightAmount,
+      taxAmount: extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      currentFreightAmount: detailedInvoice.Freight_Amount,
+      currentTaxAmount: detailedInvoice.Tax_Amount,
+    }) : undefined;
+    if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(result) + formatTaxAmountNotes(result) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -334,6 +376,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
         extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,
@@ -401,6 +445,9 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: submittedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
         paymentTerms: result.extractedPaymentTerms?.name,
       },

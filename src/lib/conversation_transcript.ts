@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { HTML_TAG_NAMES } from './html_text.js';
 
 const CENTRAL_TIME_ZONE = 'America/Chicago';
 const TRANSCRIPT_FILE_PREFIX = 'pga_corp_accounts_payable';
@@ -111,7 +112,7 @@ function decodeEntities(value: string): string {
     .replace(/&#39;|&apos;/gi, "'");
 }
 
-const HTML_TAG_NAME = /^(?:a|article|b|blockquote|body|br|center|code|div|em|figcaption|figure|font|footer|h[1-6]|head|header|hr|html|i|img|li|link|meta|nav|ol|p|pre|script|section|small|span|strong|style|sub|sup|table|tbody|td|tfoot|th|thead|title|tr|u|ul|wbr)$/i;
+const HTML_TAG_NAME = new RegExp(`^(?:${HTML_TAG_NAMES})$`, 'i');
 const HTML_BLOCK_NAME = /^(?:p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol|section|article|header|footer)$/i;
 const MAX_TAG_LENGTH = 200;
 
