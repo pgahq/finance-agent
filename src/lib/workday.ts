@@ -1301,8 +1301,12 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   // equal the control total is an all-freight invoice: keep those lines rather than moving them to
   // header freight. This covers invoices this agent submitted and Workday OCR drafts of carrier bills.
   // A blank, zero, or unparseable extracted freight is no freight, as in documentFreight.
-  const extractedFreightUsable = ((extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined) ?? 0) > 0;
-  const ocrFreightAsLines = !providedFinalLines && !extractedFreightUsable && ocrLines.length > 0
+  const extractedFreightValue = extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined;
+  const extractedFreightUsable = (extractedFreightValue ?? 0) > 0;
+  // An extracted freight equal to the OCR freight rows describes the same charge, not a separate header amount.
+  const extractedFreightMatchesOcr = extractedFreightUsable && splitOcrLines?.freightAmountFromLines != null
+    && Math.round(extractedFreightValue! * 100) === Math.round(splitOcrLines.freightAmountFromLines * 100);
+  const ocrFreightAsLines = !providedFinalLines && (!extractedFreightUsable || extractedFreightMatchesOcr) && ocrLines.length > 0
     && splitOcrLines?.merchandiseLines.length === 0 && !((chargeAmount(signedSoapAmount(currentFreightAmount)) ?? 0) > 0)
     && reconcileSubmittedCharges(ocrLines, {
       amountDue: signedSoapAmount(controlAmountTotal),

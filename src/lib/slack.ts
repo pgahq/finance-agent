@@ -103,7 +103,9 @@ function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): vo
       ]
     : chargeCheck;
   shown.forEach((line, index) => {
-    const bullet = `• ${escapeSlackMrkdwn(truncateSlackText(line, CHARGE_CHECK_LINE_LIMIT))}`;
+    // Escape before capping so the cap bounds the text Slack receives; drop a cut-off entity.
+    const capped = truncateSlackText(escapeSlackMrkdwn(line), CHARGE_CHECK_LINE_LIMIT).replace(/&[a-z]{0,3}…$/, '…');
+    const bullet = `• ${capped}`;
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: index === 0 ? `*Amount Check*\n${bullet}` : bullet }

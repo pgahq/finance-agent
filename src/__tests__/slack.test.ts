@@ -321,6 +321,10 @@ describe('notifyResult', () => {
     expect(texts).toContain('&lt;!channel&gt;');
     expect(texts).not.toContain('<!channel>');
     expect(texts).toContain(`• ${mismatch}`);
+    const sections = postedSlackBody(global.fetch as jest.Mock).blocks
+      .map((block) => block.text?.text ?? '')
+      .filter((text) => text.includes('Removed invoice line'));
+    expect(sections[0].length).toBeLessThanOrEqual('*Amount Check*\n• '.length + 500);
   });
 
   it('omits the Workday invoice number on create when Invoice_Number is missing', async () => {

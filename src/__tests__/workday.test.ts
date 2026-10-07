@@ -2044,7 +2044,7 @@ describe('Workday utilities', () => {
       ]);
     });
 
-    it('should replace OCR freight-only lines with a remainder Invoice line so existing shipping rows are replaced', async () => {
+    it('keeps an all-freight OCR line as the coded invoice line when the extracted freight equals it', async () => {
       process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
 
       const mockClient = {
@@ -2093,18 +2093,9 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
 
       const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(data.Freight_Amount).toBe(15);
+      expect(data).not.toHaveProperty('Freight_Amount');
       expect(data.Invoice_Line_Replacement_Data).toEqual([
-        expect.objectContaining({
-          Line_Order: 1,
-          Item_Description: 'Invoice',
-          Quantity: 1,
-          Unit_Cost: 0,
-          Extended_Amount: 0,
-          Spend_Category_Reference: {
-            ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'DEFAULT-SPEND-CAT' }],
-          },
-        })
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Ground Shipping', Extended_Amount: '15' })
       ]);
     });
 
@@ -2224,7 +2215,7 @@ describe('Workday utilities', () => {
       ]);
     });
 
-    it('should split a single SOAP OCR line object so freight-only updates replace that row with a remainder Invoice line', async () => {
+    it('unwraps a single SOAP OCR line object and keeps it as the coded line of an all-freight invoice', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -2271,15 +2262,9 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
 
       const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(data.Freight_Amount).toBe(15);
+      expect(data).not.toHaveProperty('Freight_Amount');
       expect(data.Invoice_Line_Replacement_Data).toEqual([
-        expect.objectContaining({
-          Line_Order: 1,
-          Item_Description: 'Invoice',
-          Quantity: 1,
-          Unit_Cost: 0,
-          Extended_Amount: 0,
-        })
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Ground Shipping' })
       ]);
     });
 
@@ -2430,6 +2415,22 @@ describe('Workday utilities', () => {
       const data = getData();
       expect(data.Freight_Amount).toBe(15);
       expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+    });
+
+    it('keeps coded OCR freight lines when the extracted freight equals them', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$4,595.00' });
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
     });
 
     it.each(['n/a', '$0.00', ' '])('keeps coded OCR freight lines when the extracted freight is %p', async (extractedFreightAmount) => {
