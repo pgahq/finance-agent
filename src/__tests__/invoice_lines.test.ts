@@ -1310,7 +1310,7 @@ describe('restoreClearedFreightFromRows', () => {
   it('puts the freight rows on the header when a printed zero freight would lose them', () => {
     expect(restoreClearedFreightFromRows(lines, { amountDue: '$125.00', freightCleared: true })).toEqual({
       freight: '25',
-      message: 'Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they were submitted as header Freight_Amount.',
+      message: 'Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.',
     });
   });
 
@@ -1324,6 +1324,24 @@ describe('restoreClearedFreightFromRows', () => {
 
   it('counts tax when checking the amount due', () => {
     expect(restoreClearedFreightFromRows(lines, { amountDue: '$131.00', tax: '$6.00', freightCleared: true }).freight).toBe('25');
+  });
+
+  it('does not contradict the all-freight sentence on a carrier bill', () => {
+    const carrierLines = [{ description: 'Freight Charge', totalPrice: '$4,595.00' }];
+    const restored = restoreClearedFreightFromRows(carrierLines, { amountDue: '$4,595.00', freightCleared: true });
+    expect(restored.freight).toBe('4595');
+
+    const prepared = prepareInvoiceCharges(carrierLines, { amountDue: '$4,595.00', freight: restored.freight }, {
+      allowFreightAsLines: true,
+      removeDuplicates: true,
+    });
+    expect(prepared.freightAsLines).toBe(true);
+    const notes = [restored.message!, ...chargeReconciliationMessages(prepared.reconciliation)];
+    expect(notes).toEqual([
+      'Header freight printed as zero, but the freight rows ($4,595.00) make up the rest of the amount due, so they count as the invoice freight.',
+      expect.stringContaining('header Freight_Amount is not set'),
+    ]);
+    expect(notes.filter(note => note.includes('submitted as header Freight_Amount'))).toEqual([]);
   });
 });
 

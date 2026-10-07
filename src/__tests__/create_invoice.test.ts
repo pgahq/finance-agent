@@ -944,7 +944,7 @@ describe('create_invoice', () => {
     expect(submitArgs.freightCleared).toBe(false);
     expect(submitArgs.freightAsLines).toBeFalsy();
     expect(submitArgs.buildNotes([])).toContain(
-      'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they were submitted as header Freight_Amount.'
+      'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.'
     );
   });
 

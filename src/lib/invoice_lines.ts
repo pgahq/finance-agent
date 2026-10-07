@@ -946,7 +946,7 @@ export function restoreClearedFreightFromRows(
   if (merchandiseCents + toCents(freightAmountFromLines) + taxCents !== toCents(amountDue)) return {};
   return {
     freight: String(freightAmountFromLines),
-    message: `Header freight printed as zero, but the freight rows (${formatChargeDollars(freightAmountFromLines)}) make up the rest of the amount due, so they were submitted as header Freight_Amount.`,
+    message: `Header freight printed as zero, but the freight rows (${formatChargeDollars(freightAmountFromLines)}) make up the rest of the amount due, so they count as the invoice freight.`,
   };
 }
 
