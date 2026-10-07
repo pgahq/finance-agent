@@ -230,6 +230,10 @@ export function formatChargeReviewNotes(reviewNote: string | undefined): string 
   return reviewNote ? `\n\nFreight/Tax review: ${reviewNote}` : '';
 }
 
+export function formatLineTotalReviewNotes(reviewNote: string | undefined): string {
+  return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
+}
+
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;

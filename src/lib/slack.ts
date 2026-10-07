@@ -50,6 +50,14 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
     text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
   });
 
+  const triggeredBy = triggeredByText(details as unknown);
+  if (triggeredBy) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Triggered by* ${triggeredBy}`) }
+    });
+  }
+
   const priorFailures = Array.isArray(error?.priorFailures) ? error.priorFailures : [];
   appendPriorFailureBlocks(blocks, priorFailures);
 
@@ -67,12 +75,25 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
   }
 }
 
+function triggeredByText(details: unknown): string | undefined {
+  if (!details || typeof details !== 'object') return undefined;
+  const { triggeredByEmail, triggeredByName } = details as Record<string, unknown>;
+  const email = typeof triggeredByEmail === 'string' ? triggeredByEmail.trim() : '';
+  if (!email) return undefined;
+  const name = typeof triggeredByName === 'string' ? triggeredByName.trim() : '';
+  return name ? `${name} (${email})` : email;
+}
+
+const ERROR_DETAILS_RENDERED_ELSEWHERE = new Set(['conversationUrl', 'triggeredByEmail', 'triggeredByName']);
+
 function errorDetailsForSlack(details: unknown): Record<string, unknown> | undefined {
   if (!details || typeof details !== 'object' || Array.isArray(details)) {
     return undefined;
   }
 
-  const { conversationUrl: _conversationUrl, ...rest } = details as Record<string, unknown>;
+  const rest = Object.fromEntries(
+    Object.entries(details as Record<string, unknown>).filter(([key]) => !ERROR_DETAILS_RENDERED_ELSEWHERE.has(key))
+  );
   if (Object.keys(rest).length === 0) {
     return undefined;
   }
@@ -132,6 +153,11 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     freightCleared?: boolean;
     taxCleared?: boolean;
     purchaseOrderNumber?: string;
+    purchaseOrderSource?: string;
+    purchaseOrderLine?: number;
+    invoicePurchaseOrderNumber?: string;
+    emailPurchaseOrderNumber?: string;
+    purchaseOrderNotLinked?: boolean;
     paymentTerms?: string;
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
@@ -141,7 +167,15 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
   if (extracted?.taxCleared) changeLines.push('*Tax* → none');
   else if (extracted?.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
-  if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
+  if (extracted?.purchaseOrderNumber) {
+    const line = extracted.purchaseOrderLine ? ` Line ${extracted.purchaseOrderLine}` : '';
+    const replaced = extracted.invoicePurchaseOrderNumber
+      ? `; invoice shows ${extracted.invoicePurchaseOrderNumber}`
+      : extracted.emailPurchaseOrderNumber ? `; email shows ${extracted.emailPurchaseOrderNumber}` : '';
+    const source = extracted.purchaseOrderSource === 'note' ? ` (from Intercom note${replaced})` : '';
+    const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
+  }
   if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
 
   const assigneeName = typeof details.assigneeName === 'string' ? details.assigneeName : undefined;

@@ -167,6 +167,11 @@ describe('invoice line description prompts', () => {
     expect(mergeInvoiceLinesPrompt).toContain('after** the concatenated description is set');
   });
 
+  it('tells merge to keep printed unit cost decimals and credit signs', () => {
+    expect(mergeInvoiceLinesPrompt).toContain('"$224.9488753" → 224.9488753');
+    expect(mergeInvoiceLinesPrompt).toContain('"($250.00)" → -250');
+  });
+
   it('tells merge to pick among same-service PO lines by service dates when PO line selection is on', () => {
     const prompt = mergeInvoiceLinesPromptFor(true);
     expect(prompt.startsWith(mergeInvoiceLinesPrompt)).toBe(true);
