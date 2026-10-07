@@ -7,9 +7,11 @@ import {
   buildFinalInvoiceLines,
   constrainEmailLobToRelatedWorktags,
   isFreightOrHandlingLine,
+  normalizeExtractedFreightAndTax,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   statesServicePeriod,
@@ -1723,7 +1725,6 @@ describe('buildFinalInvoiceLines service-date matching', () => {
 
 describe('normalizeExtractedFreightAndTax', () => {
   it('moves a sales-tax amount out of freight into tax', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '510.86',
       extractedFreightLabel: 'Sales Tax',
@@ -1737,7 +1738,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('keeps a real freight amount and a real tax amount separate', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '15.00',
       extractedFreightLabel: 'Shipping',
@@ -1751,7 +1751,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('moves a freight-labeled tax amount into freight', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: null,
       extractedFreightLabel: null,
@@ -1765,7 +1764,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('swaps freight and tax when both are mislabeled', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
       extractedFreightLabel: 'Sales Tax',
@@ -1777,7 +1775,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('treats labeled zero amounts as explicit clears', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '0.00',
       extractedFreightLabel: 'Freight',
@@ -1796,7 +1793,6 @@ describe('normalizeExtractedFreightAndTax', () => {
     'Sales Tax - Estimated',
     'Sales Tax (approx.)',
   ])('moves a freight amount labeled %s to tax', (label) => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '$510.86',
       extractedFreightLabel: label,
@@ -1807,7 +1803,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it.each(['Freight Amount', 'Shipping & Handling Amount', 'Shipping Total'])('moves a tax amount labeled %s to freight', (label) => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedTaxAmount: '25.00',
       extractedTaxLabel: label,
@@ -1817,21 +1812,48 @@ describe('normalizeExtractedFreightAndTax', () => {
     expect(result.taxCleared).toBe(true);
   });
 
-  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('ignores malformed amount %s without clearing headers', (amount) => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('keeps malformed amount %s under a crossed label as read and asks for review', (amount) => {
     expect(normalizeExtractedFreightAndTax({
       extractedFreightAmount: amount,
       extractedFreightLabel: 'Sales Tax',
     })).toEqual({
-      extractedFreightAmount: undefined,
+      extractedFreightAmount: amount,
       extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+      reviewNote: `Freight "${amount}" labeled "Sales Tax" and tax none look mislabeled, but an amount could not be read cleanly; both were kept as read. Verify freight and tax against the document.`,
+    });
+  });
+
+  it('keeps both amounts and asks for review when the other amount under a crossed label is unreadable', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '1.234,56',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('510.86');
+    expect(result.extractedTaxAmount).toBe('1.234,56');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain('an amount could not be read cleanly');
+  });
+
+  it.each(['510.86 $', '$ 510.86*', '1.234,56'])('passes correctly labeled amount %s through as read', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: amount,
+      extractedTaxAmount: amount,
       freightCleared: false,
       taxCleared: false,
     });
   });
 
   it.each(['$8,514.38', '8514.38', '510.86 USD', 'USD 510.86'])('accepts well-formed amount %s', (amount) => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     expect(normalizeExtractedFreightAndTax({
       extractedFreightAmount: amount,
       extractedFreightLabel: 'Freight',
@@ -1839,7 +1861,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
       extractedFreightLabel: 'Sales Tax',
@@ -1853,7 +1874,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '8.00',
       extractedFreightLabel: 'Sales Tax',
@@ -1868,7 +1888,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('drops a tax-labeled freight amount that duplicates the tax amount', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '$510.86',
       extractedFreightLabel: 'Sales Tax',
@@ -1882,7 +1901,6 @@ describe('normalizeExtractedFreightAndTax', () => {
   });
 
   it('keeps both amounts and asks for review when a freight-labeled tax amount differs from the freight amount', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
     const result = normalizeExtractedFreightAndTax({
       extractedFreightAmount: '15.00',
       extractedFreightLabel: 'Shipping',
@@ -1896,13 +1914,12 @@ describe('normalizeExtractedFreightAndTax', () => {
     expect(result.reviewNote).toContain('Tax amount 8.00 is labeled "Freight"');
   });
 
-  it('rejects negative and malformed amounts without clearing existing headers', () => {
-    const { normalizeExtractedFreightAndTax } = require('../lib/invoice_lines.js');
+  it('passes unparseable amounts under matching labels through as read without clearing headers', () => {
     expect(normalizeExtractedFreightAndTax({
       extractedFreightAmount: '-15.00',
       extractedFreightLabel: 'Shipping',
     })).toEqual({
-      extractedFreightAmount: undefined,
+      extractedFreightAmount: '-15.00',
       extractedTaxAmount: undefined,
       freightCleared: false,
       taxCleared: false,
@@ -1912,9 +1929,55 @@ describe('normalizeExtractedFreightAndTax', () => {
       extractedTaxLabel: 'Sales Tax',
     })).toEqual({
       extractedFreightAmount: undefined,
-      extractedTaxAmount: undefined,
+      extractedTaxAmount: 'N/A',
       freightCleared: false,
       taxCleared: false,
+    });
+  });
+});
+
+describe('resolveHeaderChargeAmounts', () => {
+  it('moves the BearCom tax-labeled freight to tax and ignores line freight', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+      freightAmountFromLines: 25,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: '510.86',
+      freightCleared: true,
+      taxCleared: false,
+    });
+  });
+
+  it('fills freight from lines only when the document showed no freight header', () => {
+    expect(resolveHeaderChargeAmounts({ freightAmountFromLines: 25 }).extractedFreightAmount).toBe('25');
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    }).extractedFreightAmount).toBe('12.00');
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12,34',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    }).extractedFreightAmount).toBe('12,34');
+  });
+
+  it('does not refill a cleared freight header from lines and drops a cleared tax amount', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+      freightAmountFromLines: 25,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: true,
+      taxCleared: true,
     });
   });
 });

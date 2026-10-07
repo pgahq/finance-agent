@@ -374,10 +374,24 @@ function sameAmount(a: string | undefined, b: string | undefined): boolean {
   return a != null && b != null && parseCanonicalChargeAmount(a) === parseCanonicalChargeAmount(b);
 }
 
+function printable(value: string | null | undefined): string {
+  return (value ?? '').replace(/["\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function conflictingChargeNote(field: 'Freight' | 'Tax', amount: string | undefined, label: string | null | undefined, otherAmount: string | undefined): string {
   const other = field === 'Freight' ? 'tax' : 'freight';
-  const printedLabel = (label ?? '').replace(/["\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return `${field} amount ${amount} is labeled "${printedLabel}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
+  return `${field} amount ${amount} is labeled "${printable(label)}" and a separate ${other} amount ${otherAmount} was also read; both were kept as read. Verify freight and tax against the document.`;
+}
+
+function unreadableChargeNote(options: {
+  freightAmount?: string;
+  freightLabel?: string | null;
+  taxAmount?: string;
+  taxLabel?: string | null;
+}): string {
+  const describe = (amount: string | undefined, label: string | null | undefined) =>
+    `${amount == null ? 'none' : `"${printable(amount)}"`}${label ? ` labeled "${printable(label)}"` : ''}`;
+  return `Freight ${describe(options.freightAmount, options.freightLabel)} and tax ${describe(options.taxAmount, options.taxLabel)} look mislabeled, but an amount could not be read cleanly; both were kept as read. Verify freight and tax against the document.`;
 }
 
 export function normalizeExtractedFreightAndTax(options: {
@@ -401,6 +415,8 @@ export function normalizeExtractedFreightAndTax(options: {
 
   const freightValid = freightNonZero || freightZero;
   const taxValid = taxNonZero || taxZero;
+  const freightUnreadable = Boolean(rawFreightAmount?.trim()) && !freightValid;
+  const taxUnreadable = Boolean(rawTaxAmount?.trim()) && !taxValid;
 
   let freightAmount: string | undefined;
   let taxAmount: string | undefined;
@@ -411,7 +427,12 @@ export function normalizeExtractedFreightAndTax(options: {
   const labeledFreightZero = freightZero && Boolean(freightLabel);
   const labeledTaxZero = taxZero && Boolean(taxLabel);
 
-  if (freightIsTax && taxIsFreight) {
+  // Amounts stay as read (and are parsed leniently downstream) unless a crossed label is backed by cleanly parsed amounts.
+  if ((freightIsTax || taxIsFreight) && (freightUnreadable || taxUnreadable)) {
+    freightAmount = rawFreightAmount;
+    taxAmount = rawTaxAmount;
+    reviewNote = unreadableChargeNote({ freightAmount: rawFreightAmount, freightLabel, taxAmount: rawTaxAmount, taxLabel });
+  } else if (freightIsTax && taxIsFreight) {
     if (freightValid && taxValid) {
       freightAmount = rawTaxAmount;
       taxAmount = rawFreightAmount;
@@ -441,10 +462,10 @@ export function normalizeExtractedFreightAndTax(options: {
       } else {
         taxCleared = true;
       }
-    } else if (taxNonZero) {
-      taxAmount = rawTaxAmount;
-    } else if (taxZero && labeledTaxZero) {
+    } else if (labeledTaxZero) {
       taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
     }
   } else if (taxIsFreight) {
     if (taxNonZero && freightNonZero && !sameAmount(rawTaxAmount, rawFreightAmount)) {
@@ -461,21 +482,21 @@ export function normalizeExtractedFreightAndTax(options: {
       } else {
         freightCleared = true;
       }
-    } else if (freightNonZero) {
-      freightAmount = rawFreightAmount;
-    } else if (freightZero && labeledFreightZero) {
-      freightCleared = true;
-    }
-  } else {
-    if (freightNonZero) {
-      freightAmount = rawFreightAmount;
     } else if (labeledFreightZero) {
       freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
     }
-    if (taxNonZero) {
-      taxAmount = rawTaxAmount;
-    } else if (labeledTaxZero) {
+  } else {
+    if (labeledFreightZero) {
+      freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
+    }
+    if (labeledTaxZero) {
       taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
     }
   }
 
@@ -485,6 +506,24 @@ export function normalizeExtractedFreightAndTax(options: {
     freightCleared,
     taxCleared,
     ...(reviewNote && { reviewNote }),
+  };
+}
+
+export function resolveHeaderChargeAmounts(options: {
+  extractedFreightAmount?: string | null;
+  extractedFreightLabel?: string | null;
+  extractedTaxAmount?: string | null;
+  extractedTaxLabel?: string | null;
+  freightAmountFromLines?: number;
+}): NormalizedFreightAndTax {
+  const { freightAmountFromLines, ...extracted } = options;
+  const normalized = normalizeExtractedFreightAndTax(extracted);
+  // Line-derived freight only fills a header the document did not show.
+  const lineFreight = freightAmountFromLines != null ? String(freightAmountFromLines) : undefined;
+  return {
+    ...normalized,
+    extractedFreightAmount: normalized.freightCleared ? undefined : (normalized.extractedFreightAmount ?? lineFreight),
+    extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
   };
 }
 

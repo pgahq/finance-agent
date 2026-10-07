@@ -47,10 +47,10 @@ import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
-  normalizeExtractedFreightAndTax,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -727,19 +727,6 @@ async function processInvoiceCluster(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const {
-      extractedFreightAmount: normalizedFreightAmount,
-      extractedTaxAmount: normalizedTaxAmount,
-      freightCleared,
-      taxCleared,
-      reviewNote: chargeReviewNote,
-    } = normalizeExtractedFreightAndTax({
-      extractedFreightAmount: result.extractedFreightAmount,
-      extractedFreightLabel: result.extractedFreightLabel,
-      extractedTaxAmount: result.extractedTaxAmount,
-      extractedTaxLabel: result.extractedTaxLabel,
-    });
-    const extractedTaxAmount = taxCleared ? undefined : normalizedTaxAmount;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
     let matchedPo = parsedPo;
     if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
@@ -781,11 +768,19 @@ async function processInvoiceCluster(
         .filter(l => l.description && (l.totalPrice || l.unitCost))
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    // Line-derived freight only fills a header the document did not show; a rejected header keeps the existing value.
-    const extractedFreightAmount = freightCleared
-      ? undefined
-      : (normalizedFreightAmount
-        ?? (result.extractedFreightAmount == null && freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,

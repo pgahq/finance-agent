@@ -29,8 +29,8 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
-  normalizeExtractedFreightAndTax,
   normalizeSupplierInvoiceLineAmounts,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -209,19 +209,6 @@ async function processInvoice(
       ),
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
-    const {
-      extractedFreightAmount: normalizedFreightAmount,
-      extractedTaxAmount: normalizedTaxAmount,
-      freightCleared,
-      taxCleared,
-      reviewNote: chargeReviewNote,
-    } = normalizeExtractedFreightAndTax({
-      extractedFreightAmount: result.extractedFreightAmount,
-      extractedFreightLabel: result.extractedFreightLabel,
-      extractedTaxAmount: result.extractedTaxAmount,
-      extractedTaxLabel: result.extractedTaxLabel,
-    });
-    const extractedTaxAmount = taxCleared ? undefined : normalizedTaxAmount;
     const rawPurchaseOrderNumber = result.extractedPurchaseOrderNumber || undefined;
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
@@ -270,11 +257,19 @@ async function processInvoice(
         : []
     );
     const candidateLines = withComposedLineDescriptions(merchandiseLines);
-    // Line-derived freight only fills a header the document did not show; a rejected header keeps the existing value.
-    const extractedFreightAmount = freightCleared
-      ? undefined
-      : (normalizedFreightAmount
-        ?? (result.extractedFreightAmount == null && freightAmountFromLines != null ? String(freightAmountFromLines) : undefined));
+    const {
+      extractedFreightAmount,
+      extractedTaxAmount,
+      freightCleared,
+      taxCleared,
+      reviewNote: chargeReviewNote,
+    } = resolveHeaderChargeAmounts({
+      extractedFreightAmount: result.extractedFreightAmount,
+      extractedFreightLabel: result.extractedFreightLabel,
+      extractedTaxAmount: result.extractedTaxAmount,
+      extractedTaxLabel: result.extractedTaxLabel,
+      freightAmountFromLines,
+    });
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
