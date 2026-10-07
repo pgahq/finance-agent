@@ -119,13 +119,26 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     purchaseOrderNumber?: string;
+    purchaseOrderSource?: string;
+    purchaseOrderLine?: number;
+    invoicePurchaseOrderNumber?: string;
+    purchaseOrderNotLinked?: boolean;
     paymentTerms?: string;
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
-  if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
+  if (extracted?.purchaseOrderNumber) {
+    const line = extracted.purchaseOrderLine ? ` Line ${extracted.purchaseOrderLine}` : '';
+    const source = extracted.purchaseOrderSource === 'note'
+      ? (extracted.invoicePurchaseOrderNumber
+        ? ` (from Intercom note; invoice shows ${extracted.invoicePurchaseOrderNumber})`
+        : ' (from Intercom note)')
+      : '';
+    const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
+  }
   if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
 
   const assigneeName = typeof details.assigneeName === 'string' ? details.assigneeName : undefined;

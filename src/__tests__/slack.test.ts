@@ -143,6 +143,33 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('shows a PO taken from an Intercom note with its line and the invoice PO it replaced', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: {
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'note',
+        purchaseOrderLine: 7,
+        invoicePurchaseOrderNumber: 'PO-411406',
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*PO #* → PO-413672 Line 7 (from Intercom note; invoice shows PO-411406)');
+  });
+
+  it('says when the PO coded the lines without linking them', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: { purchaseOrderNumber: 'PO-411406', purchaseOrderNotLinked: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*PO #* → PO-411406 · coded from PO, not linked to PO lines');
+  });
+
   it('shows the unchanged supplier invoice number and fallback supplier on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

@@ -1251,6 +1251,7 @@ async function processInvoiceCluster(
           extracted: {
             ...sharedSlackDetails.extracted,
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+            ...(updateOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
           },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
@@ -1324,6 +1325,7 @@ async function processInvoiceCluster(
       extracted: {
         ...sharedSlackDetails.extracted,
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+        ...(createOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
       },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,

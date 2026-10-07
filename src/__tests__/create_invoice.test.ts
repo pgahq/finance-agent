@@ -1317,6 +1317,7 @@ describe('create_invoice', () => {
         purchaseOrderLine: 7,
         invoicePurchaseOrderNumber: 'PO-411406',
       }));
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNotLinked).toBeUndefined();
     });
 
     it('uses the note PO when the note also names the invoice PO it rejects', async () => {
@@ -1398,6 +1399,31 @@ describe('create_invoice', () => {
         'Purchase order: Used PO-413672 from the Intercom note instead of PO-411406 on the invoice. The note names Line 12, which is not on PO-413672, so every PO line was considered.'
       );
       expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderLine).toBeUndefined();
+    });
+
+    it('flags the Slack PO as not linked when the note PO line is consumed', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      workday.submitNewSupplierInvoice.mockResolvedValue({
+        success: true,
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-465824',
+        appliedFallbacks: [{ field: 'consumedPurchaseOrderLine', label: 'omitted PO line reference (PO line fully invoiced or closed)' }],
+      });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-note-line-consumed', { conversationParts: arrowNote, adminConversationParts: arrowNote })]
+      } as any);
+
+      expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderNotLinked: true,
+      }));
     });
   });
 
