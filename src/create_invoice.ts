@@ -56,14 +56,20 @@ import {
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import {
+  findNotePurchaseOrders,
+  findNotePurchaseOrdersForOtherInvoices,
   findPurchaseOrderNumber,
+  findPurchaseOrderNumbers,
   normalizePurchaseOrderNumber,
+  selectNotePurchaseOrder,
+  type NotePurchaseOrder,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
+import { htmlToText } from './lib/html_text.js';
 import {
   costCenterCodeExcludingCompany,
   resolveCompanyFromEmail,
@@ -107,20 +113,177 @@ function toPurchaseOrderEnrichmentContext(
   };
 }
 
+interface EmailPurchaseOrders {
+  /** PO from the supplier's own text (subject, source email, filename); stands in for the invoice PO before enrichment. */
+  supplierPurchaseOrderNumber?: string;
+  /** PO to use when neither a note PO nor an invoice PO resolves. */
+  fallbackPurchaseOrderNumber?: string;
+}
+
+/**
+ * The source email body: `plainTextBody` without the conversation parts appended after it. Unset when the
+ * boundary cannot be found, so note text never passes as the supplier's own text.
+ */
+function sourceEmailBody(emailContext: InvoiceData['emailContext'] | undefined): string | undefined {
+  const plainTextBody = emailContext?.plainTextBody;
+  const parts = emailContext?.conversationParts;
+  if (!plainTextBody) return undefined;
+  if (!parts) return emailContext?.adminConversationParts ? undefined : plainTextBody;
+  const suffix = `\n\n${parts}`;
+  return plainTextBody.endsWith(suffix) ? plainTextBody.slice(0, -suffix.length) : undefined;
+}
+
+function findEmailPurchaseOrders(
+  emailContext: InvoiceData['emailContext'] | undefined,
+  fileName: string,
+  notePurchaseOrders: NotePurchaseOrder[]
+): EmailPurchaseOrders {
+  if (!notePurchaseOrders.length) {
+    const purchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, emailContext?.plainTextBody, fileName);
+    return { supplierPurchaseOrderNumber: purchaseOrderNumber, fallbackPurchaseOrderNumber: purchaseOrderNumber };
+  }
+  const supplierPurchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, sourceEmailBody(emailContext), fileName);
+  // Conversation parts can only add a fallback PO that no AP note mentions, so a PO AP rejected is never used.
+  const notePurchaseOrderNumbers = new Set([
+    ...notePurchaseOrders.map((po) => po.purchaseOrderNumber),
+    ...findPurchaseOrderNumbers(htmlToText(emailContext?.adminConversationParts ?? '')),
+  ]);
+  const fallbackPurchaseOrderNumber = supplierPurchaseOrderNumber
+    ?? findPurchaseOrderNumbers(htmlToText(emailContext?.conversationParts ?? ''))
+      .find((po) => !notePurchaseOrderNumbers.has(po));
+  return { supplierPurchaseOrderNumber, fallbackPurchaseOrderNumber };
+}
+
+interface PrefetchedPurchaseOrder {
+  purchaseOrderNumber?: string;
+  purchaseOrder?: ParsedPurchaseOrder;
+  /** POs Workday did not return before enrichment, so they are not fetched again. */
+  notFoundPurchaseOrderNumbers?: Set<string>;
+}
+
 async function resolvePurchaseOrder(
   context: ProcessingContext,
-  fileName: string,
-  emailContext?: InvoiceData['emailContext']
-): Promise<ParsedPurchaseOrder | undefined> {
-  const purchaseOrderNumber = findPurchaseOrderNumber(
-    emailContext?.subject,
-    emailContext?.plainTextBody,
-    fileName
-  );
-  if (!purchaseOrderNumber) return undefined;
+  emailPurchaseOrders: EmailPurchaseOrders,
+  notePurchaseOrders: NotePurchaseOrder[]
+): Promise<PrefetchedPurchaseOrder> {
+  const notePurchaseOrderNumber = selectNotePurchaseOrder(notePurchaseOrders, emailPurchaseOrders.supplierPurchaseOrderNumber)
+    ?.purchaseOrderNumber;
+  const { fallbackPurchaseOrderNumber } = emailPurchaseOrders;
+  const notFoundPurchaseOrderNumbers = new Set<string>();
+  for (const purchaseOrderNumber of new Set([notePurchaseOrderNumber, fallbackPurchaseOrderNumber])) {
+    if (!purchaseOrderNumber) continue;
+    debug(`Fetching PO data before enrichment: ${purchaseOrderNumber}`);
+    const purchaseOrder = await loadPurchaseOrder(context, purchaseOrderNumber);
+    if (purchaseOrder) return { purchaseOrderNumber, purchaseOrder, notFoundPurchaseOrderNumbers };
+    notFoundPurchaseOrderNumbers.add(purchaseOrderNumber);
+  }
+  return { notFoundPurchaseOrderNumbers };
+}
 
-  debug(`Fetching PO data before enrichment: ${purchaseOrderNumber}`);
-  return loadPurchaseOrder(context, purchaseOrderNumber);
+interface SelectedPurchaseOrder {
+  purchaseOrder?: ParsedPurchaseOrder;
+  /** Set when an Intercom note chose the PO. */
+  fromNote?: NotePurchaseOrder;
+  /** A note PO that Workday did not return. */
+  notePurchaseOrderNotFound?: string;
+  /** Note POs tied to other invoice numbers, set when the notes tie none to this invoice. */
+  notePurchaseOrdersForOtherInvoices?: NotePurchaseOrder[];
+  invoiceNumber?: string;
+}
+
+// An Intercom note from AP wins over the PO printed on the invoice; invoices often carry a stale PO.
+async function selectPurchaseOrder(
+  context: ProcessingContext,
+  prefetched: PrefetchedPurchaseOrder,
+  notePurchaseOrders: NotePurchaseOrder[],
+  emailPurchaseOrders: EmailPurchaseOrders,
+  invoicePurchaseOrderNumber?: string,
+  invoiceNumber?: string | null
+): Promise<SelectedPurchaseOrder> {
+  const load = async (purchaseOrderNumber: string) => {
+    if (purchaseOrderNumber === prefetched.purchaseOrderNumber) return prefetched.purchaseOrder;
+    if (prefetched.notFoundPurchaseOrderNumbers?.has(purchaseOrderNumber)) return undefined;
+    debug(`Fetching PO data for ${purchaseOrderNumber}`);
+    return loadPurchaseOrder(context, purchaseOrderNumber);
+  };
+  const notePurchaseOrder = selectNotePurchaseOrder(
+    notePurchaseOrders,
+    invoicePurchaseOrderNumber ?? emailPurchaseOrders.supplierPurchaseOrderNumber,
+    invoiceNumber
+  );
+  let notePurchaseOrderNotFound: string | undefined;
+  if (notePurchaseOrder) {
+    const purchaseOrder = await load(notePurchaseOrder.purchaseOrderNumber);
+    if (purchaseOrder) {
+      if (invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== purchaseOrder.documentNumber) {
+        debug(`Using ${purchaseOrder.documentNumber} from the Intercom note instead of invoice PO ${invoicePurchaseOrderNumber}`);
+      }
+      return { purchaseOrder, fromNote: notePurchaseOrder };
+    }
+    notePurchaseOrderNotFound = notePurchaseOrder.purchaseOrderNumber;
+  }
+  const fallbackPurchaseOrderNumber = invoicePurchaseOrderNumber ?? emailPurchaseOrders.fallbackPurchaseOrderNumber;
+  const purchaseOrder = fallbackPurchaseOrderNumber && fallbackPurchaseOrderNumber !== notePurchaseOrderNotFound
+    ? await load(fallbackPurchaseOrderNumber)
+    : undefined;
+  const forOtherInvoices = notePurchaseOrder ? [] : findNotePurchaseOrdersForOtherInvoices(notePurchaseOrders, invoiceNumber);
+  return {
+    purchaseOrder,
+    ...(notePurchaseOrderNotFound ? { notePurchaseOrderNotFound } : {}),
+    ...(forOtherInvoices.length
+      ? { notePurchaseOrdersForOtherInvoices: forOtherInvoices, ...(invoiceNumber ? { invoiceNumber } : {}) }
+      : {}),
+  };
+}
+
+// Narrows the PO to the line an Intercom note names ("PO-413672 Line 7") so line matching cannot pick another.
+function pinNotePurchaseOrderLine(
+  purchaseOrder: ParsedPurchaseOrder | undefined,
+  lineNumber: number | undefined
+): { purchaseOrder?: ParsedPurchaseOrder; lineMissing: boolean } {
+  if (!purchaseOrder || !lineNumber) return { purchaseOrder, lineMissing: false };
+  const lines = purchaseOrder.lines.filter((line) => line.lineOrder === lineNumber);
+  if (!lines.length) {
+    debug(`Intercom note names line ${lineNumber}, which is not on ${purchaseOrder.documentNumber}; matching against every PO line`);
+    return { purchaseOrder, lineMissing: true };
+  }
+  return { purchaseOrder: { ...purchaseOrder, lines }, lineMissing: false };
+}
+
+function formatPurchaseOrderSelectionNotes(input: {
+  selected: SelectedPurchaseOrder;
+  invoicePurchaseOrderNumber?: string;
+  /** PO from the subject, source email, or filename; reported only when the invoice shows no PO. */
+  emailPurchaseOrderNumber?: string;
+  /** The note line the invoice lines were coded from; unset when PO lines were not used. */
+  appliedLineNumber?: number;
+  noteLineMissing: boolean;
+}): string {
+  const { selected, invoicePurchaseOrderNumber, emailPurchaseOrderNumber, appliedLineNumber, noteLineMissing } = input;
+  const loadedPurchaseOrderNumber = selected.purchaseOrder?.documentNumber;
+  if (selected.notePurchaseOrderNotFound) {
+    return `\n\nPurchase order: ${selected.notePurchaseOrderNotFound} from the Intercom note was not found in Workday; ${loadedPurchaseOrderNumber ? `used ${loadedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
+  }
+  if (selected.notePurchaseOrdersForOtherInvoices?.length) {
+    const named = selected.notePurchaseOrdersForOtherInvoices
+      .map((po) => `${po.purchaseOrderNumber} for invoice ${po.invoiceNumbers?.join(', ')}`)
+      .join(' and ');
+    const thisInvoice = selected.invoiceNumber ? ` (${selected.invoiceNumber})` : '';
+    return `\n\nPurchase order: The Intercom note names ${named}, not this invoice${thisInvoice}; ${loadedPurchaseOrderNumber ? `kept ${loadedPurchaseOrderNumber}` : 'no PO was loaded'}.`;
+  }
+  const { fromNote } = selected;
+  if (!fromNote || !loadedPurchaseOrderNumber) return '';
+  if (!appliedLineNumber && !noteLineMissing && invoicePurchaseOrderNumber === loadedPurchaseOrderNumber) return '';
+  const used = `${loadedPurchaseOrderNumber}${appliedLineNumber ? ` Line ${appliedLineNumber}` : ''}`;
+  const instead = invoicePurchaseOrderNumber
+    ? (invoicePurchaseOrderNumber !== loadedPurchaseOrderNumber ? ` instead of ${invoicePurchaseOrderNumber} on the invoice` : '')
+    : (emailPurchaseOrderNumber && emailPurchaseOrderNumber !== loadedPurchaseOrderNumber
+      ? ` instead of ${emailPurchaseOrderNumber} in the email`
+      : '');
+  const missingLine = noteLineMissing && fromNote.lineNumber
+    ? ` The note names Line ${fromNote.lineNumber}, which is not on ${loadedPurchaseOrderNumber}, so every PO line was considered.`
+    : '';
+  return `\n\nPurchase order: Used ${used} from the Intercom note${instead}.${missingLine}`;
 }
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -684,7 +847,10 @@ async function processInvoiceCluster(
     // decide the supplier. Prefer the PO company when a matching PO is found;
     // otherwise use Default OCR Company.
     const stubInvoice: WorkdayInvoice = {};
-    const parsedPo = await resolvePurchaseOrder(context, fileName, emailContext);
+    const notePurchaseOrders = findNotePurchaseOrders(emailContext?.adminConversationParts);
+    const emailPurchaseOrders = findEmailPurchaseOrders(emailContext, fileName, notePurchaseOrders);
+    const prefetchedPo = await resolvePurchaseOrder(context, emailPurchaseOrders, notePurchaseOrders);
+    const parsedPo = prefetchedPo.purchaseOrder;
     const stubCompany = enrichmentStubCompany(parsedPo);
 
     const result = await enrichInvoiceFromAttachments(
@@ -726,11 +892,16 @@ async function processInvoiceCluster(
     });
     const extractedAmountDue = result.extractedAmountDue ?? undefined;
     const enrichmentPoNumber = normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber);
-    let matchedPo = parsedPo;
-    if (enrichmentPoNumber && enrichmentPoNumber !== matchedPo?.documentNumber) {
-      debug(`Fetching PO data for extracted PO number: ${enrichmentPoNumber}`);
-      matchedPo = await loadPurchaseOrder(context, enrichmentPoNumber);
-    }
+    const selectedPo = await selectPurchaseOrder(
+      context,
+      prefetchedPo,
+      notePurchaseOrders,
+      emailPurchaseOrders,
+      enrichmentPoNumber,
+      result.extractedSuppliersInvoiceNumber
+    );
+    const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
+    const matchedPo = pinnedPo.purchaseOrder;
 
     const poCompanyWID = matchedPo?.company?.workdayId;
     const defaultCompany = resolveDefaultCompany();
@@ -752,6 +923,15 @@ async function processInvoiceCluster(
     }
     const purchaseOrderLineFallbackLabel = (label: string) =>
       purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
+    // The default company codes no PO lines, so a note line is honored only when PO lines are used.
+    const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : selectedPo.fromNote?.lineNumber;
+    const purchaseOrderSelectionNotes = formatPurchaseOrderSelectionNotes({
+      selected: selectedPo,
+      invoicePurchaseOrderNumber: enrichmentPoNumber,
+      emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber,
+      appliedLineNumber: notePoLineNumber,
+      noteLineMissing: pinnedPo.lineMissing && !usedDefaultCompany,
+    });
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
@@ -906,7 +1086,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
@@ -975,6 +1155,16 @@ async function processInvoiceCluster(
         freightCleared,
         taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
+        ...(selectedPo.fromNote && matchedPo ? {
+          purchaseOrderSource: 'note',
+          ...(notePoLineNumber ? { purchaseOrderLine: notePoLineNumber } : {}),
+          ...(enrichmentPoNumber
+            ? (enrichmentPoNumber !== matchedPo.documentNumber ? { invoicePurchaseOrderNumber: enrichmentPoNumber } : {})
+            : (emailPurchaseOrders.supplierPurchaseOrderNumber
+              && emailPurchaseOrders.supplierPurchaseOrderNumber !== matchedPo.documentNumber
+              ? { emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber }
+              : {})),
+        } : {}),
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
@@ -1171,6 +1361,7 @@ async function processInvoiceCluster(
           extracted: {
             ...sharedSlackDetails.extracted,
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+            ...(updateOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
           },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
@@ -1246,6 +1437,7 @@ async function processInvoiceCluster(
       extracted: {
         ...sharedSlackDetails.extracted,
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
+        ...(createOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
       },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,
