@@ -279,9 +279,9 @@ export function splitFreightLines<T extends {
   return { merchandiseLines, freightLines, freightAmountFromLines };
 }
 
-const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'gst', 'hst', 'pst', 'qst']);
-const TAX_ALLOWED_WORDS = new Set([
-  ...TAX_CORE_WORDS,
+const TAX_LINE_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'gst', 'hst', 'pst', 'qst']);
+const TAX_LINE_ALLOWED_WORDS = new Set([
+  ...TAX_LINE_CORE_WORDS,
   'sales', 'use', 'state', 'county', 'city', 'local', 'excise', 'and', 'amount', 'total',
 ]);
 
@@ -292,8 +292,8 @@ function descriptionTokens(description: string | undefined): string[] {
 
 function isTaxChargeLine(description: string | undefined): boolean {
   const tokens = descriptionTokens(description);
-  return tokens.some(token => TAX_CORE_WORDS.has(token))
-    && tokens.every(token => TAX_ALLOWED_WORDS.has(token) || /^\d+$/.test(token));
+  return tokens.some(token => TAX_LINE_CORE_WORDS.has(token))
+    && tokens.every(token => TAX_LINE_ALLOWED_WORDS.has(token) || /^\d+$/.test(token));
 }
 
 // Tax rows often print the rate (`Sales Tax 6%`, `VAT 20.00%`, `Tax 0.0825`); the rate is not a goods word.
@@ -499,21 +499,13 @@ export function formatChargeReconciliationNotes(reconciliation: SubmittedChargeR
   return formatAmountCheckNotes(chargeReconciliationMessages(reconciliation));
 }
 
-// A blank, unparseable (`'n/a'`), or zero extracted freight does not override freight rows that
-// carry an amount; otherwise the stripped rows would vanish from both the lines and the header.
-function documentFreight(extracted: string | undefined, freightAmountFromLines: number | undefined): string | undefined {
-  const parsed = extracted?.trim() ? chargeAmount(extracted) : undefined;
-  if (parsed != null && (parsed !== 0 || !freightAmountFromLines)) return extracted;
-  return freightAmountFromLines != null ? String(freightAmountFromLines) : undefined;
-}
-
 /** Reconciliation of the extracted totals, for runs that annotate the invoice without submitting lines. */
 export function extractedChargeReconciliation(
   extractedLines: ExtractedInvoiceLine[],
   charges: { amountDue?: string; freight?: string; tax?: string }
 ): SubmittedChargeReconciliation<ExtractedInvoiceLine> {
-  const { merchandiseLines, freightAmountFromLines } = splitFreightLines(extractedLines);
-  const freight = documentFreight(charges.freight, freightAmountFromLines);
+  const { merchandiseLines } = splitFreightLines(extractedLines);
+  const { freight } = charges;
   return reconcileSubmittedCharges(merchandiseLines, {
     amountDue: charges.amountDue,
     freight,
@@ -610,12 +602,14 @@ function allFreightInvoiceLines(
  */
 export function prepareInvoiceCharges(
   extractedLines: ExtractedInvoiceLine[],
+  // Header amounts as resolveHeaderChargeAmounts returns them (labels applied, withheld or cleared
+  // values left out, blank freight filled from freight rows); they are not re-derived here.
   charges: { amountDue?: string; freight?: string; tax?: string },
   // Annotate-only enrichment turns both off; callers pass them explicitly.
   options: { allowFreightAsLines: boolean; removeDuplicates: boolean }
 ): PreparedInvoiceCharges {
-  const { merchandiseLines, freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);
-  const freightAmount = documentFreight(charges.freight, freightAmountFromLines);
+  const { merchandiseLines, freightLines } = splitFreightLines(extractedLines);
+  const freightAmount = charges.freight;
   const reconciliation = reconcileSubmittedCharges(merchandiseLines, {
     amountDue: charges.amountDue,
     freight: freightAmount,
@@ -651,6 +645,308 @@ export function prepareInvoiceCharges(
     freightAmount,
     freightAsLines: false,
     reconciliation: { ...reconciliation, unreconciled: undefined },
+  };
+}
+
+const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'vats', 'gst', 'hst']);
+const TAX_COMPOUND_ANCHORS = new Set([
+  'sales tax', 'sales taxes', 'use tax', 'use taxes', 'state tax', 'state taxes',
+  'local tax', 'local taxes', 'county tax', 'county taxes', 'city tax', 'city taxes',
+  'total tax', 'total taxes', 'provincial tax', 'provincial taxes', 'municipal tax',
+  'municipal taxes', 'tax on sales', 'taxes on sales', 'sales and use tax', 'sales and use taxes',
+]);
+const TAX_METADATA_WORDS = new Set([
+  'rate', 'id', 'number', 'exempt', 'registration', 'code', 'inclusion',
+  'basis', 'subtotal', 'table', 'schedule', 'jurisdiction', 'percentage', 'percent',
+  'taxable', 'taxability', 'withholding', 'recoverable', 'deductible', 'reclaimable',
+  'receivable', 'balance',
+]);
+const TAX_QUALIFIERS = new Set([
+  'sales', 'use', 'state', 'local', 'county', 'city', 'total', 'vat', 'gst', 'hst',
+  'provincial', 'municipal', 'amount', 'due', 'charged', 'charge', 'paid', 'collectible',
+  'line', 'item', 'included', 'inclusive', 'incl', 'payable', 'on', 'and', 'for', 'of',
+  'estimated', 'estimate', 'est', 'approx', 'approximate',
+  'new', 'york', 'california', 'texas', 'florida', 'illinois', 'pennsylvania', 'ohio',
+  'georgia', 'north', 'carolina', 'michigan', 'jersey', 'virginia', 'washington', 'arizona',
+  'massachusetts', 'tennessee', 'indiana', 'missouri', 'maryland', 'wisconsin', 'colorado',
+  'minnesota', 'south', 'alabama', 'louisiana', 'kentucky', 'oregon', 'oklahoma',
+  'connecticut', 'utah', 'iowa', 'nevada', 'arkansas', 'mississippi', 'kansas', 'mexico',
+  'nebraska', 'west', 'idaho', 'hawaii', 'hampshire', 'maine', 'montana', 'rhode',
+  'island', 'delaware', 'south', 'dakota', 'north', 'dakota', 'alaska', 'vermont', 'wyoming',
+  'ca', 'ny', 'tx', 'fl', 'il', 'pa', 'oh', 'ga', 'nc', 'mi', 'nj', 'va', 'wa', 'az',
+  'ma', 'tn', 'in', 'mo', 'md', 'wi', 'co', 'mn', 'sc', 'al', 'la', 'ky', 'or', 'ok',
+  'ct', 'ut', 'ia', 'nv', 'ar', 'ms', 'ks', 'nm', 'ne', 'wv', 'id', 'hi', 'nh', 'me',
+  'mt', 'ri', 'de', 'sd', 'nd', 'ak', 'vt', 'wy',
+]);
+
+function normalizeLabel(label: string | null | undefined): string | undefined {
+  if (!label) return undefined;
+  const normalized = label
+    .toLowerCase()
+    .replace(/[/_,-]+/g, ' ')
+    .replace(/\b(\d+(?:\.\d+)?)\s*%\b/g, '$1%')
+    .replace(/[^\w\s%]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || undefined;
+}
+
+const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
+
+function labelMatchesFreight(label: string | null | undefined): boolean {
+  const normalized = normalizeLabel(label);
+  if (!normalized) return false;
+  return isFreightOrHandlingLine(normalized.split(' ').filter(token => !FREIGHT_LABEL_QUALIFIERS.has(token)).join(' '));
+}
+
+function labelMatchesTax(label: string | null | undefined): boolean {
+  const normalized = normalizeLabel(label);
+  if (!normalized) return false;
+  if (TAX_METADATA_WORDS.has(normalized)) return false;
+  if (TAX_COMPOUND_ANCHORS.has(normalized)) return true;
+  if (TAX_CORE_WORDS.has(normalized)) return true;
+  const tokens = normalized.split(' ').filter(Boolean);
+  if (tokens.some(token => TAX_METADATA_WORDS.has(token))) return false;
+  const hasAnchor = tokens.some((token, i) => {
+    if (TAX_CORE_WORDS.has(token)) return true;
+    const compound = [token, tokens[i + 1]].filter(Boolean).join(' ');
+    return TAX_COMPOUND_ANCHORS.has(compound);
+  });
+  if (!hasAnchor) return false;
+  return tokens.every(token => (
+    TAX_CORE_WORDS.has(token)
+    || TAX_QUALIFIERS.has(token)
+    || /^\d+(\.\d+)?%$/.test(token)
+    || /^\d+(\.\d+)?$/.test(token)
+  ));
+}
+
+const SUPPORTED_CURRENCY_PREFIXES = /^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR)?\s*/i;
+
+function parseCanonicalChargeAmount(value: string | number | null | undefined): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (/[\u2212-]/.test(trimmed)) return undefined;
+  if (/\(.*\)/.test(trimmed)) return undefined;
+  const prefixMatch = trimmed.match(SUPPORTED_CURRENCY_PREFIXES);
+  const prefixEnd = prefixMatch ? prefixMatch[0].length : 0;
+  const rest = trimmed.slice(prefixEnd).trim();
+  if (!/^\d/.test(rest)) return undefined;
+  const suffix = rest.replace(/^[\d,.]+/, '').trim();
+  if (suffix && !/^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR)?\s*[*†‡]*$/i.test(suffix)) return undefined;
+  const digits = rest.slice(0, rest.length - suffix.length).trim();
+  if (!/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(digits)) return undefined;
+  const numeric = digits.replace(/,/g, '');
+  const parsed = parseFloat(numeric);
+  if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.round(parsed * 100) / 100;
+}
+
+function isValidNonNegativeAmount(value: string | null | undefined): boolean {
+  return parseCanonicalChargeAmount(value) !== undefined;
+}
+
+export interface NormalizedFreightAndTax {
+  extractedFreightAmount?: string;
+  extractedTaxAmount?: string;
+  freightCleared: boolean;
+  taxCleared: boolean;
+  reviewNote?: string;
+}
+
+function sameAmount(a: string | undefined, b: string | undefined): boolean {
+  return a != null && b != null && parseCanonicalChargeAmount(a) === parseCanonicalChargeAmount(b);
+}
+
+function printable(value: string | null | undefined): string {
+  const singleLine = (value ?? '').replace(/["\p{Cc}\p{Cf}\u2028\u2029]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  return singleLine.length > 60 ? `${singleLine.slice(0, 57)}...` : singleLine;
+}
+
+function conflictingChargeNote(field: 'Freight' | 'Tax', amount: string | undefined, label: string | null | undefined, otherAmount: string | undefined): string {
+  const other = field === 'Freight' ? 'tax' : 'freight';
+  return `${field} amount ${printable(amount)} is labeled "${printable(label)}" and a separate ${other} amount ${printable(otherAmount)} was also read; both were kept as read. Verify freight and tax against the document.`;
+}
+
+function withheldChargeNote(withheld: { field: 'Freight' | 'Tax'; amount: string; label?: string | null }[]): string {
+  const described = withheld
+    .map(({ field, amount, label }) => `${field.toLowerCase()} amount "${printable(amount)}"${label ? ` labeled "${printable(label)}"` : ''}`)
+    .join(' and ');
+  return `Could not safely apply ${described}, so ${withheld.length > 1 ? 'they were' : 'it was'} not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`;
+}
+
+interface ExtractedHeaderCharges {
+  extractedFreightAmount?: string | null;
+  extractedFreightLabel?: string | null;
+  extractedTaxAmount?: string | null;
+  extractedTaxLabel?: string | null;
+}
+
+export function normalizeExtractedFreightAndTax(options: ExtractedHeaderCharges): NormalizedFreightAndTax {
+  return normalizeHeaderCharges(options).normalized;
+}
+
+// freightMovedToTax: freight was cleared because its amount was a tax row, not because the document printed zero freight.
+function normalizeHeaderCharges(options: ExtractedHeaderCharges): { normalized: NormalizedFreightAndTax; freightMovedToTax: boolean } {
+  const rawFreightAmount = options.extractedFreightAmount?.trim() ? options.extractedFreightAmount : undefined;
+  const rawTaxAmount = options.extractedTaxAmount?.trim() ? options.extractedTaxAmount : undefined;
+  const freightLabel = options.extractedFreightLabel;
+  const taxLabel = options.extractedTaxLabel;
+
+  const freightIsTax = labelMatchesTax(freightLabel);
+  const taxIsFreight = !labelMatchesTax(taxLabel) && labelMatchesFreight(taxLabel);
+
+  const freightNonZero = rawFreightAmount != null && isValidNonNegativeAmount(rawFreightAmount) && parseExtractedAmount(rawFreightAmount) !== 0;
+  const taxNonZero = rawTaxAmount != null && isValidNonNegativeAmount(rawTaxAmount) && parseExtractedAmount(rawTaxAmount) !== 0;
+  const freightZero = rawFreightAmount != null && isValidNonNegativeAmount(rawFreightAmount) && parseExtractedAmount(rawFreightAmount) === 0;
+  const taxZero = rawTaxAmount != null && isValidNonNegativeAmount(rawTaxAmount) && parseExtractedAmount(rawTaxAmount) === 0;
+
+  const freightValid = freightNonZero || freightZero;
+  const taxValid = taxNonZero || taxZero;
+  const freightUnreadable = rawFreightAmount != null && !freightValid;
+  const taxUnreadable = rawTaxAmount != null && !taxValid;
+
+  let freightAmount: string | undefined;
+  let taxAmount: string | undefined;
+  let freightCleared = false;
+  let taxCleared = false;
+  let freightMovedToTax = false;
+  let reviewNote: string | undefined;
+
+  const labeledFreightZero = freightZero && Boolean(freightLabel);
+  const labeledTaxZero = taxZero && Boolean(taxLabel);
+
+  // The Workday builder parses leniently (it strips signs and separators), so an amount that does not parse cleanly is
+  // withheld rather than submitted. With one amount unreadable, a crossed label on the other cannot be resolved either.
+  if (freightUnreadable || taxUnreadable) {
+    const withheld: { field: 'Freight' | 'Tax'; amount: string; label?: string | null }[] = [];
+    if (rawFreightAmount != null && (freightUnreadable || freightIsTax)) {
+      withheld.push({ field: 'Freight', amount: rawFreightAmount, label: freightLabel });
+    } else if (labeledFreightZero) {
+      freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
+    }
+    if (rawTaxAmount != null && (taxUnreadable || taxIsFreight)) {
+      withheld.push({ field: 'Tax', amount: rawTaxAmount, label: taxLabel });
+    } else if (labeledTaxZero) {
+      taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
+    }
+    reviewNote = withheldChargeNote(withheld);
+  } else if (freightIsTax && taxIsFreight) {
+    if (freightValid && taxValid) {
+      freightAmount = rawTaxAmount;
+      taxAmount = rawFreightAmount;
+      freightCleared = Boolean(rawTaxAmount && parseExtractedAmount(rawTaxAmount) === 0);
+      taxCleared = Boolean(rawFreightAmount && parseExtractedAmount(rawFreightAmount) === 0);
+    } else if (freightValid) {
+      taxAmount = rawFreightAmount;
+      freightCleared = true;
+      freightMovedToTax = true;
+      taxCleared = Boolean(rawFreightAmount && parseExtractedAmount(rawFreightAmount) === 0);
+    } else if (taxValid) {
+      freightAmount = rawTaxAmount;
+      taxCleared = true;
+      freightCleared = Boolean(rawTaxAmount && parseExtractedAmount(rawTaxAmount) === 0);
+    }
+  } else if (freightIsTax) {
+    if (freightNonZero && taxNonZero && !sameAmount(rawFreightAmount, rawTaxAmount)) {
+      freightAmount = rawFreightAmount;
+      taxAmount = rawTaxAmount;
+      reviewNote = conflictingChargeNote('Freight', rawFreightAmount, freightLabel, rawTaxAmount);
+    } else if (freightNonZero) {
+      freightCleared = true;
+      freightMovedToTax = true;
+      taxAmount = taxNonZero ? rawTaxAmount : rawFreightAmount;
+    } else if (freightZero) {
+      freightCleared = true;
+      freightMovedToTax = true;
+      if (taxNonZero) {
+        taxAmount = rawTaxAmount;
+      } else {
+        taxCleared = true;
+      }
+    } else if (labeledTaxZero) {
+      taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
+    }
+  } else if (taxIsFreight) {
+    if (taxNonZero && freightNonZero && !sameAmount(rawTaxAmount, rawFreightAmount)) {
+      freightAmount = rawFreightAmount;
+      taxAmount = rawTaxAmount;
+      reviewNote = conflictingChargeNote('Tax', rawTaxAmount, taxLabel, rawFreightAmount);
+    } else if (taxNonZero) {
+      taxCleared = true;
+      freightAmount = freightNonZero ? rawFreightAmount : rawTaxAmount;
+    } else if (taxZero) {
+      taxCleared = true;
+      if (freightNonZero) {
+        freightAmount = rawFreightAmount;
+      } else {
+        freightCleared = true;
+      }
+    } else if (labeledFreightZero) {
+      freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
+    }
+  } else {
+    if (labeledFreightZero) {
+      freightCleared = true;
+    } else {
+      freightAmount = rawFreightAmount;
+    }
+    if (labeledTaxZero) {
+      taxCleared = true;
+    } else {
+      taxAmount = rawTaxAmount;
+    }
+  }
+
+  return {
+    normalized: {
+      extractedFreightAmount: freightAmount,
+      extractedTaxAmount: taxAmount,
+      freightCleared,
+      taxCleared,
+      ...(reviewNote && { reviewNote }),
+    },
+    freightMovedToTax,
+  };
+}
+
+export function resolveHeaderChargeAmounts(options: {
+  extractedFreightAmount?: string | null;
+  extractedFreightLabel?: string | null;
+  extractedTaxAmount?: string | null;
+  extractedTaxLabel?: string | null;
+  freightAmountFromLines?: number;
+}): NormalizedFreightAndTax {
+  const { freightAmountFromLines, ...extracted } = options;
+  const { normalized, freightMovedToTax } = normalizeHeaderCharges(extracted);
+  const freightFromLines = freightAmountFromLines != null ? String(freightAmountFromLines) : undefined;
+  // splitFreightLines already removed freight rows from the lines, so their sum must land in the header or it is lost.
+  if (freightMovedToTax && freightFromLines != null) {
+    return {
+      ...normalized,
+      extractedFreightAmount: freightFromLines,
+      freightCleared: false,
+      extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
+    };
+  }
+  // Line-derived freight only fills a header with no amount read; a withheld header amount keeps the existing value.
+  const lineFreight = !options.extractedFreightAmount?.trim() ? freightFromLines : undefined;
+  return {
+    ...normalized,
+    extractedFreightAmount: normalized.freightCleared ? undefined : (normalized.extractedFreightAmount ?? lineFreight),
+    extractedTaxAmount: normalized.taxCleared ? undefined : normalized.extractedTaxAmount,
   };
 }
 
@@ -1275,7 +1571,8 @@ export async function buildFinalInvoiceLines(
   emailWorktags?: EmailWorktags,
   relatedLobLookup?: RelatedLobLookup,
   invoiceLineQuantityDisplayed?: boolean,
-  invoiceContext?: InvoiceDateContext
+  invoiceContext?: InvoiceDateContext,
+  abortSignal?: AbortSignal
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
@@ -1316,8 +1613,13 @@ export async function buildFinalInvoiceLines(
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
+      abortSignal,
     }) as MergeInvoiceLinesResult;
   } catch (error) {
+    if (abortSignal?.aborted) {
+      debug('Line merge aborted by deadline signal; rethrowing so the processor error path runs');
+      throw error;
+    }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
     return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);

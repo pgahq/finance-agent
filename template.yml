@@ -723,7 +723,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
       Handler: dist/create_invoice.processor
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
-      Timeout: 300 # 5 minutes for single invoice
+      Timeout: 420 # 7 minutes for single invoice; must stay below the 15-minute cluster claim lifetime
       MemorySize: 1024
       VpcConfig:
         SecurityGroupIds:

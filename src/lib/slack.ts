@@ -147,13 +147,19 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     amountDue?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
+    taxAmount?: string;
+    freightCleared?: boolean;
+    taxCleared?: boolean;
     purchaseOrderNumber?: string;
     paymentTerms?: string;
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
-  if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted?.freightCleared) changeLines.push('*Freight* → none');
+  else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted?.taxCleared) changeLines.push('*Tax* → none');
+  else if (extracted?.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
   if (extracted?.purchaseOrderNumber) changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}`);
   if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
 
@@ -501,6 +507,9 @@ export interface EnrichmentNotification {
     amountDue?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
+    taxAmount?: string;
+    freightCleared?: boolean;
+    taxCleared?: boolean;
     purchaseOrderNumber?: string;
     paymentTerms?: string;
   };
@@ -580,7 +589,10 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   if (extracted.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
   if (extracted.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
-  if (extracted.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted.freightCleared) changeLines.push('*Freight* → none');
+  else if (extracted.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
+  if (extracted.taxCleared) changeLines.push('*Tax* → none');
+  else if (extracted.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
   if (extracted.purchaseOrderNumber) {
     const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${lineSuffix}`);

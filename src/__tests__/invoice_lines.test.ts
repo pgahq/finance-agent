@@ -12,11 +12,13 @@ import {
   FREIGHT_HEADER_FALLBACK_MESSAGE,
   mergeAmountCheckMessages,
   isFreightOrHandlingLine,
+  normalizeExtractedFreightAndTax,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   reconcileSubmittedCharges,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   statesServicePeriod,
@@ -638,6 +640,24 @@ describe('buildFinalInvoiceLines', () => {
     );
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
+  });
+
+  it('rethrows AI errors when the deadline signal has aborted', async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error('Processor deadline reached'));
+    mockGetAiResponse.mockRejectedValue(new Error('Processor deadline reached'));
+
+    await expect(buildFinalInvoiceLines(
+      extracted,
+      [poLine()],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortController.signal
+    )).rejects.toThrow('Processor deadline reached');
   });
 
   it('lets email LOB override the PO LOB', async () => {
@@ -1370,31 +1390,14 @@ describe('prepareInvoiceCharges', () => {
     ]);
   });
 
-  it('ignores an unparseable extracted freight and keeps the freight row as the line', () => {
+  it('uses the header freight it is given and does not refill it from freight rows', () => {
     const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepare([shipping], { amountDue: '$15.00', freight: 'n/a' });
+    // resolveHeaderChargeAmounts leaves a withheld ('n/a') or cleared freight out; it stays out here.
+    const prepared = prepare([shipping], { amountDue: '$15.00' });
 
-    expect(prepared.freightAsLines).toBe(true);
-    expect(prepared.lines).toEqual([shipping]);
-    expect(prepared.freightAmount).toBe('15');
-  });
-
-  it('does not let a zero extracted freight discard a freight row that has an amount', () => {
-    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepare([shipping], { amountDue: '$15.00', freight: '$0.00' });
-
-    expect(prepared.freightAsLines).toBe(true);
-    expect(prepared.lines).toEqual([shipping]);
-    expect(prepared.freightAmount).toBe('15');
-  });
-
-  it('treats a blank extracted freight as missing and uses the freight rows', () => {
-    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
-    const prepared = prepare([shipping], { amountDue: '$15.00', freight: ' ' });
-
-    expect(prepared.freightAsLines).toBe(true);
-    expect(prepared.lines).toEqual([shipping]);
-    expect(prepared.freightAmount).toBe('15');
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.freightAmount).toBeUndefined();
+    expect(prepared.lines).toEqual([]);
   });
 
   it('treats freight plus tax as the whole invoice', () => {
@@ -1409,7 +1412,7 @@ describe('prepareInvoiceCharges', () => {
     const widgets = { description: 'Widgets', totalPrice: '$100.00' };
     const prepared = prepare(
       [widgets, { description: 'Shipping', totalPrice: '$15.00' }],
-      { amountDue: '$115.00' }
+      { amountDue: '$115.00', freight: '15' }
     );
 
     expect(prepared.freightAsLines).toBe(false);
@@ -1438,7 +1441,8 @@ describe('prepareInvoiceCharges', () => {
   it('does not flag a credit memo whose freight row is also a credit', () => {
     expect(extractedChargeCheck(
       [{ description: 'Widget', totalPrice: '-$100.00' }, { description: 'Freight', totalPrice: '-$10.00' }],
-      { amountDue: '-$110.00' }
+      // resolveHeaderChargeAmounts fills a blank header from the signed freight-row sum.
+      { amountDue: '-$110.00', freight: '-10' }
     )).toEqual([]);
   });
 
@@ -2094,3 +2098,365 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(input.invoiceServicePeriod).toBe(servicePeriod.trim() || null);
   });
 });
+
+describe('normalizeExtractedFreightAndTax', () => {
+  it('moves a sales-tax amount out of freight into tax', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps a real freight amount and a real tax amount separate', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '5.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('5.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('moves a freight-labeled tax amount into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: null,
+      extractedFreightLabel: null,
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: 'Shipping & Handling',
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('swaps freight and tax when both are mislabeled', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('10.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+  });
+
+  it('treats labeled zero amounts as explicit clears', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Freight',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each([
+    'Sales Tax Amount',
+    'Total Tax Amount',
+    'Sales Tax - Estimated',
+    'Sales Tax (approx.)',
+  ])('moves a freight amount labeled %s to tax', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('$510.86');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Freight Amount', 'Shipping & Handling Amount', 'Shipping Total'])('moves a tax amount labeled %s to freight', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('withholds malformed amount %s under a crossed label and asks for review', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+      reviewNote: `Could not safely apply freight amount "${amount}" labeled "Sales Tax", so it was not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`,
+    });
+  });
+
+  it('withholds a crossed amount when the other amount is unreadable instead of submitting it under the wrong field', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '1.234,56',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Could not safely apply freight amount "510.86" labeled "Sales Tax" and tax amount "1.234,56" labeled "Sales Tax", so they were not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.');
+  });
+
+  it('withholds only the unreadable amount when labels match and keeps the readable one', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '-4.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('12.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.reviewNote).toContain('tax amount "-4.00" labeled "Sales Tax"');
+  });
+
+  it.each(['510.86 $', '$ 510.86*', '510.86 USD*', '$510.86†'])('accepts correctly labeled amount %s with a trailing symbol or footnote mark', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: amount,
+      extractedTaxAmount: amount,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('moves a trailing-symbol tax amount read into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86 $',
+      extractedFreightLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86 $');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Shipping Amount Due', 'Freight Due', 'Delivery Total Due'])('recognizes freight label %s on a tax amount', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('still clears a correctly labeled zero when the other amount is withheld', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '-4.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+    expect(result.reviewNote).toContain('freight amount "-4.00" labeled "Shipping"');
+  });
+
+  it.each(['', '   '])('treats blank amount %p as not read', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('writes withheld amounts and labels into the review note as a single bounded line', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12,34\u0000\u202e\nInjected',
+      extractedFreightLabel: `Ship"ping\u2028${'x'.repeat(100)}`,
+    });
+    expect(result.reviewNote).toContain('freight amount "12,34 Injected" labeled "Ship ping ');
+    expect(result.reviewNote).toContain('x...", so it was not submitted');
+    expect(result.reviewNote).not.toMatch(/[\p{Cc}\u202e\u2028]/u);
+  });
+
+  it.each(['$8,514.38', '8514.38', '510.86 USD', 'USD 510.86'])('accepts well-formed amount %s', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Freight',
+    }).extractedFreightAmount).toBe(amount);
+  });
+
+  it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Shipping',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('10.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read. Verify freight and tax against the document.');
+  });
+
+  it('drops a tax-labeled freight amount that duplicates the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '510.86',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps both amounts and asks for review when a freight-labeled tax amount differs from the freight amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain('Tax amount 8.00 is labeled "Freight"');
+  });
+
+  it.each([
+    ['-15.00', 'Shipping', 'Freight'],
+    ['N/A', 'Sales Tax', 'Tax'],
+    ['1.234,56', 'Sales Tax', 'Tax'],
+  ])('withholds unparseable amount %s under matching label %s and asks for review', (amount, label, field) => {
+    const result = normalizeExtractedFreightAndTax(field === 'Freight'
+      ? { extractedFreightAmount: amount, extractedFreightLabel: label }
+      : { extractedTaxAmount: amount, extractedTaxLabel: label });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain(`${field.toLowerCase()} amount "${amount}" labeled "${label}"`);
+  });
+});
+
+describe('resolveHeaderChargeAmounts', () => {
+  it('moves the BearCom tax-labeled freight to tax and clears freight when no freight lines exist', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: '510.86',
+      freightCleared: true,
+      taxCleared: false,
+    });
+  });
+
+  it.each([
+    ['moved', { extractedFreightAmount: '$510.86', extractedFreightLabel: 'Sales Tax' }],
+    ['a duplicate tax read', { extractedFreightAmount: '510.86', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+    ['a zero tax row', { extractedFreightAmount: '0.00', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+  ])('fills freight from shipping lines when the freight header amount was %s out to tax', (_case, extracted) => {
+    const result = resolveHeaderChargeAmounts({ ...extracted, freightAmountFromLines: 15 });
+    expect(result.extractedFreightAmount).toBe('15');
+    expect(result.freightCleared).toBe(false);
+    expect(parseFloat(result.extractedTaxAmount!.replace('$', ''))).toBe(510.86);
+  });
+
+  it('keeps freight cleared when a tax-field row labeled Shipping printed zero, even with shipping lines', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Shipping',
+      freightAmountFromLines: 15,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.extractedTaxAmount).toBe('510.86');
+  });
+
+  it('fills freight from lines only when the document showed no freight header', () => {
+    expect(resolveHeaderChargeAmounts({ freightAmountFromLines: 25 }).extractedFreightAmount).toBe('25');
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    }).extractedFreightAmount).toBe('12.00');
+  });
+
+  it.each(['', '   '])('fills freight from lines when the freight header amount is blank (%p)', (amount) => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBe('25');
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps the existing freight instead of line freight when the header amount is withheld', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12,34',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.reviewNote).toContain('freight amount "12,34"');
+  });
+
+  it('does not refill a cleared freight header from lines and drops a cleared tax amount', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+      freightAmountFromLines: 25,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: true,
+      taxCleared: true,
+    });
+  });
+});
+

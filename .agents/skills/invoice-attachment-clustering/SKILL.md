@@ -55,9 +55,15 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    records a cluster plan (`invoice_cluster_plans`, one `pending` row per
    cluster, `src/lib/invoice_cluster_plans.ts`), then Event-invokes itself
    (`clustered: true`, `planId`, `clusterIndex`, no re-parse) for each leftover
-   cluster, then processes the first cluster inline, keeping the 300s timeout
-   per invoice. The first cluster reuses the PDFs already downloaded for
+   cluster, then processes the first cluster inline, keeping the 420s timeout
+   per invocation. The first cluster reuses the PDFs already downloaded for
    classification; fanned-out clusters download their own.
+   - `withProcessorHandler` starts a deadline signal 20s before the Lambda
+     limit. Only AI calls take the signal; S3, database, Workday, and Slack
+     calls do not. When it fires, the run fails into its error path, and the
+     Slack alert and row `failed` update are best effort within that 20s.
+     A run that would start inside the reserve posts a Slack error and stops
+     before connecting to the database.
    - Every cluster run claims its plan row (`pending`/`failed` → `processing`,
      or a `processing` row older than 15 minutes) before loading files, and
      marks it `done` (with the Workday invoice WID) or `failed`. A duplicate
@@ -68,7 +74,7 @@ Shadow exists to prove the classifier on real traffic with no write risk:
      `done` posts a Slack error, since the row becomes claimable again after
      the TTL.
    - The 15-minute takeover TTL (claims and plan rows) is longer than the
-     processor timeout (300s; `template.test.ts` guards this), so a row or
+     processor timeout (420s; `template.test.ts` guards this), so a row or
      claim is only taken over after its owner was stopped.
    - Fan-out dispatches settle independently: a failed dispatch marks that row
      `failed` only if it is still `pending`, the first cluster still runs, and Slack posts one error naming

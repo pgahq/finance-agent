@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
+import { resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -2400,11 +2401,11 @@ describe('Workday utilities', () => {
       expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
     });
 
-    it('uses freight from the new rows over the old header when the extracted freight is unparseable', async () => {
-      const getData = mockUpdateClient({ Control_Amount_Total: '115.00', Freight_Amount: '40.00', Tax_Amount: '0.00' });
+    it('keeps the existing Workday freight when the extracted freight is unparseable', async () => {
+      const getData = mockUpdateClient({ Control_Amount_Total: '155.00', Freight_Amount: '40.00', Tax_Amount: '0.00' });
 
       await submitSupplierInvoiceUpdateForTest({
-        extractedAmountDue: '$115.00',
+        extractedAmountDue: '$155.00',
         extractedFreightAmount: 'n/a',
         finalLines: [
           { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
@@ -2413,7 +2414,7 @@ describe('Workday utilities', () => {
       });
 
       const data = getData();
-      expect(data.Freight_Amount).toBe(15);
+      expect(data.Freight_Amount).toBe('40.00');
       expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
     });
 
@@ -3848,6 +3849,147 @@ describe('Workday utilities', () => {
           const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
           expect(data.Tax_Amount).toBe('12.50');
           expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+        });
+
+        it('should send Freight_Amount 0 and the corrected Tax_Amount when freight is cleared on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Freight_Amount: '510.86',
+                    Tax_Amount: '0.00'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '510.86',
+            freightCleared: true,
+            finalLines: [{ lineOrder: 1, description: 'Radios', quantity: 1, unitCost: 8514.38, extendedAmount: 8514.38 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data).toHaveProperty('Freight_Amount', 0);
+          expect(data.Tax_Amount).toBe(510.86);
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+        });
+
+        it('should send Tax_Amount 0 over an existing Workday Tax_Amount when tax is cleared on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '12.50'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            taxCleared: true,
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe(0);
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
+        it('should keep the existing Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Freight_Amount: '40.00'
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '12,34',
+            extractedFreightLabel: 'Shipping',
+            freightAmountFromLines: 25,
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe('40.00');
+        });
+
+        it('should move the draft OCR freight row to Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [
+                      { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Widgets', Quantity: '1', Unit_Cost: '485', Extended_Amount: '485' },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Shipping', Quantity: '1', Unit_Cost: '15', Extended_Amount: '15' }
+                    ]
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '-15.00',
+            extractedFreightLabel: 'Shipping',
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe(15);
+          expect(data.Invoice_Line_Replacement_Data.map((line: any) => line.Item_Description)).toEqual(['Widgets']);
+        });
+
+        it('should keep the existing Tax_Amount and OCR tax rows when no tax was extracted', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '10.00',
+                    Invoice_Line_Replacement_Data: [
+                      { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Widgets', Quantity: '1', Unit_Cost: '485', Extended_Amount: '485' },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'State Tax', Quantity: '1', Unit_Cost: '5', Extended_Amount: '5' }
+                    ]
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest();
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe('10.00');
+          expect(data.Invoice_Line_Replacement_Data.map((line: any) => line.Item_Description)).toEqual(['Widgets', 'State Tax']);
         });
 
         it('should omit Tax_Applicability_Reference when the existing Workday Tax_Amount is zero', async () => {
@@ -5903,23 +6045,6 @@ describe('Workday utilities', () => {
           field: 'chargeReconciliation',
           label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
         }]));
-      });
-
-      it('uses freight from the rows when the extracted freight is zero', async () => {
-        const getData = captureCreate();
-
-        await submitNewSupplierInvoiceForTest({
-          extractedAmountDue: '$115.00',
-          extractedFreightAmount: '$0.00',
-          finalLines: [
-            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
-            { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
-          ],
-        });
-
-        const data = getData();
-        expect(data.Freight_Amount).toBe(15);
-        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
       });
 
       it('falls back to header freight when freightAsLines is set but no line survived merge', async () => {

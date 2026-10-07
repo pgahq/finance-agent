@@ -234,6 +234,23 @@ describe('create_invoice', () => {
     delete process.env.FALLBACK_LOB_ID;
   });
 
+  it('passes the Lambda deadline signal to enrichment and line building', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+    await processor(
+      { data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any,
+      { getRemainingTimeInMillis: () => 120_000 } as any
+    );
+
+    const enrichSignal = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][7];
+    expect(enrichSignal).toBeInstanceOf(AbortSignal);
+    expect(enrichSignal.aborted).toBe(false);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][8]).toBe(enrichSignal);
+  });
+
   it('passes assigneeWID when the AP agent employee cache matches assigneeEmail', async () => {
     process.env.INVOICE_MOD_ENABLED = 'true';
     const { processor, workday, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
@@ -600,7 +617,7 @@ describe('create_invoice', () => {
     ]);
   });
 
-  it('keeps the freight row as the line when the extracted header freight is unparseable', async () => {
+  it('withholds an unparseable extracted freight instead of submitting the freight row as the line', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     const shipping = { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false };
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -609,21 +626,23 @@ describe('create_invoice', () => {
       extractedFreightAmount: 'n/a',
       extractedInvoiceLines: [shipping]
     });
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
-      lines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
-      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
-      relatedLobByCostCenter: new Map()
-    });
+    invoiceLines.buildFinalInvoiceLines
+      .mockResolvedValueOnce({ lines: [], appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }, relatedLobByCostCenter: new Map() })
+      .mockResolvedValueOnce({
+        lines: [{ lineOrder: 1, description: 'Invoice', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
 
     await processor({
       data: [attachmentRequest('new-invoices/req-freight-na/invoice.pdf')]
     } as any);
 
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([shipping]);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.freightAsLines).toBe(true);
-    expect(submitArgs.extractedFreightAmount).toBe('15');
-    expect(submitArgs.finalLines).toEqual([expect.objectContaining({ description: 'Shipping', extendedAmount: 15 })]);
+    expect(submitArgs.freightAsLines).toBe(false);
+    expect(submitArgs.extractedFreightAmount).toBeUndefined();
+    expect(submitArgs.buildNotes([])).toContain('Freight/Tax review');
   });
 
   it('submits header-only freight as a synthesized freight line when no rows were extracted', async () => {
@@ -860,6 +879,40 @@ describe('create_invoice', () => {
     expect(submitArgs.finalLines).toEqual([
       expect.objectContaining({ lineOrder: 1, description: 'Office supplies', quantity: 1, unitCost: 100 })
     ]);
+  });
+
+  it('moves a mislabeled sales-tax amount from freight to tax before submit', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$9,025.24',
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 1, unitCost: '3913.54', totalPrice: '3913.54', hasDiscount: false },
+        { description: 'Gadgets', quantity: 1, unitCost: '3625.00', totalPrice: '3625.00', hasDiscount: false },
+        { description: 'Accessories', quantity: 1, unitCost: '975.84', totalPrice: '975.84', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 3913.54 },
+        { lineOrder: 2, description: 'Gadgets', quantity: 1, unitCost: 3625.00 },
+        { lineOrder: 3, description: 'Accessories', quantity: 1, unitCost: 975.84 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-sales-tax-as-freight/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedFreightAmount).toBeUndefined();
+    expect(submitArgs.extractedTaxAmount).toBe('510.86');
+    expect(submitArgs.freightCleared).toBe(true);
+    expect(submitArgs.taxCleared).toBe(false);
   });
 
   it('does not attach a PO line id or splits to a synthesized remainder line', async () => {
