@@ -7,6 +7,7 @@ import {
   buildFinalInvoiceLines,
   constrainEmailLobToRelatedWorktags,
   isFreightOrHandlingLine,
+  lineTotalMismatchNote,
   normalizeExtractedFreightAndTax,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
@@ -1269,6 +1270,50 @@ describe('alignSupplierInvoiceLineAmounts', () => {
       false
     );
     expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 224.95 });
+  });
+});
+
+describe('lineTotalMismatchNote', () => {
+  const consultant = { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 };
+  const monthly = { lineOrder: 2, description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: 5500, extendedAmount: 5500 };
+
+  it('flags lines that total twice the amount due', () => {
+    expect(lineTotalMismatchNote([consultant, monthly], { amountDue: '$5,500.00', taxAmount: '$0.00' })).toBe(
+      'Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line before approving.'
+    );
+  });
+
+  it('accepts lines that match the amount due', () => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$5,500.00', taxAmount: '$0.00' })).toBeUndefined();
+  });
+
+  it('subtracts freight and tax from the amount due', () => {
+    const line = { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 };
+    expect(lineTotalMismatchNote([line], { amountDue: '$118.25', freightAmount: '$10.00', taxAmount: '$8.25' })).toBeUndefined();
+    expect(lineTotalMismatchNote([line], { amountDue: '$118.25', freightAmount: '$10.00' })).toContain('is $108.25');
+  });
+
+  it('nets discount lines and amount-only lines', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 0, extendedAmount: 1250 },
+      { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -250 },
+    ];
+    expect(lineTotalMismatchNote(lines, { amountDue: '1,000.00' })).toBeUndefined();
+  });
+
+  it('uses quantity times unit cost when a line has no extended amount', () => {
+    const line = { lineOrder: 1, description: 'Widgets', quantity: 3, unitCost: 33.34, extendedAmount: null };
+    expect(lineTotalMismatchNote([line], { amountDue: '$100.02' })).toBeUndefined();
+    expect(lineTotalMismatchNote([line], { amountDue: '$100.00' })).toContain('Invoice lines total $100.02');
+  });
+
+  it('skips the check without an amount due, lines, or a line amount', () => {
+    expect(lineTotalMismatchNote([consultant, monthly], {})).toBeUndefined();
+    expect(lineTotalMismatchNote([], { amountDue: '$5,500.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Retainer', quantity: 1, unitCost: null, extendedAmount: null }],
+      { amountDue: '$5,500.00' }
+    )).toBeUndefined();
   });
 });
 

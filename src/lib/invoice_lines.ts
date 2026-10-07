@@ -1059,6 +1059,38 @@ export function normalizeSupplierInvoiceLineAmounts(
   );
 }
 
+function submittedLineAmount(line: FinalInvoiceLine): number | undefined {
+  if (line.extendedAmount != null) return line.extendedAmount;
+  if (line.unitCost != null) return line.unitCost * (line.quantity ?? 1);
+  return undefined;
+}
+
+function formatCents(cents: number): string {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+// Lines that restate another row (a monthly summary beside its hourly breakdown) would invoice
+// the charge twice, so a line sum that misses the document's amount due is flagged for AP review.
+export function lineTotalMismatchNote(
+  lines: FinalInvoiceLine[],
+  charges: { amountDue?: string; freightAmount?: string; taxAmount?: string }
+): string | undefined {
+  const amountDue = charges.amountDue ? parseExtractedAmount(charges.amountDue) : undefined;
+  if (amountDue == null || lines.length === 0) return undefined;
+  const lineAmounts = lines.map(submittedLineAmount);
+  if (lineAmounts.some(amount => amount == null)) return undefined;
+
+  const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount!), 0);
+  const freightCents = toCents((charges.freightAmount ? parseExtractedAmount(charges.freightAmount) : undefined) ?? 0);
+  const taxCents = toCents((charges.taxAmount ? parseExtractedAmount(charges.taxAmount) : undefined) ?? 0);
+  const expectedCents = toCents(amountDue) - freightCents - taxCents;
+  if (lineCents === expectedCents) return undefined;
+
+  return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(toCents(amountDue))}`
+    + ` less freight ${formatCents(freightCents)} and tax ${formatCents(taxCents)} is ${formatCents(expectedCents)}.`
+    + ' Check for a duplicated or summary line before approving.';
+}
+
 function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {
   return (line.quantity != null && line.quantity !== 0)
     || (line.unitCost != null && line.unitCost !== 0);
