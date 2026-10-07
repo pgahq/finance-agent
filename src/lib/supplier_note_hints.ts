@@ -1,4 +1,5 @@
 import type { DatabaseConnection } from './database.js';
+import { htmlToText } from './html_text.js';
 
 /**
  * Supplier hints from the email context (subject, source email, and every
@@ -23,19 +24,6 @@ export interface ResolvedSupplierHint {
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,6}\b/gi;
 const LABELED_NAME_PATTERN = /^[ \t]*(?:supplier|vendor)(?:[ \t]*:|[ \t]+[-–])[ \t]*(.+?)[ \t]*$/gim;
 const MAX_NAME_LENGTH = 120;
-
-function htmlToText(value: string): string {
-  return value
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:p|div|li)>/gi, '\n')
-    .replace(/<[^>]{1,200}>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&');
-}
 
 function normalizeName(raw: string): string | undefined {
   const cleaned = raw

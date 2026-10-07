@@ -193,6 +193,15 @@ export function buildIntercomConversationPartsText(conversation: IntercomConvers
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
+/** Non-empty conversation part bodies written by teammates (author type admin), in API order. */
+export function buildIntercomAdminPartsText(conversation: IntercomConversationResponse): string | undefined {
+  const segments: string[] = [];
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    if (part.author?.type === 'admin') appendConversationPartBody(segments, part.body);
+  }
+  return segments.length > 0 ? segments.join('\n\n') : undefined;
+}
+
 /** Newest Unix-seconds timestamp among the source email and conversation parts that carry a body or attachments. */
 export function latestIntercomMessageAt(conversation: IntercomConversationResponse): number | undefined {
   const hasContent = (body: string | null | undefined, attachments: unknown[] | undefined) =>
@@ -213,11 +222,13 @@ export function latestIntercomMessageAt(conversation: IntercomConversationRespon
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const plainTextBody = buildIntercomPlainTextBody(conversation);
   const conversationParts = buildIntercomConversationPartsText(conversation);
+  const adminConversationParts = buildIntercomAdminPartsText(conversation);
   const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
     plainTextBody,
     ...(conversationParts ? { conversationParts } : {}),
+    ...(adminConversationParts ? { adminConversationParts } : {}),
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -241,6 +252,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
         subject: sourceContext.subject,
         plainTextBody,
         ...(conversationParts ? { conversationParts } : {}),
+        ...(adminConversationParts ? { adminConversationParts } : {}),
       }, part.created_at ?? conversation.created_at)
     ),
   ];
