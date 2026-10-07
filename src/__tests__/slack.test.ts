@@ -91,6 +91,44 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"clusters"');
   });
 
+  it('shows who triggered a failed run right after the error, not in the JSON details', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByEmail: 'jcarey@pgahq.com',
+      triggeredByName: 'Joe Carey',
+    }, new Error('Create failed'));
+
+    const body = postedSlackBody(global.fetch as jest.Mock);
+    const errorIndex = body.blocks.findIndex((block) => block.text?.text === '*Error*\nCreate failed');
+    expect(body.blocks[errorIndex + 1].text?.text).toBe('*Triggered by* Joe Carey (jcarey@pgahq.com)');
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"fileName": "invoice.pdf"');
+    expect(texts).not.toContain('triggeredByEmail');
+    expect(texts).not.toContain('triggeredByName');
+  });
+
+  it('shows the trigger email alone when no name was resolved', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByEmail: 'jcarey@pgahq.com',
+    }, new Error('Create failed'));
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Triggered by* jcarey@pgahq.com');
+    expect(texts).not.toContain('triggeredByEmail');
+  });
+
+  it('omits the trigger line when no trigger email is known', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByName: 'Joe Carey',
+    }, new Error('Create failed'));
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).not.toContain('*Triggered by*');
+    expect(texts).not.toContain('Joe Carey');
+  });
+
   it('omits priorFailures when the error has none', async () => {
     await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, new Error('Create failed'));
 

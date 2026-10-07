@@ -39,6 +39,14 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
     text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
   });
 
+  const triggeredBy = triggeredByText(details as unknown);
+  if (triggeredBy) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Triggered by* ${triggeredBy}`) }
+    });
+  }
+
   const priorFailures = Array.isArray(error?.priorFailures) ? error.priorFailures : [];
   appendPriorFailureBlocks(blocks, priorFailures);
 
@@ -56,12 +64,25 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
   }
 }
 
+function triggeredByText(details: unknown): string | undefined {
+  if (!details || typeof details !== 'object') return undefined;
+  const { triggeredByEmail, triggeredByName } = details as Record<string, unknown>;
+  const email = typeof triggeredByEmail === 'string' ? triggeredByEmail.trim() : '';
+  if (!email) return undefined;
+  const name = typeof triggeredByName === 'string' ? triggeredByName.trim() : '';
+  return name ? `${name} (${email})` : email;
+}
+
+const ERROR_DETAILS_RENDERED_ELSEWHERE = new Set(['conversationUrl', 'triggeredByEmail', 'triggeredByName']);
+
 function errorDetailsForSlack(details: unknown): Record<string, unknown> | undefined {
   if (!details || typeof details !== 'object' || Array.isArray(details)) {
     return undefined;
   }
 
-  const { conversationUrl: _conversationUrl, ...rest } = details as Record<string, unknown>;
+  const rest = Object.fromEntries(
+    Object.entries(details as Record<string, unknown>).filter(([key]) => !ERROR_DETAILS_RENDERED_ELSEWHERE.has(key))
+  );
   if (Object.keys(rest).length === 0) {
     return undefined;
   }

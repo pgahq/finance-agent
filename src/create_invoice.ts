@@ -44,7 +44,7 @@ import {
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
-import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
+import { employeeDisplayName, getEmployeeWidByEmail, type EmployeeLookupResult } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
@@ -363,13 +363,16 @@ function intercomConversationUrl(conversationId?: string, intercomAppId?: string
 function slackInvoiceDetails(
   details: Record<string, unknown>,
   conversationId?: string,
-  intercomAppId?: string
+  intercomAppId?: string,
+  triggeredBy?: { email?: string; name?: string }
 ): Record<string, unknown> {
   const conversationUrl = intercomConversationUrl(conversationId, intercomAppId);
   return {
     ...details,
     ...(conversationId ? { conversationId } : {}),
     ...(conversationUrl ? { conversationUrl } : {}),
+    ...(triggeredBy?.email ? { triggeredByEmail: triggeredBy.email } : {}),
+    ...(triggeredBy?.email && triggeredBy.name ? { triggeredByName: triggeredBy.name } : {}),
   };
 }
 
@@ -442,7 +445,7 @@ async function reportShadowClustering(
       'create_invoice_shadow',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails(details, request.conversationId, request.intercomAppId),
+      slackInvoiceDetails(details, request.conversationId, request.intercomAppId, { email: request.assigneeEmail }),
       error
     );
     throw error;
@@ -485,7 +488,12 @@ async function processNewInvoice(
       'create_invoice',
       'error',
       Date.now() - startTime,
-      slackInvoiceDetails({ s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) }, conversationId, intercomAppId),
+      slackInvoiceDetails(
+        { s3Key, fileName, ...(attachments?.length ? { attachments: requestFilenames(request) } : {}) },
+        conversationId,
+        intercomAppId,
+        { email: assigneeEmail }
+      ),
       new Error('INVOICE_MOD_ENABLED is false; cannot create new invoices')
     );
     return;
@@ -553,7 +561,7 @@ async function processNewInvoice(
         'create_invoice',
         'error',
         processingTime,
-        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId),
+        slackInvoiceDetails({ attachments: requestFilenames(request) }, conversationId, intercomAppId, { email: assigneeEmail }),
         error
       );
       throw error;
@@ -589,7 +597,7 @@ async function processNewInvoice(
           slackInvoiceDetails({
             planId,
             undispatchedClusters: undispatched.map(({ files }) => files.map((file) => file.fileName)),
-          }, conversationId, intercomAppId),
+          }, conversationId, intercomAppId, { email: assigneeEmail }),
           new Error(
             `${undispatched.length} of ${clusterCount} invoice clusters could not be dispatched and were not processed. ` +
             'Re-trigger the conversation to process them; invoices already created for this conversation are not duplicated.'
@@ -768,7 +776,7 @@ async function markInvoiceClusterDone(
         ...plan,
         ...(workdayInvoiceWid ? { invoiceWID: workdayInvoiceWid } : {}),
         attachments: input.files.map((file) => file.fileName),
-      }, input.conversationId, input.intercomAppId),
+      }, input.conversationId, input.intercomAppId, { email: input.assigneeEmail }),
       new Error('The invoice was processed but its cluster plan row could not be marked done; a later retry of this cluster could process it again.')
     );
   }
@@ -798,6 +806,7 @@ async function processInvoiceCluster(
   const [primary] = files;
   const { s3Key, fileName, contentType } = primary;
   const emailContext = requestEmailContext ?? primary.emailContext;
+  let assigneeLookup: { match?: EmployeeLookupResult } | undefined;
 
   try {
     debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
@@ -1091,6 +1100,7 @@ async function processInvoiceCluster(
         : '')
       : emailWorktagNotes;
     const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+    assigneeLookup = { match: assigneeMatch };
     const assigneeName = assigneeMatch ? employeeDisplayName(assigneeMatch) : undefined;
     if (assigneeEmail && !assigneeMatch) {
       debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
@@ -1466,6 +1476,9 @@ async function processInvoiceCluster(
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
+    const triggeredByMatch = assigneeLookup
+      ? assigneeLookup.match
+      : await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
     await notifyResult(
       'create_invoice',
       'error',
@@ -1475,7 +1488,10 @@ async function processInvoiceCluster(
         fileName,
         ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
         ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
-      }, conversationId, intercomAppId),
+      }, conversationId, intercomAppId, {
+        email: assigneeEmail,
+        name: triggeredByMatch ? employeeDisplayName(triggeredByMatch) : undefined,
+      }),
       error
     );
     throw error;
