@@ -173,8 +173,45 @@ describe('findNotePurchaseOrders', () => {
       { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
     ]);
     expect(findNotePurchaseOrders('PO 413672 Line 7 for invoice 69962682; PO-411406 for invoice 69962699')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7, invoiceNumbers: ['69962682'] },
+      { purchaseOrderNumber: 'PO-411406', invoiceNumbers: ['69962699'] },
+    ]);
+  });
+
+  it('ties each PO to the invoice the note names with it', () => {
+    const invoicesFor = (note: string) => Object.fromEntries(
+      findNotePurchaseOrders(note).map((po) => [po.purchaseOrderNumber, po.invoiceNumbers])
+    );
+    expect(invoicesFor('PO-413672 Line 7 for invoice 69962682. PO-411406 for Inv # 69962699')).toEqual({
+      'PO-413672': ['69962682'],
+      'PO-411406': ['69962699'],
+    });
+    expect(invoicesFor('Invoice 69962682: use PO-413672 Line 7\nInvoice no. 69962699 - PO 411406')).toEqual({
+      'PO-413672': ['69962682'],
+      'PO-411406': ['69962699'],
+    });
+    expect(invoicesFor('for invoice INV-0069962682 not PO 411406, use PO-413672')).toEqual({
+      'PO-411406': ['69962682'],
+      'PO-413672': ['69962682'],
+    });
+    expect(invoicesFor('use PO-413672 for invoices 69962682, 69962690 and 69962699')).toEqual({
+      'PO-413672': ['69962682', '69962690', '69962699'],
+    });
+  });
+
+  it('does not tie a PO to an invoice from another sentence or to the invoice PO', () => {
+    expect(findNotePurchaseOrders('use PO-413672 Line 7. The invoice 69962682 total is right')).toEqual([
       { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
-      { purchaseOrderNumber: 'PO-411406' },
+    ]);
+    expect(findNotePurchaseOrders('the invoice PO-411406 is wrong, use PO-413672')).toEqual([
+      { purchaseOrderNumber: 'PO-411406', rejected: true },
+      { purchaseOrderNumber: 'PO-413672' },
+    ]);
+    expect(findNotePurchaseOrders("Don't use the PO on the invoice. use PO-413672 Line 7")).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+    expect(findNotePurchaseOrders('invoice 12/01 and invoice 2 of 3: use PO-413672')).toEqual([
+      { purchaseOrderNumber: 'PO-413672' },
     ]);
   });
 });
@@ -206,5 +243,28 @@ describe('selectNotePurchaseOrder', () => {
     expect(selectNotePurchaseOrder([invoicePo, note], undefined)).toBeUndefined();
     expect(selectNotePurchaseOrder([invoicePo, note], 'PO-999999')).toBeUndefined();
     expect(selectNotePurchaseOrder([], 'PO-411406')).toBeUndefined();
+  });
+
+  describe('when the notes tie POs to invoice numbers', () => {
+    const forA = { purchaseOrderNumber: 'PO-413672', lineNumber: 7, invoiceNumbers: ['69962682'] };
+    const forB = { purchaseOrderNumber: 'PO-411406', invoiceNumbers: ['69962699'] };
+
+    it('uses the PO tied to this invoice', () => {
+      expect(selectNotePurchaseOrder([forA, forB], 'PO-411406', 'INV-0069962682')).toBe(forA);
+      expect(selectNotePurchaseOrder([forA, forB], 'PO-411406', '69962699')).toBe(forB);
+    });
+
+    it('keeps the invoice PO for an invoice the notes do not name', () => {
+      expect(selectNotePurchaseOrder([forA], 'PO-411406', '69962699')).toBeUndefined();
+      expect(selectNotePurchaseOrder([forA, { purchaseOrderNumber: 'PO-500001' }], 'PO-411406', '69962699')).toBeUndefined();
+      expect(selectNotePurchaseOrder([forA], 'PO-411406', undefined)).toBeUndefined();
+    });
+
+    it('skips rejected POs and stays put when two POs are tied to the same invoice', () => {
+      const rejected = { purchaseOrderNumber: 'PO-411406', rejected: true, invoiceNumbers: ['69962682'] };
+      expect(selectNotePurchaseOrder([rejected, forA], 'PO-411406', '69962682')).toBe(forA);
+      const other = { purchaseOrderNumber: 'PO-500001', invoiceNumbers: ['69962682'] };
+      expect(selectNotePurchaseOrder([forA, other], 'PO-411406', '69962682')).toBeUndefined();
+    });
   });
 });

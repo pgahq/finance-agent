@@ -193,7 +193,8 @@ async function selectPurchaseOrder(
   prefetched: PrefetchedPurchaseOrder,
   notePurchaseOrders: NotePurchaseOrder[],
   emailPurchaseOrders: EmailPurchaseOrders,
-  invoicePurchaseOrderNumber?: string
+  invoicePurchaseOrderNumber?: string,
+  invoiceNumber?: string | null
 ): Promise<SelectedPurchaseOrder> {
   const load = async (purchaseOrderNumber: string) => {
     if (purchaseOrderNumber === prefetched.purchaseOrderNumber) return prefetched.purchaseOrder;
@@ -203,7 +204,8 @@ async function selectPurchaseOrder(
   };
   const notePurchaseOrder = selectNotePurchaseOrder(
     notePurchaseOrders,
-    invoicePurchaseOrderNumber ?? emailPurchaseOrders.supplierPurchaseOrderNumber
+    invoicePurchaseOrderNumber ?? emailPurchaseOrders.supplierPurchaseOrderNumber,
+    invoiceNumber
   );
   let notePurchaseOrderNotFound: string | undefined;
   if (notePurchaseOrder) {
@@ -877,7 +879,8 @@ async function processInvoiceCluster(
       prefetchedPo,
       notePurchaseOrders,
       emailPurchaseOrders,
-      enrichmentPoNumber
+      enrichmentPoNumber,
+      result.extractedSuppliersInvoiceNumber
     );
     const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
     const matchedPo = pinnedPo.purchaseOrder;
