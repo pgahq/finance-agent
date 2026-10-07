@@ -1502,13 +1502,18 @@ describe('removeRepeatedLineTables', () => {
     expect(result.keepReason).toBe('unit_cost');
   });
 
-  it('keeps the first table and asks AP to verify when nothing tells the tables apart', () => {
+  it('removes nothing when nothing tells the tables apart', () => {
     const first = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
     const second = { ...first, description: 'Risk advisory total', tableNumber: 2 };
-    const result = removeRepeatedLineTables([first, second], levelBlueCharges);
-    expect(result.lines).toEqual([first]);
-    expect(result.keepReason).toBe('document_order');
-    expect(result.note).toContain('the first table on the document was kept. Verify the kept lines before approving.');
+    expect(removeRepeatedLineTables([first, second], levelBlueCharges)).toEqual({ lines: [first, second], removed: [] });
+  });
+
+  it('removes nothing when two real same-month charges look like a repeat because the amount due was misread', () => {
+    const lines = [
+      { description: "Account 1001 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 1 },
+      { description: "Account 1002 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, { amountDue: '$500.00' })).toEqual({ lines, removed: [] });
   });
 
   it('removes nothing from a valid multi-line invoice, including two equal charges in one table', () => {
@@ -1674,7 +1679,8 @@ describe('removeRepeatedLineTables', () => {
     const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
     const plain = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
     const result = removeRepeatedLineTables([plain, row], levelBlueCharges);
-    expect(result.keepReason).toBe(states ? 'service_period' : 'document_order');
+    expect(result.keepReason).toBe(states ? 'service_period' : undefined);
+    expect(result.lines).toEqual(states ? [row] : [plain, row]);
   });
 
   it('reads the month, not the day, of a US date when matching PO lines', () => {
@@ -1682,8 +1688,9 @@ describe('removeRepeatedLineTables', () => {
     const summary = { description: 'Retainer March 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
     const january = poLine({ purchaseOrderLineId: 'POL-JAN', extendedAmount: 5500, startDate: '2026-01-01', endDate: '2026-01-31' });
     const march = poLine({ purchaseOrderLineId: 'POL-MAR', extendedAmount: 5500, startDate: '2026-03-01', endDate: '2026-03-31' });
-    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [january]).keepReason).toBe('document_order');
-    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [march]).keepReason).toBe('document_order');
+    const unchanged = { lines: [retainer, summary], removed: [] };
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [january])).toEqual(unchanged);
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [march])).toEqual(unchanged);
   });
 
   it('keeps both tables when they bill different months', () => {

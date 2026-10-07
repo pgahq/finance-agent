@@ -1255,7 +1255,7 @@ function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
   return unitCost == null ? undefined : toCents(unitCost * line.quantity);
 }
 
-export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost' | 'document_order';
+export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost';
 
 export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
   lines: T[];
@@ -1269,7 +1269,6 @@ const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
   purchase_order: 'its lines match open PO lines by amount and service period',
   service_period: 'its lines state the service period',
   unit_cost: 'its quantities and unit costs reproduce the line totals to the cent',
-  document_order: 'nothing else told the tables apart, so the first table on the document was kept. Verify the kept lines before approving',
 };
 
 // Keeps the Workday note and Slack section short when a long table is removed.
@@ -1311,7 +1310,7 @@ function maxPoLineMatches<T extends ExtractedInvoiceLine>(table: TableCandidate<
 function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
   purchaseOrderLines: PurchaseOrderLine[]
-): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } {
+): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } | undefined {
   // Without PO line selection, PO lines carry no availability, so consumed lines can't be told apart.
   const openPoLines = isPoLineSelectionEnabled()
     ? purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null)
@@ -1337,7 +1336,9 @@ function keepTable<T extends ExtractedInvoiceLine>(
     remaining = remaining.filter((_, index) => scores[index] === best);
     if (remaining.length === 1) return { table: remaining[0], reason };
   }
-  return { table: remaining[0], reason: 'document_order' };
+  // When nothing tells the tables apart, a misread amount due could make two real charges look
+  // like a repeat, so no table is removed.
+  return undefined;
 }
 
 // Some invoices print the same charges twice, for example an hourly line-item table plus a monthly
@@ -1386,7 +1387,9 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
     .filter(months => months.length > 0);
   if (new Set(tableMonths).size > 1) return unchanged;
 
-  const { table: kept, reason } = keepTable(tables, purchaseOrderLines);
+  const choice = keepTable(tables, purchaseOrderLines);
+  if (!choice) return unchanged;
+  const { table: kept, reason } = choice;
   const keptLines = lines.filter(line => line.tableNumber === kept.tableNumber);
   const removed = lines.filter(line => line.tableNumber !== kept.tableNumber);
 
