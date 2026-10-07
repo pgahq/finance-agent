@@ -1220,14 +1220,18 @@ function statedMonth(text: string | null | undefined): StatedMonth | undefined {
   return undefined;
 }
 
+// The PO line's service window must span the whole stated month; one open side counts as covering
+// it, but a line with no dates says nothing about the month.
 function poLineCoversMonth(line: Pick<PurchaseOrderLine, 'startDate' | 'endDate'>, { year, month }: StatedMonth): boolean {
   const startDate = toIsoDate(line.startDate);
   const endDate = toIsoDate(line.endDate);
   if (!startDate && !endDate) return false;
+  // A date that is present but unparseable is unknown, not an open side.
+  if ((line.startDate && !startDate) || (line.endDate && !endDate)) return false;
   const pad = (value: number) => String(value).padStart(2, '0');
   const firstDay = `${year}-${pad(month)}-01`;
   const lastDay = `${year}-${pad(month)}-${pad(new Date(Date.UTC(year, month, 0)).getUTCDate())}`;
-  return (!startDate || startDate <= lastDay) && (!endDate || endDate >= firstDay);
+  return (!startDate || startDate <= firstDay) && (!endDate || endDate >= lastDay);
 }
 
 function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
@@ -1235,8 +1239,10 @@ function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
     const amount = parseExtractedLineAmount(line.totalPrice);
     return amount == null ? undefined : toCents(amount);
   }
+  // A unit cost with no printed quantity or total does not show what the row charges.
+  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity < 0) return undefined;
   const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
-  return unitCost == null ? undefined : toCents(unitCost * (line.quantity ?? 1));
+  return unitCost == null ? undefined : toCents(unitCost * line.quantity);
 }
 
 export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost' | 'document_order';
@@ -1256,10 +1262,40 @@ const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
   document_order: 'nothing else told the tables apart, so the first table on the document was kept. Verify the kept lines before approving',
 };
 
+// Keeps the Workday note and Slack section short when a long table is removed.
+const REMOVED_LINES_LISTED = 5;
+
 interface TableCandidate<T> {
   tableNumber: number;
   lines: T[];
   lineCents: number[];
+}
+
+// Largest one-to-one pairing of a table's rows with PO lines of the same amount whose window spans
+// the row's stated month (augmenting paths), so the order PO lines are listed in cannot change the score.
+function maxPoLineMatches<T extends ExtractedInvoiceLine>(table: TableCandidate<T>, openPoLines: PurchaseOrderLine[]): number {
+  const candidates = table.lines.map((line, index) => {
+    const month = statedMonth(line.description);
+    if (!month) return [];
+    return openPoLines
+      .map((poLine, poIndex) => ({ poLine, poIndex }))
+      .filter(({ poLine }) => toCents(poLine.extendedAmount!) === table.lineCents[index] && poLineCoversMonth(poLine, month))
+      .map(({ poIndex }) => poIndex);
+  });
+  const rowForPoLine = new Map<number, number>();
+  const assign = (row: number, visited: Set<number>): boolean => {
+    for (const poIndex of candidates[row]) {
+      if (visited.has(poIndex)) continue;
+      visited.add(poIndex);
+      const holder = rowForPoLine.get(poIndex);
+      if (holder === undefined || assign(holder, visited)) {
+        rowForPoLine.set(poIndex, row);
+        return true;
+      }
+    }
+    return false;
+  };
+  return candidates.reduce((matches, _, row) => matches + (assign(row, new Set()) ? 1 : 0), 0);
 }
 
 function keepTable<T extends ExtractedInvoiceLine>(
@@ -1270,10 +1306,8 @@ function keepTable<T extends ExtractedInvoiceLine>(
   const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
     table.lines.filter((line, index) => matches(line, table.lineCents[index])).length / table.lines.length;
   const criteria: Array<[RepeatedTableKeepReason, (table: TableCandidate<T>) => number]> = [
-    ['purchase_order', table => share(table, (line, cents) => {
-      const month = statedMonth(line.description);
-      return !!month && openPoLines.some(poLine => toCents(poLine.extendedAmount!) === cents && poLineCoversMonth(poLine, month));
-    })],
+    // One PO line backs at most one row, so a table that repeats a charge cannot score twice on it.
+    ['purchase_order', table => maxPoLineMatches(table, openPoLines) / table.lines.length],
     ['service_period', table => share(table, line => !!statedMonth(line.description))],
     ['unit_cost', table => share(table, (line, cents) => {
       const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
@@ -1304,9 +1338,13 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
 ): RepeatedLineTables<T> {
   const unchanged: RepeatedLineTables<T> = { lines, removed: [] };
   if (lines.length < 2) return unchanged;
-  if (lines.some(line => typeof line.tableNumber !== 'number' || !Number.isFinite(line.tableNumber))) return unchanged;
+  if (lines.some(line => !Number.isInteger(line.tableNumber) || line.tableNumber! < 1)) return unchanged;
+  // A credit or discount row is never removed with its table, and a malformed quantity leaves the
+  // row's charge in doubt, so either keeps every line.
+  if (lines.some(line => !line.description?.trim() || line.hasDiscount === true
+    || (line.quantity != null && (!Number.isFinite(line.quantity) || line.quantity < 0)))) return unchanged;
   const lineCents = lines.map(extractedLineCents);
-  if (lineCents.some(cents => cents == null)) return unchanged;
+  if (lineCents.some(cents => cents == null || cents < 0)) return unchanged;
   const expected = expectedLineTotal(charges, [charges.currentFreightAmount]);
   if (!expected) return unchanged;
   const totalCents = lineCents.reduce<number>((sum, cents) => sum + cents!, 0);
@@ -1322,6 +1360,8 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   });
   const tables = [...byTable.values()].sort((a, b) => a.tableNumber - b.tableNumber);
   if (tables.length < 2) return unchanged;
+  // Numbering that skips a table means extraction lost track of the document's tables.
+  if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
   const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
   if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
 
@@ -1330,10 +1370,15 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   const removed = lines.filter(line => line.tableNumber !== kept.tableNumber);
 
   const removedTables = tables.filter(table => table !== kept).map(table => table.tableNumber);
-  const removedList = removed
-    .map(line => `"${printable(line.description)}" (${formatCents(extractedLineCents(line)!)})`)
-    .join(', ');
-  const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${removedList} because`
+  const listed = removed
+    .slice(0, REMOVED_LINES_LISTED)
+    .map(line => `"${printable(line.description)}" (${formatCents(extractedLineCents(line)!)})`);
+  const unlisted = removed.length - listed.length;
+  if (unlisted > 0) {
+    const unlistedCents = removed.slice(REMOVED_LINES_LISTED).reduce((sum, line) => sum + extractedLineCents(line)!, 0);
+    listed.push(`${unlisted} more ${unlisted === 1 ? 'line' : 'lines'} (${formatCents(unlistedCents)})`);
+  }
+  const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${listed.join(', ')} because`
     + ` ${removedTables.length === 1 ? `table ${removedTables[0]} repeats` : `tables ${removedTables.join(', ')} repeat`}`
     + ` the charges in table ${kept.tableNumber}: each table totals ${formatCents(expected.expectedCents)},`
     + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${KEEP_REASON_TEXT[reason]}.`;

@@ -1891,6 +1891,7 @@ async function submitSupplierInvoiceWithRepair({
   const validationTriggeredFields = new Set<FallbackField>();
   const priorFailures: SupplierInvoiceSubmitPriorFailure[] = [];
 
+  let lastLoggedLines: { lines: string; attempt: number } | undefined;
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
@@ -1906,7 +1907,13 @@ async function submitSupplierInvoiceWithRepair({
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
     }
-    debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${JSON.stringify(summarizeSubmittedLines(invoiceData))}`);
+    const submittedLines = JSON.stringify(summarizeSubmittedLines(invoiceData));
+    if (submittedLines === lastLoggedLines?.lines) {
+      debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): unchanged from attempt ${lastLoggedLines.attempt}`);
+    } else {
+      debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${submittedLines}`);
+      lastLoggedLines = { lines: submittedLines, attempt: attemptNumber };
+    }
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);

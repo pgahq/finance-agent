@@ -265,6 +265,51 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"lineReview"');
   });
 
+  it('escapes invoice text in line review notes and keeps a long note from hiding the next one', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [
+        `Repeated line review: Removed line "<!channel> <https://x.test|pay> & co" ${'x'.repeat(4000)}`,
+        'Line total review: Invoice lines total $6,750.00.',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('Removed line "&lt;!channel&gt; &lt;https://x.test|pay&gt; &amp; co"');
+    expect(texts).not.toContain('<!channel>');
+    expect(texts).toContain('…\n• Line total review: Invoice lines total $6,750.00.');
+  });
+
+  it('shows at most five line review notes and never cuts an escaped character in half', async () => {
+    const ampersandAtCut = `${'a'.repeat(570)}&${'b'.repeat(100)}`;
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [ampersandAtCut, ...Array.from({ length: 9 }, (_, index) => `Note ${index + 2}`)],
+    });
+
+    const section = postedSlackBody(global.fetch as jest.Mock).blocks
+      .find((block) => block.text?.text.startsWith('*Line review*'))!.text!.text;
+    expect(section).toContain('• Note 5');
+    expect(section).not.toContain('Note 6');
+    expect(section).toMatch(/a…\n• Note 2/);
+    expect(section).not.toMatch(/&[a-z]*…/);
+  });
+
+  it('never leaves half an emoji when truncating a line review note', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [`${'a'.repeat(571)}😀${'b'.repeat(100)}`, 'Note 2', 'Note 3', 'Note 4', 'Note 5'],
+    });
+
+    const section = postedSlackBody(global.fetch as jest.Mock).blocks
+      .find((block) => block.text?.text.startsWith('*Line review*'))!.text!.text;
+    expect(section).toMatch(/a…\n• Note 2/);
+    expect(section).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it('omits the line review section on a skipped resend', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

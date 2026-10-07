@@ -101,7 +101,7 @@ export const InvoiceEnrichmentSchema = z.object({
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.'),
-    tableNumber: z.number().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.')
+    tableNumber: z.number().int().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.')
   })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({

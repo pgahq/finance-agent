@@ -948,6 +948,7 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(debug).toHaveBeenCalledWith(expect.stringMatching(/^Submitted lines for invoice .* \(attempt 2\): unchanged from attempt 1$/));
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -5461,6 +5462,16 @@ describe('Workday utilities', () => {
         expect(debug).toHaveBeenCalledWith(expect.stringContaining(
           'Submitted lines for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
         ));
+        const submittedLineLogs = (debug as jest.Mock).mock.calls
+          .map(([message]) => message)
+          .filter((message): message is string => typeof message === 'string' && message.startsWith('Submitted lines for invoice'));
+        expect(submittedLineLogs).toHaveLength(2);
+        expect(submittedLineLogs[1]).toContain('(attempt 2)');
+        for (const message of submittedLineLogs) {
+          expect(message).toMatch(/"quantity":2,"unitCost":150,"extendedAmount":300\b/);
+          expect(message).toContain('"splits":[[');
+          expect(message).toContain('Cost_Center_Reference_ID=CC-Hospitality');
+        }
       });
 
       it('fails without a classifier or fallback cost center retry when no PO pass-through worktags remain', async () => {

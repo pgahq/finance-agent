@@ -683,6 +683,39 @@ describe('create_invoice', () => {
     ]);
   });
 
+  it('should keep both LevelBlue tables when extraction dropped a row without an amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const consultantRow = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 };
+    const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        consultantRow,
+        { description: 'Travel', quantity: null, unitCost: null, totalPrice: null, hasDiscount: null, tableNumber: 1 },
+        monthly,
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: consultantRow.description, quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 },
+        { lineOrder: 2, description: monthly.description, quantity: 1, unitCost: 5500, extendedAmount: 5500 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-levelblue-dropped-row/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([consultantRow, monthly]);
+    const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+    expect(notes).not.toContain('Repeated line review');
+    expect(notes).toContain('Line total review: Invoice lines total $11,000.00');
+  });
+
   it('should keep every line of a valid multi-line invoice from one table', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
     const extracted = [

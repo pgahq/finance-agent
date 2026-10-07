@@ -30,6 +30,19 @@ function truncateSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): stri
   return `${text.slice(0, limit - 1)}…`;
 }
 
+const LINE_REVIEW_NOTES_SHOWN = 5;
+
+// Invoice-derived text must not form Slack links or mentions such as <!channel>.
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Truncating escaped text must not leave half an entity such as "&am" or half an emoji.
+function truncateEscapedSlackText(text: string, limit: number): string {
+  const truncated = truncateSlackText(text, limit);
+  return truncated === text ? text : truncated.replace(/(?:&[a-z]*|[\uD800-\uDBFF])…$/, '…');
+}
+
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
   const errorMessage = typeof error?.message === 'string' && error.message.trim()
     ? error.message.trim()
@@ -216,9 +229,13 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     ? details.lineReview.filter((note): note is string => typeof note === 'string' && note.length > 0)
     : [];
   if (lineReview.length && details.skipped !== true) {
+    // Each note gets its own share of the section, so a long note cannot hide the next one.
+    const shown = lineReview.slice(0, LINE_REVIEW_NOTES_SHOWN);
+    const noteLimit = Math.floor((SLACK_SECTION_TEXT_LIMIT - 20) / shown.length) - 3;
+    const notes = shown.map((note) => `• ${truncateEscapedSlackText(escapeSlackText(note), noteLimit)}`);
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: truncateSlackText(`*Line review*\n${lineReview.map((note) => `• ${note}`).join('\n')}`) }
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Line review*\n${notes.join('\n')}`) }
     });
   }
 

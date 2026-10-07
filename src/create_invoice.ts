@@ -954,10 +954,9 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
-      (result.extractedInvoiceLines ?? [])
-        .filter(l => l.description && (l.totalPrice || l.unitCost))
-    );
+    const extractedRows = result.extractedInvoiceLines ?? [];
+    const usableRows = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
+    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(usableRows);
     const extractedCandidateLines = withComposedLineDescriptions(merchandiseLines);
     const {
       extractedFreightAmount,
@@ -974,8 +973,9 @@ async function processInvoiceCluster(
       freightAmountFromLines,
     });
 
-    // A withheld charge leaves the submitted header unknown, so no line can be judged a repeat.
-    const repeatedLines = chargeWithheld
+    // A withheld charge leaves the submitted header unknown, and a row dropped for a missing
+    // description or amount leaves its table's total unknown, so no line can be judged a repeat.
+    const repeatedLines = chargeWithheld || usableRows.length < extractedRows.length
       ? { lines: extractedCandidateLines, note: undefined }
       : removeRepeatedLineTables(extractedCandidateLines, {
         amountDue: extractedAmountDue,

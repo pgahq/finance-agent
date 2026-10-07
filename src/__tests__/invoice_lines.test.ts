@@ -1530,8 +1530,87 @@ describe('removeRepeatedLineTables', () => {
     expect(removeRepeatedLineTables([consultant, monthly], { amountDue: '$12,000.00' }).removed).toEqual([]);
   });
 
+  it('credits one open PO line to only one row of a table', () => {
+    const septemberRow = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const repeatedRows = [septemberRow, { ...septemberRow }];
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const septemberPoLine = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const result = removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine]);
+    expect(result.keepReason).toBe('purchase_order');
+    expect(result.lines).toEqual(repeatedRows);
+
+    const twoPoLines = [septemberPoLine, { ...septemberPoLine, purchaseOrderLineId: 'POL-SEP-2' }];
+    const summaryMatch = poLine({ purchaseOrderLineId: 'POL-SEP-5500', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine, summaryMatch]).lines).toEqual([summary]);
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, twoPoLines).lines).toEqual(repeatedRows);
+  });
+
+  it.each([
+    ['a mid-month start', { startDate: '2026-09-15', endDate: '2026-10-15' }, 'service_period'],
+    ['an end before the month ends', { startDate: '2026-08-01', endDate: '2026-09-29' }, 'service_period'],
+    ['exact month boundaries', { startDate: '2026-09-01', endDate: '2026-09-30' }, 'purchase_order'],
+    ['an annual window', { startDate: '2026-01-01', endDate: '2026-12-31' }, 'purchase_order'],
+    ['an open start', { startDate: undefined, endDate: '2026-09-30' }, 'purchase_order'],
+    ['no service dates', { startDate: undefined, endDate: undefined }, 'service_period'],
+  ])('matches a PO line with %s only when it spans the whole stated month', (_label, window, reason) => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, ...window });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe(reason);
+  });
+
+  it('keeps every line when a table that would be removed carries a credit or discount', () => {
+    const lines = [
+      { description: 'Consulting', quantity: 1, unitCost: '6,000.00', totalPrice: '6,000.00', tableNumber: 1 },
+      { description: 'Loyalty discount', quantity: null, unitCost: null, totalPrice: '-$500.00', hasDiscount: true, tableNumber: 1 },
+      { description: "Consulting Sep'26 net", quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  it('scores PO matches the same whatever order the PO lines are listed in', () => {
+    const september = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const october = { ...september, description: "Risk advisory Oct'26" };
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const annual = poLine({ purchaseOrderLineId: 'POL-YEAR', extendedAmount: 2750, startDate: '2026-01-01', endDate: '2026-12-31' });
+    const septemberOnly = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const summaryPo = poLine({ purchaseOrderLineId: 'POL-SUM', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    for (const poLines of [[annual, septemberOnly, summaryPo], [septemberOnly, annual, summaryPo]]) {
+      const result = removeRepeatedLineTables([september, october, summary], levelBlueCharges, poLines);
+      expect(result.keepReason).toBe('unit_cost');
+      expect(result.lines).toEqual([september, october]);
+    }
+  });
+
+  it('treats a malformed PO service date as unknown rather than as an open side', () => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, startDate: 'not-a-date', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe('service_period');
+  });
+
+  it('lists at most five removed rows and sums the rest', () => {
+    const hourly = Array.from({ length: 7 }, (_, index) => ({
+      description: `Consultant ${index + 1}`, quantity: null, unitCost: null, totalPrice: '100.00', tableNumber: 1,
+    }));
+    const summary = { description: "Services Sep'26", quantity: null, unitCost: null, totalPrice: '700.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([...hourly, summary], { amountDue: '$700.00' });
+    expect(result.lines).toEqual([summary]);
+    expect(result.note).toContain('"Consultant 5" ($100.00), 2 more lines ($200.00) because table 1 repeats');
+    expect(result.note).not.toContain('Consultant 6');
+  });
+
   it.each<[string, ExtractedInvoiceLine[]]>([
     ['a row has no table number', [consultant, { ...monthly, tableNumber: null }]],
+    ['a table number is zero', [{ ...consultant, tableNumber: 0 }, monthly]],
+    ['a table number is negative', [{ ...consultant, tableNumber: -1 }, monthly]],
+    ['a table number is fractional', [consultant, { ...monthly, tableNumber: 1.5 }]],
+    ['a table number is not a number', [consultant, { ...monthly, tableNumber: Number.NaN }]],
+    ['the table numbers skip a table', [consultant, { ...monthly, tableNumber: 3 }]],
+    ['the numbering does not start at 1', [{ ...consultant, tableNumber: 2 }, { ...monthly, tableNumber: 3 }]],
+    ['a row has a unit cost but no quantity or total', [consultant, { ...monthly, quantity: null, totalPrice: null }]],
+    ['a row has a negative quantity', [consultant, { ...monthly, quantity: -1, totalPrice: null }]],
+    ['a row has a non-finite quantity', [consultant, { ...monthly, quantity: Number.POSITIVE_INFINITY, totalPrice: null }]],
+    ['a row has a negative quantity beside a printed total', [consultant, { ...monthly, quantity: -1 }]],
+    ['a row has a non-finite quantity beside a printed total', [consultant, { ...monthly, quantity: Number.NaN }]],
+    ['a row is marked discounted with a positive net total', [{ ...consultant, hasDiscount: true }, monthly]],
+    ['a row has a whitespace-only description', [{ ...consultant, description: '   ' }, monthly]],
     ['all rows share one table', [consultant, { ...monthly, tableNumber: 1 }]],
     ['a row has no amount', [consultant, { ...monthly, unitCost: null, totalPrice: null }]],
     ['there is a single row', [consultant]],
