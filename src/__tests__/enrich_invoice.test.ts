@@ -43,6 +43,7 @@ jest.mock('../lib/workday.js', () => ({
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
   getPurchaseOrder: jest.fn().mockResolvedValue(undefined),
   parsePurchaseOrder: jest.requireActual('../lib/workday.js').parsePurchaseOrder,
+  finalLinesLinkPurchaseOrderLines: jest.requireActual('../lib/workday.js').finalLinesLinkPurchaseOrderLines,
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
@@ -64,7 +65,8 @@ jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceIds: jest.fn().mockResolvedValue(new Map()),
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
-  getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map())
+  getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map()),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -1215,6 +1217,72 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain(closedNote);
     expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.purchaseOrderLineNotes).toBe(closedNote);
+    expect(params).not.toHaveProperty('purchaseOrderSupplier');
+  });
+
+  it('lets the update retry with the PO supplier when the invoice names the same company', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-414373',
+            Supplier_Reference: {
+              descriptor: 'Club Pro Manufacturing USA',
+              ID: [{ $attributes: { type: 'WID' }, $value: 'club-pro-wid' }],
+            },
+            Goods_Line_Data: { Line_Number: 1, Goods_Order_Line_ID: 'ITEM_ORDER_LINE-3-29143', Item_Description: 'Cart' },
+          }
+        }
+      }
+    });
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'found',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Club Pro Manufacturing' },
+        resolvedSupplier: { workdayId: 'golf-gear-wid', supplierName: 'GOLF GEAR LTD', confidence: 0.9, reason: 'Letterhead' },
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'update_invoice', reason: 'Supplier found' },
+        reason: 'Supplier found'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-414373',
+      extractedInvoiceLines: [
+        { description: 'Cart', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValueOnce({
+      lines: [{ lineOrder: 1, description: 'Cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: null,
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.supplierWID).toBe('golf-gear-wid');
+    expect(params.purchaseOrderSupplier).toEqual(expect.objectContaining({
+      workdayId: 'club-pro-wid',
+      purchaseOrderNumber: 'PO-414373',
+      allowRetry: true,
+    }));
   });
 
   afterEach(() => {

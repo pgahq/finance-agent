@@ -44,9 +44,10 @@ import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
-import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
+import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
+import { resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, finalLinesLinkPurchaseOrderLines, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -217,6 +218,7 @@ async function processInvoice(
       ? normalizedPurchaseOrderNumber
       : undefined;
     let poLines: PurchaseOrderLine[] | undefined;
+    let poSupplier: PurchaseOrderSupplier | undefined;
     let poClosedForInvoicing = false;
     if (canModifyInvoice && extractedPurchaseOrderNumber) {
       debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
@@ -227,6 +229,7 @@ async function processInvoice(
         poLines = parsedPo?.lines ?? [];
         debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
         const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
+        poSupplier = poLines.length > 0 && returnedPoNumber === extractedPurchaseOrderNumber ? parsedPo?.supplier : undefined;
         if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
           debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
           poLines = undefined;
@@ -319,6 +322,22 @@ async function processInvoice(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
+    const purchaseOrderSupplier = (await resolvePurchaseOrderSupplier(context.dbConnection, {
+      purchaseOrderNumber: extractedPurchaseOrderNumber,
+      purchaseOrderSupplier: poSupplier,
+      linksPurchaseOrderLines: Boolean(finalLines?.length) && finalLinesLinkPurchaseOrderLines(finalLines ?? [], {
+        omitPurchaseOrderLineReference: poClosedForInvoicing,
+        invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
+      }),
+      submittedSupplierWID: targetSupplierWID,
+      invoiceSupplier: {
+        resolvedName: result.supplier.resolvedSupplier?.supplierName
+          ?? (result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined),
+        extractedName: result.supplier.extractedInformation?.supplierName,
+        phone: result.supplier.extractedInformation?.phone,
+        email: result.supplier.extractedInformation?.email,
+      },
+    }))?.purchaseOrderSupplier;
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     const lineTotalReviewNote = finalLines && !chargeWithheld ? lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
@@ -374,6 +393,7 @@ async function processInvoice(
         resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
         paymentTermsId,
         ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+        ...(purchaseOrderSupplier ? { purchaseOrderSupplier } : {}),
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);

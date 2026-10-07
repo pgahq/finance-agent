@@ -39,6 +39,11 @@ function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): voi
     text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
   });
 
+  const mismatchText = purchaseOrderSupplierMismatchText(error);
+  if (mismatchText) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: truncateSlackText(mismatchText) } });
+  }
+
   const triggeredBy = triggeredByText(details as unknown);
   if (triggeredBy) {
     blocks.push({
@@ -74,6 +79,19 @@ function triggeredByText(details: unknown): string | undefined {
 }
 
 const ERROR_DETAILS_RENDERED_ELSEWHERE = new Set(['conversationUrl', 'triggeredByEmail', 'triggeredByName']);
+
+function purchaseOrderSupplierMismatchText(error: unknown): string | undefined {
+  const mismatch = error && typeof error === 'object'
+    ? (error as { purchaseOrderSupplierMismatch?: Record<string, unknown> }).purchaseOrderSupplierMismatch
+    : undefined;
+  const { purchaseOrderNumber, purchaseOrderSupplier, invoiceSupplier } = mismatch ?? {};
+  if (typeof purchaseOrderNumber !== 'string' || typeof purchaseOrderSupplier !== 'string') return undefined;
+  const invoiceSupplierSentence = typeof invoiceSupplier === 'string' && invoiceSupplier
+    ? ` The invoice matched *${invoiceSupplier}*, which does not look like the same company.`
+    : '';
+  return `*PO supplier mismatch*\n${purchaseOrderNumber} is issued to *${purchaseOrderSupplier}*, and Workday only lets that supplier invoice it.${invoiceSupplierSentence} `
+    + 'The invoice was not resubmitted with another supplier. Confirm the PO number on the invoice or the supplier, then re-trigger the conversation.';
+}
 
 function errorDetailsForSlack(details: unknown): Record<string, unknown> | undefined {
   if (!details || typeof details !== 'object' || Array.isArray(details)) {
@@ -117,7 +135,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (supplier?.isDefault) {
     fallbackLines.push('Default supplier — no match found in Workday');
   } else if (supplier?.resolvedName) {
-    const how = supplier.status === 'found' ? 'identified' : (supplier.status ?? 'set');
+    const how = supplier.status === 'found' ? 'identified'
+      : supplier.status === 'po' ? 'from PO'
+      : (supplier.status ?? 'set');
     changeLines.push(`*Supplier* → ${supplier.resolvedName} (${how})`);
   }
 

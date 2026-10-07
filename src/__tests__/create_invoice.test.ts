@@ -27,6 +27,7 @@ jest.mock('../lib/workday.js', () => ({
   parsePurchaseOrderLines: jest.fn().mockReturnValue([]),
   parsePurchaseOrder: jest.fn(),
   loadPurchaseOrder: jest.fn().mockResolvedValue(undefined),
+  finalLinesLinkPurchaseOrderLines: jest.requireActual('../lib/workday.js').finalLinesLinkPurchaseOrderLines,
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
@@ -58,6 +59,7 @@ jest.mock('../lib/database.js', () => ({
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
   getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map()),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([]),
   findCompanyByName: jest.fn().mockResolvedValue({
     workdayId: 'pga-america-wid',
     companyName: 'The Professional Golfers Association of America'
@@ -1217,6 +1219,87 @@ describe('create_invoice', () => {
     expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  describe('PO supplier', () => {
+    const poWithSupplier = {
+      documentNumber: 'PO-414373',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      supplier: { workdayId: 'club-pro-wid', descriptor: 'Club Pro Manufacturing USA' },
+      lines: [{ lineOrder: 1, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143', purchaseOrderDocumentNumber: 'PO-414373', description: 'Cart' }],
+    };
+    const poLinkedLines = [{ lineOrder: 1, description: 'Cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' }];
+    const enrichmentFor = (supplierName: string) => ({
+      ...baseEnrichmentResult,
+      supplier: {
+        ...baseEnrichmentResult.supplier,
+        extractedInformation: { supplierName, memo: 'Carts' },
+        resolvedSupplier: { workdayId: 'golf-gear-wid', supplierName: 'GOLF GEAR LTD', confidence: 0.9, reason: 'Letterhead' },
+      },
+      extractedPurchaseOrderNumber: 'PO-414373',
+    });
+    const run = async (supplierName: string) => {
+      const loaded = freshRequire();
+      loaded.workday.loadPurchaseOrder.mockResolvedValue(poWithSupplier);
+      loaded.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichmentFor(supplierName));
+      loaded.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({ lines: poLinkedLines, appliedFallbacks: {}, relatedLobByCostCenter: new Map() });
+      return loaded;
+    };
+
+    it('lets submit retry with the PO supplier when the invoice names the same company', async () => {
+      const { processor, workday } = await run('Club Pro Manufacturing');
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.supplierWID).toBe('golf-gear-wid');
+      expect(submitArgs.purchaseOrderSupplier).toEqual({
+        workdayId: 'club-pro-wid',
+        descriptor: 'Club Pro Manufacturing USA',
+        purchaseOrderNumber: 'PO-414373',
+        invoiceSupplierName: 'GOLF GEAR LTD',
+        allowRetry: true,
+      });
+    });
+
+    it('refuses the PO supplier retry when the invoice names an unrelated company', async () => {
+      const { processor, workday } = await run('GOLF GEAR LTD');
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-2/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.supplierWID).toBe('golf-gear-wid');
+      expect(submitArgs.purchaseOrderSupplier).toEqual(expect.objectContaining({ workdayId: 'club-pro-wid', allowRetry: false }));
+    });
+
+    it('reports the PO supplier in Slack once submit switched to it', async () => {
+      const { processor, workday, slack } = await run('Club Pro Manufacturing');
+      workday.submitNewSupplierInvoice.mockResolvedValue({
+        success: true,
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-412727',
+        appliedFallbacks: [{ field: 'purchaseOrderSupplier', label: 'supplier from PO-414373 (Club Pro Manufacturing USA)', dueToValidationError: true }],
+      });
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-3/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      const details = slack.notifyResult.mock.calls.find((call: any[]) => call[1] === 'success')?.[3];
+      expect(details.supplier).toEqual({ status: 'po', resolvedName: 'Club Pro Manufacturing USA', isDefault: false });
+      expect(details.appliedFallbacks).toContain('supplier from PO-414373 (Club Pro Manufacturing USA)');
+    });
+
+    it('passes no PO supplier when the lines are not linked to the PO', async () => {
+      const { processor, workday, invoiceLines } = await run('Club Pro Manufacturing');
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ ...poLinkedLines[0], purchaseOrderLineId: undefined }],
+        appliedFallbacks: {},
+        relatedLobByCostCenter: new Map(),
+      });
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-4/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1]).not.toHaveProperty('purchaseOrderSupplier');
+    });
   });
 
   it('should keep PO company, memo, and line coding but omit PO line refs for a Closed PO', async () => {

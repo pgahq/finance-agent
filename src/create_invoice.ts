@@ -84,7 +84,9 @@ import {
   markInvoiceClusterUndispatched,
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
+import { resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import {
+  finalLinesLinkPurchaseOrderLines,
   formatPurchaseOrderLineFallbackNotes,
   getSupplierInvoiceEditability,
   isPurchaseOrderClosedForInvoicing,
@@ -1080,6 +1082,22 @@ async function processInvoiceCluster(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
+    const purchaseOrderSupplierDecision = await resolvePurchaseOrderSupplier(context.dbConnection, {
+      purchaseOrderNumber: matchedPo?.documentNumber,
+      purchaseOrderSupplier: matchedPo?.supplier,
+      linksPurchaseOrderLines: finalLinesLinkPurchaseOrderLines(finalLines, {
+        omitPurchaseOrderLineReference: poClosedForInvoicing,
+        invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
+      }),
+      submittedSupplierWID: targetSupplierWID,
+      invoiceSupplier: {
+        resolvedName: result.supplier.resolvedSupplier?.supplierName,
+        extractedName: result.supplier.extractedInformation?.supplierName,
+        phone: result.supplier.extractedInformation?.phone,
+        email: result.supplier.extractedInformation?.email,
+      },
+    });
+    const purchaseOrderSupplier = purchaseOrderSupplierDecision?.purchaseOrderSupplier;
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     const lineTotalReviewNote = chargeWithheld ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
@@ -1191,6 +1209,10 @@ async function processInvoiceCluster(
       },
       lineCount: finalLines.length,
     };
+    const submittedSupplierDetails = (appliedFallbacks: AppliedFallback[]) =>
+      purchaseOrderSupplier && appliedFallbacks.some((fallback) => fallback.field === 'purchaseOrderSupplier')
+        ? { status: 'po', resolvedName: purchaseOrderSupplier.descriptor, isDefault: false }
+        : sharedSlackDetails.supplier;
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
     // Key resends on the number printed on the document, never a generated submit value: a number composed
@@ -1361,6 +1383,7 @@ async function processInvoiceCluster(
           paymentTermsId,
           attachments: submitAttachments,
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+          ...(purchaseOrderSupplier ? { purchaseOrderSupplier } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
         let updateRegistrySyncFailed = false;
@@ -1380,6 +1403,7 @@ async function processInvoiceCluster(
         const processingTime = Date.now() - startTime;
         await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
           ...sharedSlackDetails,
+          supplier: submittedSupplierDetails(updateOutcome.appliedFallbacks),
           extracted: {
             ...sharedSlackDetails.extracted,
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
@@ -1427,6 +1451,7 @@ async function processInvoiceCluster(
       attachments: submitAttachments,
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
       ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
+      ...(purchaseOrderSupplier ? { purchaseOrderSupplier } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
     });
 
@@ -1456,6 +1481,7 @@ async function processInvoiceCluster(
 
     await notifyResult('create_invoice', 'success', processingTime, slackInvoiceDetails({
       ...sharedSlackDetails,
+      supplier: submittedSupplierDetails(createOutcome.appliedFallbacks),
       extracted: {
         ...sharedSlackDetails.extracted,
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,

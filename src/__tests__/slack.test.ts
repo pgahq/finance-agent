@@ -135,6 +135,38 @@ describe('notifyResult', () => {
     const texts = postedSlackTexts(global.fetch as jest.Mock);
     expect(texts).toContain('*Error*\nCreate failed');
     expect(texts).not.toContain('*Prior submit failures*');
+    expect(texts).not.toContain('*PO supplier mismatch*');
+  });
+
+  it('explains a PO supplier mismatch on the Slack error payload', async () => {
+    const error = Object.assign(new Error("You can't select this supplier to invoice this purchase order."), {
+      purchaseOrderSupplierMismatch: {
+        purchaseOrderNumber: 'PO-414373',
+        purchaseOrderSupplier: 'Club Pro Manufacturing USA',
+        purchaseOrderSupplierWID: 'club-pro-wid',
+        submittedSupplierWID: 'golf-gear-wid',
+        invoiceSupplier: 'GOLF GEAR LTD',
+      },
+    });
+
+    await notifyResult('create_invoice', 'error', 9000, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*PO supplier mismatch*\nPO-414373 is issued to *Club Pro Manufacturing USA*, and Workday only lets that supplier invoice it.');
+    expect(texts).toContain('The invoice matched *GOLF GEAR LTD*, which does not look like the same company.');
+    expect(texts).toContain('The invoice was not resubmitted with another supplier.');
+  });
+
+  it('shows a supplier switched to the PO supplier as from PO', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      supplier: { status: 'po', resolvedName: 'Club Pro Manufacturing USA', isDefault: false },
+      appliedFallbacks: ['supplier from PO-414373 (Club Pro Manufacturing USA)'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Supplier* → Club Pro Manufacturing USA (from PO)');
+    expect(texts).toContain('supplier from PO-414373 (Club Pro Manufacturing USA)');
   });
 
   it('renders create success as Changes, not a JSON dump', async () => {
