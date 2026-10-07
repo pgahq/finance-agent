@@ -1,5 +1,6 @@
 import {
   findNotePurchaseOrders,
+  findNotePurchaseOrdersForOtherInvoices,
   findPurchaseOrderNumber,
   findPurchaseOrderNumbers,
   normalizePurchaseOrderNumber,
@@ -266,5 +267,21 @@ describe('selectNotePurchaseOrder', () => {
       const other = { purchaseOrderNumber: 'PO-500001', invoiceNumbers: ['69962682'] };
       expect(selectNotePurchaseOrder([forA, other], 'PO-411406', '69962682')).toBeUndefined();
     });
+  });
+});
+
+describe('findNotePurchaseOrdersForOtherInvoices', () => {
+  const forA = { purchaseOrderNumber: 'PO-413672', lineNumber: 7, invoiceNumbers: ['69962682'] };
+  const forB = { purchaseOrderNumber: 'PO-411406', invoiceNumbers: ['69962699'] };
+
+  it('lists the tied POs when the notes tie none to this invoice', () => {
+    expect(findNotePurchaseOrdersForOtherInvoices([forA], '69962699')).toEqual([forA]);
+    expect(findNotePurchaseOrdersForOtherInvoices([forA, { purchaseOrderNumber: 'PO-500001' }], undefined)).toEqual([forA]);
+  });
+
+  it('lists nothing when a PO is tied to this invoice, the notes tie none, or the tied PO is rejected', () => {
+    expect(findNotePurchaseOrdersForOtherInvoices([forA, forB], 'INV-0069962699')).toEqual([]);
+    expect(findNotePurchaseOrdersForOtherInvoices([{ purchaseOrderNumber: 'PO-413672' }], '69962699')).toEqual([]);
+    expect(findNotePurchaseOrdersForOtherInvoices([{ ...forA, rejected: true }], '69962699')).toEqual([]);
   });
 });

@@ -165,6 +165,18 @@ export function findNotePurchaseOrders(text?: string | null): NotePurchaseOrder[
   });
 }
 
+/** Unrejected note POs the notes tie to other invoices, when they tie no PO to this one. */
+export function findNotePurchaseOrdersForOtherInvoices(
+  notePurchaseOrders: NotePurchaseOrder[],
+  invoiceNumber?: string | null
+): NotePurchaseOrder[] {
+  const normalizedInvoiceNumber = normalizeNoteInvoiceNumber(invoiceNumber);
+  if (normalizedInvoiceNumber && notePurchaseOrders.some((po) => po.invoiceNumbers?.includes(normalizedInvoiceNumber))) {
+    return [];
+  }
+  return notePurchaseOrders.filter((po) => !po.rejected && po.invoiceNumbers?.length);
+}
+
 /**
  * The note PO to use over the invoice PO. A PO the notes reject is never used.
  *

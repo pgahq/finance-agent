@@ -57,6 +57,7 @@ import {
 } from './lib/invoice_lines.js';
 import {
   findNotePurchaseOrders,
+  findNotePurchaseOrdersForOtherInvoices,
   findPurchaseOrderNumber,
   findPurchaseOrderNumbers,
   normalizePurchaseOrderNumber,
@@ -185,6 +186,9 @@ interface SelectedPurchaseOrder {
   fromNote?: NotePurchaseOrder;
   /** A note PO that Workday did not return. */
   notePurchaseOrderNotFound?: string;
+  /** Note POs tied to other invoice numbers, set when the notes tie none to this invoice. */
+  notePurchaseOrdersForOtherInvoices?: NotePurchaseOrder[];
+  invoiceNumber?: string;
 }
 
 // An Intercom note from AP wins over the PO printed on the invoice; invoices often carry a stale PO.
@@ -222,7 +226,14 @@ async function selectPurchaseOrder(
   const purchaseOrder = fallbackPurchaseOrderNumber && fallbackPurchaseOrderNumber !== notePurchaseOrderNotFound
     ? await load(fallbackPurchaseOrderNumber)
     : undefined;
-  return { purchaseOrder, ...(notePurchaseOrderNotFound ? { notePurchaseOrderNotFound } : {}) };
+  const forOtherInvoices = notePurchaseOrder ? [] : findNotePurchaseOrdersForOtherInvoices(notePurchaseOrders, invoiceNumber);
+  return {
+    purchaseOrder,
+    ...(notePurchaseOrderNotFound ? { notePurchaseOrderNotFound } : {}),
+    ...(forOtherInvoices.length
+      ? { notePurchaseOrdersForOtherInvoices: forOtherInvoices, ...(invoiceNumber ? { invoiceNumber } : {}) }
+      : {}),
+  };
 }
 
 // Narrows the PO to the line an Intercom note names ("PO-413672 Line 7") so line matching cannot pick another.
@@ -252,6 +263,13 @@ function formatPurchaseOrderSelectionNotes(input: {
   const loadedPurchaseOrderNumber = selected.purchaseOrder?.documentNumber;
   if (selected.notePurchaseOrderNotFound) {
     return `\n\nPurchase order: ${selected.notePurchaseOrderNotFound} from the Intercom note was not found in Workday; ${loadedPurchaseOrderNumber ? `used ${loadedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
+  }
+  if (selected.notePurchaseOrdersForOtherInvoices?.length) {
+    const named = selected.notePurchaseOrdersForOtherInvoices
+      .map((po) => `${po.purchaseOrderNumber} for invoice ${po.invoiceNumbers?.join(', ')}`)
+      .join(' and ');
+    const thisInvoice = selected.invoiceNumber ? ` (${selected.invoiceNumber})` : '';
+    return `\n\nPurchase order: The Intercom note names ${named}, not this invoice${thisInvoice}; ${loadedPurchaseOrderNumber ? `kept ${loadedPurchaseOrderNumber}` : 'no PO was loaded'}.`;
   }
   const { fromNote } = selected;
   if (!fromNote || !loadedPurchaseOrderNumber) return '';

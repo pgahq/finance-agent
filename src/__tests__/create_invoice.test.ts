@@ -1414,7 +1414,31 @@ describe('create_invoice', () => {
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.memo).toContain('PO-411406');
-      expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: The Intercom note names PO-413672 for invoice 69962682, not this invoice (69962699); kept PO-411406.'
+      );
+    });
+
+    it('says the note PO was for another invoice when the invoice number was not read', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedSuppliersInvoiceNumber: null,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const note = 'use PO-413672 Line 7 for invoice 69962682';
+
+      await processor({
+        data: [arrowRequest('req-note-invoice-number-unread', { conversationParts: note, adminConversationParts: note })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: The Intercom note names PO-413672 for invoice 69962682, not this invoice; kept PO-411406.'
+      );
     });
 
     it('keeps the invoice PO when the note confirms it for this invoice', async () => {
