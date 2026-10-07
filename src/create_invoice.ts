@@ -126,7 +126,8 @@ interface EmailPurchaseOrders {
 function sourceEmailBody(emailContext: InvoiceData['emailContext'] | undefined): string | undefined {
   const plainTextBody = emailContext?.plainTextBody;
   const parts = emailContext?.conversationParts;
-  if (!plainTextBody || !parts) return plainTextBody;
+  if (!plainTextBody) return undefined;
+  if (!parts) return emailContext?.adminConversationParts ? undefined : plainTextBody;
   const suffix = `\n\n${parts}`;
   return plainTextBody.endsWith(suffix) ? plainTextBody.slice(0, -suffix.length) : undefined;
 }

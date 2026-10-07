@@ -31,12 +31,17 @@ export function findPurchaseOrderNumber(
   return findPurchaseOrderNumbers(...texts)[0];
 }
 
-// "PO-413672 Line 7", "PO# 413672 line #7", "PO number 413672, Ln 7", "PO-413672 Line Number 7".
-// The line must follow on the same line of text with no sentence end between; "Line 7-8" and "Line 7 and 8" name no line.
-const NOTE_PO_PATTERN = /\bPO(?:\s+number)?[-–\s#:]+(\w{6})\b(?:[ \t,:–-]*(?:line|ln)\.?\s*(?:number|no\.?|#)?\s*(\d{1,4})\b(?!\s*(?:[-–,&]|and\b|or\b)\s*\d))?/gi;
+// "Line 7", "Ln. 7", "line #7", "Line Number 7", "Line No: 7".
+const NOTE_LINE_LABEL = String.raw`(?:line|ln)\.?[ \t]*(?:(?:number|no\.?|#)[ \t]*)?:?[ \t]*`;
+// "PO-413672 Line 7", "PO# 413672 line #7", "PO number 413672, Ln 7". The line must follow on the same line of
+// text with no sentence end between; ranges and lists ("Line 7-8", "7/8", "7 and 8", "7 to 8") name no line.
+const NOTE_PO_PATTERN = new RegExp(
+  String.raw`\bPO(?:\s+number)?[-–\s#:]+(\w{6})\b(?:[ \t,:–-]*${NOTE_LINE_LABEL}(\d{1,4})\b(?![ \t]*(?:[-–,&/+]|and\b|or\b|to\b|through\b|thru\b)[ \t]*(?:${NOTE_LINE_LABEL})?\d))?`,
+  'gi'
+);
 // A clause ends at a sentence end or the next PO number; "the PO line 8" stays in the clause.
 const NOTE_CLAUSE_END = /[;?!\n]|(?<!\b(?:ln|no))\.(?=\s|$)|\bPO(?:\s+number)?[-–\s#:]+(?=\w*\d)\w{6}\b/i;
-const NOTE_LINE_REFERENCE = /\b(?:lines?|ln)\b\.?\s*(?:number|no\.?|#)?\s*\d/i;
+const NOTE_LINE_REFERENCE = new RegExp(String.raw`\b(?:lines?|ln)\b\.?[ \t]*(?:(?:number|no\.?|#)[ \t]*)?:?[ \t]*\d`, 'i');
 
 export interface NotePurchaseOrder {
   purchaseOrderNumber: string;

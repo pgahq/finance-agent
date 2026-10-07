@@ -14,6 +14,11 @@ describe('supplier_note_hints', () => {
       });
     });
 
+    it('strips Outlook and custom tags around a supplier name', () => {
+      expect(extractSupplierNoteHints('<p>Supplier: Arrow Exterminators<o:p></o:p></p><x-sig>Thanks</x-sig>').supplierNames)
+        .toEqual(['Arrow Exterminators']);
+    });
+
     it('uppercases a lowercase-only ID', () => {
       expect(extractSupplierNoteHints('use s-000999')).toEqual({
         supplierIds: ['S-000999'],

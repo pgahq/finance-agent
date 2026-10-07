@@ -66,8 +66,23 @@ describe('findNotePurchaseOrders', () => {
     expect(findNotePurchaseOrders('use PO-413672')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
   });
 
-  it('reads "Line Number N"', () => {
-    expect(findNotePurchaseOrders('PO-413672 Line Number 7')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineNumber: 7 }]);
+  it('reads "Line Number N" and colon-labeled lines', () => {
+    for (const note of ['PO-413672 Line Number 7', 'PO-413672 Line Number: 7', 'PO-413672 Line No: 7', 'PO-413672, Line: 7', 'PO-413672 Ln. 7']) {
+      expect(findNotePurchaseOrders(note)).toEqual([{ purchaseOrderNumber: 'PO-413672', lineNumber: 7 }]);
+    }
+  });
+
+  it('names no line for ranges and lists written with words or slashes', () => {
+    for (const note of ['use PO-413672 Line 7 to 8', 'use PO-413672 Line 7 through 8', 'use PO-413672 Line 7/8', 'use PO-413672 Line 7 or Line 8']) {
+      expect(findNotePurchaseOrders(note)).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    }
+    expect(findNotePurchaseOrders('use PO-413672 Line 7 to code the service')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7 },
+    ]);
+  });
+
+  it('treats CRLF as a line break', () => {
+    expect(findNotePurchaseOrders('use PO-413672\r\nLine 7 is freight')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
   });
 
   it('does not bind a line from the next sentence, a range, or Line 0', () => {
@@ -100,6 +115,9 @@ describe('findNotePurchaseOrders', () => {
 
   it('does not bind a line from a separate block', () => {
     expect(findNotePurchaseOrders('<div>use PO-413672</div><div>Line 7 is freight</div>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('<div title="a>b">use PO-413672</div><p data-x=\'>\'>Line 7 is freight</p>')).toEqual([
+      { purchaseOrderNumber: 'PO-413672' },
+    ]);
   });
 
   it('keeps each PO line when the note names two POs', () => {
