@@ -753,7 +753,8 @@ function formatWorktagForLog(tag: any): string {
     .join('|');
 }
 
-function summarizeSubmittedLineWorktags(invoiceData: Record<string, unknown>): unknown[] {
+// Workday's read-back after a submit can show different line amounts than were sent, so log what was sent.
+function summarizeSubmittedLines(invoiceData: Record<string, unknown>): unknown[] {
   return ([] as any[]).concat(invoiceData.Invoice_Line_Replacement_Data ?? []).map((line: any) => ({
     line: line.Line_Order,
     worktags: ([] as any[]).concat(line.Worktags_Reference ?? []).map(formatWorktagForLog),
@@ -764,6 +765,10 @@ function summarizeSubmittedLineWorktags(invoiceData: Record<string, unknown>): u
           ),
         }
       : {}),
+    quantity: line.Quantity,
+    unitCost: line.Unit_Cost,
+    extendedAmount: line.Extended_Amount,
+    ...(line.Purchase_Order_Line_Reference ? { purchaseOrderLine: formatWorktagForLog(line.Purchase_Order_Line_Reference) } : {}),
   }));
 }
 
@@ -1901,6 +1906,7 @@ async function submitSupplierInvoiceWithRepair({
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
     }
+    debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${JSON.stringify(summarizeSubmittedLines(invoiceData))}`);
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
@@ -1910,8 +1916,6 @@ async function submitSupplierInvoiceWithRepair({
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
         throw sanitizeSoapError(error, priorFailures);
       }
-
-      debug(`Submitted line worktags for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${JSON.stringify(summarizeSubmittedLineWorktags(invoiceData))}`);
 
       const validationError = summarizeValidationError(error);
       appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);

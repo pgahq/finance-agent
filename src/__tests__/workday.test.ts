@@ -5459,7 +5459,7 @@ describe('Workday utilities', () => {
           expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO pass-through worktags (kept PO split rows)' }),
         ]));
         expect(debug).toHaveBeenCalledWith(expect.stringContaining(
-          'Submitted line worktags for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
+          'Submitted lines for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
         ));
       });
 
