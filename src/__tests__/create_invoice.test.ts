@@ -944,22 +944,49 @@ describe('create_invoice', () => {
     );
   });
 
-  it('still Slacks the create error with the trigger email when the employee lookup fails', async () => {
-    const { processor, slack, invoiceEnrichment, employees } = freshRequire();
+  it('still Slacks the create error with the trigger email when the employee query fails', async () => {
+    const { processor, slack, invoiceEnrichment, employees, database } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
       ...baseEnrichmentResult,
       supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
     });
-    employees.getEmployeeWidByEmail.mockRejectedValue(new Error('database unavailable'));
+    employees.getEmployeeWidByEmail.mockImplementation(jest.requireActual('../lib/employees.js').getEmployeeWidByEmail);
+    const query = jest.fn((sql: string) => sql.includes("type = 'employee'")
+      ? Promise.reject(new Error('database unavailable'))
+      : Promise.resolve([]));
+    database.getDatabaseConnection.mockResolvedValue({ query, close: jest.fn().mockResolvedValue({}) });
 
     await expect(processor({
       data: [{ ...attachmentRequest('new-invoices/req-4/invoice.pdf'), assigneeEmail: 'jcarey@pgahq.com' }]
     } as any)).rejects.toThrow('Invoice enrichment returned error status');
 
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("type = 'employee'"), ['jcarey@pgahq.com']);
     expect(slack.notifyResult).toHaveBeenCalledTimes(1);
     const details = slack.notifyResult.mock.calls[0][3];
     expect(details).toMatchObject({ triggeredByEmail: 'jcarey@pgahq.com' });
     expect(details).not.toHaveProperty('triggeredByName');
+  });
+
+  it('reuses the assignee lookup for the trigger name when the create fails after it', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    employees.getEmployeeWidByEmail.mockResolvedValue({ workdayId: 'wid-jcarey', preferredName: 'Joe Carey' });
+    workday.submitNewSupplierInvoice.mockRejectedValue(new Error('Workday down'));
+
+    await expect(processor({
+      data: [{ ...attachmentRequest('new-invoices/req-4/invoice.pdf'), assigneeEmail: 'jcarey@pgahq.com' }]
+    } as any)).rejects.toThrow('Workday down');
+
+    expect(employees.getEmployeeWidByEmail).toHaveBeenCalledTimes(1);
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ triggeredByEmail: 'jcarey@pgahq.com', triggeredByName: 'Joe Carey' }),
+      expect.any(Error)
+    );
   });
 
   it('includes conversation link and priorFailures on Slack success details', async () => {

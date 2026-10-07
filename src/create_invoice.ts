@@ -44,7 +44,7 @@ import {
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
-import { employeeDisplayName, getEmployeeWidByEmail } from './lib/employees.js';
+import { employeeDisplayName, getEmployeeWidByEmail, type EmployeeLookupResult } from './lib/employees.js';
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
@@ -806,6 +806,7 @@ async function processInvoiceCluster(
   const [primary] = files;
   const { s3Key, fileName, contentType } = primary;
   const emailContext = requestEmailContext ?? primary.emailContext;
+  let assigneeLookup: { match?: EmployeeLookupResult } | undefined;
 
   try {
     debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
@@ -1099,6 +1100,7 @@ async function processInvoiceCluster(
         : '')
       : emailWorktagNotes;
     const assigneeMatch = await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+    assigneeLookup = { match: assigneeMatch };
     const assigneeName = assigneeMatch ? employeeDisplayName(assigneeMatch) : undefined;
     if (assigneeEmail && !assigneeMatch) {
       debug('Assignee email did not match AP agent workers report cache; omitting Assignee_Reference', {
@@ -1474,13 +1476,9 @@ async function processInvoiceCluster(
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
-    // The failure may be a database outage, so the name is optional and must never block the alert.
-    const triggeredByMatch = assigneeEmail
-      ? await getEmployeeWidByEmail(context.dbConnection, assigneeEmail).catch((lookupError: unknown) => {
-        debug('Failed to look up trigger person for error notification', { assigneeEmail, error: lookupError });
-        return undefined;
-      })
-      : undefined;
+    const triggeredByMatch = assigneeLookup
+      ? assigneeLookup.match
+      : await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
     await notifyResult(
       'create_invoice',
       'error',
