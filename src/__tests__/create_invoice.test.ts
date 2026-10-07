@@ -3,11 +3,9 @@
 // vars it needs, resets the module registry, and re-requires the module (and its mocked
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
-// The processor replaces process.env with loadEnv(); this suite covers the freight reconciliation
-// behavior, so the flag is on unless a test overrides loadEnv.
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' })
+  default: jest.fn().mockResolvedValue({})
 }));
 
 jest.mock('@pga/logger', () => ({
@@ -733,27 +731,6 @@ describe('create_invoice', () => {
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([fallback]);
       expect(notes).toContain(`Amount check: ${fallback.label}`);
       expect(notes).not.toContain(allFreightNote);
-    });
-
-    it('keeps SUPIN-465729 freight on the header when the freight reconciliation flag is off', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-      loadEnv.mockResolvedValue({});
-      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(myFreightWorldEnrichment);
-      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
-        lines: [],
-        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
-        relatedLobByCostCenter: new Map()
-      });
-
-      await processor({
-        data: [attachmentRequest('new-invoices/req-myfreightworld-flag-off/invoice.pdf')]
-      } as any);
-
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([]);
-      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.freightAsLines).toBe(false);
-      expect(submitArgs.extractedFreightAmount).toBe('$4,595.00');
-      expect(submitArgs.finalLines).toEqual([]);
     });
 
     it('keeps an unrecognized single carrier line that equals header freight as the freight line', async () => {

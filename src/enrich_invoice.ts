@@ -46,7 +46,6 @@ import {
 } from './lib/invoice_lines.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
-import { isFreightReconciliationEnabled } from './lib/freight_reconciliation_flag.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine } from './lib/workday.js';
@@ -245,8 +244,8 @@ async function processInvoice(context: ProcessingContext, invoiceData: InvoiceDa
     const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
     const extractedCharges = { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount };
     const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
-    // Annotate-only runs never change lines, so both freight behaviors need a submit and the flag.
-    const reconcilesFreight = submitsLines && isFreightReconciliationEnabled();
+    // Annotate-only runs never change lines, so both freight behaviors need a submit.
+    const reconcilesFreight = submitsLines;
     const charges = prepareInvoiceCharges(
       canModifyInvoice ? extractedLines : [],
       extractedCharges,

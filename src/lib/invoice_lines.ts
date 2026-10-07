@@ -611,7 +611,7 @@ function allFreightInvoiceLines(
 export function prepareInvoiceCharges(
   extractedLines: ExtractedInvoiceLine[],
   charges: { amountDue?: string; freight?: string; tax?: string },
-  // Both behaviors are behind FREIGHT_RECONCILIATION_ENABLED; callers pass them explicitly.
+  // Annotate-only enrichment turns both off; callers pass them explicitly.
   options: { allowFreightAsLines: boolean; removeDuplicates: boolean }
 ): PreparedInvoiceCharges {
   const { merchandiseLines, freightLines, freightAmountFromLines } = splitFreightLines(extractedLines);

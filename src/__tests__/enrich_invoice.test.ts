@@ -1,11 +1,9 @@
 import { processor } from '../enrich_invoice.js';
 
 // Mock the dependencies
-// The processor replaces process.env with loadEnv(); this suite covers the freight reconciliation
-// behavior, so the flag is on unless a test overrides loadEnv.
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' })
+  default: jest.fn().mockResolvedValue({})
 }));
 
 jest.mock('@pga/logger', () => ({
@@ -1278,7 +1276,7 @@ describe('enrich_invoice', () => {
 
   afterEach(() => {
     delete process.env.PO_LINE_SELECTION_ENABLED;
-    require('@pga/lambda-env').default.mockResolvedValue({ FREIGHT_RECONCILIATION_ENABLED: 'true' });
+    require('@pga/lambda-env').default.mockResolvedValue({});
   });
 
   it.each([
@@ -1288,7 +1286,7 @@ describe('enrich_invoice', () => {
   ])('handles PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability, selectionOn) => {
     if (selectionOn) {
       process.env.PO_LINE_SELECTION_ENABLED = 'true';
-      require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true', FREIGHT_RECONCILIATION_ENABLED: 'true' });
+      require('@pga/lambda-env').default.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
     }
     const { getAiResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

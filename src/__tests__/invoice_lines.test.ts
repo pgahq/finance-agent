@@ -22,7 +22,6 @@ import {
   statesServicePeriod,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
-import { isFreightReconciliationEnabled } from '../lib/freight_reconciliation_flag.js';
 import { getAiResponse } from '../lib/ai.js';
 import { mergeInvoiceLinesPromptFor } from '../prompts/merge_invoice_lines_prompt.js';
 import { extractLineOfBusinessId } from '../lib/related_worktags.js';
@@ -1284,17 +1283,6 @@ describe('reconcileSubmittedCharges', () => {
   });
 });
 
-describe('isFreightReconciliationEnabled', () => {
-  it.each([
-    ['true', true],
-    ['false', false],
-    ['', false],
-    [undefined, false],
-  ])('reads %p as %p', (value, expected) => {
-    expect(isFreightReconciliationEnabled(value === undefined ? {} : { FREIGHT_RECONCILIATION_ENABLED: value })).toBe(expected);
-  });
-});
-
 describe('mergeAmountCheckMessages', () => {
   it('drops the freight-as-line sentence when submit fell back to header freight', () => {
     const extraction = [
@@ -1328,7 +1316,7 @@ describe('prepareInvoiceCharges', () => {
     ]);
   });
 
-  it('keeps freight on the header and every line when the flag is off', () => {
+  it('keeps freight on the header and every line when both behaviors are off (annotate-only enrichment)', () => {
     const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description: 'Sales Tax', totalPrice: '$6.00' }];
     const prepared = prepare(lines, { amountDue: '$106.00', tax: '$6.00' }, { allowFreightAsLines: false, removeDuplicates: false });
 

@@ -64,7 +64,6 @@ import {
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
-import { isFreightReconciliationEnabled } from './lib/freight_reconciliation_flag.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
@@ -751,7 +750,7 @@ async function processInvoiceCluster(
     const charges = prepareInvoiceCharges(
       (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost)),
       { amountDue: extractedAmountDue, freight: result.extractedFreightAmount ?? undefined, tax: extractedTaxAmount },
-      { allowFreightAsLines: isFreightReconciliationEnabled(), removeDuplicates: isFreightReconciliationEnabled() }
+      { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = chargeReconciliationMessages(chargeReconciliation);

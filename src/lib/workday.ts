@@ -4,7 +4,6 @@ import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValid
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
-import { isFreightReconciliationEnabled } from './freight_reconciliation_flag.js';
 import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
@@ -1284,9 +1283,7 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const providedFinalLines = finalLines !== undefined;
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
-  // The flag is checked here too, so a caller passing freightAsLines cannot bypass it.
-  const reconcilesFreight = isFreightReconciliationEnabled();
-  const keepFreightLines = reconcilesFreight && Boolean(freightAsLines) && normalizedFinalLines.length > 0;
+  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0;
   const splitFinalLines = providedFinalLines && !keepFreightLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
@@ -1299,7 +1296,7 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   // header freight. This covers invoices this agent submitted and Workday OCR drafts of carrier bills.
   // A blank, zero, or unparseable extracted freight is no freight, as in documentFreight.
   const extractedFreightUsable = ((extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined) ?? 0) > 0;
-  const ocrFreightAsLines = reconcilesFreight && !providedFinalLines && !extractedFreightUsable && ocrLines.length > 0
+  const ocrFreightAsLines = !providedFinalLines && !extractedFreightUsable && ocrLines.length > 0
     && splitOcrLines?.merchandiseLines.length === 0 && !((chargeAmount(signedSoapAmount(currentFreightAmount)) ?? 0) > 0)
     && reconcileSubmittedCharges(ocrLines, {
       amountDue: signedSoapAmount(controlAmountTotal),
@@ -1329,14 +1326,14 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const finalReconciliation = reconcileSubmittedCharges(
     keepFreightLines ? normalizedFinalLines : (splitFinalLines?.merchandiseLines ?? []),
     headerCharges,
-    { checkWithoutLines: ocrLines.length === 0, removeDuplicates: reconcilesFreight }
+    { checkWithoutLines: ocrLines.length === 0 }
   );
   const submitsOcrLines = ocrLines.length > 0 && (!providedFinalLines || finalReconciliation.lines.length === 0);
   const candidateOcrLines = ocrFreightAsLines
     ? ocrLines
     : (splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined));
   const ocrReconciliation = submitsOcrLines && candidateOcrLines
-    ? reconcileSubmittedCharges(candidateOcrLines, headerCharges, { removeDuplicates: reconcilesFreight })
+    ? reconcileSubmittedCharges(candidateOcrLines, headerCharges)
     : undefined;
 
   return {
