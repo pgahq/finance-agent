@@ -5,6 +5,7 @@ import {
   buildIntercomPlainTextBody,
   downloadAttachment,
   fetchConversationInvoiceData,
+  fetchConversationMessages,
   getIntercomConfig,
   intercomConversationCreatedAtToIsoDate,
   latestIntercomMessageAt,
@@ -210,6 +211,36 @@ describe('intercom', () => {
           ],
         },
       })).toBe(`${sourceBody}\n\nThank you for contacting the Corporate Accounts Payable Team.`);
+    });
+  });
+
+  describe('fetchConversationMessages', () => {
+    const config = { accessToken: 'token', apiBaseUrl: 'https://api.intercom.io' };
+
+    it('returns the source and each part in order with timestamps, without bounces or empty parts', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: 'c1',
+          created_at: 1704067200,
+          source: { body: 'Invoice attached', author: { type: 'user', email: 'ap@supplier.test' } },
+          conversation_parts: {
+            conversation_parts: [
+              { part_type: 'comment', body: 'Please void invoice 123; a credit memo follows', created_at: 1704070800, author: { type: 'user' } },
+              { part_type: 'note', body: 'Message delivery failed\nsmtp;550 5.7.129 Recipient not found', created_at: 1704070900 },
+              { part_type: 'assignment', body: '   ', created_at: 1704071000 },
+              { part_type: 'note', body: 'Thanks', author: { type: 'admin' } },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      expect(await fetchConversationMessages(config, 'c1')).toEqual([
+        { body: 'Invoice attached', createdAt: 1704067200, authorType: 'user' },
+        { body: 'Please void invoice 123; a credit memo follows', createdAt: 1704070800, authorType: 'user', partType: 'comment' },
+        { body: 'Thanks', createdAt: 1704067200, authorType: 'admin', partType: 'note' },
+      ]);
     });
   });
 

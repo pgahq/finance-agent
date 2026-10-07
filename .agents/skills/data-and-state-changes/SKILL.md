@@ -47,6 +47,19 @@ request's clusters before dispatch; each cluster run claims its row before any
 work. Both tables are created at cold start next to the registry; rows are not
 pruned yet.
 
+Agent invoice scoring adds `agent_invoice_snapshots`, `agent_invoice_scores`,
+and `cancel_labels` (DDL and indexes in `src/lib/database.ts`), created after
+the cluster plans table, and the `agent_invoice_touches` view plus
+`agent_invoice_touch_daily` table (`src/lib/touch_reporting.ts`), created by
+`ensureTouchReporting` after the documents migration on the same client; a
+failure there is logged and does not fail cold start. `agent_invoice_status_checks`
+(`src/lib/invoice_scores.ts`) and `agent_invoice_audit_posts`
+(`src/score_digest.ts`) are created by the scoring jobs themselves, not at cold
+start.
+Write only through `src/lib/invoice_snapshots.ts` and
+`src/lib/invoice_scores.ts`; the `agent-invoice-scoring` skill covers behavior.
+None of them is pruned yet.
+
 ## Shared pool lifetime
 
 The Postgres `Pool` is process-global. Do not close it after individual RAG

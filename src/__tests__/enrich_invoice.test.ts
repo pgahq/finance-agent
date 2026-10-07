@@ -40,6 +40,7 @@ jest.mock('../lib/workday.js', () => ({
     }]
   }),
   submitSupplierInvoiceUpdate: jest.fn().mockResolvedValue({ success: true, appliedFallbacks: [] }),
+  getSupplierInvoice: jest.fn().mockResolvedValue({ Invoice_Number: 'SUPIN-412727' }),
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
   getPurchaseOrder: jest.fn().mockResolvedValue(undefined),
   parsePurchaseOrder: jest.requireActual('../lib/workday.js').parsePurchaseOrder,
@@ -895,6 +896,83 @@ describe('enrich_invoice', () => {
         ],
       })
     );
+  });
+
+  describe('scoring snapshots', () => {
+    const matchingSupplierResponse = {
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      }
+    };
+    const event = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    it('records the OCR baseline before the agent update and the invoice after it', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { getDatabaseConnection } = require('../lib/database.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      getAiResponse.mockResolvedValueOnce(matchingSupplierResponse);
+
+      await expect(processor(event as any)).resolves.not.toThrow();
+
+      const db = await getDatabaseConnection();
+      const sources = db.query.mock.calls
+        .filter(([sql]: [string]) => sql.includes('INSERT INTO agent_invoice_snapshots'))
+        .map(([, params]: [string, unknown[]]) => params[1]);
+      expect(sources).toEqual(['enrich_baseline', 'enrich']);
+      expect(notifyEnrichmentResult).toHaveBeenCalledWith(expect.not.objectContaining({ snapshotSync: 'failed' }));
+    });
+
+    it('reports snapshotSync failed without failing the enrichment when the read-back fails', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { getSupplierInvoice } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      getAiResponse.mockResolvedValueOnce(matchingSupplierResponse);
+      getSupplierInvoice.mockRejectedValueOnce(new Error('soap down'));
+
+      await expect(processor(event as any)).resolves.not.toThrow();
+
+      expect(notifyEnrichmentResult).toHaveBeenCalledWith(expect.objectContaining({
+        invoiceWID: 'test-invoice-id',
+        snapshotSync: 'failed',
+      }));
+    });
+
+    it('takes no snapshot on the notes-only path', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { getDatabaseConnection } = require('../lib/database.js');
+      getAiResponse.mockResolvedValueOnce({
+        ...matchingSupplierResponse,
+        supplier: { ...matchingSupplierResponse.supplier, status: 'not_found', resolvedSupplier: null },
+      });
+
+      await expect(processor({ data: [{ ...event.data[0], supplier: null }] } as any)).resolves.not.toThrow();
+
+      const db = await getDatabaseConnection();
+      const { annotateSupplierInvoice } = require('../lib/workday.js');
+      expect(annotateSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(db.query.mock.calls.some(([sql]: [string]) => sql.includes('INSERT INTO agent_invoice_snapshots'))).toBe(false);
+    });
   });
 
   it('omits Slack invoiceNumber when Get has no Invoice_Number', async () => {

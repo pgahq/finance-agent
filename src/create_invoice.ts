@@ -29,6 +29,8 @@ import {
   type ClassifiedAttachment,
   type ClusterableAttachment,
 } from './lib/invoice_attachment_clustering.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
+import { snapshotAgentWrite } from './lib/invoice_snapshots.js';
 import {
   acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
@@ -806,6 +808,12 @@ async function processInvoiceCluster(
   const [primary] = files;
   const { s3Key, fileName, contentType } = primary;
   const emailContext = requestEmailContext ?? primary.emailContext;
+  const snapshotContext = {
+    ...(conversationId ? { conversationId } : {}),
+    s3Keys: files.map((file) => file.s3Key),
+    attachmentKinds: files.map((file) => file.kind ?? 'unclassified'),
+    clusteringMode: invoiceAttachmentClusteringMode(),
+  };
   let assigneeLookup: { match?: EmployeeLookupResult } | undefined;
 
   try {
@@ -1363,6 +1371,13 @@ async function processInvoiceCluster(
           ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
+        const updateSnapshotSaved = await snapshotAgentWrite(context, {
+          workdayInvoiceWid: existing.workdayInvoiceWid,
+          source: 'resend_update',
+          previousInvoice: updateOutcome.previousInvoice,
+          ...(existing.workdayInvoiceNumber ? { workdayInvoiceNumber: existing.workdayInvoiceNumber } : {}),
+          ...snapshotContext,
+        });
         let updateRegistrySyncFailed = false;
         try {
           await upsertConversationSupplierInvoice(context.dbConnection, {
@@ -1392,6 +1407,7 @@ async function processInvoiceCluster(
           appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
+          ...(updateSnapshotSaved ? {} : { snapshotSync: 'failed' }),
         }, conversationId, intercomAppId));
         return;
       }
@@ -1433,6 +1449,15 @@ async function processInvoiceCluster(
     const processingTime = Date.now() - startTime;
 
     run.workdayInvoiceWid = createOutcome.invoiceWID;
+    const snapshotSaved = createOutcome.invoiceWID
+      ? await snapshotAgentWrite(context, {
+        workdayInvoiceWid: createOutcome.invoiceWID,
+        source: 'create',
+        ...(createOutcome.createdInvoice ? { invoice: createOutcome.createdInvoice } : {}),
+        ...(createOutcome.invoiceNumber ? { workdayInvoiceNumber: createOutcome.invoiceNumber } : {}),
+        ...snapshotContext,
+      })
+      : false;
     let registrySyncFailed = false;
     if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
@@ -1472,6 +1497,7 @@ async function processInvoiceCluster(
       appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
+      ...(snapshotSaved ? {} : { snapshotSync: 'failed' }),
     }, conversationId, intercomAppId));
   } catch (error) {
     const processingTime = Date.now() - startTime;
