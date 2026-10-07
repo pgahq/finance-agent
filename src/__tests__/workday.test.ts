@@ -5885,6 +5885,42 @@ describe('Workday utilities', () => {
         ]);
       });
 
+      it('puts freight on the header when freightAsLines lines do not add up to the amount due', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$15.00',
+          freightAsLines: true,
+          finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
+        }]));
+      });
+
+      it('uses freight from the rows when the extracted freight is zero', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$0.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+      });
+
       it('falls back to header freight when freightAsLines is set but no line survived merge', async () => {
         const getData = captureCreate();
 
@@ -5898,7 +5934,7 @@ describe('Workday utilities', () => {
         expect(getData().Freight_Amount).toBe(4595);
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
           field: 'chargeReconciliation',
-          label: 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.',
+          label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
         }]));
       });
 

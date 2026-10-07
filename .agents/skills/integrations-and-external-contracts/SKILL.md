@@ -163,7 +163,7 @@ Workday's gross amount is lines + `Freight_Amount` + `Tax_Amount`, so a charge m
 
 - Totals that already reconcile are left alone, so legitimate header-only freight stays.
 - A line is dropped only when the excess is exactly the header freight and/or tax and the dropped lines are freight (`isFreightOrHandlingLine`) or tax rows summing to it. Goods are never dropped; an unrecognized single line equal to the header freight is kept as the line with no header freight, and the note asks AP to check the extracted freight instead of calling it a freight bill.
-- When the PO merge returns no line for an all-freight invoice, create and enrich rebuild it without the PO; if submit still falls back to header freight, the note drops the freight-as-line sentence (`mergeAmountCheckMessages`).
+- When the PO merge returns no line for an all-freight invoice, create and enrich rebuild it without the PO. Submit keeps freight as lines only when the submitted lines plus tax equal the control total; otherwise it falls back to header freight and the note drops the freight-as-line sentence (`mergeAmountCheckMessages`).
 - Anything else is submitted as extracted and flagged once, from the submitted payload.
 - Printed credits count as negative; unparseable row amounts count as zero.
 

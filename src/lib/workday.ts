@@ -1283,14 +1283,20 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
   const providedFinalLines = finalLines !== undefined;
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
-  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0;
+  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
+  // freightAsLines is honored only when the submitted lines plus tax are the whole control total;
+  // otherwise the freight goes on the header, as on a mixed invoice.
+  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0
+    && reconcileSubmittedCharges(normalizedFinalLines, {
+      amountDue: signedSoapAmount(controlAmountTotal),
+      tax: signedSoapAmount(taxAmount),
+    }).unreconciled === undefined;
   const splitFinalLines = providedFinalLines && !keepFreightLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
   const currentFreightAmount: unknown = currentInvoice.Freight_Amount;
-  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount);
   // An invoice whose lines are all freight, whose header freight is empty, and whose lines plus tax
   // equal the control total is an all-freight invoice: keep those lines rather than moving them to
   // header freight. This covers invoices this agent submitted and Workday OCR drafts of carrier bills.
@@ -1306,12 +1312,13 @@ function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
 
   // An unparseable Workday value (`'n/a'`) is not a freight amount and never reaches the payload.
   const parseableCurrentFreight = soapAmount(currentFreightAmount) != null ? currentFreightAmount : undefined;
-  // An unparseable extracted freight still says this extraction read freight, so freight recovered
-  // from the new rows wins over the old Workday header.
+  // A zero or unparseable extracted freight still says this extraction read freight, so freight
+  // recovered from the new rows wins over it and over the old Workday header.
+  const parsedExtractedFreight = extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined;
   const freightAmount = freightSubmittedAsLines
     ? undefined
     : extractedFreightAmount
-      ? (parseExtractedAmount(extractedFreightAmount) ?? recoveredFreightAmount ?? parseableCurrentFreight ?? splitOcrLines?.freightAmountFromLines)
+      ? (parsedExtractedFreight || (recoveredFreightAmount ?? parsedExtractedFreight ?? parseableCurrentFreight ?? splitOcrLines?.freightAmountFromLines))
       : (parseableCurrentFreight ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
   // Submit replaces the whole invoice; an OCR Freight_Amount left in place would count the freight lines twice.
   const clearsExistingFreight = freightSubmittedAsLines && currentFreightAmount != null && currentFreightAmount !== '';

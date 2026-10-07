@@ -555,7 +555,7 @@ export interface PreparedInvoiceCharges {
 export const CHARGE_RECONCILIATION_FALLBACK_FIELD = 'chargeReconciliation';
 export const ALL_FREIGHT_LINES_PREFIX = 'All-freight invoice:';
 const FREIGHT_EQUALS_ONLY_LINE_PREFIX = 'Header freight equals the only line';
-export const FREIGHT_HEADER_FALLBACK_MESSAGE = 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.';
+export const FREIGHT_HEADER_FALLBACK_MESSAGE = 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.';
 
 /**
  * Amount-check sentences from extraction plus those from submit. When submit fell back to header

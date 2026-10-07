@@ -726,7 +726,7 @@ describe('create_invoice', () => {
 
       const fallback = {
         field: 'chargeReconciliation',
-        label: 'All-freight invoice had no line left after merge, so the freight was submitted as header Freight_Amount.',
+        label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
       };
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([fallback]);
       expect(notes).toContain(`Amount check: ${fallback.label}`);
