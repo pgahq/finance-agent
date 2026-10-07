@@ -658,10 +658,11 @@ describe('create_invoice', () => {
   };
 
   it.each([
-    ['missing', {}],
-    ['shadow', { REPEATED_LINE_REMOVAL_ENABLED: 'shadow' }],
-  ])('should keep both LevelBlue tables and flag the line total when repeated-line removal is %s', async (_mode, env) => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
+    ['missing', {}, false],
+    ['shadow', { REPEATED_LINE_REMOVAL_ENABLED: 'shadow' }, true],
+  ])('should keep both LevelBlue tables and flag the line total when repeated-line removal is %s', async (_mode, env, logged) => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack, loadEnv } = freshRequire();
+    const { debug } = require('@pga/logger');
     loadEnv.mockResolvedValue(env);
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(levelBlueRepeat);
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
@@ -681,6 +682,12 @@ describe('create_invoice', () => {
     const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
     expect(notes).not.toContain('Repeated line review');
     expect(notes).toContain('Line total review: Invoice lines total $11,000.00');
+    expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
+      expect.stringMatching(/^Line total review: Invoice lines total \$11,000\.00/),
+    ]);
+    const shadowLogs = debug.mock.calls.filter(([message]: [unknown]) =>
+      String(message).startsWith('Repeated line review (shadow, lines kept): Removed line "PSO-RISK-ADVISORY - Consultant"'));
+    expect(shadowLogs).toHaveLength(logged ? 1 : 0);
   });
 
   it('should drop the LevelBlue table that repeats the charge and keep the Sep\'26 row', async () => {

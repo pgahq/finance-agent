@@ -71,7 +71,7 @@ Globals:
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
         # Read at cold start. `true` turns on PO line selection by status and service dates (consumed PO lines lose their reference); missing leaves it off.
         PO_LINE_SELECTION_ENABLED: ssm:/finance-agent/po-line-selection-enabled
-        # Read at cold start. `true` lets create remove line tables that repeat another table's charges, `shadow` only logs them; missing leaves every line in.
+        # Read at cold start (lambda-env caches SSM per container). `true` lets create remove line tables that repeat another table's charges, `shadow` only logs them; missing leaves every line in.
         REPEATED_LINE_REMOVAL_ENABLED: ssm:/finance-agent/repeated-line-removal-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
