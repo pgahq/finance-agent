@@ -15,8 +15,12 @@ describe('supplier_note_hints', () => {
     });
 
     it('strips Outlook and custom tags around a supplier name', () => {
-      expect(extractSupplierNoteHints('<p>Supplier: Arrow Exterminators<o:p></o:p></p><x-sig>Thanks</x-sig>').supplierNames)
+      expect(extractSupplierNoteHints('<p>Supplier: Arrow Exterminators<o:p></o:p><v:shape id="x"></v:shape></p><x-sig>Thanks</x-sig>').supplierNames)
         .toEqual(['Arrow Exterminators']);
+    });
+
+    it('keeps a supplier name written in angle brackets', () => {
+      expect(extractSupplierNoteHints('Supplier: <Arrow Exterminators>').supplierNames).toEqual(['Arrow Exterminators']);
     });
 
     it('uppercases a lowercase-only ID', () => {

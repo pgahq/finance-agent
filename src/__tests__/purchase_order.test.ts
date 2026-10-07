@@ -129,6 +129,7 @@ describe('findNotePurchaseOrders', () => {
 
   it('reads PO numbers wrapped in angle brackets', () => {
     expect(findNotePurchaseOrders('use <PO-413672>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use <PO 413672> line 7')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
     expect(findNotePurchaseOrders('<p>use &lt;PO-413672&gt;</p>')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
   });
 

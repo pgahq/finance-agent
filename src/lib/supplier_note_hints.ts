@@ -32,7 +32,8 @@ function normalizeName(raw: string): string | undefined {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/[.,;:\-–]+$/, '')
-    .trim();
+    .trim()
+    .replace(/^<\s*(.*?)\s*>$/, '$1');
   if (cleaned.length < 2 || cleaned.length > MAX_NAME_LENGTH) return undefined;
   return cleaned;
 }
