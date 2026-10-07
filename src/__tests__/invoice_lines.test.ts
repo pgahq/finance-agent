@@ -1283,6 +1283,16 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: 20.25 });
   });
 
+  it('records the quantity total on a credit with no discount marker and no extended amount', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Credit for returned units', hasDiscount: null, quantity: 2, unitCost: -10, extendedAmount: null },
+      { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: null, unitCost: -50, extendedAmount: null },
+    ];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 2, unitCost: -10, extendedAmount: -20 });
+    expect(result[1].extendedAmount).toBeNull();
+  });
+
   it('keeps the total of a line with no extended amount when rounding the quantity would move it', () => {
     const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2.555, unitCost: 1000, extendedAmount: null }];
     expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 2555 });
@@ -1334,7 +1344,7 @@ describe('lineTotalMismatchNote', () => {
 
   it('flags lines that total twice the amount due', () => {
     expect(lineTotalMismatchNote([consultant, monthly], { amountDue: '$5,500.00', taxAmount: '$0.00' })).toBe(
-      'Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line before approving.'
+      'Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
     );
   });
 

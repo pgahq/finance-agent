@@ -618,7 +618,7 @@ describe('create_invoice', () => {
     expect(submitArgs.extractedAmountDue).toBe('$5,500.00');
     expect(submitArgs.finalLines[0]).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
     expect(submitArgs.buildNotes([])).toContain(
-      'Line total review: Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line before approving.'
+      'Line total review: Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
     );
   });
 

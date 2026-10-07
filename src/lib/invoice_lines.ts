@@ -139,9 +139,11 @@ export interface FinalInvoiceLine {
 // Extraction sets hasDiscount on merchandise rows that print a discounted net price.
 // Only a row that credits money back is a discount line; a positive row is merchandise
 // and must keep its quantity and PO line link so Workday records the PO as invoiced.
+// A negative line is a credit whatever hasDiscount says: it must not invoice PO line quantity.
 export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'extendedAmount' | 'unitCost'>): boolean {
-  if (line.hasDiscount !== true) return false;
   const amount = line.extendedAmount ?? line.unitCost;
+  if (amount != null && amount < 0) return true;
+  if (line.hasDiscount !== true) return false;
   return amount == null || amount <= 0;
 }
 
@@ -1047,7 +1049,10 @@ function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
     ? toCents(line.extendedAmount) / 100
     : line.extendedAmount;
   const roundedQuantityOrUnitCost = quantity !== line.quantity || unitCost !== line.unitCost;
-  const computedExtendedAmount = extendedAmount == null && roundedQuantityOrUnitCost && line.unitCost != null && !isDiscountLine(line)
+  // An unmarked credit submits amount-only, so it records the total Workday would compute from its quantity.
+  const unmarkedCredit = line.hasDiscount !== true && isDiscountLine(line);
+  const computedExtendedAmount = extendedAmount == null && line.unitCost != null
+    && (unmarkedCredit || (roundedQuantityOrUnitCost && !isDiscountLine(line)))
     ? toCents(line.unitCost * (line.quantity ?? 1)) / 100
     : undefined;
   return {
@@ -1164,7 +1169,7 @@ export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTo
   if (lineCents === expectedCents) return undefined;
 
   const likelyCause = lineCents > expectedCents
-    ? 'Check for a duplicated or summary line before approving.'
+    ? 'Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
     : 'Check for a missing line or charge before approving.';
   return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(toCents(amountDue))}`
     + ` less freight ${formatCents(freightCents)} and tax ${formatCents(taxCents)} is ${formatCents(expectedCents)}.`

@@ -1179,7 +1179,7 @@ describe('Workday utilities', () => {
       expect(submittedLines[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
       expect(submittedLines[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 2555 });
       expect(submittedLines[2]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 10.005 });
-      expect(submittedLines[3]).toMatchObject({ Quantity: 1, Unit_Cost: -12.345679, Extended_Amount: -12.35 });
+      expect(submittedLines[3]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
     });
 
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
@@ -3115,6 +3115,22 @@ describe('Workday utilities', () => {
         expect(lines[0].Unit_Cost).toBe(0);
         expect(lines[0].Extended_Amount).toBe(-50);
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+      });
+
+      it('submits a negative line with no discount marker as an amount-only credit without the PO line reference', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedTaxAmount: '$45.00',
+          finalLines: [{ lineOrder: 1, description: 'Credit for March overbilling', hasDiscount: null, quantity: 1, unitCost: -250, extendedAmount: -250, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(-250);
+        expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+        expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
       });
 
       it('keeps the PO line reference, quantity, and tax applicability on a positive line flagged hasDiscount', async () => {
@@ -5092,7 +5108,7 @@ describe('Workday utilities', () => {
       const invoiceData = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
       expect(invoiceData.Control_Amount_Total).toBe(5487.65);
       expect(invoiceData.Invoice_Line_Replacement_Data[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
-      expect(invoiceData.Invoice_Line_Replacement_Data[1]).toMatchObject({ Quantity: 1, Unit_Cost: -12.345679, Extended_Amount: -12.35 });
+      expect(invoiceData.Invoice_Line_Replacement_Data[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
     });
 
     it('includes Assignee_Reference when assigneeWID is provided', async () => {
