@@ -2,7 +2,6 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPromptFor, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
-import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
@@ -1311,10 +1310,7 @@ function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
   purchaseOrderLines: PurchaseOrderLine[]
 ): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } | undefined {
-  // Without PO line selection, PO lines carry no availability, so consumed lines can't be told apart.
-  const openPoLines = isPoLineSelectionEnabled()
-    ? purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null)
-    : [];
+  const openPoLines = purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null);
   const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
     table.lines.filter((line, index) => matches(line, table.lineCents[index])).length / table.lines.length;
   const criteria: Array<[RepeatedTableKeepReason, (table: TableCandidate<T>) => number]> = [
@@ -1572,11 +1568,12 @@ export async function buildFinalInvoiceLines(
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
-  const poLineSelectionEnabled = isPoLineSelectionEnabled() && invoiceContext !== undefined;
+  // Invoices without PO lines also keep it; selection rules only apply to PO line matching.
+  const poLineSelection = invoiceContext !== undefined && parsedPoLines.length > 0;
   const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
-    ...(poLineSelectionEnabled ? {
+    ...(poLineSelection ? {
       invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
       invoiceServicePeriod,
     } : {}),
@@ -1593,7 +1590,7 @@ export async function buildFinalInvoiceLines(
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
       splitLineData: line.splitLineData ?? [],
-      ...(poLineSelectionEnabled ? {
+      ...(poLineSelection ? {
         startDate: line.startDate,
         endDate: line.endDate,
         availableForInvoicing: line.availableForInvoicing,
@@ -1605,7 +1602,7 @@ export async function buildFinalInvoiceLines(
   let mergeResult: MergeInvoiceLinesResult;
   try {
     mergeResult = await getAiResponse({
-      prompt: mergeInvoiceLinesPromptFor(poLineSelectionEnabled),
+      prompt: mergeInvoiceLinesPromptFor(poLineSelection),
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
@@ -1631,7 +1628,7 @@ export async function buildFinalInvoiceLines(
   const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
   // invoiceServicePeriod covers every line that states no period of its own, so when it
   // names a period no line is left for the invoice-date fallback.
-  const selectedLines = !poLineSelectionEnabled
+  const selectedLines = !poLineSelection
     ? pinnedLines
     : markConsumedPoLineReferences(
       statesServicePeriod(invoiceServicePeriod)

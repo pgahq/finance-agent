@@ -89,8 +89,6 @@ Globals:
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
-        # Read at cold start. `true` turns on PO line selection by status and service dates (consumed PO lines lose their reference); missing leaves it off.
-        PO_LINE_SELECTION_ENABLED: ssm:/finance-agent/po-line-selection-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key
