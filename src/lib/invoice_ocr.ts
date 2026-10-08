@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { getOcrModel } from './models.js';
-import { invoiceOcrPrompt, InvoiceOcrSchema, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
+import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PresignedAttachment } from './types.js';
 
@@ -58,7 +58,7 @@ export async function extractInvoiceDocuments(
 
   const documentBytes = processedAttachments.reduce((total, att) => total + (att.buffer?.byteLength ?? 0), 0);
   const startedAt = Date.now();
-  const result = await getAiResponse({
+  const response = await getAiResponse({
     prompt: invoiceOcrPrompt,
     schema: InvoiceOcrSchema,
     model: getOcrModel(),
@@ -74,7 +74,8 @@ export async function extractInvoiceDocuments(
         ]
       }
     ]
-  }) as InvoiceOcrResult;
+  }) as InvoiceOcrResponse;
+  const result = normalizeInvoiceOcrResult(response);
   debug('Invoice OCR finished', { durationMs: Date.now() - startedAt, documentCount: parts.length, documentBytes });
   debug('Invoice OCR result:', result);
   return result;

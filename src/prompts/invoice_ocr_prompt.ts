@@ -2,43 +2,102 @@ import { z } from 'zod';
 import { InvoiceEnrichmentSchema } from './enrich_invoice_prompt.js';
 
 const enrichment = InvoiceEnrichmentSchema.shape;
-const extractedLine = enrichment.extractedInvoiceLines.unwrap().element;
+const extractedLine = enrichment.extractedInvoiceLines.unwrap().element.shape;
 
-// Anthropic structured outputs reject numeric bounds, and z.number().int() emits safe-integer minimum/maximum.
-const ocrInvoiceLine = extractedLine.extend({
-  tableNumber: z.number().nullable().describe(`${extractedLine.shape.tableNumber.description ?? ''} Whole numbers only.`),
+// Anthropic structured outputs allow at most 16 union-typed (nullable) and 24 optional parameters, and no numeric
+// bounds. Text fields are therefore required strings where an empty string means "not printed"; only quantity,
+// hasDiscount and tableNumber stay nullable. normalizeInvoiceOcrResult turns empty values back into null.
+function printedText(field: z.ZodType): z.ZodString {
+  return z.string().describe(`${field.description ?? ''} Return an empty string instead of null when it is not printed.`);
+}
+
+function printedTextShape<K extends string>(shape: Record<K, z.ZodType>): Record<K, z.ZodString> {
+  return Object.fromEntries(
+    Object.entries<z.ZodType>(shape).map(([key, field]) => [key, printedText(field)])
+  ) as Record<K, z.ZodString>;
+}
+
+const ocrInvoiceLine = z.object({
+  description: extractedLine.description,
+  descriptionCells: z.array(z.string()).describe(`${extractedLine.descriptionCells.description ?? ''} Return an empty array instead of null.`),
+  quantity: extractedLine.quantity,
+  unitCost: printedText(extractedLine.unitCost),
+  totalPrice: printedText(extractedLine.totalPrice),
+  hasDiscount: extractedLine.hasDiscount,
+  tableNumber: z.number().nullable().describe(`${extractedLine.tableNumber.description ?? ''} Whole numbers only.`),
 });
 
-// Document-only extraction. Field rules are shared with InvoiceEnrichmentSchema so the merged result keeps the same meaning.
 export const InvoiceOcrSchema = z.object({
-  printedSupplier: enrichment.supplier.shape.extractedInformation.extend({
-    remitToAddress: z.string().nullable().describe('The remit-to or payment address printed on the invoice when it differs from the supplier street address. Null if none is printed.'),
+  printedSupplier: z.object({
+    ...printedTextShape(enrichment.supplier.shape.extractedInformation.shape),
+    remitToAddress: z.string().describe('The remit-to or payment address printed on the invoice when it differs from the supplier street address. Empty string if none is printed.'),
   }).describe('The supplier (vendor) exactly as printed on the invoice'),
-  printedBillTo: enrichment.companyVerification.shape.extractedInformation.describe('The bill-to company (the buyer being billed, not the supplier) exactly as printed on the invoice'),
-  extractedInvoiceDate: enrichment.extractedInvoiceDate,
-  extractedAmountDue: enrichment.extractedAmountDue,
-  extractedSuppliersInvoiceNumber: enrichment.extractedSuppliersInvoiceNumber,
-  extractedFreightAmount: enrichment.extractedFreightAmount,
-  extractedFreightLabel: enrichment.extractedFreightLabel,
-  extractedTaxAmount: enrichment.extractedTaxAmount,
-  extractedTaxLabel: enrichment.extractedTaxLabel,
-  extractedPurchaseOrderNumber: enrichment.extractedPurchaseOrderNumber,
-  extractedAccountNumber: enrichment.extractedAccountNumber,
-  extractedJobNumber: enrichment.extractedJobNumber,
-  extractedCustomerId: enrichment.extractedCustomerId,
-  extractedServicePeriod: enrichment.extractedServicePeriod,
-  extractedPaymentTerms: z.object({
-    name: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt")'),
-  }).nullable().describe('Payment terms printed on the invoice. Null if none are printed.'),
+  printedBillTo: z.object(printedTextShape(enrichment.companyVerification.shape.extractedInformation.shape))
+    .describe('The bill-to company (the buyer being billed, not the supplier) exactly as printed on the invoice'),
+  extractedInvoiceDate: printedText(enrichment.extractedInvoiceDate),
+  extractedAmountDue: printedText(enrichment.extractedAmountDue),
+  extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
+  extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
+  extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
+  extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
+  extractedTaxLabel: printedText(enrichment.extractedTaxLabel),
+  extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
+  extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
+  extractedJobNumber: printedText(enrichment.extractedJobNumber),
+  extractedCustomerId: printedText(enrichment.extractedCustomerId),
+  extractedServicePeriod: printedText(enrichment.extractedServicePeriod),
+  extractedPaymentTerms: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt"). Empty string if none are printed.'),
   invoiceLineQuantityDisplayed: enrichment.invoiceLineQuantityDisplayed,
-  extractedInvoiceLines: z.array(ocrInvoiceLine).nullable().describe(enrichment.extractedInvoiceLines.description ?? ''),
+  extractedInvoiceLines: z.array(ocrInvoiceLine).describe(`${enrichment.extractedInvoiceLines.description ?? ''} Return an empty array instead of null.`),
 });
 
-export type InvoiceOcrResult = z.infer<typeof InvoiceOcrSchema>;
+export type InvoiceOcrResponse = z.infer<typeof InvoiceOcrSchema>;
+
+type NullableText<T> = { [K in keyof T]: T[K] extends string ? string | null : T[K] };
+type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLines'][number]>, 'description' | 'descriptionCells'> & {
+  description: string;
+  descriptionCells: string[] | null;
+};
+
+// The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines'> & {
+  printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
+  printedBillTo: NullableText<InvoiceOcrResponse['printedBillTo']>;
+  extractedPaymentTerms: { name: string } | null;
+  extractedInvoiceLines: InvoiceOcrLine[] | null;
+};
+
+function textOrNull(value: string | null | undefined): string | null {
+  return value?.trim() ? value : null;
+}
+
+function nullableTextFields<T extends Record<string, unknown>>(fields: T): NullableText<T> {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [key, typeof value === 'string' ? textOrNull(value) : value])
+  ) as NullableText<T>;
+}
+
+export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
+  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, ...headerFields } = response;
+  const paymentTerms = textOrNull(extractedPaymentTerms);
+  return {
+    ...nullableTextFields(headerFields),
+    printedSupplier: nullableTextFields(printedSupplier),
+    printedBillTo: nullableTextFields(printedBillTo),
+    extractedPaymentTerms: paymentTerms ? { name: paymentTerms } : null,
+    extractedInvoiceLines: extractedInvoiceLines.length
+      ? extractedInvoiceLines.map((line) => ({
+        ...nullableTextFields(line),
+        description: line.description,
+        descriptionCells: line.descriptionCells.length ? line.descriptionCells : null,
+      }))
+      : null,
+  };
+}
 
 export const invoiceOcrPrompt = `You read supplier invoice documents (PDFs and images) and extract what is printed on them. You have no tools and no access to Workday. Do not guess Workday IDs, suppliers, or companies. A separate step matches the supplier and company and codes the invoice from your output, so report every printed detail that helps identify the supplier and the bill-to company.
 
-Use null for any field that is not printed on the document. Do not guess.
+For any text field that is not printed on the document, return an empty string; return an empty array when there are no lines or description cells. Only quantity, hasDiscount, and tableNumber take null. Where a rule below says to omit a field or leave it null, use the empty value instead. Do not guess.
 
 ---
 
@@ -120,7 +179,7 @@ Extract these identifiers independently when they appear on the invoice or in a 
 
 ## Part 8: Payment Terms
 
-If payment terms are printed on the invoice (e.g. "Net 30", "Net 60", "Due on Receipt"), populate \`extractedPaymentTerms.name\` with the text as it appears. If no payment terms are printed, set \`extractedPaymentTerms\` to null.
+If payment terms are printed on the invoice (e.g. "Net 30", "Net 60", "Due on Receipt"), populate \`extractedPaymentTerms\` with the text as it appears. If no payment terms are printed, return an empty string.
 
 ---
 

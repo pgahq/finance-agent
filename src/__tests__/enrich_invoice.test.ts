@@ -109,15 +109,28 @@ jest.mock('../lib/ai.js', () => {
     }
   });
   let pendingFullResult: Promise<unknown> | undefined;
+  // Shapes a queued full result like the Haiku response: empty strings and arrays instead of null.
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const textFields = (fields: Record<string, unknown> = {}) =>
+    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, text(value)]));
   const toOcrResult = (full: any) => {
-    const documentFields = Object.fromEntries(
-      Object.entries(full ?? {}).filter(([key]) => key.startsWith('extracted') || key === 'invoiceLineQuantityDisplayed')
+    const headerText = Object.fromEntries(
+      Object.entries(full ?? {})
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines'].includes(key))
+        .map(([key, value]) => [key, text(value)])
     );
     return {
-      printedSupplier: full?.supplier?.extractedInformation ?? {},
-      printedBillTo: full?.companyVerification?.extractedInformation ?? {},
-      ...documentFields,
-      extractedPaymentTerms: full?.extractedPaymentTerms ? { name: full.extractedPaymentTerms.name } : null,
+      printedSupplier: textFields(full?.supplier?.extractedInformation),
+      printedBillTo: textFields(full?.companyVerification?.extractedInformation),
+      ...headerText,
+      extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
+      invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
+      extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
+        ...line,
+        descriptionCells: line.descriptionCells ?? [],
+        unitCost: text(line.unitCost),
+        totalPrice: text(line.totalPrice),
+      })),
     };
   };
   return {
@@ -1109,7 +1122,7 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
-      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      { description: 'Widgets', descriptionCells: null, quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
     ]);
     expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
       expect.anything(),
