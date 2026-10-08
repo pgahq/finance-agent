@@ -474,6 +474,7 @@ describe('intercom', () => {
         plainTextBody: `${sourceBody}\n\n${autoReply}`,
         conversationParts: autoReply,
         messageBody: sourceBody,
+        messageSubject: 'Invoice',
       });
       expect(result.attachments[0].emailContext.plainTextBody).not.toContain('550');
       expect(result.transcript.messages.map((message) => message.body)).toEqual([
@@ -515,7 +516,7 @@ describe('intercom', () => {
       );
     });
 
-    it('gives each attachment the body of the message that carried it', async () => {
+    it('gives each attachment the body of the message that carried it, and a subject only for the source email', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,
         ok: true,
@@ -547,6 +548,8 @@ describe('intercom', () => {
         '<p>First invoice, PO-411406</p>',
         '<p>Second invoice attached</p>',
       ]);
+      expect(result.attachments.map((attachment) => attachment.emailContext.messageSubject)).toEqual(['Invoices', undefined]);
+      expect(result.attachments[1].emailContext.subject).toBe('Invoices');
     });
 
     it('ignores conversation parts with null or whitespace-only bodies', async () => {

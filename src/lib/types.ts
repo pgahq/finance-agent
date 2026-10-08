@@ -55,8 +55,10 @@ export interface InvoiceData {
     conversationParts?: string;
     /** Intercom internal notes written by teammates (part type note, author type admin); a PO they choose wins over every other PO. */
     adminConversationParts?: string;
-    /** Body of the Intercom source email or conversation part that carried this attachment. */
+    /** Body of the Intercom source email or conversation part that carried this attachment; empty when it had none. */
     messageBody?: string;
+    /** Subject of that message; only the source email has one, so a reply never inherits the thread's first subject. */
+    messageSubject?: string;
   };
 }
 

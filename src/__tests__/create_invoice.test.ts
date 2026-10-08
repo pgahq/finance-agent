@@ -2189,6 +2189,51 @@ describe('create_invoice', () => {
       expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
     });
 
+    it('ignores the thread subject for an invoice attached to a later reply', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-413672',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-stale-subject-po', {
+          subject: 'Re: Invoice 1182, PO-411406',
+          plainTextBody: 'Invoice 1182 attached\n\nOctober invoice attached',
+          conversationParts: 'October invoice attached',
+          messageBody: 'October invoice attached',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-413672');
+      expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
+    });
+
+    it('uses the PO in the subject of the source email that carried the invoice', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-source-subject-po', {
+          subject: 'Invoice 69962682 for PO-413672',
+          messageSubject: 'Invoice 69962682 for PO-413672',
+          messageBody: '',
+        })]
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+        'Purchase order: Used PO-413672 from the email or conversation instead of PO-411406 on the invoice.'
+      );
+    });
+
     it('keeps the invoice PO when the email and conversation name several POs', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);

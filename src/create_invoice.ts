@@ -134,8 +134,8 @@ interface EmailPurchaseOrders {
   /** PO to use when neither a note PO nor an invoice PO resolves. */
   fallbackPurchaseOrderNumber?: string;
   /**
-   * The one PO the subject, the message that carried this attachment, and the filename name, leaving out POs an AP
-   * note mentions. It wins over the invoice PO; when they name several POs it is unset. Older messages in the thread
+   * The one PO the message that carried this attachment (its subject only for the source email) and the filename
+   * name, leaving out POs an AP note mentions. It wins over the invoice PO; when they name several POs it is unset. Older messages in the thread
    * never count, since they often name another invoice's PO.
    */
   conversationPurchaseOrderNumber?: string;
@@ -164,11 +164,10 @@ function findEmailPurchaseOrders(
     ...notePurchaseOrders.map((po) => po.purchaseOrderNumber),
     ...findPurchaseOrderNumbers(htmlToText(emailContext?.adminConversationParts ?? '')),
   ]);
-  const messageText = emailContext?.messageBody ? htmlToText(emailContext.messageBody) : sourceEmailBody(emailContext);
-  const conversationPurchaseOrderNumber = findSolePurchaseOrderNumber(
-    [emailContext?.subject, messageText, fileName],
-    notePurchaseOrderNumbers
-  );
+  const messageTexts = emailContext?.messageBody !== undefined
+    ? [emailContext.messageSubject, htmlToText(emailContext.messageBody)]
+    : [emailContext?.subject, sourceEmailBody(emailContext)];
+  const conversationPurchaseOrderNumber = findSolePurchaseOrderNumber([...messageTexts, fileName], notePurchaseOrderNumbers);
   if (!notePurchaseOrders.length) {
     const purchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, emailContext?.plainTextBody, fileName);
     return {
