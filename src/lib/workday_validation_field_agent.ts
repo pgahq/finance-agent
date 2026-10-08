@@ -26,7 +26,7 @@ export interface WorkdayValidationFieldInput {
 function getValidationFieldModel(): LanguageModel {
   return createLanguageModel(process.env.WORKDAY_VALIDATION_FIELD_MODEL
     || process.env.WORKDAY_SUBMIT_REPAIR_MODEL
-    || 'gpt-5.4-mini');
+    || 'openai/gpt-5.4-mini');
 }
 
 export async function classifyWorkdayValidationField(

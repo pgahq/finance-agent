@@ -91,6 +91,44 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"clusters"');
   });
 
+  it('shows who triggered a failed run right after the error, not in the JSON details', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByEmail: 'jcarey@pgahq.com',
+      triggeredByName: 'Joe Carey',
+    }, new Error('Create failed'));
+
+    const body = postedSlackBody(global.fetch as jest.Mock);
+    const errorIndex = body.blocks.findIndex((block) => block.text?.text === '*Error*\nCreate failed');
+    expect(body.blocks[errorIndex + 1].text?.text).toBe('*Triggered by* Joe Carey (jcarey@pgahq.com)');
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"fileName": "invoice.pdf"');
+    expect(texts).not.toContain('triggeredByEmail');
+    expect(texts).not.toContain('triggeredByName');
+  });
+
+  it('shows the trigger email alone when no name was resolved', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByEmail: 'jcarey@pgahq.com',
+    }, new Error('Create failed'));
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Triggered by* jcarey@pgahq.com');
+    expect(texts).not.toContain('triggeredByEmail');
+  });
+
+  it('omits the trigger line when no trigger email is known', async () => {
+    await notifyResult('create_invoice', 'error', 1000, {
+      fileName: 'invoice.pdf',
+      triggeredByName: 'Joe Carey',
+    }, new Error('Create failed'));
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).not.toContain('*Triggered by*');
+    expect(texts).not.toContain('Joe Carey');
+  });
+
   it('omits priorFailures when the error has none', async () => {
     await notifyResult('create_invoice', 'error', 1000, { fileName: 'invoice.pdf' }, new Error('Create failed'));
 
@@ -143,6 +181,47 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('shows a PO taken from an Intercom note with its line and the invoice PO it replaced', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: {
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'note',
+        purchaseOrderLine: 7,
+        invoicePurchaseOrderNumber: 'PO-411406',
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*PO #* → PO-413672 Line 7 (from Intercom note; invoice shows PO-411406)');
+  });
+
+  it('shows the email PO a note PO replaced when the invoice shows no PO', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: {
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'note',
+        emailPurchaseOrderNumber: 'PO-411406',
+      },
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*PO #* → PO-413672 (from Intercom note; email shows PO-411406)');
+  });
+
+  it('says when the PO coded the lines without linking them', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465824',
+      extracted: { purchaseOrderNumber: 'PO-411406', purchaseOrderNotLinked: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*PO #* → PO-411406 · coded from PO, not linked to PO lines');
+  });
+
   it('shows the unchanged supplier invoice number and fallback supplier on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -155,6 +234,92 @@ describe('notifyResult', () => {
     const texts = postedSlackTexts(global.fetch as jest.Mock);
     expect(texts).toContain('*Supplier Invoice #* → 12345');
     expect(texts).toContain('*Fallbacks Applied*\n• default supplier');
+  });
+
+  it('shows corrected tax and cleared freight on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465719',
+      supplier: { status: 'found', resolvedName: 'BearCom', isDefault: false },
+      extracted: { taxAmount: '510.86', freightCleared: true },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Freight* → none');
+    expect(texts).toContain('*Tax* → 510.86');
+  });
+
+  it('lists repeated-line and line-total review notes on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [
+        'Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant" ($5,500.00) because table 1 repeats the charges in table 2.',
+        'Line total review: Invoice lines total $6,750.00, but the amount due $5,000.00 less freight $0.00 and tax $0.00 is $5,000.00.',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Line review*\n• Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant"');
+    expect(texts).toContain('\n• Line total review: Invoice lines total $6,750.00');
+    expect(texts).not.toContain('"lineReview"');
+  });
+
+  it('escapes invoice text in line review notes and keeps a long note from hiding the next one', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [
+        `Repeated line review: Removed line "<!channel> <https://x.test|pay> & co" ${'x'.repeat(4000)}`,
+        'Line total review: Invoice lines total $6,750.00.',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('Removed line "&lt;!channel&gt; &lt;https://x.test|pay&gt; &amp; co"');
+    expect(texts).not.toContain('<!channel>');
+    expect(texts).toContain('…\n• Line total review: Invoice lines total $6,750.00.');
+  });
+
+  it('shows at most five line review notes and never cuts an escaped character in half', async () => {
+    const ampersandAtCut = `${'a'.repeat(570)}&${'b'.repeat(100)}`;
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [ampersandAtCut, ...Array.from({ length: 9 }, (_, index) => `Note ${index + 2}`)],
+    });
+
+    const section = postedSlackBody(global.fetch as jest.Mock).blocks
+      .find((block) => block.text?.text.startsWith('*Line review*'))!.text!.text;
+    expect(section).toContain('• Note 5');
+    expect(section).not.toContain('Note 6');
+    expect(section).toMatch(/a…\n• Note 2/);
+    expect(section).not.toMatch(/&[a-z]*…/);
+  });
+
+  it('never leaves half an emoji when truncating a line review note', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      lineReview: [`${'a'.repeat(571)}😀${'b'.repeat(100)}`, 'Note 2', 'Note 3', 'Note 4', 'Note 5'],
+    });
+
+    const section = postedSlackBody(global.fetch as jest.Mock).blocks
+      .find((block) => block.text?.text.startsWith('*Line review*'))!.text!.text;
+    expect(section).toMatch(/a…\n• Note 2/);
+    expect(section).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('omits the line review section on a skipped resend', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-465991',
+      skipped: true,
+      skipReason: 'No documents newer than the last processing of SUPIN-465991.',
+      lineReview: ['Line total review: Invoice lines total $11,000.00.'],
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).not.toContain('*Line review*');
   });
 
   it('lists clustered files and unrelated docs on create success', async () => {
@@ -483,6 +648,21 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
   });
 
+  it('shows corrected tax and cleared freight on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-465719',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'BearCom', isDefault: false },
+      extracted: { taxAmount: '510.86', freightCleared: true },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Freight* → none');
+    expect(texts).toContain('*Tax* → 510.86');
+  });
+
   it('lists the closed-PO line note under Fallbacks Applied', async () => {
     const closedNote = 'PO-413898 is Closed or Pending Close; invoice lines were coded from the PO but not linked to PO lines.';
     await notifyEnrichmentResult({
@@ -521,9 +701,11 @@ describe('notifyEnrichmentResult', () => {
       supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
       extracted: {},
       fallbacks: { defaultSupplier: false },
+      snapshotSync: 'failed',
     });
 
     const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"snapshotSync": "failed"');
     expect(texts).toContain('processed in 1.50s');
     expect(texts).not.toContain('Workday Invoice');
     expect(texts).not.toContain('Unknown');

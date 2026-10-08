@@ -1,7 +1,8 @@
 import { debug } from '@pga/logger';
-import { annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
+import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -947,6 +948,7 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(debug).toHaveBeenCalledWith(expect.stringMatching(/^Submitted lines for invoice .* \(attempt 2\): unchanged from attempt 1$/));
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -1051,6 +1053,198 @@ describe('Workday utilities', () => {
 
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
+    it('should retry unit cost decimal precision faults with amount-only lines that keep the total', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5500.00'
+              }
+            }
+          }
+        });
+      });
+
+      const precisionFault = 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753';
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: precisionFault,
+                Xpath: '/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[1]/ns1:Unit_Cost[1]'
+              }
+            }
+          }, null);
+          return;
+        }
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$5,500.00',
+        finalLines: [{
+          lineOrder: 1,
+          description: 'PSO-RISK-ADVISORY - Consultant',
+          quantity: 24.45,
+          unitCost: 224.9488753,
+          extendedAmount: 5500,
+        }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([{ attempt: 1, message: precisionFault }]);
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' }),
+        ])
+      );
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 5500,
+      });
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Control_Amount_Total).toBe(5500);
+
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
+    it('retries a mixed fault with one line precision error as amount-only on every eligible line, keeping totals and PO links', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5600.00'
+              }
+            }
+          }
+        });
+      });
+      const lineXpath = (index: number, field: string) => `/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[${index}]/ns1:${field}[1]`;
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: [
+                { Message: 'Enter a valid memo', Xpath: lineXpath(2, 'Memo') },
+                { Message: 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753', Xpath: lineXpath(1, 'Unit_Cost') },
+              ]
+            }
+          }, null);
+          return;
+        }
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$5,600.00',
+        finalLines: [
+          { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+          { lineOrder: 2, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100, purchaseOrderLineId: 'POL-002' },
+        ]
+      });
+
+      expect(result.success).toBe(true);
+      const retried = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(retried.Invoice_Line_Replacement_Data[0]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 5500 });
+      expect(retried.Invoice_Line_Replacement_Data[1]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 100,
+        Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-002' }] },
+      });
+      expect(retried.Control_Amount_Total).toBe(5600);
+    });
+
+    it('should submit normalized LevelBlue lines within the WSDL decimal limits on the first attempt', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5500.00'
+              }
+            }
+          }
+        });
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const finalLines = normalizeSupplierInvoiceLineAmounts([
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: 'Hours', quantity: 2.555, unitCost: 1000, extendedAmount: null },
+        { lineOrder: 3, description: 'Fuel surcharge', quantity: 0, unitCost: 0, extendedAmount: 10.005 },
+        { lineOrder: 4, description: 'Service credit', quantity: 1, unitCost: -12.3456789, extendedAmount: -12.35 },
+      ], true);
+      const result = await submitSupplierInvoiceUpdateForTest({ extractedAmountDue: '$8,052.66', finalLines });
+
+      expect(result.success).toBe(true);
+      expect(capturedRequests).toHaveLength(1);
+      const submittedLines = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+      expect(submittedLines[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
+      expect(submittedLines[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 2555 });
+      expect(submittedLines[2]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 10.005 });
+      expect(submittedLines[3]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
     });
 
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
@@ -2988,6 +3182,22 @@ describe('Workday utilities', () => {
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
+      it('submits a negative line with no discount marker as an amount-only credit without the PO line reference', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedTaxAmount: '$45.00',
+          finalLines: [{ lineOrder: 1, description: 'Credit for March overbilling', hasDiscount: null, quantity: 1, unitCost: -250, extendedAmount: -250, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(-250);
+        expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+        expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
+      });
+
       it('keeps the PO line reference, quantity, and tax applicability on a positive line flagged hasDiscount', async () => {
         const { getCapturedRequest } = setupMockClient();
 
@@ -3546,6 +3756,147 @@ describe('Workday utilities', () => {
           const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
           expect(data.Tax_Amount).toBe('12.50');
           expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+        });
+
+        it('should send Freight_Amount 0 and the corrected Tax_Amount when freight is cleared on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Freight_Amount: '510.86',
+                    Tax_Amount: '0.00'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedTaxAmount: '510.86',
+            freightCleared: true,
+            finalLines: [{ lineOrder: 1, description: 'Radios', quantity: 1, unitCost: 8514.38, extendedAmount: 8514.38 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data).toHaveProperty('Freight_Amount', 0);
+          expect(data.Tax_Amount).toBe(510.86);
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toEqual(usaTaxableRef);
+        });
+
+        it('should send Tax_Amount 0 over an existing Workday Tax_Amount when tax is cleared on update', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '12.50'
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            taxCleared: true,
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe(0);
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+        });
+
+        it('should keep the existing Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Freight_Amount: '40.00'
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '12,34',
+            extractedFreightLabel: 'Shipping',
+            freightAmountFromLines: 25,
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+            finalLines: [{ lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 }]
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe('40.00');
+        });
+
+        it('should move the draft OCR freight row to Freight_Amount when the extracted freight header is withheld', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Invoice_Line_Replacement_Data: [
+                      { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Widgets', Quantity: '1', Unit_Cost: '485', Extended_Amount: '485' },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Shipping', Quantity: '1', Unit_Cost: '15', Extended_Amount: '15' }
+                    ]
+                  }
+                }
+              }
+            });
+          });
+          const resolved = resolveHeaderChargeAmounts({
+            extractedFreightAmount: '-15.00',
+            extractedFreightLabel: 'Shipping',
+          });
+
+          await submitSupplierInvoiceUpdateForTest({
+            extractedFreightAmount: resolved.extractedFreightAmount,
+            freightCleared: resolved.freightCleared,
+          });
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Freight_Amount).toBe(15);
+          expect(data.Invoice_Line_Replacement_Data.map((line: any) => line.Item_Description)).toEqual(['Widgets']);
+        });
+
+        it('should keep the existing Tax_Amount and OCR tax rows when no tax was extracted', async () => {
+          const { mockClient, getCapturedRequest } = setupMockClient();
+          mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+            callback(null, {
+              Response_Data: {
+                Supplier_Invoice: {
+                  Supplier_Invoice_Data: {
+                    ...mockBaseGetResponse.Response_Data.Supplier_Invoice.Supplier_Invoice_Data,
+                    Tax_Amount: '10.00',
+                    Invoice_Line_Replacement_Data: [
+                      { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Widgets', Quantity: '1', Unit_Cost: '485', Extended_Amount: '485' },
+                      { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'State Tax', Quantity: '1', Unit_Cost: '5', Extended_Amount: '5' }
+                    ]
+                  }
+                }
+              }
+            });
+          });
+
+          await submitSupplierInvoiceUpdateForTest();
+
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe('10.00');
+          expect(data.Invoice_Line_Replacement_Data.map((line: any) => line.Item_Description)).toEqual(['Widgets', 'State Tax']);
         });
 
         it('should omit Tax_Applicability_Reference when the existing Workday Tax_Amount is zero', async () => {
@@ -4804,6 +5155,27 @@ describe('Workday utilities', () => {
       });
     });
 
+    it('submits normalized lines within the WSDL decimal limits on a new invoice', async () => {
+      const mockClient = mockSoapClient();
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      const finalLines = normalizeSupplierInvoiceLineAmounts([
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: 'Service credit', quantity: 1, unitCost: -12.3456789, extendedAmount: -12.35 },
+      ], true);
+      const result = await submitNewSupplierInvoiceForTest({ extractedAmountDue: '$5,487.65', finalLines });
+
+      expect(result.success).toBe(true);
+      const invoiceData = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(invoiceData.Control_Amount_Total).toBe(5487.65);
+      expect(invoiceData.Invoice_Line_Replacement_Data[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
+      expect(invoiceData.Invoice_Line_Replacement_Data[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
+    });
+
     it('includes Assignee_Reference when assigneeWID is provided', async () => {
       const mockClient = mockSoapClient();
       let capturedRequest: any;
@@ -4864,6 +5236,288 @@ describe('Workday utilities', () => {
       expect(result.appliedFallbacks).toEqual(
         expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
       );
+    });
+
+    describe('duplicate worktag types', () => {
+      const ref = (type: string, value: string, wid?: string) => ({
+        ID: [
+          ...(wid ? [{ $attributes: { type: 'WID' }, $value: wid }] : []),
+          { $attributes: { type }, $value: value },
+        ],
+      });
+      const org = (value: string, wid: string) => ref('Organization_Reference_ID', value, wid);
+      const newInvoiceResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };
+      const duplicateWorktagFault = {
+        Validation_Fault: {
+          Validation_Error: [{
+            Message: 'Only one worktag for each type is allowed for each document line.',
+            Detail_Message: 'Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-Only one worktag for each type is allowed for each document line.{+84}- on Supplier Invoice Line Replacement Data',
+            Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+          }],
+        },
+      };
+      const values = (worktags: any[] | undefined) => ([] as any[]).concat(worktags ?? []).flatMap((tag: any) =>
+        ([] as any[]).concat(tag.ID ?? [])
+          .filter((id: any) => id.$attributes?.type !== 'WID')
+          .map((id: any) => id.$value)
+      );
+      const submittedLines = (request: any) => ([] as any[]).concat(
+        request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data
+      );
+
+      it('keeps one LOB on a closed-PO line when the PO carries a different LOB the cache knows (PO-400628)', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        const resolveOrgWorktagKinds = jest.fn().mockResolvedValue(new Map([['wid-lob-corporate-comms', 'lob']]));
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'PGA of America - September Communications Consulting',
+            quantity: 4,
+            unitCost: 3500,
+            extendedAmount: 14000,
+            costCenterId: 'CC-Communications',
+            fundId: 'FUND-General_Fund_Unrestricted',
+            lineOfBusinessId: 'LOB-Communications',
+            purchaseOrderLineId: 'POL-1',
+            poPassthroughWorktagsReference: [
+              ref('Cost_Center_Reference_ID', 'CC-Communications', 'wid-cc'),
+              ref('Fund_ID', 'FUND-General_Fund_Unrestricted', 'wid-fund'),
+              org('Corporate_Communications', 'wid-lob-corporate-comms'),
+              org('VENU-Corporate', 'wid-venue'),
+            ],
+          }],
+          omitPurchaseOrderLineReference: true,
+          resolveOrgWorktagKinds,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(resolveOrgWorktagKinds).toHaveBeenCalledWith(expect.arrayContaining(['wid-lob-corporate-comms', 'Corporate_Communications']));
+        const [line] = submittedLines(capturedRequest);
+        expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+        expect(values(line.Worktags_Reference)).toEqual(expect.arrayContaining(['LOB-Communications', 'VENU-Corporate']));
+        expect(values(line.Worktags_Reference)).not.toContain('Corporate_Communications');
+        expect(values(line.Worktags_Reference).filter(value => value === 'CC-Communications')).toHaveLength(1);
+      });
+
+      it('lets the PO LOB replace a fallback LOB when only the cache knows the PO LOB', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        process.env.FALLBACK_LOB_ID = 'LOB-Corporate';
+
+        await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Communications consulting',
+            quantity: 1,
+            unitCost: 1000,
+            extendedAmount: 1000,
+            costCenterId: 'CC-Communications',
+            lineOfBusinessId: 'LOB-Corporate',
+            poPassthroughWorktagsReference: [org('Corporate_Communications', 'wid-lob-corporate-comms')],
+          }],
+          resolveOrgWorktagKinds: async () => new Map([['wid-lob-corporate-comms', 'lob']]),
+        });
+
+        const [line] = submittedLines(capturedRequest);
+        expect(values(line.Worktags_Reference)).toContain('Corporate_Communications');
+        expect(values(line.Worktags_Reference)).not.toContain('LOB-Corporate');
+      });
+
+      it('keeps one event on each split row when the PO line and its splits carry different events (PO-414007)', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, newInvoiceResponse);
+        });
+        const lineEvent = org('2026-KPMG_Womens_PGA', 'wid-event-line');
+        const splitEvent = org('2026-Womens_PGA_Championship', 'wid-event-split');
+        const split = (costCenter: string) => ({
+          extendedAmount: 100,
+          worktagReference: [ref('Cost_Center_Reference_ID', costCenter, `wid-${costCenter}`), splitEvent],
+        });
+        const splits = [split('CC-Operations'), split('CC-Hospitality'), split('CC-Merchandise')];
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Gas - 2 pass',
+            quantity: 1,
+            unitCost: 300,
+            extendedAmount: 300,
+            fundId: 'FUND-Championships',
+            purchaseOrderLineId: 'POL-1',
+            poPassthroughWorktagsReference: [ref('Fund_ID', 'FUND-Championships', 'wid-fund'), lineEvent],
+            supplierInvoiceSplitLineData: splits,
+          }],
+          resolveOrgWorktagKinds: async () => new Map([['wid-event-line', 'event'], ['wid-event-split', 'event']]),
+        });
+
+        expect(result.success).toBe(true);
+        const [line] = submittedLines(capturedRequest);
+        expect(line.Supplier_Invoice_Split_Line_Data).toHaveLength(3);
+        for (const splitRow of line.Supplier_Invoice_Split_Line_Data) {
+          const splitValues = values(splitRow.Worktag_Reference);
+          expect(splitValues.filter(value => value.startsWith('2026-'))).toEqual(['2026-Womens_PGA_Championship']);
+          expect(splitValues.filter(value => value.startsWith('CC-'))).toHaveLength(1);
+        }
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining('Dropped duplicate worktag types before submitting invoice (new invoice)'));
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'duplicateWorktags', label: 'kept one worktag per type (dropped 2026-KPMG_Womens_PGA)' }),
+        ]));
+      });
+
+      it('logs PO line and split worktags, not the raw Get PO response, when loading a PO', async () => {
+        const mockClient: any = mockSoapClient();
+        mockClient.Get_Purchase_Orders = jest.fn((_request: any, callback: any) => {
+          callback(null, {
+            Response_Data: {
+              Purchase_Order: {
+                Purchase_Order_Data: {
+                  Document_Number: 'PO-414007',
+                  Service_Line_Data: {
+                    Line_Number: 1,
+                    Service_Order_Line_ID: 'POL-1',
+                    Description: 'Gas - 2 pass',
+                    Worktags_Reference: [ref('Fund_ID', 'FUND-Championships', 'wid-fund')],
+                    Service_Purchase_Order_Line_Split_Data: [
+                      { Extended_Amount: 100, Worktag_Reference: [ref('Cost_Center_Reference_ID', 'CC-Operations', 'wid-ops')] },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        });
+
+        const parsed = await loadPurchaseOrder(mockContext, 'PO-414007');
+
+        expect(parsed?.documentNumber).toBe('PO-414007');
+        expect(debug).toHaveBeenCalledWith(
+          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]]}]'
+        );
+        expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('PO response for PO-414007'));
+      });
+
+      it('retries once without PO pass-through worktags, keeping PO split rows, on the duplicate worktag fault', async () => {
+        const mockClient = mockSoapClient();
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(duplicateWorktagFault, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        const unknownOrg = org('VENU-Something', 'wid-unknown');
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Gas - 4 pass Flip',
+            quantity: 2,
+            unitCost: 150,
+            extendedAmount: 300,
+            costCenterId: 'CC-Operations',
+            fundId: 'FUND-Championships',
+            lineOfBusinessId: 'LOB-Championships',
+            poPassthroughWorktagsReference: [unknownOrg],
+            supplierInvoiceSplitLineData: [
+              { extendedAmount: 150, worktagReference: [ref('Cost_Center_Reference_ID', 'CC-Operations', 'wid-ops')] },
+              { extendedAmount: 150, worktagReference: [ref('Cost_Center_Reference_ID', 'CC-Hospitality', 'wid-hosp')] },
+            ],
+          }],
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        const [firstLine] = submittedLines(capturedRequests[0]);
+        const [retryLine] = submittedLines(capturedRequests[1]);
+        const splitValues = (line: any) => ([] as any[]).concat(line.Supplier_Invoice_Split_Line_Data ?? [])
+          .map((split: any) => values(split.Worktag_Reference));
+        expect(splitValues(firstLine)).toEqual([
+          ['CC-Operations', 'VENU-Something'],
+          ['CC-Hospitality', 'VENU-Something'],
+        ]);
+        expect(splitValues(retryLine)).toEqual([['CC-Operations'], ['CC-Hospitality']]);
+        expect(values(retryLine.Worktags_Reference)).not.toContain('VENU-Something');
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO pass-through worktags (kept PO split rows)' }),
+        ]));
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining(
+          'Submitted lines for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
+        ));
+        const submittedLineLogs = (debug as jest.Mock).mock.calls
+          .map(([message]) => message)
+          .filter((message): message is string => typeof message === 'string' && message.startsWith('Submitted lines for invoice'));
+        expect(submittedLineLogs).toHaveLength(2);
+        expect(submittedLineLogs[1]).toContain('(attempt 2)');
+        for (const message of submittedLineLogs) {
+          expect(message).toMatch(/"quantity":2,"unitCost":150,"extendedAmount":300\b/);
+          expect(message).toContain('"splits":[[');
+          expect(message).toContain('Cost_Center_Reference_ID=CC-Hospitality');
+        }
+      });
+
+      it('fails without a classifier or fallback cost center retry when no PO pass-through worktags remain', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(duplicateWorktagFault, null);
+        });
+        process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+
+        await expect(submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Consulting',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            costCenterId: 'CC-Operations',
+          }],
+        })).rejects.toThrow('Only one worktag for each type is allowed for each document line.');
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+
+      it('still submits when the organization kind lookup fails', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(null, newInvoiceResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Consulting',
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            poPassthroughWorktagsReference: [org('VENU-Corporate', 'wid-venue')],
+          }],
+          resolveOrgWorktagKinds: jest.fn().mockRejectedValue(new Error('db down')),
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      });
     });
 
     describe('Zendesk URL additional field', () => {

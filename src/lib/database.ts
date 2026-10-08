@@ -1,5 +1,6 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { debug } from '@pga/logger';
+import { ensureTouchReporting } from './touch_reporting.js';
 import { Pool } from 'pg';
 import { parseRelatedLob, type RelatedLob } from './related_worktags.js';
 
@@ -117,6 +118,79 @@ export const CREATE_INVOICE_CLUSTER_PLANS_TABLE = `
   );
 `;
 
+// One row per finance-agent write to a supplier invoice, read back from Workday after the write.
+// The scorer diffs what AP later saved against the latest row.
+export const CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_snapshots (
+    workday_invoice_wid VARCHAR(255) NOT NULL,
+    write_seq INTEGER NOT NULL,
+    source VARCHAR(32) NOT NULL,
+    workday_invoice_number VARCHAR(255),
+    fields JSONB NOT NULL,
+    conversation_id VARCHAR(255),
+    s3_keys JSONB,
+    attachment_kinds JSONB,
+    release_sha VARCHAR(64),
+    clustering_mode VARCHAR(16),
+    pre_write_diff JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (workday_invoice_wid, write_seq)
+  );
+`;
+
+export const CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_conversation ON agent_invoice_snapshots(conversation_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_created_at ON agent_invoice_snapshots(created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_source_wid ON agent_invoice_snapshots(source, workday_invoice_wid, created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_snapshots_suppliers_invoice_number ON agent_invoice_snapshots((fields->>'suppliersInvoiceNumber'));`,
+];
+
+// One row per agent-written invoice: the entry read when AP submits it and the final read at a terminal state.
+export const CREATE_AGENT_INVOICE_SCORES_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_scores (
+    workday_invoice_wid VARCHAR(255) PRIMARY KEY,
+    workday_invoice_number VARCHAR(255),
+    origin VARCHAR(32),
+    conversation_id VARCHAR(255),
+    entry_status VARCHAR(64),
+    entry_read_at TIMESTAMP,
+    entry_fields JSONB,
+    entry_diff JSONB,
+    final_status VARCHAR(64),
+    final_read_at TIMESTAMP,
+    late_diff JSONB,
+    outcome VARCHAR(32),
+    cancel_reason TEXT,
+    cancel_attribution VARCHAR(16),
+    cancel_basis VARCHAR(64),
+    cancel_evidence JSONB,
+    hold_reason TEXT,
+    release_sha VARCHAR(64),
+    clustering_mode VARCHAR(16),
+    terminal BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+// The digests and touch rollup select scores by when they were read.
+export const CREATE_AGENT_INVOICE_SCORES_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_entry_read_at ON agent_invoice_scores(entry_read_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_final_read_at ON agent_invoice_scores(final_read_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_invoice_scores_latest_read ON agent_invoice_scores((GREATEST(entry_read_at, final_read_at, updated_at)));`,
+];
+
+// AP's own call on an unattributed cancel; overrides the scorer's rules for that invoice.
+export const CREATE_CANCEL_LABELS_TABLE = `
+  CREATE TABLE IF NOT EXISTS cancel_labels (
+    workday_invoice_wid VARCHAR(255) PRIMARY KEY,
+    attribution VARCHAR(16) NOT NULL CHECK (attribution IN ('agent', 'business')),
+    note TEXT,
+    labeled_by VARCHAR(255),
+    labeled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
 export async function migrateDocumentsTypeCheck(
   query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<{ type?: string }> }>
 ): Promise<void> {
@@ -231,9 +305,27 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
       await pool.query(CREATE_CONVERSATION_INVOICE_CLAIMS_TABLE);
       await pool.query(CREATE_INVOICE_CLUSTER_PLANS_TABLE);
 
+      // Agent invoice scoring: snapshots of each agent write, per-invoice scores, and AP cancel labels
+      await pool.query(CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE);
+      for (const indexSql of CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES) {
+        await pool.query(indexSql);
+      }
+      await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
+      for (const indexSql of CREATE_AGENT_INVOICE_SCORES_INDEXES) {
+        await pool.query(indexSql);
+      }
+      await pool.query(CREATE_CANCEL_LABELS_TABLE);
+
       const migrationClient = await pool.connect();
       try {
         await migrateDocumentsTypeCheck((sql, params) => migrationClient.query(sql, params));
+        // After agent_invoice_scores exists: touch reporting view and daily rollup table. Reporting must never
+        // block invoice processing, so a failure here is logged and the pool is still served.
+        try {
+          await ensureTouchReporting((sql, params) => migrationClient.query(sql, params));
+        } catch (reportingError) {
+          debug('Could not create touch reporting objects; continuing without them', reportingError);
+        }
       } finally {
         migrationClient.release();
       }
@@ -522,6 +614,43 @@ export async function getCostCenterWorkdayIdsByCodes(
     return byId;
   } catch (error) {
     debug('Error getting cost center Workday ids:', error);
+    throw error;
+  }
+}
+
+/** Map worktag WIDs and LOB reference IDs (lowercased) to their cached organization kind. */
+export async function getOrgWorktagKindsByIds(
+  db: DatabaseConnection,
+  ids: string[]
+): Promise<Map<string, 'lob' | 'event'>> {
+  const byId = new Map<string, 'lob' | 'event'>();
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return byId;
+
+  try {
+    const results: unknown = await db.query(`
+      SELECT workday_id, type, metadata
+      FROM documents
+      WHERE type IN ('lob', 'event')
+        AND (
+          workday_id = ANY($1::text[])
+          OR LOWER(COALESCE(metadata->>'referenceId', '')) = ANY($2::text[])
+        )
+    `, [unique, unique.map((id) => id.toLowerCase())]);
+
+    for (const row of Array.isArray(results) ? results : []) {
+      const record = asRecord(row);
+      const kind = record.type === 'lob' || record.type === 'event' ? record.type : undefined;
+      if (!kind) continue;
+      if (typeof record.workday_id === 'string' && record.workday_id) byId.set(record.workday_id, kind);
+      const referenceId = asRecord(record.metadata).referenceId;
+      if (typeof referenceId === 'string' && referenceId.trim()) byId.set(referenceId.trim().toLowerCase(), kind);
+    }
+
+    debug(`Found cached organization kinds for ${byId.size} worktag key(s)`);
+    return byId;
+  } catch (error) {
+    debug('Error getting cached organization worktag kinds:', error);
     throw error;
   }
 }

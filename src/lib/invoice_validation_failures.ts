@@ -459,6 +459,36 @@ export function isQuantityUnitExtendedMismatchError(text: unknown): boolean {
   );
 }
 
+// Workday may print "!**!" in place of the limit and value.
+const DECIMAL_PRECISION_FAULT = /Decimal precision of (?:\d+|!\*\*!) exceeded/i;
+
+// The message names the field ("for Unit Cost: 224.9488753"); when it does not, that error's own xpath does.
+// An xpath outside Invoice_Line_Replacement_Data is a header or reference field the line retry cannot fix.
+function isQuantityOrUnitCostPrecisionFault(message: string, xpath?: string): boolean {
+  if (!DECIMAL_PRECISION_FAULT.test(message)) return false;
+  if (xpath && !/Invoice_Line_Replacement_Data/i.test(xpath)) return false;
+  const namedField = message.match(/exceeded for ([A-Za-z_ ]+?)\s*(?:[:.,;]|$)/im)?.[1];
+  const subject = namedField ?? xpath ?? '';
+  return /(?:^|[^A-Za-z])(?:Unit[\s_]*Cost|Quantity)(?![A-Za-z])/i.test(subject)
+    && !/Extended[\s_]*Amount/i.test(namedField ?? '');
+}
+
+// Each validation error is read on its own, so a Quantity xpath on one error cannot qualify another.
+// strong-soap rejects with an Error whose parsed envelope sits on `root`.
+// fallbackText is read only when no structured error carries a precision message, so it cannot
+// requalify a fault whose xpath already placed it outside the invoice lines.
+export function isLineQuantityOrUnitCostPrecisionError(value: unknown, fallbackText?: string): boolean {
+  if (typeof value === 'string') return isQuantityOrUnitCostPrecisionFault(value);
+  const soapFault = (value as { root?: { Envelope?: { Body?: { Fault?: unknown } } } } | null)?.root?.Envelope?.Body?.Fault;
+  const precisionFaults = extractWorkdayValidationErrorDetailsList([value, soapFault])
+    .map(details => ({ message: [details.message, details.detailMessage].filter(Boolean).join(' '), xpath: details.xpath }))
+    .filter(details => DECIMAL_PRECISION_FAULT.test(details.message));
+  if (precisionFaults.length > 0) {
+    return precisionFaults.some(details => isQuantityOrUnitCostPrecisionFault(details.message, details.xpath));
+  }
+  return fallbackText ? isQuantityOrUnitCostPrecisionFault(fallbackText) : false;
+}
+
 export function isAssigneeValidationError(text: unknown): boolean {
   const validationText = asValidationText(text);
   return (
@@ -481,6 +511,10 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));
+}
+
+export function isDuplicateWorktagTypeError(text: unknown): boolean {
+  return /Only one worktag for each type is allowed/i.test(asValidationText(text));
 }
 
 export function isConfigurableAttributeValidationError(text: unknown): boolean {

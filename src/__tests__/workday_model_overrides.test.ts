@@ -5,10 +5,7 @@ import { classifyWorkdayValidationField } from '../lib/workday_validation_field_
 jest.mock('ai', () => ({
   ...jest.requireActual<Record<string, unknown>>('ai'),
   ToolLoopAgent: jest.fn(),
-}));
-
-jest.mock('@ai-sdk/openai', () => ({
-  openai: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'openai.responses', modelId }))
+  gateway: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'gateway', modelId })),
 }));
 
 describe('Workday agent models', () => {
@@ -60,15 +57,15 @@ describe('Workday agent models', () => {
       expect(agentModel()).toBe(customModel);
     });
 
-    it('defaults to gpt-5.4-mini', async () => {
+    it('defaults to openai/gpt-5.4-mini', async () => {
       await proposeWorkdaySubmitRepair(repairInput);
-      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'gpt-5.4-mini' }));
+      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'openai/gpt-5.4-mini' }));
     });
 
     it('uses WORKDAY_SUBMIT_REPAIR_MODEL when set', async () => {
       process.env.WORKDAY_SUBMIT_REPAIR_MODEL = 'gpt-5.4';
       await proposeWorkdaySubmitRepair(repairInput);
-      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'gpt-5.4' }));
+      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'openai/gpt-5.4' }));
     });
   });
 
@@ -84,11 +81,11 @@ describe('Workday agent models', () => {
       process.env.WORKDAY_SUBMIT_REPAIR_MODEL = 'repair-model';
       process.env.WORKDAY_VALIDATION_FIELD_MODEL = 'validation-model';
       await classifyWorkdayValidationField(validationInput);
-      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'validation-model' }));
+      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'openai/validation-model' }));
     });
 
     it('does not build a model when a duplicate invoice number skips the agent', async () => {
-      const mockOpenai = jest.requireMock<{ openai: jest.Mock }>('@ai-sdk/openai').openai;
+      const mockGateway = jest.requireMock<{ gateway: jest.Mock }>('ai').gateway;
       const decision = await classifyWorkdayValidationField({
         validation: { message: "Supplier's Invoice Number is already in use", detailMessage: undefined, xpath: undefined },
         allowedRetryFields: ['supplier'],
@@ -96,18 +93,18 @@ describe('Workday agent models', () => {
 
       expect(decision.retryField).toBe('unknown');
       expect(mockToolLoopAgent).not.toHaveBeenCalled();
-      expect(mockOpenai).not.toHaveBeenCalled();
+      expect(mockGateway).not.toHaveBeenCalled();
     });
 
-    it('falls back to WORKDAY_SUBMIT_REPAIR_MODEL, then gpt-5.4-mini', async () => {
+    it('falls back to WORKDAY_SUBMIT_REPAIR_MODEL, then openai/gpt-5.4-mini', async () => {
       process.env.WORKDAY_SUBMIT_REPAIR_MODEL = 'repair-model';
       await classifyWorkdayValidationField(validationInput);
-      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'repair-model' }));
+      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'openai/repair-model' }));
 
       mockToolLoopAgent.mockClear();
       delete process.env.WORKDAY_SUBMIT_REPAIR_MODEL;
       await classifyWorkdayValidationField(validationInput);
-      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'gpt-5.4-mini' }));
+      expect(agentModel()).toEqual(expect.objectContaining({ modelId: 'openai/gpt-5.4-mini' }));
     });
   });
 });

@@ -208,7 +208,8 @@ function classificationFileParts(documents: ClassifiableDocument[]) {
 
 export async function classifyInvoiceAttachments(
   documents: ClassifiableDocument[],
-  emailContext?: InvoiceData['emailContext']
+  emailContext?: InvoiceData['emailContext'],
+  abortSignal?: AbortSignal
 ): Promise<InvoiceAttachmentParseResult> {
   const fileList = documents.map((doc, index) => `${index + 1}. ${doc.fileName}`).join('\n');
   const emailText = emailContext
@@ -218,6 +219,7 @@ export async function classifyInvoiceAttachments(
     prompt: parseInvoiceAttachmentsPrompt,
     schema: InvoiceAttachmentParseSchema,
     tools: {},
+    abortSignal,
     messages: [
       {
         role: 'user',
@@ -288,7 +290,8 @@ export function joinClassifications(
 
 export async function parseAndClusterInvoiceAttachments(
   attachments: ClusterableAttachment[],
-  loadBuffer: (s3Key: string) => Promise<Buffer>
+  loadBuffer: (s3Key: string) => Promise<Buffer>,
+  options?: { abortSignal?: AbortSignal }
 ): Promise<{ clustering: InvoiceAttachmentClustering; classified: ClassifiedAttachment[] }> {
   const buffers = await Promise.all(attachments.map((attachment) => loadBuffer(attachment.s3Key)));
   const documents = attachments.map((attachment, index) => ({
@@ -296,7 +299,7 @@ export async function parseAndClusterInvoiceAttachments(
     contentType: attachment.contentType,
     buffer: buffers[index],
   }));
-  const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext);
+  const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext, options?.abortSignal);
   const classified = joinClassifications(attachments, classifications.documents);
   const clustering = clusterClassifiedAttachments(classified);
   debug('Clustered invoice attachments', {

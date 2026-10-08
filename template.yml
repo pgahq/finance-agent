@@ -38,6 +38,24 @@ Parameters:
     Type: String
     Description: Intercom workspace app_id for Slack inbox permalinks (sandbox vs prod)
     Default: jyi16dpc
+  ReleaseSha:
+    Type: String
+    Description: Git commit deployed, stamped on agent invoice snapshots so scores can be compared by release
+    Default: unknown
+  CancelReasonAttribution:
+    Type: String
+    Description: >-
+      JSON mapping of Workday cancel reasons (name or Invoice_Cancel_Reason ID) and work queue tags to cancel
+      attribution for invoice scoring. Order Canceled (3-3) and Alternate Payment Method Used (3-4) are business;
+      Duplicate Invoice (Workday-owned DUPLICATE) counts against the agent as a duplicate; Incorrect Supplier (3-1)
+      and Invoiced in Error (3-2) stay unmapped because either side can cause them.
+    Default: '{"business":["INVOICE_CANCEL_REASON-3-3","INVOICE_CANCEL_REASON-3-4"],"duplicate":["DUPLICATE"],"agent":[],"agentTags":[]}'
+  TenantRefreshWeekday:
+    Type: String
+    Description: >-
+      UTC weekday (0-6, 6 = Saturday) when this Workday tenant is overwritten with production data, or
+      "none". Scoring skips that day and closes invoices the refresh removed instead of treating them as deletions.
+    Default: "none"
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -57,6 +75,8 @@ Globals:
         WORKDAY_DOMAIN: !Ref WorkdayDomain
         WORKDAY_TENANT: !Ref WorkdayTenant
         WORKDAY_UI_BASE_URL: !Ref WorkdayUiBaseUrl
+        RELEASE_SHA: !Ref ReleaseSha
+        SCORE_TENANT_REFRESH_WEEKDAY: !Ref TenantRefreshWeekday
         WORKDAY_CLIENT_ID: ssm:/finance-agent/workday-client-id
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
@@ -71,7 +91,7 @@ Globals:
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
-        OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
+        AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket
@@ -721,7 +741,7 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-CreateInvoiceProcessor"
       Handler: dist/create_invoice.processor
       Role: !GetAtt EnrichInvoiceProcessorRole.Arn
-      Timeout: 300 # 5 minutes for single invoice
+      Timeout: 420 # 7 minutes for single invoice; must stay below the 15-minute cluster claim lifetime
       MemorySize: 1024
       VpcConfig:
         SecurityGroupIds:
@@ -756,6 +776,81 @@ Resources:
           Properties:
             Path: /create-invoice
             Method: POST
+
+  # Score Invoices - daily: finds agent invoices that reached a new stage and dispatches them to the processor
+  ScoreInvoicesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ScoreInvoices"
+      Handler: dist/score_invoices.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 14 * * ? *)
+
+  # Score Invoices Processor - entry diff at AP submit, final read at a terminal state, cancel attribution
+  ScoreInvoicesProcessor:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ScoreInvoicesProcessor"
+      Handler: dist/score_invoices_processor.processor
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          CANCEL_REASON_ATTRIBUTION: !Ref CancelReasonAttribution
+          # WQL alias for Supplier's Invoice Number on supplierInvoices; finds an invoice AP re-keyed after a cancel.
+          SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD: suppliersInvoiceNumber
+          INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
+          INTERCOM_API_BASE_URL: https://api.intercom.io
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+
+  # Score Digest - weekly audit summary posted to the audit Slack channel, not the per-invoice channel
+  ScoreDigestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-ScoreDigest"
+      Handler: dist/score_digest.handler
+      Role: !GetAtt FinanceAgentLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          AUDIT_SLACK_WEBHOOK_URL: ssm:/finance-agent/audit-slack-webhook-url
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue pgagent-private-subnet-id-1
+          - !ImportValue pgagent-private-subnet-id-2
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 14 ? * MON *)
+            Input: '{"mode":"weekly"}'
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # After the 14:00 UTC scoring run; posts only on days something was scored.
+            Schedule: cron(20 14 * * ? *)
+            Input: '{"mode":"daily"}'
 
 Outputs:
   EnrichInvoiceApiUrl:

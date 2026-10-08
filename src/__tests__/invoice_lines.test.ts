@@ -6,13 +6,22 @@ import {
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
   constrainEmailLobToRelatedWorktags,
+  isDiscountLine,
   isFreightOrHandlingLine,
+  lineTotalMismatchNote,
+  normalizeExtractedFreightAndTax,
+  removeRepeatedLineTables,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  parseExtractedAmount,
+  parseExtractedLineAmount,
+  parseExtractedUnitCost,
+  resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   statesServicePeriod,
+  type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
 import { getAiResponse } from '../lib/ai.js';
@@ -633,6 +642,56 @@ describe('buildFinalInvoiceLines', () => {
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
   });
 
+  it('keeps sub-cent unit cost precision when the merge fails and extracted lines are used', async () => {
+    mockGetAiResponse.mockRejectedValue(new Error('merge unavailable'));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null }],
+      undefined,
+      undefined,
+      {}
+    );
+    const [line] = alignSupplierInvoiceLineAmounts(result.lines);
+
+    expect(line).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
+  });
+
+  it('keeps a printed discount row negative when the merge fails and extracted lines are used', async () => {
+    mockGetAiResponse.mockRejectedValue(new Error('merge unavailable'));
+
+    const result = await buildFinalInvoiceLines(
+      [
+        { description: 'Consulting', quantity: 10, unitCost: '$125.00', totalPrice: '$1,250.00', hasDiscount: null },
+        { description: 'Loyalty discount', quantity: null, unitCost: null, totalPrice: '($250.00)', hasDiscount: true },
+      ],
+      undefined,
+      undefined,
+      {}
+    );
+    const lines = alignSupplierInvoiceLineAmounts(result.lines);
+
+    expect(lines[1]).toMatchObject({ hasDiscount: true, extendedAmount: -250 });
+    expect(lineTotalMismatchNote(lines, { amountDue: '$1,000.00' })).toBeUndefined();
+  });
+
+  it('rethrows AI errors when the deadline signal has aborted', async () => {
+    const abortController = new AbortController();
+    abortController.abort(new Error('Processor deadline reached'));
+    mockGetAiResponse.mockRejectedValue(new Error('Processor deadline reached'));
+
+    await expect(buildFinalInvoiceLines(
+      extracted,
+      [poLine()],
+      undefined,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      abortController.signal
+    )).rejects.toThrow('Processor deadline reached');
+  });
+
   it('lets email LOB override the PO LOB', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{
@@ -1203,6 +1262,477 @@ describe('alignSupplierInvoiceLineAmounts', () => {
     const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 0, extendedAmount: 1250 }];
     expect(alignSupplierInvoiceLineAmounts(lines)).toEqual(lines);
   });
+
+  it('rounds a back-computed unit cost to six decimals and keeps quantity and the line total', () => {
+    const lines = [{ lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500, purchaseOrderLineId: 'POL-001' }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500, purchaseOrderLineId: 'POL-001' });
+  });
+
+  it('rounds quantity to two decimals and submits amount-only when the rounded product misses the total', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting hours', quantity: 1.125, unitCost: 200, extendedAmount: 225 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 225 });
+  });
+
+  it('submits amount-only when six-decimal rounding no longer reproduces the total on a very large quantity', () => {
+    const lines = [{ lineOrder: 1, description: 'Envelopes', quantity: 2000000, unitCost: 0.0123456789, extendedAmount: 24691.36 }];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 24691.36 });
+  });
+
+  it('rounds unit cost on lines without an extended amount and records the unrounded total', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2, unitCost: 10.12345678, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 2, unitCost: 10.123457, extendedAmount: 20.25 });
+  });
+
+  it.each([
+    [{ hasDiscount: null, unitCost: 10, extendedAmount: -20 }, true],
+    [{ hasDiscount: null, unitCost: -10, extendedAmount: 20 }, false],
+    [{ hasDiscount: null, unitCost: -10, extendedAmount: null }, true],
+    [{ hasDiscount: true, unitCost: 10, extendedAmount: 20 }, false],
+  ])('classifies a line by its extended amount, else its unit cost (%o)', (line, expected) => {
+    expect(isDiscountLine(line)).toBe(expected);
+  });
+
+  it('records the quantity total on a credit with no discount marker and no extended amount', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Credit for returned units', hasDiscount: null, quantity: 2, unitCost: -10, extendedAmount: null },
+      { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: null, unitCost: -50, extendedAmount: null },
+    ];
+    const result = alignSupplierInvoiceLineAmounts(lines);
+    expect(result[0]).toMatchObject({ quantity: 2, unitCost: -10, extendedAmount: -20 });
+    expect(result[1].extendedAmount).toBeNull();
+  });
+
+  it('keeps the total of a line with no extended amount when rounding the quantity would move it', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 2.555, unitCost: 1000, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 2555 });
+  });
+
+  it('leaves a line with no extended amount untouched when nothing needs rounding', () => {
+    const lines = [{ lineOrder: 1, description: 'Consulting', quantity: 3, unitCost: 12.5, extendedAmount: null }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toEqual(lines[0]);
+  });
+
+  it('keeps a three-decimal extended amount as printed', () => {
+    const lines = [{ lineOrder: 1, description: 'Fuel', quantity: 0, unitCost: 0, extendedAmount: 10.005 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0].extendedAmount).toBe(10.005);
+  });
+
+  it('rounds half-cent boundaries on the decimal value in both signs', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Item', quantity: 1, unitCost: 1.0049999, extendedAmount: 1.0045 },
+      { lineOrder: 2, description: 'Item', quantity: 1, unitCost: 1.0000005, extendedAmount: null },
+      { lineOrder: 3, description: 'Credit', quantity: 1, unitCost: -12.3455, extendedAmount: -12.3455 },
+    ];
+    const [first, second, third] = alignSupplierInvoiceLineAmounts(lines);
+    expect(first).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 1 });
+    expect(second).toMatchObject({ quantity: 1, unitCost: 1.000001, extendedAmount: 1 });
+    expect(third).toMatchObject({ quantity: 1, unitCost: -12.3455, extendedAmount: -12.35 });
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Item', quantity: 0, unitCost: 0, extendedAmount: 1.005 }],
+      { amountDue: '$1.01' }
+    )).toBeUndefined();
+  });
+
+  it('rounds an extended amount past three decimals to cents so its cent total holds', () => {
+    const lines = [{ lineOrder: 1, description: 'Item', quantity: 0, unitCost: 0, extendedAmount: 1.0049 }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0].extendedAmount).toBe(1);
+  });
+
+  it('rounds the extended amount on amount-only lines derived from a long unit cost to cents', () => {
+    const lines = applyMissingQuantityColumnLines(
+      [{ lineOrder: 1, description: 'Retainer', quantity: null, unitCost: 224.9488753, extendedAmount: null }],
+      false
+    );
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 224.95 });
+  });
+});
+
+describe('lineTotalMismatchNote', () => {
+  const consultant = { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 };
+  const monthly = { lineOrder: 2, description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: 5500, extendedAmount: 5500 };
+
+  it('flags lines that total twice the amount due', () => {
+    expect(lineTotalMismatchNote([consultant, monthly], { amountDue: '$5,500.00', taxAmount: '$0.00' })).toBe(
+      'Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
+    );
+  });
+
+  it('accepts lines that match the amount due', () => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$5,500.00', taxAmount: '$0.00' })).toBeUndefined();
+  });
+
+  it('subtracts freight and tax from the amount due', () => {
+    const line = { lineOrder: 1, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100 };
+    expect(lineTotalMismatchNote([line], { amountDue: '$118.25', freightAmount: '$10.00', taxAmount: '$8.25' })).toBeUndefined();
+    expect(lineTotalMismatchNote([line], { amountDue: '$118.25', freightAmount: '$10.00' })).toContain('is $108.25');
+  });
+
+  it('nets discount lines and amount-only lines', () => {
+    const lines = [
+      { lineOrder: 1, description: 'Consulting', quantity: 0, unitCost: 0, extendedAmount: 1250 },
+      { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: null, unitCost: null, extendedAmount: -250 },
+    ];
+    expect(lineTotalMismatchNote(lines, { amountDue: '1,000.00' })).toBeUndefined();
+  });
+
+  it('uses quantity times unit cost when a line has no extended amount', () => {
+    const line = { lineOrder: 1, description: 'Widgets', quantity: 3, unitCost: 33.34, extendedAmount: null };
+    expect(lineTotalMismatchNote([line], { amountDue: '$100.02' })).toBeUndefined();
+    expect(lineTotalMismatchNote([line], { amountDue: '$100.00' })).toContain('Invoice lines total $100.02');
+  });
+
+  it('skips the check without an amount due, lines, or a line amount', () => {
+    expect(lineTotalMismatchNote([consultant, monthly], {})).toBeUndefined();
+    expect(lineTotalMismatchNote([], { amountDue: '$5,500.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Retainer', quantity: 1, unitCost: null, extendedAmount: null }],
+      { amountDue: '$5,500.00' }
+    )).toBeUndefined();
+  });
+
+  it('skips the check when a freight row has no amount or only freight rows remain', () => {
+    const widgets = { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 };
+    const shipping = { lineOrder: 2, description: 'Shipping', quantity: null, unitCost: null, extendedAmount: null };
+    expect(lineTotalMismatchNote([widgets, shipping], { amountDue: '$110.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote(
+      [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+      { amountDue: '$110.00' }
+    )).toBeUndefined();
+  });
+
+  it('asks about a missing line or charge when the lines fall short', () => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$6,000.00' })).toBe(
+      'Invoice lines total $5,500.00, but the amount due $6,000.00 less freight $0.00 and tax $0.00 is $6,000.00. Check for a missing line or charge before approving.'
+    );
+  });
+
+  it.each([
+    ['a negative amount due', { amountDue: '-$50.00' }],
+    ['a parenthesized credit', { amountDue: '$(1,000.00)' }],
+    ['a malformed amount due', { amountDue: '1.234,56' }],
+    ['an unreadable freight amount', { amountDue: '$5,600.00', freightAmount: 'N/A' }],
+    ['an unreadable freight amount over a Workday freight', { amountDue: '$5,515.00', freightAmount: 'N/A', currentFreightAmount: '15.00' }],
+    ['an unreadable tax amount', { amountDue: '$5,600.00', taxAmount: '12.3.4' }],
+    ['an unreadable Workday tax amount', { amountDue: '$5,600.00', currentTaxAmount: { value: 100 } }],
+  ])('skips the check for %s', (_label, charges) => {
+    expect(lineTotalMismatchNote([consultant], charges)).toBeUndefined();
+  });
+
+  it('uses the Workday invoice freight and tax when none was extracted, as the builder does', () => {
+    const charges = { amountDue: '$5,620.00', currentFreightAmount: '15.00', currentTaxAmount: 105 };
+    expect(lineTotalMismatchNote([consultant], charges)).toBeUndefined();
+    expect(lineTotalMismatchNote([consultant], { ...charges, freightAmount: '$20.00' })).toContain('less freight $20.00 and tax $105.00');
+    expect(lineTotalMismatchNote([consultant], { ...charges, taxCleared: true })).toContain('less freight $15.00 and tax $0.00');
+  });
+
+  it.each([1.005, '1.005'])('rounds a Workday tax of %p to the same cent whether it is a number or a string', currentTaxAmount => {
+    expect(lineTotalMismatchNote([consultant], { amountDue: '$5,501.01', currentTaxAmount })).toBeUndefined();
+  });
+
+  it('moves freight-described lines to freight when no header freight is set', () => {
+    const shipping = { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 10, extendedAmount: 10 };
+    expect(lineTotalMismatchNote([consultant, shipping], { amountDue: '$5,510.00' })).toBeUndefined();
+    expect(lineTotalMismatchNote([consultant, shipping], { amountDue: '$5,510.00', freightAmount: '$10.00' })).toBeUndefined();
+  });
+
+  it('counts a discount line once at its unit cost, as the builder submits it', () => {
+    const discount = { lineOrder: 2, description: 'Discount', hasDiscount: true, quantity: 2, unitCost: -5, extendedAmount: null };
+    expect(lineTotalMismatchNote([consultant, discount], { amountDue: '$5,495.00' })).toBeUndefined();
+  });
+});
+
+describe('removeRepeatedLineTables', () => {
+  const consultant = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', tableNumber: 1 };
+  const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
+  const levelBlueCharges = { amountDue: '$5,500.00', taxAmount: '$0.00' };
+  const levelBluePoLines = [
+    poLine({ lineOrder: 1, purchaseOrderLineId: 'ORDER_SERVICE_LINE-3-29580', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30', availableForInvoicing: true }),
+    poLine({ lineOrder: 2, purchaseOrderLineId: 'ORDER_SERVICE_LINE-3-29577', extendedAmount: 5500, startDate: '2026-10-01', endDate: '2026-10-31', availableForInvoicing: true }),
+  ];
+
+  it('keeps the LevelBlue Sep\'26 summary row because it matches the open September PO line', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines);
+    expect(result.lines).toEqual([monthly]);
+    expect(result.removed).toEqual([consultant]);
+    expect(result.keptTable).toBe(2);
+    expect(result.keepReason).toBe('purchase_order');
+    expect(result.note).toBe(
+      'Removed line "PSO-RISK-ADVISORY - Consultant" ($5,500.00) because table 1 repeats the charges in table 2: each table totals $5,500.00, the amount due less freight and tax. Kept table 2 because its lines match open PO lines by amount and service period.'
+    );
+  });
+
+  it('keeps the row that states its service period when there are no PO lines', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges);
+    expect(result.lines).toEqual([monthly]);
+    expect(result.keepReason).toBe('service_period');
+  });
+
+  it('prefers a table matching an open PO line over one that only states a period', () => {
+    const halves = [
+      { description: 'Risk advisory September 2026 - part 1', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+      { description: 'Risk advisory September 2026 - part 2', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+    ];
+    const september = { ...monthly, tableNumber: 2 };
+    const result = removeRepeatedLineTables([...halves, september], levelBlueCharges, levelBluePoLines);
+    expect(result.lines).toEqual([september]);
+    expect(result.keepReason).toBe('purchase_order');
+  });
+
+  it('ignores consumed PO lines and PO lines for another month', () => {
+    const consumed = levelBluePoLines.map(line => ({ ...line, availableForInvoicing: false }));
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, consumed).keepReason).toBe('service_period');
+    const otherAmount = levelBluePoLines.map(line => ({ ...line, extendedAmount: 6000 }));
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, otherAmount).keepReason).toBe('service_period');
+  });
+
+  it('keeps the table whose quantity times a printed unit cost reproduces the total when neither states a period', () => {
+    const summary = { description: 'Risk advisory retainer', quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([consultant, summary], levelBlueCharges);
+    expect(result.lines).toEqual([summary]);
+    expect(result.keepReason).toBe('unit_cost');
+  });
+
+  it('removes nothing when nothing tells the tables apart', () => {
+    const first = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const second = { ...first, description: 'Risk advisory total', tableNumber: 2 };
+    expect(removeRepeatedLineTables([first, second], levelBlueCharges)).toEqual({ lines: [first, second], removed: [] });
+  });
+
+  it('removes nothing when two real same-month charges look like a repeat because the amount due was misread', () => {
+    const lines = [
+      { description: "Account 1001 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 1 },
+      { description: "Account 1002 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, { amountDue: '$500.00' })).toEqual({ lines, removed: [] });
+  });
+
+  it('removes nothing from a valid multi-line invoice, including two equal charges in one table', () => {
+    const lines = [
+      { description: 'Router', quantity: 1, unitCost: '250.00', totalPrice: '250.00', tableNumber: 1 },
+      { description: 'Router', quantity: 1, unitCost: '250.00', totalPrice: '250.00', tableNumber: 1 },
+      { description: 'Install', quantity: 2, unitCost: '50.00', totalPrice: '100.00', tableNumber: 1 },
+    ];
+    const result = removeRepeatedLineTables(lines, { amountDue: '$600.00' });
+    expect(result).toEqual({ lines, removed: [] });
+  });
+
+  it('removes nothing when lines from two tables add up to the amount due', () => {
+    const lines = [
+      { description: 'Hardware', quantity: 1, unitCost: '400.00', totalPrice: '400.00', tableNumber: 1 },
+      { description: 'Services', quantity: 1, unitCost: '200.00', totalPrice: '200.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, { amountDue: '$600.00' }).removed).toEqual([]);
+  });
+
+  it('removes nothing when the mismatch is not one table repeating another', () => {
+    const extra = { description: 'Out-of-scope work', quantity: 1, unitCost: '1,250.00', totalPrice: '1,250.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([consultant, extra], { amountDue: '$5,000.00' });
+    expect(result).toEqual({ lines: [consultant, extra], removed: [] });
+  });
+
+  it('removes nothing when the lines total less than the amount due', () => {
+    expect(removeRepeatedLineTables([consultant, monthly], { amountDue: '$12,000.00' }).removed).toEqual([]);
+  });
+
+  it('credits one open PO line to only one row of a table', () => {
+    const septemberRow = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const repeatedRows = [septemberRow, { ...septemberRow }];
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const septemberPoLine = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const result = removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine]);
+    expect(result.keepReason).toBe('purchase_order');
+    expect(result.lines).toEqual(repeatedRows);
+
+    const twoPoLines = [septemberPoLine, { ...septemberPoLine, purchaseOrderLineId: 'POL-SEP-2' }];
+    const summaryMatch = poLine({ purchaseOrderLineId: 'POL-SEP-5500', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine, summaryMatch]).lines).toEqual([summary]);
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, twoPoLines).lines).toEqual(repeatedRows);
+  });
+
+  it.each([
+    ['a mid-month start', { startDate: '2026-09-15', endDate: '2026-10-15' }, 'service_period'],
+    ['an end before the month ends', { startDate: '2026-08-01', endDate: '2026-09-29' }, 'service_period'],
+    ['exact month boundaries', { startDate: '2026-09-01', endDate: '2026-09-30' }, 'purchase_order'],
+    ['an annual window', { startDate: '2026-01-01', endDate: '2026-12-31' }, 'purchase_order'],
+    ['an open start', { startDate: undefined, endDate: '2026-09-30' }, 'purchase_order'],
+    ['no service dates', { startDate: undefined, endDate: undefined }, 'service_period'],
+  ])('matches a PO line with %s only when it spans the whole stated month', (_label, window, reason) => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, ...window });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe(reason);
+  });
+
+  it('keeps every line when a table that would be removed carries a credit or discount', () => {
+    const lines = [
+      { description: 'Consulting', quantity: 1, unitCost: '6,000.00', totalPrice: '6,000.00', tableNumber: 1 },
+      { description: 'Loyalty discount', quantity: null, unitCost: null, totalPrice: '-$500.00', hasDiscount: true, tableNumber: 1 },
+      { description: "Consulting Sep'26 net", quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  it('scores PO matches the same whatever order the PO lines are listed in', () => {
+    const september = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const october = { ...september, description: "Risk advisory Oct'26" };
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const annual = poLine({ purchaseOrderLineId: 'POL-YEAR', extendedAmount: 2750, startDate: '2026-01-01', endDate: '2026-12-31' });
+    const septemberOnly = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const summaryPo = poLine({ purchaseOrderLineId: 'POL-SUM', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const secondSeptember = { ...september, description: "Risk advisory Sep'26 - part 2" };
+    for (const poLines of [[annual, septemberOnly, summaryPo], [septemberOnly, annual, summaryPo]]) {
+      const result = removeRepeatedLineTables([september, secondSeptember, summary], levelBlueCharges, poLines);
+      expect(result.keepReason).toBe('unit_cost');
+      expect(result.lines).toEqual([september, secondSeptember]);
+    }
+    const mixedMonths = [september, october, summary];
+    expect(removeRepeatedLineTables(mixedMonths, levelBlueCharges, [annual, septemberOnly, summaryPo])).toEqual({ lines: mixedMonths, removed: [] });
+  });
+
+  it('treats a malformed PO service date as unknown rather than as an open side', () => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, startDate: 'not-a-date', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe('service_period');
+  });
+
+  it('lists at most five removed rows and sums the rest', () => {
+    const hourly = Array.from({ length: 7 }, (_, index) => ({
+      description: `Consultant ${index + 1}`, quantity: null, unitCost: null, totalPrice: '100.00', tableNumber: 1,
+    }));
+    const summary = { description: "Services Sep'26", quantity: null, unitCost: null, totalPrice: '700.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([...hourly, summary], { amountDue: '$700.00' });
+    expect(result.lines).toEqual([summary]);
+    expect(result.note).toContain('"Consultant 5" ($100.00), 2 more lines ($200.00) because table 1 repeats');
+    expect(result.note).not.toContain('Consultant 6');
+  });
+
+  it.each<[string, ExtractedInvoiceLine[]]>([
+    ['a row has no table number', [consultant, { ...monthly, tableNumber: null }]],
+    ['a table number is zero', [{ ...consultant, tableNumber: 0 }, monthly]],
+    ['a table number is negative', [{ ...consultant, tableNumber: -1 }, monthly]],
+    ['a table number is fractional', [consultant, { ...monthly, tableNumber: 1.5 }]],
+    ['a table number is not a number', [consultant, { ...monthly, tableNumber: Number.NaN }]],
+    ['the table numbers skip a table', [consultant, { ...monthly, tableNumber: 3 }]],
+    ['the numbering does not start at 1', [{ ...consultant, tableNumber: 2 }, { ...monthly, tableNumber: 3 }]],
+    ['a row has a unit cost but no quantity or total', [consultant, { ...monthly, quantity: null, totalPrice: null }]],
+    ['a row has a negative quantity', [consultant, { ...monthly, quantity: -1, totalPrice: null }]],
+    ['a row has a non-finite quantity', [consultant, { ...monthly, quantity: Number.POSITIVE_INFINITY, totalPrice: null }]],
+    ['a row has a negative quantity beside a printed total', [consultant, { ...monthly, quantity: -1 }]],
+    ['a row has a non-finite quantity beside a printed total', [consultant, { ...monthly, quantity: Number.NaN }]],
+    ['a row is marked discounted with a positive net total', [{ ...consultant, hasDiscount: true }, monthly]],
+    ['a row has a whitespace-only description', [{ ...consultant, description: '   ' }, monthly]],
+    ['all rows share one table', [consultant, { ...monthly, tableNumber: 1 }]],
+    ['a row has no amount', [consultant, { ...monthly, unitCost: null, totalPrice: null }]],
+    ['there is a single row', [consultant]],
+  ])('removes nothing when %s', (_label, lines) => {
+    expect(removeRepeatedLineTables(lines, levelBlueCharges).removed).toEqual([]);
+  });
+
+  it.each([
+    ['no amount due', {}],
+    ['a credit memo', { amountDue: '-$5,500.00' }],
+    ['an unreadable tax amount', { amountDue: '$5,500.00', taxAmount: 'N/A' }],
+  ])('removes nothing with %s', (_label, charges) => {
+    expect(removeRepeatedLineTables([consultant, monthly], charges).removed).toEqual([]);
+  });
+
+  it('subtracts freight and tax before comparing each table with the amount due', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], { amountDue: '$5,940.00', freightAmount: '$15.00', taxAmount: '$425.00' });
+    expect(result.lines).toEqual([monthly]);
+    expect(result.note).toContain('each table totals $5,500.00');
+  });
+
+  it('keeps one table of several lines and removes the summary table', () => {
+    const lines = [
+      { description: 'Analyst hours', quantity: 10, unitCost: '150.00', totalPrice: '1,500.00', tableNumber: 1 },
+      { description: 'Engineer hours', quantity: 20, unitCost: '200.00', totalPrice: '4,000.00', tableNumber: 1 },
+      { description: 'Services total', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    const result = removeRepeatedLineTables(lines, levelBlueCharges);
+    expect(result.lines).toEqual(lines.slice(0, 2));
+    expect(result.keepReason).toBe('unit_cost');
+    expect(result.note).toContain('Removed line "Services total" ($5,500.00) because table 2 repeats the charges in table 1');
+  });
+
+  it.each([
+    ['September 2026', true],
+    ['Sept. 2026', true],
+    ['2026 - September', true],
+    ['09/2026', true],
+    ["Sep '26", true],
+    ['May 15, 2026', false],
+    ['Mayfield maintenance 2026', false],
+    ['Consultant', false],
+    ['PO 4500 - March retainer', false],
+    ['Invoice 1234 Dec services', false],
+    ['Retainer 03/01/2026 - 03/31/2026', true],
+    ['Retainer 02/30/2026', false],
+    [`may${' '.repeat(40000)}x`, false],
+  ])('reads "%s" as a stated month: %p', (description, states) => {
+    const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const plain = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const result = removeRepeatedLineTables([plain, row], levelBlueCharges);
+    expect(result.keepReason).toBe(states ? 'service_period' : undefined);
+    expect(result.lines).toEqual(states ? [row] : [plain, row]);
+  });
+
+  it('reads the month, not the day, of a US date when matching PO lines', () => {
+    const retainer = { description: 'Retainer 03/01/2026 - 03/31/2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const summary = { description: 'Retainer March 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const january = poLine({ purchaseOrderLineId: 'POL-JAN', extendedAmount: 5500, startDate: '2026-01-01', endDate: '2026-01-31' });
+    const march = poLine({ purchaseOrderLineId: 'POL-MAR', extendedAmount: 5500, startDate: '2026-03-01', endDate: '2026-03-31' });
+    const unchanged = { lines: [retainer, summary], removed: [] };
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [january])).toEqual(unchanged);
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [march])).toEqual(unchanged);
+  });
+
+  it('keeps both tables when they bill different months', () => {
+    const lines = [
+      { description: 'Services Aug 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 },
+      { description: 'Services Sep 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+});
+
+describe('extracted amount parsing', () => {
+  it.each([
+    ['$5,500.00', 5500],
+    ['5,500.00', 5500],
+    ['USD 1,234.567', 1234.57],
+  ])('parses amount %s to cents', (raw, expected) => {
+    expect(parseExtractedAmount(raw)).toBe(expected);
+  });
+
+  it.each([
+    ['$224.9488753', 224.948875],
+    ['$1,224.12', 1224.12],
+    ['0.0123456789', 0.012346],
+  ])('parses unit cost %s to six decimals', (raw, expected) => {
+    expect(parseExtractedUnitCost(raw)).toBe(expected);
+  });
+
+  it('returns undefined for text without a number', () => {
+    expect(parseExtractedAmount('N/A')).toBeUndefined();
+    expect(parseExtractedUnitCost('N/A')).toBeUndefined();
+    expect(parseExtractedLineAmount('N/A')).toBeUndefined();
+  });
+
+  it.each([
+    ['-$250.00', -250],
+    ['$-250.00', -250],
+    ['($1,000.50)', -1000.5],
+    ['\u2212$12.345', -12.345],
+    ['$10.0049', 10.005],
+    ['$250.00', 250],
+  ])('keeps the sign of line amount %s', (raw, expected) => {
+    expect(parseExtractedLineAmount(raw)).toBe(expected);
+  });
+
+  it('keeps the sign of a printed negative unit cost and leaves header amounts unsigned', () => {
+    expect(parseExtractedUnitCost('-$12.3456789')).toBe(-12.345679);
+    expect(parseExtractedAmount('-$250.00')).toBe(250);
+  });
 });
 
 describe('applyAmountOnlyLineRetry', () => {
@@ -1691,3 +2221,379 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(input.invoiceServicePeriod).toBe(servicePeriod.trim() || null);
   });
 });
+
+describe('normalizeExtractedFreightAndTax', () => {
+  it('moves a sales-tax amount out of freight into tax', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps a real freight amount and a real tax amount separate', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '5.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('5.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('moves a freight-labeled tax amount into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: null,
+      extractedFreightLabel: null,
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: 'Shipping & Handling',
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('swaps freight and tax when both are mislabeled', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('10.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+  });
+
+  it('treats labeled zero amounts as explicit clears', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Freight',
+      extractedTaxAmount: '0',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each([
+    'Sales Tax Amount',
+    'Total Tax Amount',
+    'Sales Tax - Estimated',
+    'Sales Tax (approx.)',
+  ])('moves a freight amount labeled %s to tax', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('$510.86');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Freight Amount', 'Shipping & Handling Amount', 'Shipping Total'])('moves a tax amount labeled %s to freight', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it.each(['1,2,3', '12,34', '1,23.45', '510.86.1'])('withholds malformed amount %s under a crossed label and asks for review', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+      reviewNote: `Could not safely apply freight amount "${amount}" labeled "Sales Tax", so it was not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.`,
+      chargeWithheld: true,
+    });
+  });
+
+  it('marks only withheld charges, not conflicting charges that are both submitted', () => {
+    expect(resolveHeaderChargeAmounts({ extractedFreightAmount: 'N/A' }).chargeWithheld).toBe(true);
+    const conflicting = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '$12.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '$30.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(conflicting).toMatchObject({ extractedFreightAmount: '$12.00', extractedTaxAmount: '$30.00' });
+    expect(conflicting.reviewNote).toContain('both were kept as read');
+    expect(conflicting.chargeWithheld).toBeUndefined();
+  });
+
+  it('withholds a crossed amount when the other amount is unreadable instead of submitting it under the wrong field', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '1.234,56',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Could not safely apply freight amount "510.86" labeled "Sales Tax" and tax amount "1.234,56" labeled "Sales Tax", so they were not submitted; any value already on the Workday invoice was left as is. Verify freight and tax against the document.');
+  });
+
+  it('withholds only the unreadable amount when labels match and keeps the readable one', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '-4.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('12.00');
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.reviewNote).toContain('tax amount "-4.00" labeled "Sales Tax"');
+  });
+
+  it.each(['510.86 $', '$ 510.86*', '510.86 USD*', '$510.86†'])('accepts correctly labeled amount %s with a trailing symbol or footnote mark', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: amount,
+      extractedTaxAmount: amount,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('moves a trailing-symbol tax amount read into freight', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '510.86 $',
+      extractedFreightLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86 $');
+    expect(result.freightCleared).toBe(true);
+  });
+
+  it.each(['Shipping Amount Due', 'Freight Due', 'Delivery Total Due'])('recognizes freight label %s on a tax amount', (label) => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedTaxAmount: '25.00',
+      extractedTaxLabel: label,
+    });
+    expect(result.extractedFreightAmount).toBe('25.00');
+    expect(result.taxCleared).toBe(true);
+  });
+
+  it('still clears a correctly labeled zero when the other amount is withheld', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '-4.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.taxCleared).toBe(true);
+    expect(result.reviewNote).toContain('freight amount "-4.00" labeled "Shipping"');
+  });
+
+  it.each(['', '   '])('treats blank amount %p as not read', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: amount,
+      extractedTaxLabel: 'Sales Tax',
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: false,
+      taxCleared: false,
+    });
+  });
+
+  it('writes withheld amounts and labels into the review note as a single bounded line', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '12,34\u0000\u202e\nInjected',
+      extractedFreightLabel: `Ship"ping\u2028${'x'.repeat(100)}`,
+    });
+    expect(result.reviewNote).toContain('freight amount "12,34 Injected" labeled "Ship ping ');
+    expect(result.reviewNote).toContain('x...", so it was not submitted');
+    expect(result.reviewNote).not.toMatch(/[\p{Cc}\u202e\u2028]/u);
+  });
+
+  it.each(['$8,514.38', '8514.38', '510.86 USD', 'USD 510.86'])('accepts well-formed amount %s', (amount) => {
+    expect(normalizeExtractedFreightAndTax({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Freight',
+    }).extractedFreightAmount).toBe(amount);
+  });
+
+  it('swaps equal amounts when both labels are crossed, since they are two printed rows', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Shipping',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+  });
+
+  it('keeps both amounts and asks for review when a tax-labeled freight amount differs from the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '8.00',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '10.00',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBe('8.00');
+    expect(result.extractedTaxAmount).toBe('10.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toBe('Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read. Verify freight and tax against the document.');
+  });
+
+  it('drops a tax-labeled freight amount that duplicates the tax amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '$510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '510.86',
+      extractedTaxLabel: 'Sales Tax',
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBe('510.86');
+    expect(result.freightCleared).toBe(true);
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps both amounts and asks for review when a freight-labeled tax amount differs from the freight amount', () => {
+    const result = normalizeExtractedFreightAndTax({
+      extractedFreightAmount: '15.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '8.00',
+      extractedTaxLabel: 'Freight',
+    });
+    expect(result.extractedFreightAmount).toBe('15.00');
+    expect(result.extractedTaxAmount).toBe('8.00');
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain('Tax amount 8.00 is labeled "Freight"');
+  });
+
+  it.each([
+    ['-15.00', 'Shipping', 'Freight'],
+    ['N/A', 'Sales Tax', 'Tax'],
+    ['1.234,56', 'Sales Tax', 'Tax'],
+  ])('withholds unparseable amount %s under matching label %s and asks for review', (amount, label, field) => {
+    const result = normalizeExtractedFreightAndTax(field === 'Freight'
+      ? { extractedFreightAmount: amount, extractedFreightLabel: label }
+      : { extractedTaxAmount: amount, extractedTaxLabel: label });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.extractedTaxAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.taxCleared).toBe(false);
+    expect(result.reviewNote).toContain(`${field.toLowerCase()} amount "${amount}" labeled "${label}"`);
+  });
+});
+
+describe('resolveHeaderChargeAmounts', () => {
+  it('moves the BearCom tax-labeled freight to tax and clears freight when no freight lines exist', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: null,
+      extractedTaxLabel: null,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: '510.86',
+      freightCleared: true,
+      taxCleared: false,
+    });
+  });
+
+  it.each([
+    ['moved', { extractedFreightAmount: '$510.86', extractedFreightLabel: 'Sales Tax' }],
+    ['a duplicate tax read', { extractedFreightAmount: '510.86', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+    ['a zero tax row', { extractedFreightAmount: '0.00', extractedFreightLabel: 'Sales Tax', extractedTaxAmount: '510.86', extractedTaxLabel: 'Sales Tax' }],
+  ])('fills freight from shipping lines when the freight header amount was %s out to tax', (_case, extracted) => {
+    const result = resolveHeaderChargeAmounts({ ...extracted, freightAmountFromLines: 15 });
+    expect(result.extractedFreightAmount).toBe('15');
+    expect(result.freightCleared).toBe(false);
+    expect(parseFloat(result.extractedTaxAmount!.replace('$', ''))).toBe(510.86);
+  });
+
+  it('keeps freight cleared when a tax-field row labeled Shipping printed zero, even with shipping lines', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '510.86',
+      extractedFreightLabel: 'Sales Tax',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Shipping',
+      freightAmountFromLines: 15,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(true);
+    expect(result.extractedTaxAmount).toBe('510.86');
+  });
+
+  it('fills freight from lines only when the document showed no freight header', () => {
+    expect(resolveHeaderChargeAmounts({ freightAmountFromLines: 25 }).extractedFreightAmount).toBe('25');
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12.00',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    }).extractedFreightAmount).toBe('12.00');
+  });
+
+  it.each(['', '   '])('fills freight from lines when the freight header amount is blank (%p)', (amount) => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: amount,
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBe('25');
+    expect(result.reviewNote).toBeUndefined();
+  });
+
+  it('keeps the existing freight instead of line freight when the header amount is withheld', () => {
+    const result = resolveHeaderChargeAmounts({
+      extractedFreightAmount: '12,34',
+      extractedFreightLabel: 'Shipping',
+      freightAmountFromLines: 25,
+    });
+    expect(result.extractedFreightAmount).toBeUndefined();
+    expect(result.freightCleared).toBe(false);
+    expect(result.reviewNote).toContain('freight amount "12,34"');
+  });
+
+  it('does not refill a cleared freight header from lines and drops a cleared tax amount', () => {
+    expect(resolveHeaderChargeAmounts({
+      extractedFreightAmount: '0.00',
+      extractedFreightLabel: 'Shipping',
+      extractedTaxAmount: '0.00',
+      extractedTaxLabel: 'Sales Tax',
+      freightAmountFromLines: 25,
+    })).toEqual({
+      extractedFreightAmount: undefined,
+      extractedTaxAmount: undefined,
+      freightCleared: true,
+      taxCleared: true,
+    });
+  });
+});
+

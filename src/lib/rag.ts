@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { tool } from 'ai';
+import { embed, gateway, tool } from 'ai';
 import { z } from 'zod';
 import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
@@ -7,31 +7,16 @@ import { parseCompanySearchQuery } from './company_search_query.js';
 import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
+import { gatewayProviderPin } from './models.js';
 export type { DocumentType } from './database.js';
 
-// Create embedding for text using OpenAI
+// Must stay text-embedding-3-small (1536 dimensions): stored vectors and the pgvector index depend on it.
+const EMBEDDING_MODEL_ID = 'openai/text-embedding-3-small';
+export const embeddingModel = gateway.embeddingModel(EMBEDDING_MODEL_ID);
+
 export async function createEmbedding(text: string): Promise<number[]> {
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
-
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: text
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI Embeddings API error: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json() as { data: Array<{ embedding: number[] }> };
-  return data.data[0].embedding;
+  const { embedding } = await embed({ model: embeddingModel, value: text, providerOptions: gatewayProviderPin(EMBEDDING_MODEL_ID) });
+  return embedding;
 }
 
 // Create document content for suppliers

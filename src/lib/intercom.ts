@@ -193,6 +193,15 @@ export function buildIntercomConversationPartsText(conversation: IntercomConvers
   return segments.length > 0 ? segments.join('\n\n') : undefined;
 }
 
+/** Non-empty internal notes written by teammates (part type note, author type admin), in API order; excludes replies sent to the customer. */
+export function buildIntercomAdminPartsText(conversation: IntercomConversationResponse): string | undefined {
+  const segments: string[] = [];
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    if (part.author?.type === 'admin' && part.part_type === 'note') appendConversationPartBody(segments, part.body);
+  }
+  return segments.length > 0 ? segments.join('\n\n') : undefined;
+}
+
 /** Newest Unix-seconds timestamp among the source email and conversation parts that carry a body or attachments. */
 export function latestIntercomMessageAt(conversation: IntercomConversationResponse): number | undefined {
   const hasContent = (body: string | null | undefined, attachments: unknown[] | undefined) =>
@@ -213,11 +222,13 @@ export function latestIntercomMessageAt(conversation: IntercomConversationRespon
 function collectAttachments(conversation: IntercomConversationResponse): IntercomAttachment[] {
   const plainTextBody = buildIntercomPlainTextBody(conversation);
   const conversationParts = buildIntercomConversationPartsText(conversation);
+  const adminConversationParts = buildIntercomAdminPartsText(conversation);
   const sourceContext: EmailContext = {
     emailFrom: conversation.source?.author?.email || undefined,
     subject: conversation.source?.subject || undefined,
     plainTextBody,
     ...(conversationParts ? { conversationParts } : {}),
+    ...(adminConversationParts ? { adminConversationParts } : {}),
   };
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
@@ -241,6 +252,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
         subject: sourceContext.subject,
         plainTextBody,
         ...(conversationParts ? { conversationParts } : {}),
+        ...(adminConversationParts ? { adminConversationParts } : {}),
       }, part.created_at ?? conversation.created_at)
     ),
   ];
@@ -286,10 +298,10 @@ export function assertAllowedAttachmentUrl(url: string): URL {
   return parsed;
 }
 
-export async function fetchConversationInvoiceData(
+async function fetchConversation(
   config: IntercomConfig,
   conversationId: string,
-): Promise<IntercomConversationInvoiceData> {
+): Promise<IntercomConversationResponse> {
   const url = `${config.apiBaseUrl}/conversations/${encodeURIComponent(conversationId)}?display_as=plaintext`;
   debug('Fetching Intercom conversation', { conversationId, apiBaseUrl: config.apiBaseUrl });
 
@@ -329,7 +341,53 @@ export async function fetchConversationInvoiceData(
   if (!parsed.success) {
     throw new IntercomUpstreamError('Intercom Conversations API returned an unexpected response');
   }
-  const conversation = parsed.data;
+  return parsed.data;
+}
+
+export interface IntercomConversationMessage {
+  /** Unix seconds. */
+  createdAt?: number;
+  body: string;
+  /** Intercom author type: `user`, `lead`, or `contact` for the customer side; `admin`, `bot`, or `team` for us. */
+  authorType?: string;
+  /** Conversation part type, such as `comment` or `note`; unset for the opening message. */
+  partType?: string;
+}
+
+/** The source email and every conversation part that has a body, in API order. */
+export async function fetchConversationMessages(
+  config: IntercomConfig,
+  conversationId: string,
+): Promise<IntercomConversationMessage[]> {
+  const conversation = await fetchConversation(config, conversationId);
+  const messages: IntercomConversationMessage[] = [];
+  const add = (
+    body: string | null | undefined,
+    createdAt: number | undefined,
+    authorType: string | null | undefined,
+    partType?: string
+  ) => {
+    if (body?.trim() && !isIntercomMessageDeliveryFailedBody(body)) {
+      messages.push({
+        body,
+        ...(createdAt != null ? { createdAt } : {}),
+        ...(authorType ? { authorType } : {}),
+        ...(partType ? { partType } : {}),
+      });
+    }
+  };
+  add(conversation.source?.body, conversation.created_at, conversation.source?.author?.type);
+  for (const part of conversation.conversation_parts?.conversation_parts ?? []) {
+    add(part.body, part.created_at ?? conversation.created_at, part.author?.type, part.part_type);
+  }
+  return messages;
+}
+
+export async function fetchConversationInvoiceData(
+  config: IntercomConfig,
+  conversationId: string,
+): Promise<IntercomConversationInvoiceData> {
+  const conversation = await fetchConversation(config, conversationId);
   const attachments = collectAttachments(conversation);
   const invoiceAttachments = attachments.filter(
     (attachment) => attachment.contentType === 'application/pdf'
