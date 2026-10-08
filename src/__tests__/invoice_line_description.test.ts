@@ -5,7 +5,8 @@ import {
   withComposedLineDescriptions,
 } from '../lib/invoice_lines.js';
 import { formatInvoiceLinesNotes } from '../lib/invoice_enrichment.js';
-import { invoiceEnrichmentPrompt } from '../prompts/enrich_invoice_prompt.js';
+import { invoiceMatchingPrompt } from '../prompts/enrich_invoice_prompt.js';
+import { invoiceOcrPrompt } from '../prompts/invoice_ocr_prompt.js';
 import { mergeInvoiceLinesPrompt, mergeInvoiceLinesPromptFor } from '../prompts/merge_invoice_lines_prompt.js';
 
 const hashrocketAmounts = { quantity: 32, unitCost: '155.00', totalPrice: '4,960.00' };
@@ -149,17 +150,17 @@ describe('formatInvoiceLinesNotes', () => {
 
 describe('invoice line description prompts', () => {
   it('tells enrichment to concatenate identifying row cells before the terse memo', () => {
-    expect(invoiceEnrichmentPrompt).toContain('Ryan Poland');
-    expect(invoiceEnrichmentPrompt).toContain('Project Management');
-    expect(invoiceEnrichmentPrompt).toContain('descriptionCells');
-    expect(invoiceEnrichmentPrompt).toContain('The terse 1-sentence summary belongs in memo later');
-    expect(invoiceEnrichmentPrompt).toContain('Ryan Poland - Project Management');
+    expect(invoiceOcrPrompt).toContain('Ryan Poland');
+    expect(invoiceOcrPrompt).toContain('Project Management');
+    expect(invoiceOcrPrompt).toContain('descriptionCells');
+    expect(invoiceOcrPrompt).toContain('The terse 1-sentence summary belongs in memo later');
+    expect(invoiceOcrPrompt).toContain('Ryan Poland - Project Management');
   });
 
   it('tells enrichment not to catalog-match LOB when a cost center is already resolved', () => {
-    expect(invoiceEnrichmentPrompt).toContain('do **not** call findLobs');
-    expect(invoiceEnrichmentPrompt).toContain('Keep the mentioned LOB when it is already in that cost center\'s relatedLob');
-    expect(invoiceEnrichmentPrompt).toContain('relatedLob.defaultReferenceId');
+    expect(invoiceMatchingPrompt).toContain('do **not** call findLobs');
+    expect(invoiceMatchingPrompt).toContain('Keep the mentioned LOB when it is already in that cost center\'s relatedLob');
+    expect(invoiceMatchingPrompt).toContain('relatedLob.defaultReferenceId');
   });
 
   it('tells merge to copy the concatenated description unchanged and write memo after', () => {
