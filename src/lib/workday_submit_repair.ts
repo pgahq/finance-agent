@@ -38,7 +38,7 @@ export interface WorkdaySubmitRepairInput {
 }
 
 function getRepairModel(): LanguageModel {
-  return createLanguageModel(process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'gpt-5.4-mini');
+  return createLanguageModel(process.env.WORKDAY_SUBMIT_REPAIR_MODEL || 'openai/gpt-5.4-mini');
 }
 
 function normalizeText(value: string): string {

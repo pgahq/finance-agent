@@ -1,4 +1,4 @@
-import { createEmbedding, createEmployeeContent, createSupplierContent, createCompanyContent, queryDocuments } from '../lib/rag.js';
+import { createEmbedding, createEmployeeContent, createSupplierContent, createCompanyContent, embeddingModel, queryDocuments } from '../lib/rag.js';
 
 // Mock the dependencies
 jest.mock('@pga/logger', () => ({
@@ -11,83 +11,41 @@ jest.mock('../lib/database.js', () => ({
   getDocumentsByType: jest.fn().mockResolvedValue([])
 }));
 
-// Mock fetch for OpenAI API
-global.fetch = jest.fn();
+jest.mock('ai', () => ({
+  ...jest.requireActual<Record<string, unknown>>('ai'),
+  embed: jest.fn(),
+}));
 
 describe('rag', () => {
   const mockDebug = require('@pga/logger').debug;
   const mockGetDatabaseConnection = require('../lib/database.js').getDatabaseConnection;
   const mockSearchDocuments = require('../lib/database.js').searchDocuments;
   const mockGetDocumentsByType = require('../lib/database.js').getDocumentsByType;
-  const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
+  const mockEmbed = jest.requireMock<{ embed: jest.Mock }>('ai').embed;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetDocumentsByType.mockResolvedValue([]);
-    process.env.OPENAI_API_KEY = 'test-api-key';
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2, 0.3] });
   });
 
   describe('createEmbedding', () => {
-    it('should create embedding successfully', async () => {
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
+    it('embeds through the gateway with text-embedding-3-small', async () => {
       const result = await createEmbedding('test text');
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer test-api-key',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'text-embedding-3-small',
-          input: 'test text'
-        })
+      expect(embeddingModel).toEqual(expect.objectContaining({ provider: 'gateway', modelId: 'openai/text-embedding-3-small' }));
+      expect(mockEmbed).toHaveBeenCalledWith({
+        model: embeddingModel,
+        value: 'test text',
+        providerOptions: { gateway: { only: ['openai'] } },
       });
       expect(result).toEqual([0.1, 0.2, 0.3]);
     });
 
-    it('should handle API error', async () => {
-      const mockResponse = {
-        ok: false,
-        status: 400,
-        text: jest.fn().mockResolvedValue('Bad Request')
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
+    it('propagates gateway errors', async () => {
+      mockEmbed.mockRejectedValue(new Error('Gateway error: 401 Unauthorized'));
 
-      await expect(createEmbedding('test text')).rejects.toThrow('OpenAI Embeddings API error: 400 Bad Request');
-    });
-
-    it('should use missing key when OPENAI_API_KEY is not set', async () => {
-      delete process.env.OPENAI_API_KEY;
-      
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
-
-      await createEmbedding('test text');
-
-      expect(mockFetch).toHaveBeenCalledWith('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer MISSING_KEY',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'text-embedding-3-small',
-          input: 'test text'
-        })
-      });
+      await expect(createEmbedding('test text')).rejects.toThrow('Gateway error: 401 Unauthorized');
     });
   });
 
@@ -281,13 +239,6 @@ Primary Address: 100 PGA Tour Blvd`);
 
       mockSearchDocuments.mockResolvedValue(mockSearchResults);
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       const result = await queryDocuments({
         query: 'test query',
@@ -327,13 +278,6 @@ Primary Address: 100 PGA Tour Blvd`);
 
       mockSearchDocuments.mockResolvedValue(mockSearchResults);
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       const result = await queryDocuments({
         query: 'test query'
@@ -369,13 +313,6 @@ Primary Address: 100 PGA Tour Blvd`);
 
       mockSearchDocuments.mockResolvedValue(mockSearchResults);
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       const result = await queryDocuments({
         query: 'test query',
@@ -406,13 +343,6 @@ Primary Address: 100 PGA Tour Blvd`);
 
       mockSearchDocuments.mockResolvedValue(mockSearchResults);
 
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       const result = await queryDocuments({
         query: 'Legal',
@@ -438,13 +368,6 @@ Primary Address: 100 PGA Tour Blvd`);
     it('should handle no results', async () => {
       mockSearchDocuments.mockResolvedValue([]);
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       const result = await queryDocuments({
         query: 'test query'
@@ -465,13 +388,6 @@ Primary Address: 100 PGA Tour Blvd`);
     it('should handle searchDocuments error', async () => {
       mockSearchDocuments.mockRejectedValue(new Error('Search failed'));
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       await expect(queryDocuments({
         query: 'test query'
@@ -493,13 +409,6 @@ Primary Address: 100 PGA Tour Blvd`);
 
       mockSearchDocuments.mockResolvedValue(mockSearchResults);
       
-      const mockResponse = {
-        ok: true,
-        json: jest.fn().mockResolvedValue({
-          data: [{ embedding: [0.1, 0.2, 0.3] }]
-        })
-      };
-      mockFetch.mockResolvedValue(mockResponse as any);
 
       await queryDocuments({
         query: 'test query'
@@ -531,24 +440,12 @@ Primary Address: 100 PGA Tour Blvd`);
     it('omits a concatenated bill-to address from the company embedding query', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       await findCompaniesTool.execute({
         query: 'PGA JR. LEAGUE 100 Avenue of the Stars Palm Beach Gardens FL 33418'
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.openai.com/v1/embeddings',
-        expect.objectContaining({
-          body: JSON.stringify({
-            model: 'text-embedding-3-small',
-            input: 'PGA JR. LEAGUE'
-          })
-        })
-      );
+      expect(mockEmbed).toHaveBeenCalledWith(expect.objectContaining({ value: 'PGA JR. LEAGUE' }));
     });
 
     it('skips company search when the query is only an address', async () => {
@@ -560,7 +457,7 @@ Primary Address: 100 PGA Tour Blvd`);
         addressMatch: 'none',
         message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
       });
-      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockEmbed).not.toHaveBeenCalled();
     });
 
     it('skips company search when a house number is the only remainder', async () => {
@@ -572,7 +469,7 @@ Primary Address: 100 PGA Tour Blvd`);
         addressMatch: 'none',
         message: 'Query was only a street address. Search again with the billed company name or Company_Reference_ID.'
       });
-      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockEmbed).not.toHaveBeenCalled();
     });
 
     it('tags a unique bill-to street without reordering name results', async () => {
@@ -599,25 +496,13 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 0.65,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America',
         address: '100 Avenue of the Champions, Palm Beach Gardens, FL 33418-3653',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.openai.com/v1/embeddings',
-        expect.objectContaining({
-          body: JSON.stringify({
-            model: 'text-embedding-3-small',
-            input: 'PGA of America'
-          })
-        })
-      );
+      expect(mockEmbed).toHaveBeenCalledWith(expect.objectContaining({ value: 'PGA of America' }));
       expect(result.addressMatch).toBe('unique');
       expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
         'wisconsin-wid',
@@ -663,10 +548,6 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 1,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America',
@@ -698,10 +579,6 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 1,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America',
@@ -742,10 +619,6 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 1,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America',
@@ -780,24 +653,12 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 0.65,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America 100 Avenue of the Champions Palm Beach Gardens FL 33418-3653',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.openai.com/v1/embeddings',
-        expect.objectContaining({
-          body: JSON.stringify({
-            model: 'text-embedding-3-small',
-            input: 'PGA of America'
-          })
-        })
-      );
+      expect(mockEmbed).toHaveBeenCalledWith(expect.objectContaining({ value: 'PGA of America' }));
       expect(result.addressMatch).toBe('unique');
       expect(result.results.map((row: { workdayId: string }) => row.workdayId)).toEqual([
         'wisconsin-wid',
@@ -838,10 +699,6 @@ Primary Address: 100 PGA Tour Blvd`);
           similarity: 0.65,
         },
       ]);
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] })
-      } as any);
 
       const result = await findCompaniesTool.execute({
         query: 'PGA of America',

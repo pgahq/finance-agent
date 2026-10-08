@@ -40,6 +40,11 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/PO_LINE_SELECTION_ENABLED|PoLineSelectionEnabled/);
   });
 
+  it('loads the Vercel AI Gateway key from SSM instead of an OpenAI key', () => {
+    expect(globals).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
+    expect(globals).not.toMatch(/OPENAI_API_KEY|openai-api-key/);
+  });
+
   it('keeps Global SSM references low enough for a single GetParameters call', () => {
     const globalSsmRefs = globals.match(/:\s*ssm:\//g) ?? [];
     const maxFunctionSsmRefs = 2;
