@@ -35,9 +35,9 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED|InvoiceAttachmentClusteringEnabled/);
   });
 
-  it('reads PO_LINE_SELECTION_ENABLED from SSM at runtime, not a deploy parameter', () => {
-    expect(globals).toMatch(/PO_LINE_SELECTION_ENABLED:\s*ssm:\/finance-agent\/po-line-selection-enabled/);
-    expect(circleci).not.toMatch(/PO_LINE_SELECTION_ENABLED|PoLineSelectionEnabled/);
+  it('loads the Vercel AI Gateway key from SSM instead of an OpenAI key', () => {
+    expect(globals).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
+    expect(globals).not.toMatch(/OPENAI_API_KEY|openai-api-key/);
   });
 
   it('keeps Global SSM references low enough for a single GetParameters call', () => {

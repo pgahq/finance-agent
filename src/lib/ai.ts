@@ -5,9 +5,6 @@ import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentT
 import { resolveReferenceCodeTool } from './reference_ids.js';
 import { defaultModel } from './models.js';
 
-// Set OpenAI API key globally
-process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'MISSING_KEY';
-
 // Main AI function with RAG tool integration
 export async function getAiResponse({
   prompt,

@@ -16,6 +16,7 @@ import {
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
+  formatRepeatedLineNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
@@ -60,6 +61,7 @@ import {
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
   prepareInvoiceCharges,
+  removeRepeatedLineTables,
   resolveHeaderChargeAmounts,
   restoreClearedFreightFromRows,
   resolveInvoiceLineQuantityDisplayed,
@@ -967,7 +969,8 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
+    const extractedRows = result.extractedInvoiceLines ?? [];
+    const extractedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -1001,7 +1004,22 @@ async function processInvoiceCluster(
       ...chargeReconciliationMessages(chargeReconciliation),
     ];
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
-    const candidateLines = withComposedLineDescriptions(charges.lines);
+    const extractedCandidateLines = withComposedLineDescriptions(charges.lines);
+
+    // A withheld charge leaves the submitted header unknown, and a row dropped for a missing
+    // description or amount leaves its table's total unknown, so no line can be judged a repeat.
+    // Freight sent as lines is not on the header, so the header freight below would not apply.
+    const repeatedLines = chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+      ? { lines: extractedCandidateLines, note: undefined }
+      : removeRepeatedLineTables(extractedCandidateLines, {
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
+      }, poClosedForInvoicing ? undefined : poLines);
+    if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
+    const candidateLines = repeatedLines.lines;
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -1138,6 +1156,10 @@ async function processInvoiceCluster(
       taxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
+    const lineReview = [
+      repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
+      lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
+    ].filter((note): note is string => Boolean(note));
 
     const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
@@ -1157,7 +1179,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1249,6 +1271,7 @@ async function processInvoiceCluster(
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
+      ...(lineReview.length ? { lineReview } : {}),
     };
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();

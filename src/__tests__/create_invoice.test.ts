@@ -712,6 +712,144 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).not.toContain('Line total review');
   });
 
+  it('should drop the LevelBlue table that repeats the charge and keep the Sep\'26 row', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+    const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      extractedTaxAmount: '$0.00',
+      extractedTaxLabel: 'Tax',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 },
+        monthly,
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: monthly.description, quantity: 1, unitCost: 5500, extendedAmount: 5500 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-levelblue-repeat/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([monthly]);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.finalLines).toHaveLength(1);
+    const notes = submitArgs.buildNotes([]);
+    expect(notes).toContain(
+      'Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant" ($5,500.00) because table 1 repeats the charges in table 2: each table totals $5,500.00, the amount due less freight and tax. Kept table 2 because its lines state the service period.'
+    );
+    expect(notes).not.toContain('Line total review');
+    expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
+      expect.stringMatching(/^Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant"/),
+    ]);
+  });
+
+  it('should keep both LevelBlue tables when extraction dropped a row without an amount', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    const consultantRow = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null, tableNumber: 1 };
+    const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        consultantRow,
+        { description: 'Travel', quantity: null, unitCost: null, totalPrice: null, hasDiscount: null, tableNumber: 1 },
+        monthly,
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: consultantRow.description, quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 },
+        { lineOrder: 2, description: monthly.description, quantity: 1, unitCost: 5500, extendedAmount: 5500 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-levelblue-dropped-row/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([consultantRow, monthly]);
+    const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+    expect(notes).not.toContain('Repeated line review');
+    expect(notes).toContain('Line total review: Invoice lines total $11,000.00');
+  });
+
+  it('should keep every line of a valid multi-line invoice from one table', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+    const extracted = [
+      { description: 'Router', quantity: 2, unitCost: '250.00', totalPrice: '500.00', hasDiscount: null, tableNumber: 1 },
+      { description: 'Install', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, tableNumber: 1 },
+    ];
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$600.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: extracted,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Router', quantity: 2, unitCost: 250, extendedAmount: 500 },
+        { lineOrder: 2, description: 'Install', quantity: 1, unitCost: 100, extendedAmount: 100 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-multi-line/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(extracted);
+    const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+    expect(notes).not.toContain('Repeated line review');
+    expect(notes).not.toContain('Line total review');
+    expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('lineReview');
+  });
+
+  it('should create the invoice with every line and flag AP when the line total cannot be reconciled', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+    const extracted = [
+      { description: 'Consulting', quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 1 },
+      { description: 'Out-of-scope work', quantity: 1, unitCost: '1,250.00', totalPrice: '1,250.00', hasDiscount: null, tableNumber: 2 },
+    ];
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,000.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: extracted,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Consulting', quantity: 1, unitCost: 5500, extendedAmount: 5500 },
+        { lineOrder: 2, description: 'Out-of-scope work', quantity: 1, unitCost: 1250, extendedAmount: 1250 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-unreconciled/invoice.pdf')]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(extracted);
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.finalLines).toHaveLength(2);
+    const notes = submitArgs.buildNotes([]);
+    expect(notes).not.toContain('Repeated line review');
+    expect(notes).toContain('Line total review: Invoice lines total $6,750.00, but the amount due $5,000.00');
+    expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
+      expect.stringMatching(/^Line total review: Invoice lines total \$6,750\.00/),
+    ]);
+  });
+
   it('submits a freight-only invoice as a coded freight line with no header freight', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     const shipping = { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false };
@@ -1541,7 +1679,9 @@ describe('create_invoice', () => {
         memo: undefined
       }]
     });
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(parsedPo.lines);
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(
+      parsedPo.lines.map((line) => ({ ...line, availableForInvoicing: true }))
+    );
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
@@ -1622,8 +1762,7 @@ describe('create_invoice', () => {
   });
 
   it('should send every PO line, flagged by availability, with the invoice date and service period, to the line merge', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
       company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
@@ -1650,9 +1789,8 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
-  it('should keep every line of a Closed PO as coding context and skip date-based selection even with PO line selection on', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+  it('should keep every line of a Closed PO as coding context and skip date-based selection', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     const lines = monthlyPoLines(8);
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
@@ -1687,30 +1825,8 @@ describe('create_invoice', () => {
     expect(bothNotes).not.toContain('Fallback values applied');
   });
 
-  it('should keep PO lines unflagged when PO line availability is off', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
-    const lines = monthlyPoLines(8);
-    workday.loadPurchaseOrder.mockResolvedValue({
-      documentNumber: 'PO-414498',
-      company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
-      lines,
-    });
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
-      ...baseEnrichmentResult,
-      extractedPurchaseOrderNumber: 'PO-414498',
-    });
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [{ ...attachmentRequest('new-invoices/req-flag-off/invoice.pdf'), emailContext: { subject: 'PO-414498' } }]
-    } as any);
-
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(lines);
-  });
-
   it('should keep consumed PO lines for coding and report the dropped references by their own note', async () => {
-    const { processor, workday, slack, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
-    loadEnv.mockResolvedValue({ PO_LINE_SELECTION_ENABLED: 'true' });
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     const allInvoiced = monthlyPoLines(12);
     workday.loadPurchaseOrder.mockResolvedValue({
       documentNumber: 'PO-414498',
