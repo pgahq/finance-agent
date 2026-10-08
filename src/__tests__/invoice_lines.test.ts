@@ -1445,13 +1445,6 @@ describe('lineTotalMismatchNote', () => {
 });
 
 describe('removeRepeatedLineTables', () => {
-  const callerPoLineSelection = process.env.PO_LINE_SELECTION_ENABLED;
-  beforeEach(() => { process.env.PO_LINE_SELECTION_ENABLED = 'true'; });
-  afterEach(() => {
-    if (callerPoLineSelection === undefined) delete process.env.PO_LINE_SELECTION_ENABLED;
-    else process.env.PO_LINE_SELECTION_ENABLED = callerPoLineSelection;
-  });
-
   const consultant = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', tableNumber: 1 };
   const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
   const levelBlueCharges = { amountDue: '$5,500.00', taxAmount: '$0.00' };
@@ -1700,13 +1693,6 @@ describe('removeRepeatedLineTables', () => {
     ];
     expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
   });
-
-  it('ignores PO lines for the keep choice when PO line selection is off', () => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
-    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines);
-    expect(result.keepReason).toBe('service_period');
-    expect(result.lines).toEqual([monthly]);
-  });
 });
 
 describe('extracted amount parsing', () => {
@@ -1845,11 +1831,6 @@ describe('buildFinalInvoiceLines service-date matching', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FALLBACK_COST_CENTER_ID;
-    process.env.PO_LINE_SELECTION_ENABLED = 'true';
-  });
-
-  afterEach(() => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
   });
 
   it('uses the legacy merge prompt and input when the caller passes no invoice context (Closed PO)', async () => {
@@ -1872,13 +1853,12 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(input).not.toHaveProperty('invoiceDate');
   });
 
-  it('keeps the pre-selection merge input, prompt, and model pick when PO line selection is off', async () => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
-    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+  it('uses the legacy merge prompt and input when the invoice has no PO lines', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine(null)] } as any);
 
-    const result = await buildFinalInvoiceLines(
+    await buildFinalInvoiceLines(
       extracted,
-      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9)],
+      undefined,
       undefined,
       {},
       undefined,
@@ -1889,14 +1869,9 @@ describe('buildFinalInvoiceLines service-date matching', () => {
 
     const call = mockGetAiResponse.mock.calls[0][0] as any;
     const input = JSON.parse(call.messages[0].content);
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
     expect(input).not.toHaveProperty('invoiceDate');
     expect(input).not.toHaveProperty('invoiceServicePeriod');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('availableForInvoicing');
-    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
-    expect(call.prompt).not.toContain('availableForInvoicing');
-    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
-    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
   });
 
   it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {
