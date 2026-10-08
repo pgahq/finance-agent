@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { getDocumentsByWorkdayIds, type DatabaseConnection } from './database.js';
-import type { PurchaseOrderSupplier, SubmitPurchaseOrderSupplier } from './workday.js';
+import type { PurchaseOrderSupplier } from './workday.js';
 
 export interface SupplierIdentity {
   names: string[];
@@ -18,17 +18,21 @@ export interface InvoiceSupplierEvidence {
 export interface PurchaseOrderSupplierInput {
   purchaseOrderNumber?: string;
   purchaseOrderSupplier?: PurchaseOrderSupplier;
-  linksPurchaseOrderLines: boolean;
-  submittedSupplierWID?: string;
+  /** The supplier resolved from the invoice (or the default supplier). */
+  invoiceSupplierWID?: string;
   invoiceSupplier: InvoiceSupplierEvidence;
 }
 
 export type PurchaseOrderSupplierRelation = 'same' | 'related' | 'unrelated';
 
+/** The PO's supplier, which the invoice is submitted with, and how the invoice's own supplier relates to it. */
 export interface PurchaseOrderSupplierDecision {
+  workdayId: string;
+  descriptor: string;
+  purchaseOrderNumber: string;
   relation: PurchaseOrderSupplierRelation;
   reason?: string;
-  purchaseOrderSupplier: SubmitPurchaseOrderSupplier;
+  invoiceSupplierName?: string;
 }
 
 const NAME_STOPWORDS = new Set([
@@ -148,16 +152,16 @@ export function relateSupplierIdentities(invoice: SupplierIdentity, purchaseOrde
 }
 
 /**
- * Decides whether a PO-linked invoice may switch to the PO's supplier when Workday rejects the submitted one.
- * Only a supplier that looks like the same company is allowed, so a wrong PO number fails instead of
- * silently billing another supplier.
+ * When the invoice's PO exists in Workday, the invoice is submitted with the PO's supplier: Workday only lets
+ * that supplier invoice the PO. The relation to the invoice's own supplier only decides whether AP is asked to
+ * confirm the PO number, since an unrelated supplier usually means a wrong PO number.
  */
 export function decidePurchaseOrderSupplier(
   input: PurchaseOrderSupplierInput,
-  profiles: { submitted?: SupplierIdentity; purchaseOrder?: SupplierIdentity } = {}
+  profiles: { invoice?: SupplierIdentity; purchaseOrder?: SupplierIdentity } = {}
 ): PurchaseOrderSupplierDecision | undefined {
-  const { purchaseOrderNumber, purchaseOrderSupplier, linksPurchaseOrderLines, submittedSupplierWID, invoiceSupplier } = input;
-  if (!purchaseOrderNumber || !purchaseOrderSupplier || !linksPurchaseOrderLines) return undefined;
+  const { purchaseOrderNumber, purchaseOrderSupplier, invoiceSupplierWID, invoiceSupplier } = input;
+  if (!purchaseOrderNumber || !purchaseOrderSupplier) return undefined;
 
   const invoiceSupplierName = present([invoiceSupplier.resolvedName, invoiceSupplier.extractedName])[0];
   const base = {
@@ -166,9 +170,7 @@ export function decidePurchaseOrderSupplier(
     purchaseOrderNumber,
     ...(invoiceSupplierName ? { invoiceSupplierName } : {}),
   };
-  if (submittedSupplierWID === purchaseOrderSupplier.workdayId) {
-    return { relation: 'same', purchaseOrderSupplier: { ...base, allowRetry: false } };
-  }
+  if (invoiceSupplierWID === purchaseOrderSupplier.workdayId) return { ...base, relation: 'same' };
 
   const invoiceIdentity = mergeIdentities(
     {
@@ -176,13 +178,11 @@ export function decidePurchaseOrderSupplier(
       phones: listValues(invoiceSupplier.phone),
       emails: listValues(invoiceSupplier.email),
     },
-    profiles.submitted,
+    profiles.invoice,
   );
   const purchaseOrderIdentity = mergeIdentities({ names: [purchaseOrderSupplier.descriptor], phones: [], emails: [] }, profiles.purchaseOrder);
   const reason = relateSupplierIdentities(invoiceIdentity, purchaseOrderIdentity);
-  return reason
-    ? { relation: 'related', reason, purchaseOrderSupplier: { ...base, allowRetry: true } }
-    : { relation: 'unrelated', purchaseOrderSupplier: { ...base, allowRetry: false } };
+  return reason ? { ...base, relation: 'related', reason } : { ...base, relation: 'unrelated' };
 }
 
 /** Like `decidePurchaseOrderSupplier`, enriched with cached supplier profiles; falls back to names alone when the cache is unavailable. */
@@ -191,15 +191,15 @@ export async function resolvePurchaseOrderSupplier(
   input: PurchaseOrderSupplierInput
 ): Promise<PurchaseOrderSupplierDecision | undefined> {
   const poSupplierWID = input.purchaseOrderSupplier?.workdayId;
-  if (!input.purchaseOrderNumber || !poSupplierWID || !input.linksPurchaseOrderLines) return undefined;
+  if (!input.purchaseOrderNumber || !poSupplierWID) return undefined;
 
-  const profiles: { submitted?: SupplierIdentity; purchaseOrder?: SupplierIdentity } = {};
-  if (db && input.submittedSupplierWID !== poSupplierWID) {
+  const profiles: { invoice?: SupplierIdentity; purchaseOrder?: SupplierIdentity } = {};
+  if (db && input.invoiceSupplierWID !== poSupplierWID) {
     try {
-      const rows = await getDocumentsByWorkdayIds(db, 'supplier', present([input.submittedSupplierWID, poSupplierWID]));
+      const rows = await getDocumentsByWorkdayIds(db, 'supplier', present([input.invoiceSupplierWID, poSupplierWID]));
       for (const row of rows) {
         if (row.workday_id === poSupplierWID) profiles.purchaseOrder = supplierIdentityFromDocument(row);
-        else if (row.workday_id === input.submittedSupplierWID) profiles.submitted = supplierIdentityFromDocument(row);
+        else if (row.workday_id === input.invoiceSupplierWID) profiles.invoice = supplierIdentityFromDocument(row);
       }
     } catch (error) {
       debug('Failed to load cached supplier profiles for PO supplier check; relating by names only:', error);
@@ -211,9 +211,25 @@ export async function resolvePurchaseOrderSupplier(
     purchaseOrderNumber: input.purchaseOrderNumber,
     purchaseOrderSupplier: input.purchaseOrderSupplier?.descriptor,
     purchaseOrderSupplierWID: poSupplierWID,
-    submittedSupplierWID: input.submittedSupplierWID,
+    invoiceSupplierWID: input.invoiceSupplierWID,
     relation: decision?.relation,
     reason: decision?.reason,
   });
   return decision;
+}
+
+/** Workday note for a supplier taken from the PO; empty when the invoice already resolved to that supplier. */
+export function formatPurchaseOrderSupplierNotes(decision: PurchaseOrderSupplierDecision | undefined): string {
+  if (!decision || decision.relation === 'same') return '';
+  const set = `\n\nSupplier from PO: Set to ${decision.descriptor}, the supplier on ${decision.purchaseOrderNumber}.`;
+  if (!decision.invoiceSupplierName) return set;
+  return decision.relation === 'related'
+    ? `${set} The invoice names ${decision.invoiceSupplierName} (${decision.reason}).`
+    : `${set} The invoice names ${decision.invoiceSupplierName}, which does not look like the same company; confirm the PO number.`;
+}
+
+/** Slack review line when the PO's supplier does not look like the company the invoice names. */
+export function purchaseOrderSupplierReviewLine(decision: PurchaseOrderSupplierDecision | undefined): string | undefined {
+  if (decision?.relation !== 'unrelated' || !decision.invoiceSupplierName) return undefined;
+  return `Supplier set from ${decision.purchaseOrderNumber} (${decision.descriptor}); the invoice names ${decision.invoiceSupplierName}, which does not look like the same company. Confirm the PO number.`;
 }

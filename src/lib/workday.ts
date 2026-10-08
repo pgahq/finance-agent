@@ -509,20 +509,6 @@ export interface ParsedPurchaseOrder {
   lines: PurchaseOrderLine[];
 }
 
-/**
- * The supplier on the PO an invoice links to. Workday only lets that supplier invoice the PO's lines,
- * so on that rejection submit retries once with it when `allowRetry` is set.
- */
-export interface SubmitPurchaseOrderSupplier {
-  workdayId: string;
-  descriptor: string;
-  purchaseOrderNumber: string;
-  allowRetry: boolean;
-  invoiceSupplierName?: string;
-  /** Set once the submitted supplier was switched to this one by the submit retry. */
-  appliedByRetry?: boolean;
-}
-
 interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
@@ -565,13 +551,12 @@ interface buildSubmitInvoiceDataOptions {
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
   omitPurchaseOrderLineReference?: boolean;
-  purchaseOrderSupplier?: SubmitPurchaseOrderSupplier;
   conversationUrl?: string;
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'purchaseOrderSupplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'purchaseOrderSupplier' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
@@ -731,24 +716,6 @@ function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoi
 function submitLinksPurchaseOrderLines(options: buildSubmitInvoiceDataOptions): boolean {
   return !options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options);
 }
-
-/**
- * True when a submit built from these lines would link at least one PO line. Pass the current invoice on
- * update, where OCR lines that carry a PO line reference are kept when there are no final lines.
- */
-export function finalLinesLinkPurchaseOrderLines(
-  finalLines: FinalInvoiceLine[] | undefined,
-  options: {
-    currentInvoice?: unknown;
-    filterInvoiceLines?: boolean;
-    omitPurchaseOrderLineReference?: boolean;
-    invoiceLineQuantityDisplayed?: boolean;
-  } = {}
-): boolean {
-  const { currentInvoice, ...rest } = options;
-  return submitLinksPurchaseOrderLines({ currentInvoice: currentInvoice ?? {}, finalLines, ...rest });
-}
-
 function linesCarryPoPassthroughWorktags(options: buildSubmitInvoiceDataOptions): boolean {
   return (options.finalLines ?? []).some(line => Boolean(line.poPassthroughWorktagsReference?.length));
 }
@@ -835,10 +802,6 @@ function normalizeSupplierWID(value?: string | null): string | undefined {
   return trimmed || undefined;
 }
 
-function purchaseOrderSupplierLabel(supplier: Pick<SubmitPurchaseOrderSupplier, 'descriptor' | 'purchaseOrderNumber'>): string {
-  return `supplier from ${supplier.purchaseOrderNumber} (${supplier.descriptor})`;
-}
-
 function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions): string | undefined {
   return normalizeSupplierWID(process.env.WORKDAY_DEFAULT_SUPPLIER_WID) ?? normalizeSupplierWID(options.defaultSupplierWID);
 }
@@ -852,11 +815,6 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
 
   if (configuredDefaultSupplierWID && (selectedSupplierWID === configuredDefaultSupplierWID || (!selectedSupplierWID && selectedDefaultSupplierWID))) {
     fallbacks.push({ field: 'supplier', label: 'default supplier' });
-  }
-
-  const purchaseOrderSupplier = options.purchaseOrderSupplier;
-  if (purchaseOrderSupplier?.appliedByRetry && selectedSupplierWID === purchaseOrderSupplier.workdayId) {
-    fallbacks.push({ field: 'purchaseOrderSupplier', label: purchaseOrderSupplierLabel(purchaseOrderSupplier) });
   }
 
   if (!normalizeInvoiceDate(invoiceDate)) {
@@ -1090,18 +1048,11 @@ async function getValidationFallbackField(
     return undefined;
   }
 
-  // The default supplier can never invoice a PO, so this fault never reaches the classifier.
+  // Callers already submit the PO's supplier, and the default supplier can never invoice a PO, so this fault
+  // never reaches the classifier.
   if (isSupplierNotAllowedForPurchaseOrderError(validationText)) {
-    if (options.purchaseOrderSupplier?.appliedByRetry || getFallbackRetryBuildOptions(options, 'purchaseOrderSupplier')) {
-      debug('Validation rejects the supplier for this PO; retrying with the PO supplier', {
-        purchaseOrderNumber: options.purchaseOrderSupplier?.purchaseOrderNumber,
-        purchaseOrderSupplierWID: options.purchaseOrderSupplier?.workdayId,
-      });
-      return 'purchaseOrderSupplier';
-    }
-    debug('Validation rejects the supplier for this PO and no PO supplier retry is allowed; failing without fallback retry', {
-      purchaseOrderNumber: options.purchaseOrderSupplier?.purchaseOrderNumber,
-      purchaseOrderSupplierWID: options.purchaseOrderSupplier?.workdayId,
+    debug('Validation rejects the supplier for this PO; failing without fallback retry', {
+      supplierWID: options.supplierWID,
     });
     return undefined;
   }
@@ -1206,24 +1157,6 @@ function getFallbackRetryBuildOptions(
   field: FallbackField
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
-
-  const purchaseOrderSupplier = options.purchaseOrderSupplier;
-  if (
-    field === 'purchaseOrderSupplier'
-    && purchaseOrderSupplier?.allowRetry
-    && !purchaseOrderSupplier.appliedByRetry
-    && normalizeSupplierWID(options.supplierWID) !== purchaseOrderSupplier.workdayId
-  ) {
-    return {
-      buildOptions: {
-        ...options,
-        supplierWID: purchaseOrderSupplier.workdayId,
-        defaultSupplierWID: undefined,
-        purchaseOrderSupplier: { ...purchaseOrderSupplier, appliedByRetry: true },
-      },
-      fallbackLabel: purchaseOrderSupplierLabel(purchaseOrderSupplier),
-    };
-  }
 
   // Workday only lets the PO's own supplier invoice PO-linked lines, so the default supplier cannot.
   if (
@@ -1833,19 +1766,10 @@ export type SupplierInvoiceSubmitPriorFailure = {
   message: string;
 };
 
-export interface PurchaseOrderSupplierMismatch {
-  purchaseOrderNumber: string;
-  purchaseOrderSupplier: string;
-  purchaseOrderSupplierWID: string;
-  submittedSupplierWID?: string;
-  invoiceSupplier?: string;
-}
-
 type SanitizedSoapError = Error & {
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   Validation_Fault?: unknown;
   serializedError?: Record<string, unknown>;
-  purchaseOrderSupplierMismatch?: PurchaseOrderSupplierMismatch;
 };
 
 interface SubmitSupplierInvoiceRequest {
@@ -1994,8 +1918,7 @@ function snapshotSoapError(error: unknown): Record<string, unknown> {
 
 function sanitizeSoapError(
   error: unknown,
-  priorFailures?: SupplierInvoiceSubmitPriorFailure[],
-  buildOptions?: buildSubmitInvoiceDataOptions
+  priorFailures?: SupplierInvoiceSubmitPriorFailure[]
 ): SanitizedSoapError {
   const summary = summarizeSoapError(error);
   const sanitizedError = new Error(summary.message) as SanitizedSoapError;
@@ -2008,21 +1931,6 @@ function sanitizeSoapError(
   }
   if (priorFailures && priorFailures.length > 1) {
     sanitizedError.priorFailures = priorFailures;
-  }
-  const purchaseOrderSupplier = buildOptions?.purchaseOrderSupplier;
-  const submittedSupplierWID = normalizeSupplierWID(buildOptions?.supplierWID) ?? normalizeSupplierWID(buildOptions?.defaultSupplierWID);
-  if (
-    purchaseOrderSupplier
-    && submittedSupplierWID !== purchaseOrderSupplier.workdayId
-    && isSupplierNotAllowedForPurchaseOrderError(error)
-  ) {
-    sanitizedError.purchaseOrderSupplierMismatch = {
-      purchaseOrderNumber: purchaseOrderSupplier.purchaseOrderNumber,
-      purchaseOrderSupplier: purchaseOrderSupplier.descriptor,
-      purchaseOrderSupplierWID: purchaseOrderSupplier.workdayId,
-      ...(submittedSupplierWID ? { submittedSupplierWID } : {}),
-      ...(purchaseOrderSupplier.invoiceSupplierName ? { invoiceSupplier: purchaseOrderSupplier.invoiceSupplierName } : {}),
-    };
   }
   sanitizedError.serializedError = {
     ...snapshotSoapError(error),
@@ -2146,7 +2054,7 @@ async function submitSupplierInvoiceWithRepair({
     } catch (error) {
       if (!isWorkdayValidationError(error)) {
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
-        throw sanitizeSoapError(error, priorFailures, attemptBuildOptions);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const validationError = summarizeValidationError(error);
@@ -2165,11 +2073,11 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault occurred after applying fallback/default value for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacksForField.map(fallback => fallback.label), validationError }
         );
-        throw sanitizeSoapError(error, priorFailures, attemptBuildOptions);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       if (attemptNumber === MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS) {
-        throw sanitizeSoapError(error, priorFailures, attemptBuildOptions);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const fallbackRetry = validationFallbackField
@@ -2180,7 +2088,7 @@ async function submitSupplierInvoiceWithRepair({
           `Validation fault did not match a configured fallback/default retry for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, appliedFallbacks: appliedFallbacks.map(fallback => fallback.label), validationError }
         );
-        throw sanitizeSoapError(error, priorFailures, attemptBuildOptions);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       const nextBuildOptions = fallbackRetry.buildOptions;
@@ -2193,7 +2101,7 @@ async function submitSupplierInvoiceWithRepair({
           `Fallback/default retry repeated a previously failed payload for invoice ${invoiceLabel}; skipping repair retries`,
           { operationName, fallbackLabel: fallbackRetry.fallbackLabel, validationError }
         );
-        throw sanitizeSoapError(error, priorFailures, attemptBuildOptions);
+        throw sanitizeSoapError(error, priorFailures);
       }
 
       attemptBuildOptions = nextBuildOptions;
@@ -2581,7 +2489,6 @@ export interface SubmitSupplierInvoiceUpdateParams {
   resolveOrgWorktagKinds?: (ids: string[]) => Promise<Map<string, OrgWorktagKind>>;
   paymentTermsId?: string;
   omitPurchaseOrderLineReference?: boolean;
-  purchaseOrderSupplier?: SubmitPurchaseOrderSupplier;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
 }
 
@@ -2609,7 +2516,6 @@ export async function submitSupplierInvoiceUpdate(
     resolveOrgWorktagKinds,
     paymentTermsId,
     omitPurchaseOrderLineReference,
-    purchaseOrderSupplier,
     attachments,
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{
@@ -2678,7 +2584,6 @@ export async function submitSupplierInvoiceUpdate(
       paymentTermsWID: paymentTermsId,
       filterInvoiceLines: true,
       omitPurchaseOrderLineReference,
-      purchaseOrderSupplier,
       attachments,
     },
     buildNotes,
@@ -2726,7 +2631,6 @@ export interface SubmitNewSupplierInvoiceParams {
   attachments: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
   omitPurchaseOrderLineReference?: boolean;
-  purchaseOrderSupplier?: SubmitPurchaseOrderSupplier;
   conversationUrl?: string;
 }
 
@@ -2758,7 +2662,6 @@ export async function submitNewSupplierInvoice(
     attachments,
     assigneeWID,
     omitPurchaseOrderLineReference,
-    purchaseOrderSupplier,
     conversationUrl,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
@@ -2816,7 +2719,6 @@ export async function submitNewSupplierInvoice(
       attachments,
       assigneeWID,
       omitPurchaseOrderLineReference,
-      purchaseOrderSupplier,
       conversationUrl,
     },
     buildNotes,

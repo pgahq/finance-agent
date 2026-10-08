@@ -52,7 +52,6 @@ jest.mock('../lib/workday.js', () => ({
   annotateSupplierInvoice: jest.fn().mockResolvedValue(undefined),
   getPurchaseOrder: jest.fn().mockResolvedValue(undefined),
   parsePurchaseOrder: jest.requireActual('../lib/workday.js').parsePurchaseOrder,
-  finalLinesLinkPurchaseOrderLines: jest.requireActual('../lib/workday.js').finalLinesLinkPurchaseOrderLines,
   isPurchaseOrderClosedForInvoicing: jest.requireActual('../lib/workday.js').isPurchaseOrderClosedForInvoicing,
   closedPurchaseOrderLineNote: jest.requireActual('../lib/workday.js').closedPurchaseOrderLineNote,
   consumedPurchaseOrderLinesNote: jest.requireActual('../lib/workday.js').consumedPurchaseOrderLinesNote,
@@ -1545,33 +1544,32 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([{ field: 'purchaseOrderLine', label: 'omitted PO line reference (PO closed or pending close)' }]))
       .toContain(closedNote);
     expect(notifyEnrichmentResult.mock.calls[0][0].fallbacks.purchaseOrderLineNotes).toBe(closedNote);
-    expect(params).not.toHaveProperty('purchaseOrderSupplier');
   });
 
-  it('lets the update retry with the PO supplier when the invoice names the same company', async () => {
-    const { enrichmentResponse } = require('../lib/ai.js');
-    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
-    const invoiceLines = require('../lib/invoice_lines.js');
-
-    getPurchaseOrder.mockResolvedValueOnce({
+  describe('PO supplier and PO number', () => {
+    const purchaseOrderResponse = (documentNumber: string, supplier?: { wid: string; descriptor: string }) => ({
       Response_Data: {
         Purchase_Order: {
           Purchase_Order_Data: {
-            Document_Number: 'PO-414373',
-            Supplier_Reference: {
-              descriptor: 'Club Pro Manufacturing USA',
-              ID: [{ $attributes: { type: 'WID' }, $value: 'club-pro-wid' }],
-            },
-            Goods_Line_Data: { Line_Number: 1, Goods_Order_Line_ID: 'ITEM_ORDER_LINE-3-29143', Item_Description: 'Cart' },
+            Document_Number: documentNumber,
+            ...(supplier ? {
+              Supplier_Reference: {
+                descriptor: supplier.descriptor,
+                ID: [{ $attributes: { type: 'WID' }, $value: supplier.wid }],
+              },
+            } : {}),
+            Goods_Line_Data: { Line_Number: 1, Goods_Order_Line_ID: `${documentNumber}-LINE-1`, Item_Description: 'Cart' },
           }
         }
       }
     });
-    enrichmentResponse.mockResolvedValueOnce({
+    const clubPro = { wid: 'club-pro-wid', descriptor: 'CLUB PRO GOLF GROUP LLC' };
+    const lastNotification = () => require('../lib/slack.js').notifyEnrichmentResult.mock.calls.at(-1)[0];
+    const enrichmentFor = (purchaseOrderNumber: string) => ({
       supplier: {
         status: 'found',
         confidence: 0.9,
-        extractedInformation: { supplierName: 'Club Pro Manufacturing' },
+        extractedInformation: { supplierName: 'GOLF GEAR LTD' },
         resolvedSupplier: { workdayId: 'golf-gear-wid', supplierName: 'GOLF GEAR LTD', confidence: 0.9, reason: 'Letterhead' },
         potentialDuplicateSuppliers: null,
         recommendation: { action: 'update_invoice', reason: 'Supplier found' },
@@ -1584,33 +1582,98 @@ describe('enrich_invoice', () => {
         recommended: null,
         reason: 'Company matches existing assignment'
       },
-      extractedPurchaseOrderNumber: 'PO-414373',
+      extractedPurchaseOrderNumber: purchaseOrderNumber,
       extractedInvoiceLines: [
         { description: 'Cart', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: false }
       ]
     });
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValueOnce({
-      lines: [{ lineOrder: 1, description: 'Cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' }],
-      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
-    });
-
-    await processor({
+    const event = (emailContext?: Record<string, string>) => ({
       data: [{
         workdayID: 'test-invoice-id',
         invoiceStatusAsText: 'Draft',
         supplier: null,
         company1: { descriptor: 'Test Company', id: 'COMP-1' },
-        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' },
+        ...(emailContext ? { emailContext } : {}),
       }]
-    } as any);
+    });
+    const mockLines = () => require('../lib/invoice_lines.js').buildFinalInvoiceLines.mockResolvedValueOnce({
+      lines: [{ lineOrder: 1, description: 'Cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'PO-LINE-1' }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
 
-    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(params.supplierWID).toBe('golf-gear-wid');
-    expect(params.purchaseOrderSupplier).toEqual(expect.objectContaining({
-      workdayId: 'club-pro-wid',
-      purchaseOrderNumber: 'PO-414373',
-      allowRetry: true,
-    }));
+    it('submits the PO supplier for PO-414373 and asks AP to confirm the PO number when the invoice names GOLF GEAR LTD', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getPurchaseOrder.mockResolvedValueOnce(purchaseOrderResponse('PO-414373', clubPro));
+      enrichmentResponse.mockResolvedValueOnce(enrichmentFor('PO-414373'));
+      mockLines();
+
+      await processor(event() as any);
+
+      const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+      expect(params.supplierWID).toBe('club-pro-wid');
+      expect(params.buildNotes([])).toContain(
+        'Supplier from PO: Set to CLUB PRO GOLF GROUP LLC, the supplier on PO-414373. The invoice names GOLF GEAR LTD, which does not look like the same company; confirm the PO number.'
+      );
+      const notification = lastNotification();
+      expect(notification.supplier.purchaseOrder).toEqual({
+        name: 'CLUB PRO GOLF GROUP LLC',
+        purchaseOrderNumber: 'PO-414373',
+        review: 'Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.',
+      });
+      expect(notification.fallbacks.defaultSupplier).toBe(false);
+    });
+
+    it('uses the one PO the email names over the invoice PO', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getPurchaseOrder.mockResolvedValueOnce(purchaseOrderResponse('PO-414373', clubPro));
+      enrichmentResponse.mockResolvedValueOnce(enrichmentFor('PO-411406'));
+      mockLines();
+
+      await processor(event({ subject: 'Invoice 11255346', plainTextBody: 'Please bill this to PO-414373.' }) as any);
+
+      expect(getPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-414373']);
+      const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+      expect(params.supplierWID).toBe('club-pro-wid');
+      expect(params.buildNotes([])).toContain('Purchase order: Used PO-414373 from the email instead of PO-411406 on the invoice.');
+      expect(lastNotification().extracted).toEqual(expect.objectContaining({
+        purchaseOrderNumber: 'PO-414373',
+        invoicePurchaseOrderNumber: 'PO-411406',
+      }));
+    });
+
+    it('keeps the invoice PO when the email names several POs', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { getPurchaseOrder } = require('../lib/workday.js');
+      getPurchaseOrder.mockResolvedValueOnce(purchaseOrderResponse('PO-411406'));
+      enrichmentResponse.mockResolvedValueOnce(enrichmentFor('PO-411406'));
+      mockLines();
+
+      await processor(event({ plainTextBody: 'Invoices for PO-414373 and PO-411406 attached.' }) as any);
+
+      expect(getPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-411406']);
+      expect(lastNotification().extracted.purchaseOrderNumber).toBe('PO-411406');
+    });
+
+    it('falls back to the invoice PO when the email PO is not in Workday', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      getPurchaseOrder
+        .mockResolvedValueOnce({ Response_Data: {} })
+        .mockResolvedValueOnce(purchaseOrderResponse('PO-411406'));
+      enrichmentResponse.mockResolvedValueOnce(enrichmentFor('PO-411406'));
+      mockLines();
+
+      await processor(event({ plainTextBody: 'Please bill this to PO-414373.' }) as any);
+
+      expect(getPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-414373', 'PO-411406']);
+      const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+      expect(params.supplierWID).toBe('golf-gear-wid');
+      expect(params.buildNotes([])).toContain('Purchase order: PO-414373 from the email was not found in Workday; used PO-411406 instead.');
+      expect(lastNotification().extracted.purchaseOrderNumber).toBe('PO-411406');
+    });
   });
 
   it.each([

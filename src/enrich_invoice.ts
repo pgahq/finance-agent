@@ -26,7 +26,7 @@ import {
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
-import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
+import { findSolePurchaseOrderNumber, normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
@@ -55,11 +55,11 @@ import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValid
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
-import { resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
+import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
-import { annotateSupplierInvoice, executeWorkdayQuery, finalLinesLinkPurchaseOrderLines, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
+import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -230,37 +230,69 @@ async function processInvoice(
     const normalizedPurchaseOrderNumber = rawPurchaseOrderNumber
       ? `PO-${rawPurchaseOrderNumber.replace(/^[Pp][Oo]-?/, '')}`
       : undefined;
-    let extractedPurchaseOrderNumber: string | undefined = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
+    const invoicePurchaseOrderNumber = /^PO-\w{6}$/.test(normalizedPurchaseOrderNumber ?? '')
       ? normalizedPurchaseOrderNumber
       : undefined;
+    // The one PO the inbound email names wins over the invoice PO; an email naming several POs names none.
+    const emailPurchaseOrderNumber = findSolePurchaseOrderNumber([
+      invoiceData.emailContext?.subject,
+      invoiceData.emailContext?.plainTextBody,
+    ]);
+    let extractedPurchaseOrderNumber: string | undefined = canModifyInvoice ? undefined : invoicePurchaseOrderNumber;
     let poLines: PurchaseOrderLine[] | undefined;
     let poSupplier: PurchaseOrderSupplier | undefined;
     let poClosedForInvoicing = false;
-    if (canModifyInvoice && extractedPurchaseOrderNumber) {
-      debug(`Fetching PO data for extracted PO number: ${extractedPurchaseOrderNumber}`);
+    let emailPurchaseOrderNotFound = false;
+    const candidatePurchaseOrderNumbers = canModifyInvoice
+      ? [...new Set([emailPurchaseOrderNumber, invoicePurchaseOrderNumber])].filter((po): po is string => Boolean(po))
+      : [];
+    for (const purchaseOrderNumber of candidatePurchaseOrderNumbers) {
+      debug(`Fetching PO data for ${purchaseOrderNumber === emailPurchaseOrderNumber ? 'email' : 'extracted'} PO number: ${purchaseOrderNumber}`);
       try {
-        const poResponse = await getPurchaseOrder(context, extractedPurchaseOrderNumber);
-        debug(`PO response for ${extractedPurchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
+        const poResponse = await getPurchaseOrder(context, purchaseOrderNumber);
+        debug(`PO response for ${purchaseOrderNumber}: ${JSON.stringify(poResponse)}`);
         const parsedPo = parsePurchaseOrder(poResponse);
-        poLines = parsedPo?.lines ?? [];
-        debug(`Parsed ${poLines.length} line(s) from PO ${extractedPurchaseOrderNumber}`);
-        const returnedPoNumber = poLines[0]?.purchaseOrderDocumentNumber;
-        poSupplier = poLines.length > 0 && returnedPoNumber === extractedPurchaseOrderNumber ? parsedPo?.supplier : undefined;
-        if (poLines.length === 0 || returnedPoNumber !== extractedPurchaseOrderNumber) {
-          debug(`PO ${extractedPurchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
-          poLines = undefined;
-          extractedPurchaseOrderNumber = undefined;
-        } else if (isPurchaseOrderClosedForInvoicing(parsedPo)) {
-          poClosedForInvoicing = true;
-          debug(`PO ${extractedPurchaseOrderNumber} is ${parsedPo?.documentStatus?.descriptor ?? parsedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+        const parsedLines = parsedPo?.lines ?? [];
+        debug(`Parsed ${parsedLines.length} line(s) from PO ${purchaseOrderNumber}`);
+        const returnedPoNumber = parsedLines[0]?.purchaseOrderDocumentNumber;
+        if (parsedLines.length === 0 || returnedPoNumber !== purchaseOrderNumber) {
+          debug(`PO ${purchaseOrderNumber} not found in Workday (returned: ${returnedPoNumber ?? 'none'}) - skipping PO processing`);
         } else {
-          poLines = markPurchaseOrderLineAvailability(poLines);
+          extractedPurchaseOrderNumber = purchaseOrderNumber;
+          poSupplier = parsedPo?.supplier;
+          if (isPurchaseOrderClosedForInvoicing(parsedPo)) {
+            poClosedForInvoicing = true;
+            poLines = parsedLines;
+            debug(`PO ${purchaseOrderNumber} is ${parsedPo?.documentStatus?.descriptor ?? parsedPo?.documentStatus?.id}; coding lines from the PO without Purchase_Order_Line_Reference`);
+          } else {
+            poLines = markPurchaseOrderLineAvailability(parsedLines);
+          }
+          break;
         }
       } catch (poError) {
-        debug(`Failed to fetch PO ${extractedPurchaseOrderNumber} from Workday - skipping PO processing:`, poError);
-        extractedPurchaseOrderNumber = undefined;
+        debug(`Failed to fetch PO ${purchaseOrderNumber} from Workday - skipping PO processing:`, poError);
       }
+      if (purchaseOrderNumber === emailPurchaseOrderNumber) emailPurchaseOrderNotFound = true;
     }
+    const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
+      purchaseOrderNumber: extractedPurchaseOrderNumber,
+      purchaseOrderSupplier: poSupplier,
+      invoiceSupplierWID: resolvedSupplierWID,
+      invoiceSupplier: {
+        resolvedName: result.supplier.resolvedSupplier?.supplierName
+          ?? (result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined),
+        extractedName: result.supplier.extractedInformation?.supplierName,
+        phone: result.supplier.extractedInformation?.phone,
+        email: result.supplier.extractedInformation?.email,
+      },
+    });
+    const submitSupplierWID = purchaseOrderSupplier?.workdayId ?? targetSupplierWID;
+    const purchaseOrderSelectionNotes = formatEnrichPurchaseOrderSelectionNotes({
+      emailPurchaseOrderNumber,
+      emailPurchaseOrderNotFound,
+      invoicePurchaseOrderNumber,
+      usedPurchaseOrderNumber: extractedPurchaseOrderNumber,
+    });
 
     const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
       costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
@@ -288,14 +320,14 @@ async function processInvoice(
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(extractedLines).freightAmountFromLines : undefined,
     });
     // Annotate-only runs submit nothing, so there is no header freight to restore.
-    const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && targetSupplierWID ? extractedLines : [], {
+    const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && submitSupplierWID ? extractedLines : [], {
       amountDue: extractedAmountDue,
       tax: extractedTaxAmount,
       freightCleared: headerFreightCleared,
     });
     const freightCleared = headerFreightCleared && restoredFreight.freight == null;
     const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
-    const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
+    const submitsLines = canModifyInvoice && Boolean(submitSupplierWID);
     // Annotate-only runs never change lines, so both freight behaviors need a submit.
     const reconcilesFreight = submitsLines;
     const charges = prepareInvoiceCharges(
@@ -383,24 +415,6 @@ async function processInvoice(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
-    const purchaseOrderSupplier = (await resolvePurchaseOrderSupplier(context.dbConnection, {
-      purchaseOrderNumber: extractedPurchaseOrderNumber,
-      purchaseOrderSupplier: poSupplier,
-      linksPurchaseOrderLines: finalLinesLinkPurchaseOrderLines(finalLines, {
-        currentInvoice: detailedInvoice,
-        filterInvoiceLines: true,
-        omitPurchaseOrderLineReference: poClosedForInvoicing,
-        invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
-      }),
-      submittedSupplierWID: targetSupplierWID,
-      invoiceSupplier: {
-        resolvedName: result.supplier.resolvedSupplier?.supplierName
-          ?? (result.supplier.status === 'matching' ? existingSupplier?.descriptor : undefined),
-        extractedName: result.supplier.extractedInformation?.supplierName,
-        phone: result.supplier.extractedInformation?.phone,
-        email: result.supplier.extractedInformation?.email,
-      },
-    }))?.purchaseOrderSupplier;
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = finalLines && !chargeWithheld && !freightAsLines ? lineTotalMismatchNote(finalLines, {
@@ -414,8 +428,8 @@ async function processInvoice(
     }) : undefined;
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
-    const upfrontFallbacks = getUpfrontFallbacks(resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -433,8 +447,8 @@ async function processInvoice(
     let submittedSuppliersInvoiceNumber = extractedSuppliersInvoiceNumber;
     let invoiceNumberFallbackLabels: string[] = [];
     let snapshotSyncFailed = false;
-    if (canModifyInvoice && targetSupplierWID) {
-      debug(`Setting supplier to WID=${targetSupplierWID}`);
+    if (canModifyInvoice && submitSupplierWID) {
+      debug(`Setting supplier to WID=${submitSupplierWID}`);
 
       const paymentTermsId = result.extractedPaymentTerms?.workdayId ?? undefined;
 
@@ -445,7 +459,7 @@ async function processInvoice(
       });
       const updateOutcome = await submitSupplierInvoiceUpdate(context, {
         invoiceWorkdayID: invoiceData.workdayID,
-        supplierWID: targetSupplierWID,
+        supplierWID: submitSupplierWID,
         buildNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
@@ -465,7 +479,6 @@ async function processInvoice(
         resolveOrgWorktagKinds: (ids) => getOrgWorktagKindsByIds(context.dbConnection, ids),
         paymentTermsId,
         ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
-        ...(purchaseOrderSupplier ? { purchaseOrderSupplier } : {}),
       });
       if (!updateOutcome.success) {
         debug(`Skipping enrichment notification — Workday update failed: ${updateOutcome.message ?? '(no message)'}`);
@@ -501,12 +514,19 @@ async function processInvoice(
       ...(typeof detailedInvoice.Invoice_Number === 'string' && detailedInvoice.Invoice_Number
         ? { invoiceNumber: detailedInvoice.Invoice_Number }
         : {}),
-      canModify: canModifyInvoice && !!targetSupplierWID,
+      canModify: canModifyInvoice && !!submitSupplierWID,
       supplier: {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         existingName: existingSupplier?.descriptor,
         isDefault: fallbacks.defaultSupplier,
+        ...(purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
+          purchaseOrder: {
+            name: purchaseOrderSupplier.descriptor,
+            purchaseOrderNumber: purchaseOrderSupplier.purchaseOrderNumber,
+            ...(purchaseOrderSupplierReviewLine(purchaseOrderSupplier) ? { review: purchaseOrderSupplierReviewLine(purchaseOrderSupplier) } : {}),
+          },
+        } : {}),
       },
       company: emailCompany ? {
         status: 'email_resolved',
@@ -529,6 +549,10 @@ async function processInvoice(
         freightCleared,
         taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
+        ...(extractedPurchaseOrderNumber && extractedPurchaseOrderNumber === emailPurchaseOrderNumber
+          && invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== emailPurchaseOrderNumber
+          ? { invoicePurchaseOrderNumber }
+          : {}),
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
@@ -637,6 +661,22 @@ function lineHasWorktag(line: any, type: string): boolean {
   return worktags.some((t: any) =>
     ([] as any[]).concat(t.ID ?? []).some((id: any) => id.$attributes?.type === type)
   );
+}
+
+function formatEnrichPurchaseOrderSelectionNotes(input: {
+  emailPurchaseOrderNumber?: string;
+  emailPurchaseOrderNotFound: boolean;
+  invoicePurchaseOrderNumber?: string;
+  usedPurchaseOrderNumber?: string;
+}): string {
+  const { emailPurchaseOrderNumber, emailPurchaseOrderNotFound, invoicePurchaseOrderNumber, usedPurchaseOrderNumber } = input;
+  if (!emailPurchaseOrderNumber || emailPurchaseOrderNumber === invoicePurchaseOrderNumber) return '';
+  if (emailPurchaseOrderNotFound) {
+    return `\n\nPurchase order: ${emailPurchaseOrderNumber} from the email was not found in Workday; ${usedPurchaseOrderNumber ? `used ${usedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
+  }
+  return usedPurchaseOrderNumber === emailPurchaseOrderNumber && invoicePurchaseOrderNumber
+    ? `\n\nPurchase order: Used ${emailPurchaseOrderNumber} from the email instead of ${invoicePurchaseOrderNumber} on the invoice.`
+    : '';
 }
 
 function getUpfrontFallbacks(

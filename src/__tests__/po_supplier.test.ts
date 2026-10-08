@@ -2,6 +2,8 @@ jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 
 import {
   decidePurchaseOrderSupplier,
+  formatPurchaseOrderSupplierNotes,
+  purchaseOrderSupplierReviewLine,
   relateSupplierIdentities,
   resolvePurchaseOrderSupplier,
   supplierIdentityFromDocument,
@@ -15,7 +17,7 @@ const golfGearDocument = {
   content: [
     'Company Name: GOLF GEAR LTD',
     'Supplier ID: S-000111',
-    'Alternate Names: CLUB PRO MFG, Golf Gear',
+    'Alternate Names: Club Pro Golf, Golf Gear',
     'Phone: (214) 555-0100',
     'Email: ar@golfgear.example',
     'Status: Active',
@@ -26,19 +28,18 @@ const golfGearDocument = {
 const clubProDocument = {
   workday_id: 'club-pro-wid',
   content: [
-    'Company Name: Club Pro Manufacturing USA',
+    'Company Name: CLUB PRO GOLF GROUP LLC',
     'Phone: +1 214-555-0100',
     'Email: billing@clubpro.example',
     'Status: Active',
   ].join('\n'),
-  metadata: { supplierName: 'Club Pro Manufacturing USA' },
+  metadata: { supplierName: 'CLUB PRO GOLF GROUP LLC' },
 };
 
 const incidentInput = (overrides: Partial<PurchaseOrderSupplierInput> = {}): PurchaseOrderSupplierInput => ({
   purchaseOrderNumber: 'PO-414373',
-  purchaseOrderSupplier: { workdayId: 'club-pro-wid', descriptor: 'Club Pro Manufacturing USA' },
-  linksPurchaseOrderLines: true,
-  submittedSupplierWID: 'golf-gear-wid',
+  purchaseOrderSupplier: { workdayId: 'club-pro-wid', descriptor: 'CLUB PRO GOLF GROUP LLC' },
+  invoiceSupplierWID: 'golf-gear-wid',
   invoiceSupplier: { resolvedName: 'GOLF GEAR LTD', extractedName: 'Golf Gear Ltd' },
   ...overrides,
 });
@@ -66,7 +67,7 @@ describe('supplierNamesMatch', () => {
 describe('supplierIdentityFromDocument', () => {
   it('reads names, alternate names, phones, and emails from cached supplier content', () => {
     expect(supplierIdentityFromDocument(golfGearDocument)).toEqual({
-      names: ['GOLF GEAR LTD', 'CLUB PRO MFG', 'Golf Gear', 'GOLF GEAR LTD'],
+      names: ['GOLF GEAR LTD', 'Club Pro Golf', 'Golf Gear', 'GOLF GEAR LTD'],
       phones: ['(214) 555-0100'],
       emails: ['ar@golfgear.example'],
     });
@@ -123,48 +124,55 @@ describe('relateSupplierIdentities', () => {
 });
 
 describe('decidePurchaseOrderSupplier', () => {
-  it('does nothing when no PO line is linked', () => {
-    expect(decidePurchaseOrderSupplier(incidentInput({ linksPurchaseOrderLines: false }))).toBeUndefined();
+  it('does nothing without a PO number', () => {
+    expect(decidePurchaseOrderSupplier(incidentInput({ purchaseOrderNumber: undefined }))).toBeUndefined();
   });
 
   it('does nothing when the PO has no supplier', () => {
     expect(decidePurchaseOrderSupplier(incidentInput({ purchaseOrderSupplier: undefined }))).toBeUndefined();
   });
 
-  it('allows no retry when the invoice already uses the PO supplier', () => {
-    expect(decidePurchaseOrderSupplier(incidentInput({ submittedSupplierWID: 'club-pro-wid' }))).toEqual({
+  it('reports the same supplier when the invoice already resolved to the PO supplier', () => {
+    expect(decidePurchaseOrderSupplier(incidentInput({ invoiceSupplierWID: 'club-pro-wid' }))).toEqual({
+      workdayId: 'club-pro-wid',
+      descriptor: 'CLUB PRO GOLF GROUP LLC',
+      purchaseOrderNumber: 'PO-414373',
+      invoiceSupplierName: 'GOLF GEAR LTD',
       relation: 'same',
-      purchaseOrderSupplier: expect.objectContaining({ workdayId: 'club-pro-wid', allowRetry: false }),
     });
   });
 
-  it('allows the PO supplier retry when the invoice supplier alternate name matches it', () => {
+  it('submits the PO supplier for PO-414373 even though nothing ties GOLF GEAR LTD to CLUB PRO GOLF GROUP LLC', () => {
+    expect(decidePurchaseOrderSupplier(incidentInput())).toEqual({
+      workdayId: 'club-pro-wid',
+      descriptor: 'CLUB PRO GOLF GROUP LLC',
+      purchaseOrderNumber: 'PO-414373',
+      invoiceSupplierName: 'GOLF GEAR LTD',
+      relation: 'unrelated',
+    });
+  });
+
+  it('relates the suppliers when the invoice supplier alternate name matches the PO supplier', () => {
     expect(decidePurchaseOrderSupplier(incidentInput(), {
-      submitted: supplierIdentityFromDocument(golfGearDocument),
-    })).toEqual({
+      invoice: supplierIdentityFromDocument(golfGearDocument),
+    })).toEqual(expect.objectContaining({
+      workdayId: 'club-pro-wid',
       relation: 'related',
-      reason: 'name "CLUB PRO MFG" matches "Club Pro Manufacturing USA"',
-      purchaseOrderSupplier: {
-        workdayId: 'club-pro-wid',
-        descriptor: 'Club Pro Manufacturing USA',
-        purchaseOrderNumber: 'PO-414373',
-        invoiceSupplierName: 'GOLF GEAR LTD',
-        allowRetry: true,
-      },
-    });
+      reason: 'name "Club Pro Golf" matches "CLUB PRO GOLF GROUP LLC"',
+    }));
   });
 
-  it('allows the PO supplier retry when the invoice letterhead names the PO supplier', () => {
+  it('relates the suppliers when the invoice letterhead names the PO supplier', () => {
     expect(decidePurchaseOrderSupplier(incidentInput({
-      invoiceSupplier: { resolvedName: 'GOLF GEAR LTD', extractedName: 'Club Pro Manufacturing' },
+      invoiceSupplier: { resolvedName: 'GOLF GEAR LTD', extractedName: 'Club Pro Golf Group' },
     }))?.relation).toBe('related');
   });
 
-  it('allows the PO supplier retry when the default supplier stands in for an unmatched PO supplier', () => {
+  it('submits the PO supplier when the invoice supplier was not resolved', () => {
     expect(decidePurchaseOrderSupplier(incidentInput({
-      submittedSupplierWID: 'default-supplier-wid',
-      invoiceSupplier: { extractedName: 'Club Pro Manufacturing' },
-    }))?.purchaseOrderSupplier.allowRetry).toBe(true);
+      invoiceSupplierWID: undefined,
+      invoiceSupplier: { extractedName: 'Club Pro Golf' },
+    }))).toEqual(expect.objectContaining({ workdayId: 'club-pro-wid', relation: 'related', invoiceSupplierName: 'Club Pro Golf' }));
   });
 
   it('splits comma-joined invoice phones before relating suppliers', () => {
@@ -174,12 +182,40 @@ describe('decidePurchaseOrderSupplier', () => {
       purchaseOrder: supplierIdentityFromDocument(clubProDocument),
     })?.reason).toBe('phone (214) 555-0100 matches');
   });
+});
 
-  it('refuses the PO supplier retry when nothing ties the suppliers together', () => {
-    expect(decidePurchaseOrderSupplier(incidentInput())).toEqual({
-      relation: 'unrelated',
-      purchaseOrderSupplier: expect.objectContaining({ workdayId: 'club-pro-wid', allowRetry: false, invoiceSupplierName: 'GOLF GEAR LTD' }),
-    });
+describe('formatPurchaseOrderSupplierNotes', () => {
+  it('adds nothing when the invoice already resolved to the PO supplier', () => {
+    expect(formatPurchaseOrderSupplierNotes(decidePurchaseOrderSupplier(incidentInput({ invoiceSupplierWID: 'club-pro-wid' })))).toBe('');
+    expect(formatPurchaseOrderSupplierNotes(undefined)).toBe('');
+  });
+
+  it('asks AP to confirm the PO number when the invoice names an unrelated company', () => {
+    expect(formatPurchaseOrderSupplierNotes(decidePurchaseOrderSupplier(incidentInput()))).toBe(
+      '\n\nSupplier from PO: Set to CLUB PRO GOLF GROUP LLC, the supplier on PO-414373.'
+      + ' The invoice names GOLF GEAR LTD, which does not look like the same company; confirm the PO number.'
+    );
+  });
+
+  it('explains why a related invoice supplier was replaced', () => {
+    expect(formatPurchaseOrderSupplierNotes(decidePurchaseOrderSupplier(incidentInput(), {
+      invoice: supplierIdentityFromDocument(golfGearDocument),
+    }))).toBe(
+      '\n\nSupplier from PO: Set to CLUB PRO GOLF GROUP LLC, the supplier on PO-414373.'
+      + ' The invoice names GOLF GEAR LTD (name "Club Pro Golf" matches "CLUB PRO GOLF GROUP LLC").'
+    );
+  });
+});
+
+describe('purchaseOrderSupplierReviewLine', () => {
+  it('flags only an unrelated invoice supplier', () => {
+    expect(purchaseOrderSupplierReviewLine(decidePurchaseOrderSupplier(incidentInput()))).toBe(
+      'Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.'
+    );
+    expect(purchaseOrderSupplierReviewLine(decidePurchaseOrderSupplier(incidentInput(), {
+      invoice: supplierIdentityFromDocument(golfGearDocument),
+    }))).toBeUndefined();
+    expect(purchaseOrderSupplierReviewLine(decidePurchaseOrderSupplier(incidentInput({ invoiceSupplierWID: 'club-pro-wid' })))).toBeUndefined();
   });
 });
 
@@ -195,20 +231,18 @@ describe('resolvePurchaseOrderSupplier', () => {
     expect(decision?.relation).toBe('related');
   });
 
-  it('relates by names alone when the supplier cache is unavailable', async () => {
+  it('still returns the PO supplier when the supplier cache is unavailable', async () => {
     const query = jest.fn().mockRejectedValue(new Error('connection refused'));
 
-    const decision = await resolvePurchaseOrderSupplier(dbReturning(query), incidentInput({
-      invoiceSupplier: { extractedName: 'CLUB PRO MFG' },
-    }));
+    const decision = await resolvePurchaseOrderSupplier(dbReturning(query), incidentInput());
 
-    expect(decision?.relation).toBe('related');
+    expect(decision).toEqual(expect.objectContaining({ workdayId: 'club-pro-wid', relation: 'unrelated' }));
   });
 
-  it('skips the cache lookup when the PO supplier is already submitted', async () => {
+  it('skips the cache lookup when the invoice already resolved to the PO supplier', async () => {
     const query = jest.fn();
 
-    const decision = await resolvePurchaseOrderSupplier(dbReturning(query), incidentInput({ submittedSupplierWID: 'club-pro-wid' }));
+    const decision = await resolvePurchaseOrderSupplier(dbReturning(query), incidentInput({ invoiceSupplierWID: 'club-pro-wid' }));
 
     expect(query).not.toHaveBeenCalled();
     expect(decision?.relation).toBe('same');

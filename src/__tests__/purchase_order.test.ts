@@ -3,6 +3,7 @@ import {
   findNotePurchaseOrdersForOtherInvoices,
   findPurchaseOrderNumber,
   findPurchaseOrderNumbers,
+  findSolePurchaseOrderNumber,
   normalizePurchaseOrderNumber,
   selectNotePurchaseOrder,
 } from '../lib/purchase_order.js';
@@ -51,6 +52,25 @@ describe('findPurchaseOrderNumber', () => {
 
   it('returns undefined when no PO number is present', () => {
     expect(findPurchaseOrderNumber('Invoice attached', 'invoice.pdf')).toBeUndefined();
+  });
+});
+
+describe('findSolePurchaseOrderNumber', () => {
+  it('returns the one PO the texts name, however often', () => {
+    expect(findSolePurchaseOrderNumber(['Re: PO-414373', 'Please use PO 414373', 'PO-414373.pdf'])).toBe('PO-414373');
+  });
+
+  it('names no PO when the texts name several', () => {
+    expect(findSolePurchaseOrderNumber(['Invoices for PO-414373', 'and PO-411406'])).toBeUndefined();
+  });
+
+  it('leaves out excluded POs before counting', () => {
+    expect(findSolePurchaseOrderNumber(['PO-414373 and PO-411406'], new Set(['PO-411406']))).toBe('PO-414373');
+    expect(findSolePurchaseOrderNumber(['PO-411406'], new Set(['PO-411406']))).toBeUndefined();
+  });
+
+  it('names no PO when none is present', () => {
+    expect(findSolePurchaseOrderNumber([undefined, null, 'Invoice attached'])).toBeUndefined();
   });
 });
 

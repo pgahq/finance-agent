@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, finalLinesLinkPurchaseOrderLines, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -6654,72 +6654,13 @@ describe('Workday utilities', () => {
       const poLinkedLines = [
         { lineOrder: 1, description: 'Club fitting cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' },
       ];
-      const poSupplier = {
-        workdayId: 'po-supplier-wid',
-        descriptor: 'Club Pro Manufacturing USA',
-        purchaseOrderNumber: 'PO-414373',
-        invoiceSupplierName: 'GOLF GEAR LTD',
-      };
       const submittedSupplier = (request: any) =>
         request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value;
       const created = (callback: any) => callback(null, {
         Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] },
       });
 
-      it('retries a PO supplier rejection with the PO supplier, never the default supplier', async () => {
-        const mockClient = mockSoapClient();
-        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
-        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
-        const requests: any[] = [];
-        mockClient.Submit_Supplier_Invoice
-          .mockImplementationOnce((request: any, callback: any) => {
-            requests.push(request);
-            callback(supplierNotAllowedForPo(), null);
-          })
-          .mockImplementationOnce((request: any, callback: any) => {
-            requests.push(request);
-            created(callback);
-          });
-
-        const result = await submitNewSupplierInvoiceForTest({
-          finalLines: poLinkedLines,
-          purchaseOrderSupplier: { ...poSupplier, allowRetry: true },
-          buildNotes: (fallbacks) => fallbacks.map((fallback) => fallback.label).join('; '),
-        });
-
-        expect(result.success).toBe(true);
-        expect(requests.map(submittedSupplier)).toEqual([mockSupplierID, 'po-supplier-wid']);
-        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-        expect(result.appliedFallbacks).toContainEqual(
-          expect.objectContaining({ field: 'purchaseOrderSupplier', label: 'supplier from PO-414373 (Club Pro Manufacturing USA)' }),
-        );
-        expect(result.appliedFallbacks.map((fallback) => fallback.field)).not.toContain('supplier');
-        expect(requests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0].Purchase_Order_Line_Reference)
-          .toEqual({ ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'ITEM_ORDER_LINE-3-29143' }] });
-      });
-
-      it('stops after the PO supplier is also rejected', async () => {
-        const mockClient = mockSoapClient();
-        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
-        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
-          callback(supplierNotAllowedForPo(), null);
-        });
-
-        const error: any = await submitNewSupplierInvoiceForTest({
-          finalLines: poLinkedLines,
-          purchaseOrderSupplier: { ...poSupplier, allowRetry: true },
-        }).catch((thrown: unknown) => thrown);
-
-        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
-        expect(error.message).toBe("You can't select this supplier to invoice this purchase order.");
-        expect(error.priorFailures).toEqual([
-          expect.objectContaining({ attempt: 1 }),
-          expect.objectContaining({ attempt: 2, fallback: 'supplier from PO-414373 (Club Pro Manufacturing USA)' }),
-        ]);
-        expect(error.purchaseOrderSupplierMismatch).toBeUndefined();
-      });
-
-      it('fails with a PO supplier mismatch, without the default supplier, when the PO supplier retry is not allowed', async () => {
+      it('fails a PO supplier rejection without the classifier or the default supplier', async () => {
         const mockClient = mockSoapClient();
         process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
         const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -6727,20 +6668,11 @@ describe('Workday utilities', () => {
           callback(supplierNotAllowedForPo(), null);
         });
 
-        const error: any = await submitNewSupplierInvoiceForTest({
-          finalLines: poLinkedLines,
-          purchaseOrderSupplier: { ...poSupplier, allowRetry: false },
-        }).catch((thrown: unknown) => thrown);
+        const error: any = await submitNewSupplierInvoiceForTest({ finalLines: poLinkedLines }).catch((thrown: unknown) => thrown);
 
         expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
         expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
-        expect(error.purchaseOrderSupplierMismatch).toEqual({
-          purchaseOrderNumber: 'PO-414373',
-          purchaseOrderSupplier: 'Club Pro Manufacturing USA',
-          purchaseOrderSupplierWID: 'po-supplier-wid',
-          submittedSupplierWID: mockSupplierID,
-          invoiceSupplier: 'GOLF GEAR LTD',
-        });
+        expect(error.message).toBe("You can't select this supplier to invoice this purchase order.");
       });
 
       it('does not offer the default supplier for a supplier fault on PO-linked lines', async () => {
@@ -6779,7 +6711,7 @@ describe('Workday utilities', () => {
         expect(requests.map(submittedSupplier)).toEqual([mockSupplierID, 'default-supplier-wid']);
       });
 
-      it('does not retry a duplicate supplier invoice number on a PO-linked invoice with a PO supplier retry available', async () => {
+      it('does not retry a duplicate supplier invoice number on a PO-linked invoice', async () => {
         const mockClient = mockSoapClient();
         process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
         const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -6792,7 +6724,6 @@ describe('Workday utilities', () => {
         await expect(submitNewSupplierInvoiceForTest({
           suppliersInvoiceNumber: '11255346',
           finalLines: poLinkedLines,
-          purchaseOrderSupplier: { ...poSupplier, allowRetry: true },
         })).rejects.toMatchObject({
           message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
         });
@@ -8314,32 +8245,6 @@ describe('Workday utilities', () => {
         message: 'Processing error occurred. The task submitted is not authorized.'
       });
       await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.not.toHaveProperty('body');
-    });
-  });
-
-  describe('finalLinesLinkPurchaseOrderLines', () => {
-    const currentInvoice = {
-      Invoice_Line_Replacement_Data: [{
-        Line_Order: 1,
-        Extended_Amount: 100,
-        Purchase_Order_Line_Reference: { ID: [{ attributes: { 'wd:type': 'Purchase_Order_Line_ID' }, $value: 'POL-1' }] },
-      }],
-    };
-
-    it('counts kept OCR lines that carry a PO line reference on update', () => {
-      expect(finalLinesLinkPurchaseOrderLines(undefined, { currentInvoice, filterInvoiceLines: true })).toBe(true);
-    });
-
-    it('reports no link when the PO line reference is omitted', () => {
-      expect(finalLinesLinkPurchaseOrderLines(undefined, {
-        currentInvoice,
-        filterInvoiceLines: true,
-        omitPurchaseOrderLineReference: true,
-      })).toBe(false);
-    });
-
-    it('reports no link without a current invoice or final lines', () => {
-      expect(finalLinesLinkPurchaseOrderLines(undefined)).toBe(false);
     });
   });
 
