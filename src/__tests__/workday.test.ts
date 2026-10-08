@@ -2,7 +2,7 @@ import { debug } from '@pga/logger';
 import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
-import { resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
+import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
 import { EMPTY_RELATED_LOB } from '../lib/related_worktags.js';
 
 // Mock the dependencies
@@ -1052,6 +1052,198 @@ describe('Workday utilities', () => {
 
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
       expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
+    it('should retry unit cost decimal precision faults with amount-only lines that keep the total', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5500.00'
+              }
+            }
+          }
+        });
+      });
+
+      const precisionFault = 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753';
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: {
+                Message: precisionFault,
+                Xpath: '/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[1]/ns1:Unit_Cost[1]'
+              }
+            }
+          }, null);
+          return;
+        }
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$5,500.00',
+        finalLines: [{
+          lineOrder: 1,
+          description: 'PSO-RISK-ADVISORY - Consultant',
+          quantity: 24.45,
+          unitCost: 224.9488753,
+          extendedAmount: 5500,
+        }]
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.priorFailures).toEqual([{ attempt: 1, message: precisionFault }]);
+      expect(result.appliedFallbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' }),
+        ])
+      );
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data[0]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 5500,
+      });
+      expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Control_Amount_Total).toBe(5500);
+
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+    });
+
+    it('retries a mixed fault with one line precision error as amount-only on every eligible line, keeping totals and PO links', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5600.00'
+              }
+            }
+          }
+        });
+      });
+      const lineXpath = (index: number, field: string) => `/ns1:Submit_Supplier_Invoice_Request[1]/ns1:Supplier_Invoice_Data[1]/ns1:Invoice_Line_Replacement_Data[${index}]/ns1:${field}[1]`;
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        if (capturedRequests.length === 1) {
+          callback({
+            Validation_Fault: {
+              Validation_Error: [
+                { Message: 'Enter a valid memo', Xpath: lineXpath(2, 'Memo') },
+                { Message: 'Decimal precision of 6 exceeded for Unit Cost: 224.9488753', Xpath: lineXpath(1, 'Unit_Cost') },
+              ]
+            }
+          }, null);
+          return;
+        }
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$5,600.00',
+        finalLines: [
+          { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+          { lineOrder: 2, description: 'Widgets', quantity: 2, unitCost: 50, extendedAmount: 100, purchaseOrderLineId: 'POL-002' },
+        ]
+      });
+
+      expect(result.success).toBe(true);
+      const retried = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(retried.Invoice_Line_Replacement_Data[0]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 5500 });
+      expect(retried.Invoice_Line_Replacement_Data[1]).toMatchObject({
+        Quantity: 0,
+        Unit_Cost: 0,
+        Extended_Amount: 100,
+        Purchase_Order_Line_Reference: { ID: [{ $attributes: { type: 'Purchase_Order_Line_ID' }, $value: 'POL-002' }] },
+      });
+      expect(retried.Control_Amount_Total).toBe(5600);
+    });
+
+    it('should submit normalized LevelBlue lines within the WSDL decimal limits on the first attempt', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2026-10-07',
+                Control_Amount_Total: '5500.00'
+              }
+            }
+          }
+        });
+      });
+
+      const capturedRequests: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequests.push(request);
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      const finalLines = normalizeSupplierInvoiceLineAmounts([
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: 'Hours', quantity: 2.555, unitCost: 1000, extendedAmount: null },
+        { lineOrder: 3, description: 'Fuel surcharge', quantity: 0, unitCost: 0, extendedAmount: 10.005 },
+        { lineOrder: 4, description: 'Service credit', quantity: 1, unitCost: -12.3456789, extendedAmount: -12.35 },
+      ], true);
+      const result = await submitSupplierInvoiceUpdateForTest({ extractedAmountDue: '$8,052.66', finalLines });
+
+      expect(result.success).toBe(true);
+      expect(capturedRequests).toHaveLength(1);
+      const submittedLines = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+      expect(submittedLines[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
+      expect(submittedLines[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 2555 });
+      expect(submittedLines[2]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: 10.005 });
+      expect(submittedLines[3]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
     });
 
     it('should not repair-retry validation faults when that field already uses a fallback value', async () => {
@@ -3291,6 +3483,22 @@ describe('Workday utilities', () => {
         expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
       });
 
+      it('submits a negative line with no discount marker as an amount-only credit without the PO line reference', async () => {
+        const { getCapturedRequest } = setupMockClient();
+
+        await submitSupplierInvoiceUpdateForTest({
+          extractedTaxAmount: '$45.00',
+          finalLines: [{ lineOrder: 1, description: 'Credit for March overbilling', hasDiscount: null, quantity: 1, unitCost: -250, extendedAmount: -250, purchaseOrderLineId: 'POL-001' }]
+        });
+
+        const lines = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+        expect(lines[0].Quantity).toBe(0);
+        expect(lines[0].Unit_Cost).toBe(0);
+        expect(lines[0].Extended_Amount).toBe(-250);
+        expect(lines[0].Purchase_Order_Line_Reference).toBeUndefined();
+        expect(lines[0].Tax_Applicability_Reference).toBeUndefined();
+      });
+
       it('keeps the PO line reference, quantity, and tax applicability on a positive line flagged hasDiscount', async () => {
         const { getCapturedRequest } = setupMockClient();
 
@@ -5246,6 +5454,27 @@ describe('Workday utilities', () => {
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Company_Reference).toEqual({
         ID: [{ $attributes: { type: 'WID' }, $value: mockCompanyID }]
       });
+    });
+
+    it('submits normalized lines within the WSDL decimal limits on a new invoice', async () => {
+      const mockClient = mockSoapClient();
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+      });
+
+      const finalLines = normalizeSupplierInvoiceLineAmounts([
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: 'Service credit', quantity: 1, unitCost: -12.3456789, extendedAmount: -12.35 },
+      ], true);
+      const result = await submitNewSupplierInvoiceForTest({ extractedAmountDue: '$5,487.65', finalLines });
+
+      expect(result.success).toBe(true);
+      const invoiceData = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(invoiceData.Control_Amount_Total).toBe(5487.65);
+      expect(invoiceData.Invoice_Line_Replacement_Data[0]).toMatchObject({ Quantity: 24.45, Unit_Cost: 224.948875, Extended_Amount: 5500 });
+      expect(invoiceData.Invoice_Line_Replacement_Data[1]).toMatchObject({ Quantity: 0, Unit_Cost: 0, Extended_Amount: -12.35 });
     });
 
     it('includes Assignee_Reference when assigneeWID is provided', async () => {

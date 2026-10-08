@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
@@ -1065,12 +1065,19 @@ async function getValidationFallbackField(
     return 'conversationUrl';
   }
 
-  if (isQuantityUnitExtendedMismatchError(validationText)) {
+  // Both faults use the document-wide amount-only retry: every eligible merchandise line drops its quantity,
+  // so Workday stops counting PO line quantity as invoiced on that resubmission. Totals and PO links are kept.
+  const lineAmountFault = isQuantityUnitExtendedMismatchError(validationText)
+    ? 'quantity * unit cost vs extended amount'
+    : isLineQuantityOrUnitCostPrecisionError(error, validationText)
+      ? 'quantity or unit cost decimal precision'
+      : undefined;
+  if (lineAmountFault) {
     if (getAmountOnlyLineRetryBuildOptions(options)) {
-      debug('Validation is quantity * unit cost vs extended amount; retrying with amount-only lines');
+      debug(`Validation is ${lineAmountFault}; retrying with amount-only lines`);
       return 'invoiceLineAmounts';
     }
-    debug('Validation is quantity * unit cost vs extended amount but no eligible lines; skipping amount-only retry');
+    debug(`Validation is ${lineAmountFault} but no eligible lines; skipping amount-only retry`);
     return undefined;
   }
 
@@ -2486,6 +2493,8 @@ export async function submitSupplierInvoiceUpdate(
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   suppliersInvoiceNumber?: string;
+  /** The live invoice read just before the update, so callers can see what the update replaced. */
+  previousInvoice?: unknown;
 }> {
   debug('Updating Supplier Invoice supplier via SOAP');
   debug(`Invoice WorkdayID: ${invoiceWorkdayID}`);
@@ -2562,6 +2571,7 @@ export async function submitSupplierInvoiceUpdate(
     appliedFallbacks,
     suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
+    previousInvoice: currentInvoice,
   };
 }
 
@@ -2631,6 +2641,8 @@ export async function submitNewSupplierInvoice(
   appliedFallbacks: AppliedFallback[];
   priorFailures?: SupplierInvoiceSubmitPriorFailure[];
   suppliersInvoiceNumber?: string;
+  /** The invoice as Workday returned it right after create, when that read succeeded. */
+  createdInvoice?: unknown;
 }> {
   debug('Creating new Supplier Invoice via SOAP');
   debug(`Supplier WID: ${supplierWID ?? '(none - using default)'}`);
@@ -2688,9 +2700,11 @@ export async function submitNewSupplierInvoice(
   );
   const invoiceWID = extractIdsByType(result, 'WID')[0];
   let invoiceNumber: string | undefined;
+  let createdInvoice: unknown;
   if (invoiceWID) {
     try {
-      invoiceNumber = readInvoiceNumber(await getSupplierInvoice(context, invoiceWID));
+      createdInvoice = await getSupplierInvoice(context, invoiceWID);
+      invoiceNumber = readInvoiceNumber(createdInvoice);
     } catch (error) {
       debug('Could not load Invoice_Number after create', { invoiceWID, error });
     }
@@ -2705,6 +2719,7 @@ export async function submitNewSupplierInvoice(
     appliedFallbacks,
     suppliersInvoiceNumber: finalBuildOptions.suppliersInvoiceNumber,
     ...(priorFailures.length ? { priorFailures } : {}),
+    ...(createdInvoice ? { createdInvoice } : {}),
   };
 }
 

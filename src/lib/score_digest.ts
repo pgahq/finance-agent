@@ -1,0 +1,532 @@
+import { LOST_TO_REFRESH_STATUS, scoreChanges, type CancelBasis, type Outcome, type ScoredChange } from './invoice_score.js';
+import type { InvoiceScore } from './invoice_scores.js';
+import type { ScoredFieldName } from './invoice_snapshots.js';
+import type { SlackBlock } from './slack.js';
+import { addCentralDays, centralWeekStart, countsForTouches, touchCalloutBlocks, touchCount, type TouchCallout } from './score_touches.js';
+import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
+
+export interface DigestWindow {
+  start: Date;
+  end: Date;
+  previousStart: Date;
+}
+
+/** The last complete Monday-to-Sunday Central week before `now`, and the week before it. */
+export function digestWindow(now: Date): DigestWindow {
+  const end = centralWeekStart(now);
+  return { start: addCentralDays(end, -7), end, previousStart: addCentralDays(end, -14) };
+}
+
+export interface FieldRate {
+  field: ScoredFieldName;
+  category: 'material' | 'convention';
+  count: number;
+  rate: number;
+  previousRate?: number;
+}
+
+export interface ReleaseRate {
+  releaseSha: string;
+  entered: number;
+  edited: number;
+  rate: number;
+}
+
+export interface ChangeExample {
+  workdayInvoiceWid: string;
+  workdayInvoiceNumber?: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface InvoiceLink {
+  workdayInvoiceWid: string;
+  workdayInvoiceNumber?: string;
+  detail: string;
+}
+
+export interface DigestSummary {
+  window: DigestWindow;
+  entered: number;
+  enteredPrevious: number;
+  outcomes: Partial<Record<Outcome, number>>;
+  stuckDrafts: number;
+  /** Sandbox only: agent invoices the weekly tenant refresh removed before they finished. */
+  lostToRefresh: number;
+  fieldRates: FieldRate[];
+  releaseRates: ReleaseRate[];
+  late: { closed: number; corrected: number };
+  cancels: { agent: number; business: number; unattributed: number; agentByBasis: Partial<Record<CancelBasis, number>> };
+  conventionExamples: Partial<Record<'memo' | 'suppliersInvoiceNumber', ChangeExample[]>>;
+  worst: InvoiceLink[];
+  unattributedCancels: InvoiceLink[];
+  backlog?: Partial<Record<string, number>>;
+  /** The pre-snapshot count was attempted and failed, so the digest says it is missing. */
+  backlogUnavailable?: boolean;
+  /** Lead callout: zero-touch share this week, the bucket breakdown, and the trend. */
+  touches?: TouchCallout;
+}
+
+function within(date: Date | undefined, start: Date, end: Date): boolean {
+  return Boolean(date) && date!.getTime() >= start.getTime() && date!.getTime() < end.getTime();
+}
+
+function againstAgent(changes: ScoredChange[] | undefined): ScoredChange[] {
+  return (changes ?? []).filter((change) => change.agentOwned !== false);
+}
+
+function fieldCounts(scores: InvoiceScore[]): Map<ScoredFieldName, { category: 'material' | 'convention'; count: number }> {
+  const counts = new Map<ScoredFieldName, { category: 'material' | 'convention'; count: number }>();
+  for (const score of scores) {
+    const seen = new Set<ScoredFieldName>();
+    for (const change of againstAgent(score.entryDiff)) {
+      if (seen.has(change.field)) continue;
+      seen.add(change.field);
+      const entry = counts.get(change.field) ?? { category: change.category, count: 0 };
+      entry.count += 1;
+      counts.set(change.field, entry);
+    }
+  }
+  return counts;
+}
+
+const CANCELED_OUTCOMES = new Set<Outcome>(['canceled', 'deleted']);
+const MAX_EXAMPLES = 3;
+const MAX_WORST = 5;
+
+/** Week summary of agent invoice scores, compared with the week before. */
+export function summarizeScores(
+  scores: InvoiceScore[],
+  window: DigestWindow,
+  unattributedCancels: InvoiceScore[] = []
+): DigestSummary {
+  const enteredNow = scores.filter((score) => within(score.entryReadAt, window.start, window.end));
+  const enteredBefore = scores.filter((score) => within(score.entryReadAt, window.previousStart, window.start));
+  const closedInWindow = scores.filter((score) => score.terminal && within(score.finalReadAt, window.start, window.end));
+  const lostToRefresh = closedInWindow.filter((score) => score.finalStatus === LOST_TO_REFRESH_STATUS).length;
+  const closedNow = closedInWindow.filter((score) => score.finalStatus !== LOST_TO_REFRESH_STATUS);
+
+  const outcomes: Partial<Record<Outcome, number>> = {};
+  const bump = (outcome: Outcome | undefined) => {
+    if (outcome) outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+  };
+  for (const score of enteredNow) bump(score.outcome);
+  const enteredWids = new Set(enteredNow.map((score) => score.workdayInvoiceWid));
+  for (const score of closedNow) {
+    if (score.outcome && CANCELED_OUTCOMES.has(score.outcome) && !enteredWids.has(score.workdayInvoiceWid)) bump(score.outcome);
+  }
+  const stuckDrafts = scores.filter((score) => !score.terminal && score.outcome === 'stuck_draft').length;
+
+  const nowCounts = fieldCounts(enteredNow);
+  const previousCounts = fieldCounts(enteredBefore);
+  const fieldRates: FieldRate[] = [...nowCounts.entries()]
+    .map(([field, { category, count }]) => ({
+      field,
+      category,
+      count,
+      rate: count / enteredNow.length,
+      ...(enteredBefore.length ? { previousRate: (previousCounts.get(field)?.count ?? 0) / enteredBefore.length } : {}),
+    }))
+    .sort((a, b) => (a.category === b.category ? b.count - a.count : a.category === 'material' ? -1 : 1));
+
+  const byRelease = new Map<string, { entered: number; edited: number }>();
+  for (const score of enteredNow) {
+    const key = score.releaseSha ?? 'unknown';
+    const entry = byRelease.get(key) ?? { entered: 0, edited: 0 };
+    entry.entered += 1;
+    if (score.outcome === 'submitted_edited') entry.edited += 1;
+    byRelease.set(key, entry);
+  }
+  const releaseRates = [...byRelease.entries()]
+    .map(([releaseSha, { entered, edited }]) => ({ releaseSha, entered, edited, rate: edited / entered }))
+    .sort((a, b) => b.entered - a.entered);
+
+  const lateClosed = closedNow.filter((score) => score.outcome && !CANCELED_OUTCOMES.has(score.outcome));
+  const late = {
+    closed: lateClosed.length,
+    corrected: lateClosed.filter((score) => againstAgent(score.lateDiff).some((change) => change.category === 'material')).length,
+  };
+
+  const canceledNow = closedNow.filter((score) => score.outcome && CANCELED_OUTCOMES.has(score.outcome));
+  const cancels = { agent: 0, business: 0, unattributed: 0, agentByBasis: {} as Partial<Record<CancelBasis, number>> };
+  for (const score of canceledNow) {
+    const attribution = score.cancelAttribution ?? 'unattributed';
+    cancels[attribution] += 1;
+    if (attribution === 'agent' && score.cancelBasis) {
+      cancels.agentByBasis[score.cancelBasis] = (cancels.agentByBasis[score.cancelBasis] ?? 0) + 1;
+    }
+  }
+
+  const conventionExamples: DigestSummary['conventionExamples'] = {};
+  for (const field of ['memo', 'suppliersInvoiceNumber'] as const) {
+    const examples = enteredNow.flatMap((score) => againstAgent(score.entryDiff)
+      .filter((change) => change.field === field)
+      .map((change) => ({
+        workdayInvoiceWid: score.workdayInvoiceWid,
+        ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
+        before: change.before,
+        after: change.after,
+      })));
+    if (examples.length) conventionExamples[field] = examples.slice(0, MAX_EXAMPLES);
+  }
+
+  const materialCount = (score: InvoiceScore) => againstAgent(score.entryDiff).filter((change) => change.category === 'material').length;
+  const worst: InvoiceLink[] = [
+    ...canceledNow
+      .filter((score) => score.cancelAttribution === 'agent')
+      .map((score) => ({ score, weight: 1000, detail: `canceled (${(score.cancelBasis && BASIS_LABELS[score.cancelBasis]) ?? score.cancelBasis ?? 'agent'})` })),
+    ...enteredNow
+      .filter((score) => materialCount(score) > 0)
+      .map((score) => ({ score, weight: materialCount(score), detail: plural(materialCount(score), 'material field change') })),
+  ]
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, MAX_WORST)
+    .map(({ score, detail }) => ({
+      workdayInvoiceWid: score.workdayInvoiceWid,
+      ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
+      detail,
+    }));
+
+  const unattributed = [...unattributedCancels]
+    .sort((a, b) => Number(b.cancelBasis === 'early_draft_cancel') - Number(a.cancelBasis === 'early_draft_cancel'))
+    .map((score) => ({
+      workdayInvoiceWid: score.workdayInvoiceWid,
+      ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
+      detail: score.cancelBasis === 'early_draft_cancel'
+        ? 'canceled in Draft soon after the agent wrote it'
+        : score.cancelBasis === 'invoice_unreadable' ? 'Workday could not return the canceled invoice' : 'no signal',
+    }));
+
+  return {
+    window,
+    entered: enteredNow.length,
+    enteredPrevious: enteredBefore.length,
+    outcomes,
+    stuckDrafts,
+    lostToRefresh,
+    fieldRates,
+    releaseRates,
+    late,
+    cancels,
+    conventionExamples,
+    worst,
+    unattributedCancels: unattributed,
+  };
+}
+
+const FIELD_LABELS: Record<ScoredFieldName, string> = {
+  supplier: 'Supplier',
+  company: 'Company',
+  suppliersInvoiceNumber: 'Supplier invoice number',
+  invoiceDate: 'Invoice date',
+  controlTotal: 'Control total',
+  memo: 'Header memo',
+  'line.amount': 'Line amount',
+  'line.purchaseOrderLine': 'PO line',
+  'line.spendCategory': 'Spend category',
+  'line.costCenter': 'Cost center',
+  'line.fund': 'Fund',
+  'line.lineOfBusiness': 'Line of business',
+  'line.otherWorktags': 'Other worktags',
+  'line.memo': 'Line memo',
+  'line.itemDescription': 'Item description',
+  'line.added': 'Lines added',
+  'line.removed': 'Lines removed',
+};
+
+const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
+  replacement: 'AP keyed a replacement',
+  duplicate: 'duplicate',
+  duplicate_reason: 'duplicate (cancel reason)',
+  wrong_document: 'not an invoice',
+  per_pdf_without_clustering: 'extra PDF before clustering',
+  agent_reason: 'agent cancel reason',
+  agent_tag: 'agent error tag',
+  ap_label: 'AP label',
+  invoice_unreadable: 'invoice could not be read',
+};
+
+const percent = (rate: number) => `${Math.round(rate * 100)}%`;
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function shortDate(date: Date): string {
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
+}
+
+/** Invoice text in a code span; Slack control characters are escaped so a value cannot mention, link, or end the span. */
+function quote(value: unknown): string {
+  const raw = value == null || value === '' ? '(blank)' : String(value);
+  const text = raw.length > 80 ? `${raw.slice(0, 79)}…` : raw;
+  return `\`${escapeSlackText(text).replace(/`/g, "'")}\``;
+}
+
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function invoiceLink(link: { workdayInvoiceWid: string; workdayInvoiceNumber?: string }): string {
+  const label = escapeSlackText(link.workdayInvoiceNumber ?? link.workdayInvoiceWid).replace(/\|/g, '/').replace(/`/g, "'");
+  const url = buildWorkdayObjectDeeplink(encodeURIComponent(link.workdayInvoiceWid));
+  return url ? `<${url}|${label}>` : `\`${label}\``;
+}
+
+function section(text: string): SlackBlock {
+  return { type: 'section', text: { type: 'mrkdwn', text: text.length > 2900 ? `${text.slice(0, 2899)}…` : text } };
+}
+
+const OUTCOME_LABELS: Record<Outcome, string> = {
+  submitted_clean: 'submitted with no material change',
+  submitted_edited: 'submitted with AP edits',
+  denied: 'denied',
+  canceled: 'canceled',
+  deleted: 'deleted',
+  stuck_draft: 'stuck in Draft',
+  lost_to_refresh: 'lost to the sandbox refresh',
+};
+
+export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
+  const { window } = summary;
+  const blocks: SlackBlock[] = [
+    ...(summary.touches ? touchCalloutBlocks(summary.touches) : []),
+    section(`*Finance agent audit* · ${shortDate(window.start)} – ${shortDate(new Date(window.end.getTime() - 1))}`),
+  ];
+
+  const outcomeLines = (Object.keys(OUTCOME_LABELS) as Outcome[])
+    .filter((outcome) => outcome !== 'stuck_draft' && outcome !== 'lost_to_refresh' && summary.outcomes[outcome])
+    .map((outcome) => `• ${summary.outcomes[outcome]} ${OUTCOME_LABELS[outcome]}`);
+  const enteredLine = `*${summary.entered}* agent invoices reached AP last week (${summary.enteredPrevious} the week before).`;
+  blocks.push(section([
+    enteredLine,
+    ...outcomeLines,
+    `• ${summary.stuckDrafts} still in Draft past the cutoff`,
+    ...(summary.lostToRefresh ? [`• ${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored)`] : []),
+  ].join('\n')));
+
+  if (summary.fieldRates.length) {
+    const line = (rate: FieldRate) => {
+      const trend = rate.previousRate != null ? ` (was ${percent(rate.previousRate)})` : '';
+      return `• ${FIELD_LABELS[rate.field]}: ${rate.count} (${percent(rate.rate)})${trend}`;
+    };
+    const material = summary.fieldRates.filter((rate) => rate.category === 'material');
+    const convention = summary.fieldRates.filter((rate) => rate.category === 'convention');
+    blocks.push(section([
+      '*Fields AP changed before submitting*',
+      ...(material.length ? ['_Coding and extraction_', ...material.map(line)] : []),
+      ...(convention.length ? ['_Conventions (memo, descriptions, invoice number)_', ...convention.map(line)] : []),
+    ].join('\n')));
+  }
+
+  if (summary.releaseRates.length > 1) {
+    blocks.push(section([
+      '*By release*',
+      ...summary.releaseRates.map((rate) => `• \`${rate.releaseSha.slice(0, 7)}\`: ${rate.edited} of ${rate.entered} edited (${percent(rate.rate)})`),
+    ].join('\n')));
+  }
+
+  blocks.push(section(
+    `*Late corrections* · coding changed after AP submitted on ${summary.late.corrected} of ${plural(summary.late.closed, 'invoice')} closed last week.`
+  ));
+
+  const { cancels } = summary;
+  const basisLines = Object.entries(cancels.agentByBasis)
+    .map(([basis, count]) => `   ◦ ${BASIS_LABELS[basis as CancelBasis] ?? basis}: ${count}`);
+  blocks.push(section([
+    `*Cancels* · ${cancels.agent} agent, ${cancels.business} business, ${cancels.unattributed} unattributed`,
+    ...basisLines,
+  ].join('\n')));
+
+  const exampleLines = (Object.entries(summary.conventionExamples) as Array<[keyof typeof summary.conventionExamples, ChangeExample[]]>)
+    .flatMap(([field, examples]) => [
+      `_${field === 'memo' ? 'Header memo' : 'Supplier invoice number'}_`,
+      ...examples.map((example) => `• ${invoiceLink(example)}: ${quote(example.before)} → ${quote(example.after)}`),
+    ]);
+  if (exampleLines.length) blocks.push(section(['*How AP rewrote conventions*', ...exampleLines].join('\n')));
+
+  if (summary.worst.length) {
+    blocks.push(section(['*Invoices to look at*', ...summary.worst.map((link) => `• ${invoiceLink(link)}: ${link.detail}`)].join('\n')));
+  }
+
+  if (summary.unattributedCancels.length) {
+    blocks.push(section([
+      '*Cancels AP can label* (agent or business)',
+      ...summary.unattributedCancels.map((link) => `• ${invoiceLink(link)}: ${link.detail}`),
+    ].join('\n')));
+  }
+
+  if (summary.backlog && Object.keys(summary.backlog).length) {
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: `Before snapshots (outcome only): ${Object.entries(summary.backlog).map(([state, count]) => `${count} ${state}`).join(', ')}`,
+      }],
+    });
+  } else if (summary.backlogUnavailable) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Before snapshots (outcome only): unavailable this week; Workday query failed.' }] });
+  }
+
+  return blocks;
+}
+
+export interface DailyScoreLine {
+  workdayInvoiceWid: string;
+  workdayInvoiceNumber?: string;
+  /** Outcome headline, for example `submitted with AP edits` or `canceled · agent (not an invoice)`. */
+  text: string;
+  /** Agent-owned fields AP changed before submitting. */
+  entryChanges: ScoredChange[];
+  /** Agent-owned fields changed after submit, at the final read. */
+  lateChanges: ScoredChange[];
+  /** Enrich invoices only: changes to OCR values the agent left alone. */
+  ocrOnlyChanges: number;
+  /** Fields AP had to change, for invoices AP submitted. */
+  touches?: number;
+  /** Cancel evidence that could not be checked, so the attribution may be missing a signal. */
+  evidenceGaps?: string[];
+}
+
+function listWords(items: string[]): string {
+  return items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+function cancelEvidenceGaps(score: InvoiceScore): string[] {
+  const evidence = score.cancelEvidence;
+  return [
+    ...(evidence?.invoiceReadFailed ? ['the canceled invoice'] : []),
+    ...(evidence?.replacementLookupFailed ? ['the replacement search'] : []),
+    ...(evidence?.duplicateCheckFailed ? ['the duplicate check'] : []),
+    ...(evidence?.conversationReadFailed ? ['the Intercom conversation'] : []),
+  ];
+}
+
+export interface DailySummary {
+  since: Date;
+  until: Date;
+  lines: DailyScoreLine[];
+  lostToRefresh: number;
+}
+
+/** Webhook posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
+export const MAX_DAILY_INVOICE_MESSAGES = 40;
+
+/** What was scored between `since` and `until`: AP submits, final reads, cancels, and newly stuck Drafts. */
+export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): DailySummary {
+  const lines: DailyScoreLine[] = [];
+  let lostToRefresh = 0;
+  for (const score of scores) {
+    const link = {
+      workdayInvoiceWid: score.workdayInvoiceWid,
+      ...(score.workdayInvoiceNumber ? { workdayInvoiceNumber: score.workdayInvoiceNumber } : {}),
+    };
+    const entered = within(score.entryReadAt, since, until);
+    const closed = score.terminal && within(score.finalReadAt, since, until);
+    if (closed && score.finalStatus === LOST_TO_REFRESH_STATUS) {
+      lostToRefresh += 1;
+      continue;
+    }
+    const parts: string[] = [];
+    let entryChanges: ScoredChange[] = [];
+    let lateChanges: ScoredChange[] = [];
+    let ocrOnlyChanges = 0;
+    if (score.outcome === 'canceled' || score.outcome === 'deleted') {
+      if (!closed) continue;
+      const basis = score.cancelBasis ? BASIS_LABELS[score.cancelBasis] ?? score.cancelBasis.replace(/_/g, ' ') : undefined;
+      parts.push(`${score.outcome} · ${score.cancelAttribution ?? 'unattributed'}${basis ? ` (${basis})` : ''}`);
+      entryChanges = scoreChanges(score.cancelEvidence?.replacement?.diff ?? []);
+    } else if (score.outcome === 'stuck_draft') {
+      if (score.terminal || !within(score.updatedAt, since, until)) continue;
+      parts.push(OUTCOME_LABELS.stuck_draft);
+    } else {
+      if (entered) {
+        parts.push(OUTCOME_LABELS[score.outcome ?? 'submitted_clean']);
+        entryChanges = againstAgent(score.entryDiff);
+        ocrOnlyChanges = (score.entryDiff ?? []).filter((change) => change.agentOwned === false).length;
+      }
+      if (closed) {
+        parts.push(score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase());
+        lateChanges = againstAgent(score.lateDiff);
+      }
+    }
+    if (parts.length) {
+      lines.push({
+        ...link,
+        text: parts.join(' → '),
+        entryChanges,
+        lateChanges,
+        ocrOnlyChanges,
+        ...(countsForTouches(score) ? { touches: touchCount(score) } : {}),
+        ...(closed && cancelEvidenceGaps(score).length ? { evidenceGaps: cancelEvidenceGaps(score) } : {}),
+      });
+    }
+  }
+  return { since, until, lines, lostToRefresh };
+}
+
+/** `Cost_Center_Reference_ID=CC72200` → `CC72200`; arrays join; amounts keep two decimals. */
+function displayValue(value: unknown): string {
+  if (value == null || value === '' || (Array.isArray(value) && !value.length)) return '(blank)';
+  if (Array.isArray(value)) return value.map(displayValue).join(', ');
+  if (typeof value === 'number') return value.toFixed(2);
+  if (typeof value === 'object') {
+    const line = value as { amount?: unknown; itemDescription?: unknown };
+    const amount = typeof line.amount === 'number' ? line.amount.toFixed(2) : undefined;
+    const description = typeof line.itemDescription === 'string' ? line.itemDescription : undefined;
+    return [amount, description].filter(Boolean).join(' · ') || 'line';
+  }
+  const text = String(value);
+  const reference = text.match(/^[A-Za-z_]+=(.+)$/);
+  return reference ? reference[1] : text;
+}
+
+function changeLine(change: ScoredChange): string {
+  const where = change.line != null ? ` (line ${change.line + 1})` : '';
+  if (change.field === 'line.added') return `• Line added${where}: ${quote(displayValue(change.after))}`;
+  if (change.field === 'line.removed') return `• Line removed${where}: ${quote(displayValue(change.before))}`;
+  return `• ${FIELD_LABELS[change.field]}${where}: ${quote(displayValue(change.before))} → ${quote(displayValue(change.after))}`;
+}
+
+function changeSections(title: string, changes: ScoredChange[]): string[] {
+  const material = changes.filter((change) => change.category === 'material');
+  const convention = changes.filter((change) => change.category === 'convention');
+  return [
+    ...(material.length ? [`*${title}*`, ...material.map(changeLine)] : []),
+    ...(convention.length ? [`*${title === 'Changed by AP' ? 'Conventions' : `${title} (conventions)`}*`, ...convention.map(changeLine)] : []),
+  ];
+}
+
+/** One message per scored invoice: outcome, then before → after for each field AP changed. */
+export function buildDailyInvoiceMessages(summary: DailySummary): SlackBlock[][] {
+  const shown = summary.lines.slice(0, MAX_DAILY_INVOICE_MESSAGES);
+  const messages = shown.map((line): SlackBlock[] => {
+    const isCancel = line.text.startsWith('canceled') || line.text.startsWith('deleted');
+    const body = [
+      ...changeSections(isCancel ? 'AP replacement differs' : 'Changed by AP', line.entryChanges),
+      ...changeSections('Changed after submit', line.lateChanges),
+    ];
+    const touches = line.touches === undefined ? '' : ` · *${line.touches} ${line.touches === 1 ? 'touch' : 'touches'}*`;
+    const blocks: SlackBlock[] = [section(`*Finance agent audit* · ${invoiceLink(line)} · ${line.text}${touches}`)];
+    if (body.length) blocks.push(section(body.join('\n')));
+    if (line.ocrOnlyChanges) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `${plural(line.ocrOnlyChanges, 'other change')} to OCR values the agent left alone (not counted)` }],
+      });
+    }
+    if (line.evidenceGaps?.length) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `Could not check ${listWords(line.evidenceGaps)}; the attribution may be missing a signal.` }],
+      });
+    }
+    return blocks;
+  });
+  const footer: string[] = [];
+  const more = summary.lines.length - shown.length;
+  if (more > 0) footer.push(`…and ${plural(more, 'more invoice')} scored since the last daily post; see the weekly digest.`);
+  if (summary.lostToRefresh) footer.push(`${summary.lostToRefresh} removed by the weekly sandbox refresh (not scored).`);
+  if (footer.length) messages.push([{ type: 'context', elements: [{ type: 'mrkdwn', text: footer.join(' ') }] }]);
+  return messages;
+}

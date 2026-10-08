@@ -374,6 +374,72 @@ describe('create_invoice', () => {
     );
   });
 
+  it('snapshots the created invoice for scoring from the read-back create already did', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, database } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    workday.submitNewSupplierInvoice.mockResolvedValueOnce({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      appliedFallbacks: [],
+      createdInvoice: {
+        Invoice_Number: 'SUPIN-412727',
+        Supplier_Reference: { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: 'S-1' }] },
+        Control_Amount_Total: '100',
+      },
+    });
+
+    await processor({ data: [{ ...attachmentRequest('new-invoices/req-1/invoice.pdf'), conversationId: 'conv-1' }] } as any);
+
+    const db = await database.getDatabaseConnection();
+    const insert = db.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO agent_invoice_snapshots'));
+    expect(insert).toBeDefined();
+    const params = insert[1];
+    expect(params[0]).toBe('new-invoice-wid');
+    expect(params[1]).toBe('create');
+    expect(params[2]).toBe('SUPIN-412727');
+    expect(JSON.parse(params[3])).toEqual({ supplier: 'Supplier_ID=S-1', controlTotal: 100, lines: [] });
+    expect(params[4]).toBe('conv-1');
+    expect(JSON.parse(params[5])).toEqual(['new-invoices/req-1/invoice.pdf']);
+    expect(params[8]).toBe('off');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.not.objectContaining({ snapshotSync: 'failed' }),
+    );
+  });
+
+  it('still reports the created invoice when the scoring snapshot cannot be saved', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, database } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    workday.submitNewSupplierInvoice.mockResolvedValueOnce({
+      success: true,
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      appliedFallbacks: [],
+      createdInvoice: { Invoice_Number: 'SUPIN-412727' },
+    });
+    const db = await database.getDatabaseConnection();
+    db.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO agent_invoice_snapshots')) throw new Error('db down');
+      return [];
+    });
+
+    await expect(processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any)).resolves.not.toThrow();
+
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({ invoiceWID: 'new-invoice-wid', snapshotSync: 'failed' }),
+    );
+    db.query.mockReset();
+    db.query.mockResolvedValue([]);
+  });
+
   it('attaches the conversation transcript without sending it to enrichment', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -586,6 +652,64 @@ describe('create_invoice', () => {
       unitCost: 0,
       extendedAmount: 1105.49,
     });
+  });
+
+  it('should round the LevelBlue unit cost, keep the line total, and note the doubled line sum', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      extractedTaxAmount: '$0.00',
+      extractedTaxLabel: 'Tax',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null },
+        { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 },
+        { lineOrder: 2, description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: 5500, extendedAmount: 5500 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-levelblue/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.extractedAmountDue).toBe('$5,500.00');
+    expect(submitArgs.finalLines[0]).toMatchObject({ quantity: 24.45, unitCost: 224.948875, extendedAmount: 5500 });
+    expect(submitArgs.buildNotes([])).toContain(
+      'Line total review: Invoice lines total $11,000.00, but the amount due $5,500.00 less freight $0.00 and tax $0.00 is $5,500.00. Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
+    );
+  });
+
+  it('should not add a line total review note when lines match the amount due', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$5,500.00',
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', hasDiscount: null }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: 224.9488753, extendedAmount: 5500 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [attachmentRequest('new-invoices/req-levelblue-single/invoice.pdf')]
+    } as any);
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.buildNotes([])).not.toContain('Line total review');
   });
 
   it('submits a freight-only invoice as a coded freight line with no header freight', async () => {
@@ -1116,6 +1240,77 @@ describe('create_invoice', () => {
       'error',
       expect.any(Number),
       expect.objectContaining({ s3Key: 'new-invoices/req-4/invoice.pdf' }),
+      expect.any(Error)
+    );
+  });
+
+  it('names the person who triggered a failed create on the Slack error', async () => {
+    const { processor, slack, invoiceEnrichment, employees } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
+    });
+    employees.getEmployeeWidByEmail.mockResolvedValue({
+      workdayId: 'wid-jcarey',
+      name: 'Joseph A Carey Jr.',
+      preferredName: 'Joe Carey',
+    });
+
+    await expect(processor({
+      data: [{ ...attachmentRequest('new-invoices/req-4/invoice.pdf'), assigneeEmail: 'jcarey@pgahq.com' }]
+    } as any)).rejects.toThrow('Invoice enrichment returned error status');
+
+    expect(employees.getEmployeeWidByEmail).toHaveBeenCalledWith(expect.anything(), 'jcarey@pgahq.com');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ triggeredByEmail: 'jcarey@pgahq.com', triggeredByName: 'Joe Carey' }),
+      expect.any(Error)
+    );
+  });
+
+  it('still Slacks the create error with the trigger email when the employee query fails', async () => {
+    const { processor, slack, invoiceEnrichment, employees, database } = freshRequire();
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      supplier: { ...baseEnrichmentResult.supplier, status: 'error', reason: 'AI failure' }
+    });
+    employees.getEmployeeWidByEmail.mockImplementation(jest.requireActual('../lib/employees.js').getEmployeeWidByEmail);
+    const query = jest.fn((sql: string) => sql.includes("type = 'employee'")
+      ? Promise.reject(new Error('database unavailable'))
+      : Promise.resolve([]));
+    database.getDatabaseConnection.mockResolvedValue({ query, close: jest.fn().mockResolvedValue({}) });
+
+    await expect(processor({
+      data: [{ ...attachmentRequest('new-invoices/req-4/invoice.pdf'), assigneeEmail: 'jcarey@pgahq.com' }]
+    } as any)).rejects.toThrow('Invoice enrichment returned error status');
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("type = 'employee'"), ['jcarey@pgahq.com']);
+    expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+    const details = slack.notifyResult.mock.calls[0][3];
+    expect(details).toMatchObject({ triggeredByEmail: 'jcarey@pgahq.com' });
+    expect(details).not.toHaveProperty('triggeredByName');
+  });
+
+  it('reuses the assignee lookup for the trigger name when the create fails after it', async () => {
+    process.env.INVOICE_MOD_ENABLED = 'true';
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    employees.getEmployeeWidByEmail.mockResolvedValue({ workdayId: 'wid-jcarey', preferredName: 'Joe Carey' });
+    workday.submitNewSupplierInvoice.mockRejectedValue(new Error('Workday down'));
+
+    await expect(processor({
+      data: [{ ...attachmentRequest('new-invoices/req-4/invoice.pdf'), assigneeEmail: 'jcarey@pgahq.com' }]
+    } as any)).rejects.toThrow('Workday down');
+
+    expect(employees.getEmployeeWidByEmail).toHaveBeenCalledTimes(1);
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'error',
+      expect.any(Number),
+      expect.objectContaining({ triggeredByEmail: 'jcarey@pgahq.com', triggeredByName: 'Joe Carey' }),
       expect.any(Error)
     );
   });
@@ -2973,6 +3168,21 @@ describe('create_invoice', () => {
       );
     });
 
+    it('carries the trigger email onto the clustering failure without a name lookup', async () => {
+      const { processor, slack, clustering, employees, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      clustering.parseAndClusterInvoiceAttachments.mockRejectedValue(new Error('classify boom'));
+
+      await expect(processor({
+        data: [{ ...clusteredRequest(), assigneeEmail: 'jcarey@pgahq.com' }],
+      } as any)).rejects.toThrow('classify boom');
+
+      expect(employees.getEmployeeWidByEmail).not.toHaveBeenCalled();
+      const details = slack.notifyResult.mock.calls[0][3];
+      expect(details).toMatchObject({ triggeredByEmail: 'jcarey@pgahq.com' });
+      expect(details).not.toHaveProperty('triggeredByName');
+    });
+
     it('Slacks once when invoice creation fails after successful clustering', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, loadEnv } = freshRequire();
       loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
@@ -3165,6 +3375,40 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({ updated: true, invoiceNumber: 'SUPIN-1' }),
       );
+    });
+
+    it('snapshots a resend update and keeps the AP edits the update overwrote', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv, database } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+      workday.submitSupplierInvoiceUpdate.mockResolvedValueOnce({
+        success: true,
+        appliedFallbacks: [],
+        previousInvoice: { Memo: 'AP memo' },
+      });
+      workday.getSupplierInvoice = jest.fn().mockResolvedValue({ Memo: 'Agent memo' });
+      const db = await database.getDatabaseConnection();
+      db.query.mockImplementation(async (sql: string) => (sql.includes('SELECT') && sql.includes('agent_invoice_snapshots')
+        ? [{ workday_invoice_wid: wid, write_seq: 1, source: 'create', fields: { memo: 'Agent memo', lines: [] }, created_at: new Date() }]
+        : []));
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      const insert = db.query.mock.calls.find(([sql]: [string]) => sql.includes('INSERT INTO agent_invoice_snapshots'));
+      expect(insert?.[1][1]).toBe('resend_update');
+      expect(JSON.parse(insert?.[1][9])).toEqual([{ field: 'memo', before: 'Agent memo', after: 'AP memo' }]);
+      db.query.mockReset();
+      db.query.mockResolvedValue([]);
+      delete workday.getSupplierInvoice;
     });
 
     it('reports the timestamped supplier invoice number after a duplicate retry on resend', async () => {

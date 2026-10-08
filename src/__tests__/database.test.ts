@@ -169,6 +169,19 @@ describe('Database Library', () => {
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS conversation_invoice_claims'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS invoice_cluster_plans'))).toBe(true);
       expect(initSql.some((sql) => sql.includes('UNIQUE (conversation_id, supplier_invoice_number)'))).toBe(true);
+
+      const position = (fragment: string) => initSql.findIndex((sql) => sql.includes(fragment));
+      const scoringSchema = [
+        'CREATE TABLE IF NOT EXISTS agent_invoice_snapshots',
+        'idx_agent_invoice_snapshots_conversation',
+        'CREATE TABLE IF NOT EXISTS agent_invoice_scores',
+        'idx_agent_invoice_scores_entry_read_at',
+        'CREATE TABLE IF NOT EXISTS cancel_labels',
+        'CREATE TABLE IF NOT EXISTS agent_invoice_touch_daily',
+        'CREATE OR REPLACE VIEW agent_invoice_touches',
+      ];
+      for (const fragment of scoringSchema) expect(position(fragment)).toBeGreaterThan(position('invoice_cluster_plans'));
+      expect(position('CREATE OR REPLACE VIEW agent_invoice_touches')).toBeGreaterThan(position('CREATE TABLE IF NOT EXISTS agent_invoice_scores'));
     });
 
     it('resets the pool when schema initialization fails', async () => {
@@ -193,6 +206,25 @@ describe('Database Library', () => {
       mockQuery.mockResolvedValue({ rows: [] });
       const connection = await getDatabaseConnection(env);
       expect(connection).toBeDefined();
+    });
+
+    it('still serves the pool when the touch reporting view cannot be created', async () => {
+      await closeDatabasePool();
+      const env = {
+        DATABASE_SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',
+        DATABASE_CLUSTER_ENDPOINT: 'test-cluster.cluster-xyz.us-east-1.rds.amazonaws.com',
+        DATABASE_NAME: 'test_db'
+      };
+      mockSecretsSend.mockResolvedValue({ SecretString: 'plain-password' });
+      mockEnd.mockClear();
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (String(sql).includes('CREATE OR REPLACE VIEW agent_invoice_touches')) throw new Error('cannot drop columns from view');
+        return { rows: [] };
+      });
+
+      await expect(getDatabaseConnection(env)).resolves.toBeDefined();
+      expect(mockEnd).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('ROLLBACK'))).toBe(true);
     });
   });
 
