@@ -1220,6 +1220,7 @@ describe('enrich_invoice', () => {
     expect(params.finalLines).toEqual([expect.objectContaining({ description: 'PRO 52118 - Linehaul - 42,000 lbs', extendedAmount: 4595 })]);
     const note = 'Header freight equals the only line ($4,595.00), so header Freight_Amount is not set. Check the extracted freight.';
     expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
+    expect(params.buildNotes([])).not.toContain('Line total review');
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
   });
 

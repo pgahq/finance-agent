@@ -1129,7 +1129,8 @@ async function processInvoiceCluster(
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
-    const lineTotalReviewNote = chargeWithheld ? undefined : lineTotalMismatchNote(finalLines, {
+    // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
+    const lineTotalReviewNote = chargeWithheld || freightAsLines ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
       freightAmount: extractedFreightAmount,
       taxAmount: extractedTaxAmount,

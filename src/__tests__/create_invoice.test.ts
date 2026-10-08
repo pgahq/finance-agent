@@ -883,7 +883,10 @@ describe('create_invoice', () => {
         ...myFreightWorldEnrichment,
         extractedInvoiceLines: [linehaul]
       });
-      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(carrierLine);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        ...carrierLine,
+        lines: [{ ...carrierLine.lines[0], description: linehaul.description }]
+      });
 
       await processor({
         data: [attachmentRequest('new-invoices/req-linehaul/invoice.pdf')]
@@ -897,6 +900,7 @@ describe('create_invoice', () => {
         'Header freight equals the only line ($4,595.00), so header Freight_Amount is not set. Check the extracted freight.'
       );
       expect(submitArgs.buildNotes([])).not.toContain('Removed invoice line');
+      expect(submitArgs.buildNotes([])).not.toContain('Line total review');
     });
 
     it('keeps header freight and drops a tax row that repeats header tax on a goods invoice', async () => {
