@@ -3,7 +3,7 @@ import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   asArray,
@@ -529,6 +529,8 @@ interface buildSubmitInvoiceDataOptions {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  /** All-freight invoice: freight rows are submitted as coded lines and header Freight_Amount stays empty. */
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   freightCleared?: boolean;
   taxCleared?: boolean;
@@ -546,8 +548,8 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
@@ -794,7 +796,7 @@ function getConfiguredDefaultSupplierWID(options: buildSubmitInvoiceDataOptions)
   return normalizeSupplierWID(process.env.WORKDAY_DEFAULT_SUPPLIER_WID) ?? normalizeSupplierWID(options.defaultSupplierWID);
 }
 
-function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFallback[] {
+function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCharges?: SubmittedCharges): AppliedFallback[] {
   const { supplierWID, defaultSupplierWID, invoiceDate, paymentTermsWID, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyLobFallback, applyRelatedLob, applyAmountOnlyLineRetry } = options;
   const fallbacks: AppliedFallback[] = [];
   const configuredDefaultSupplierWID = getConfiguredDefaultSupplierWID(options);
@@ -871,6 +873,8 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions): AppliedFal
   if (options.omitConversationUrlField) {
     fallbacks.push({ field: 'conversationUrl', label: 'omitted Intercom URL field' });
   }
+
+  fallbacks.push(...chargeReconciliationFallbacks(options, submittedCharges ?? resolveSubmittedCharges(options)));
 
   return fallbacks;
 }
@@ -1283,30 +1287,135 @@ function lineWorktagTypeContext(
   return { relatedLob, lineOfBusinessId: line.lineOfBusinessId ?? null, orgKinds };
 }
 
-function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnostics?: SubmitInvoiceDataDiagnostics): any {
-  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, extractedAmountDue, suppliersInvoiceNumber, extractedFreightAmount, extractedTaxAmount, freightCleared, taxCleared, filterInvoiceLines, finalLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
+// Line sets and header charges exactly as buildSubmitInvoiceData submits them. getAppliedFallbacks
+// reads the same result so lines removed here reach the Workday note and Slack.
+function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
+  const { currentInvoice, extractedAmountDue, extractedFreightAmount, freightAsLines, extractedTaxAmount, freightCleared, taxCleared, finalLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
     : currentInvoice.Control_Amount_Total;
   const providedFinalLines = finalLines !== undefined;
   // strong-soap can return a single line as an object, not an array.
   const normalizedFinalLines = providedFinalLines ? ([] as any[]).concat(finalLines as any) : [];
-  const splitFinalLines = providedFinalLines ? splitFreightLines(normalizedFinalLines) : undefined;
-  const merchandiseFinalLines = splitFinalLines?.merchandiseLines ?? [];
+  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount, taxCleared);
+  // freightAsLines is honored only when the submitted lines plus tax are the whole control total;
+  // otherwise the freight goes on the header, as on a mixed invoice.
+  const keepFreightLines = Boolean(freightAsLines) && normalizedFinalLines.length > 0
+    && reconcileSubmittedCharges(normalizedFinalLines, {
+      amountDue: signedSoapAmount(controlAmountTotal),
+      tax: signedSoapAmount(taxAmount),
+    }).unreconciled === undefined;
+  const splitFinalLines = providedFinalLines && !keepFreightLines ? splitFreightLines(normalizedFinalLines) : undefined;
   const recoveredFreightAmount = splitFinalLines?.freightAmountFromLines;
 
   const ocrLines = ([] as any[]).concat(currentInvoice.Invoice_Line_Replacement_Data ?? []);
-  const selfReferenceBudget = currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice);
-  const invoiceHadExistingLines = ocrLines.length > 0;
   const splitOcrLines = ocrLines.length ? splitFreightLines(ocrLines) : undefined;
-  const merchandiseOcrLines = splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined);
+  const currentFreightAmount: unknown = currentInvoice.Freight_Amount;
+  // An invoice whose lines are all freight, whose header freight is empty, and whose lines plus tax
+  // equal the control total is an all-freight invoice: keep those lines rather than moving them to
+  // header freight. This covers invoices this agent submitted and Workday OCR drafts of carrier bills.
+  // A blank, zero, or unparseable extracted freight is no freight, as in documentFreight.
+  const extractedFreightValue = extractedFreightAmount ? parseExtractedAmount(extractedFreightAmount) : undefined;
+  const extractedFreightUsable = (extractedFreightValue ?? 0) > 0;
+  // An extracted freight equal to the OCR freight rows describes the same charge, not a separate header amount.
+  const extractedFreightMatchesOcr = extractedFreightUsable && splitOcrLines?.freightAmountFromLines != null
+    && Math.round(extractedFreightValue! * 100) === Math.round(splitOcrLines.freightAmountFromLines * 100);
+  const ocrFreightAsLines = !providedFinalLines && (!extractedFreightUsable || extractedFreightMatchesOcr) && ocrLines.length > 0
+    && splitOcrLines?.merchandiseLines.length === 0 && !((chargeAmount(signedSoapAmount(currentFreightAmount)) ?? 0) > 0)
+    && reconcileSubmittedCharges(ocrLines, {
+      amountDue: signedSoapAmount(controlAmountTotal),
+      tax: signedSoapAmount(taxAmount),
+    }).unreconciled === undefined;
+  const freightSubmittedAsLines = keepFreightLines || ocrFreightAsLines;
 
-  const freightAmount = freightCleared
-    ? 0
-    : extractedFreightAmount
-      ? (parseExtractedAmount(extractedFreightAmount) ?? currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
-      : (currentInvoice.Freight_Amount ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
-  const taxAmount = resolveHeaderTaxAmount(currentInvoice, extractedTaxAmount, taxCleared);
+  // An unparseable Workday value (`'n/a'`) is not a freight amount and never reaches the payload.
+  const parseableCurrentFreight = soapAmount(currentFreightAmount) != null ? currentFreightAmount : undefined;
+  // A cleared header (a printed zero, or freight moved to tax) sends 0; an unparseable extracted
+  // freight keeps the existing Workday value, as resolveHeaderChargeAmounts does for withheld amounts.
+  const freightAmount = freightSubmittedAsLines
+    ? undefined
+    : freightCleared
+      ? 0
+      : extractedFreightAmount
+        ? (parseExtractedAmount(extractedFreightAmount) ?? parseableCurrentFreight ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines)
+        : (parseableCurrentFreight ?? recoveredFreightAmount ?? splitOcrLines?.freightAmountFromLines);
+  // Submit replaces the whole invoice; an OCR Freight_Amount left in place would count the freight lines twice.
+  const clearsExistingFreight = freightSubmittedAsLines && currentFreightAmount != null && currentFreightAmount !== '';
+  const headerCharges = {
+    amountDue: signedSoapAmount(controlAmountTotal),
+    freight: signedSoapAmount(freightAmount),
+    tax: signedSoapAmount(taxAmount),
+  };
+
+  // Reconcile only the line set Workday receives: final lines, or OCR lines on an update that
+  // falls back to them because no final merchandise is left.
+  const finalReconciliation = reconcileSubmittedCharges(
+    keepFreightLines ? normalizedFinalLines : (splitFinalLines?.merchandiseLines ?? []),
+    headerCharges,
+    { checkWithoutLines: ocrLines.length === 0 }
+  );
+  const submitsOcrLines = ocrLines.length > 0 && (!providedFinalLines || finalReconciliation.lines.length === 0);
+  const candidateOcrLines = ocrFreightAsLines
+    ? ocrLines
+    : (splitOcrLines?.merchandiseLines ?? (!providedFinalLines ? ocrLines : undefined));
+  const ocrReconciliation = submitsOcrLines && candidateOcrLines
+    ? reconcileSubmittedCharges(candidateOcrLines, headerCharges)
+    : undefined;
+
+  return {
+    controlAmountTotal: controlAmountTotal as unknown,
+    providedFinalLines,
+    invoiceHadExistingLines: ocrLines.length > 0,
+    merchandiseFinalLines: finalReconciliation.lines,
+    merchandiseOcrLines: ocrReconciliation?.lines ?? candidateOcrLines,
+    freightAmount: freightAmount as unknown,
+    clearsExistingFreight,
+    freightCleared: Boolean(freightCleared),
+    freightSubmittedAsLines,
+    taxAmount,
+    reconciliations: submitsOcrLines ? (ocrReconciliation ? [ocrReconciliation] : []) : [finalReconciliation],
+  };
+}
+
+type SubmittedCharges = ReturnType<typeof resolveSubmittedCharges>;
+
+// Workday returns SOAP amounts as strings or numbers; keep the printed sign so a credit reconciles.
+function signedSoapAmount(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
+
+// Amount-check sentences for the payload as submitted: removed duplicate lines, and totals that
+// still differ from Control_Amount_Total. Callers show these under "Amount check", not as fallbacks.
+function chargeReconciliationFallbacks(options: buildSubmitInvoiceDataOptions, submittedCharges: SubmittedCharges): AppliedFallback[] {
+  const { reconciliations } = submittedCharges;
+  const freightLinesMissing = Boolean(options.freightAsLines) && !submittedCharges.freightSubmittedAsLines
+    && (soapAmount(submittedCharges.freightAmount) ?? 0) !== 0;
+  return [
+    ...(freightLinesMissing
+      ? [FREIGHT_HEADER_FALLBACK_MESSAGE]
+      : []),
+    ...reconciliations.flatMap(reconciliation => chargeReconciliationMessages(reconciliation)),
+  ].map(label => ({ field: CHARGE_RECONCILIATION_FALLBACK_FIELD, label }));
+}
+
+function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnostics?: SubmitInvoiceDataDiagnostics, submittedCharges?: SubmittedCharges): any {
+  const { currentInvoice, supplierWID, defaultSupplierWID, companyWID, companyReferenceType, workQueueTags, notes, memo, invoiceDate, paymentTermsWID, suppliersInvoiceNumber, filterInvoiceLines, invoiceLineQuantityDisplayed, applyFundFallback, applyCostCenterFallback, applySpendCategoryFallback, omitEventWorktag, omitLobWorktag, applyRelatedLob, currencyWID, attachments, relatedLobByCostCenter, assigneeWID, omitAssigneeReference, omitPurchaseOrderLineReference, omitPoPassthroughWorktags, orgWorktagKinds } = options;
+  const {
+    controlAmountTotal,
+    providedFinalLines,
+    invoiceHadExistingLines,
+    merchandiseFinalLines,
+    merchandiseOcrLines,
+    freightAmount,
+    clearsExistingFreight,
+    freightCleared,
+    taxAmount,
+    reconciliations,
+  } = submittedCharges ?? resolveSubmittedCharges(options);
+  if (reconciliations.some(r => r.duplicateFreightLines.length || r.duplicateTaxLines.length)) {
+    debug('Dropping invoice lines already counted in header freight or tax', reconciliations.map(chargeReconciliationLogSummary));
+  }
+  const selfReferenceBudget = currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice);
   const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
@@ -1504,7 +1613,8 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
 
   // Create has no OCR lines, so an empty merchandise list omits Invoice_Line_Replacement_Data.
   // Update falls back to OCR merchandise (freight already stripped) so all-freight finalLines
-  // do not wipe goods. strong-soap drops empty repeating elements, so [] is the same as omit;
+  // do not wipe goods, unless freightAsLines submits them as the invoice lines.
+  // strong-soap drops empty repeating elements, so [] is the same as omit;
   // when OCR is also all freight, always send a remainder Invoice line so the shipping row
   // is actually replaced (amount may be 0 when control equals freight plus tax).
   let invoiceLines = providedFinalLines
@@ -1566,8 +1676,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     Control_Amount_Total: controlAmountTotal,
     Tax_Amount: taxAmount,
     Default_Tax_Option_Reference: { ID: [{ $attributes: { type: 'Tax_Option_ID' }, $value: 'ENTER_TAX_DUE' }] },
+    ...(freightAmount ? { Freight_Amount: freightAmount } : {}),
     // An omitted Freight_Amount can leave the OCR value in place on update, so a clear sends 0.
-    ...((freightAmount || freightCleared) && { Freight_Amount: freightAmount }),
+    ...((clearsExistingFreight || freightCleared) && { Freight_Amount: 0 }),
     ...(currentInvoice.Other_Charges && { Other_Charges: currentInvoice.Other_Charges }),
     ...(currentInvoice.Discount_Amount_Override && { Discount_Amount_Override: currentInvoice.Discount_Amount_Override }),
 
@@ -1892,12 +2003,14 @@ async function submitSupplierInvoiceWithRepair({
 
   let lastLoggedLines: { lines: string; attempt: number } | undefined;
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
-    const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
+    // One resolution per attempt, so the note's amount check describes exactly the payload sent.
+    const submittedCharges = resolveSubmittedCharges(attemptBuildOptions);
+    const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions, submittedCharges).map(f =>
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
     );
     const optionsWithNotes = { ...attemptBuildOptions, notes: buildNotes(appliedFallbacks, [...priorFailures]) };
     const diagnostics: SubmitInvoiceDataDiagnostics = { droppedWorktags: [], droppedTags: [] };
-    const invoiceData = buildSubmitInvoiceData(optionsWithNotes, diagnostics) as Record<string, unknown>;
+    const invoiceData = buildSubmitInvoiceData(optionsWithNotes, diagnostics, submittedCharges) as Record<string, unknown>;
     const request = createSubmitSupplierInvoiceRequest(invoiceWorkdayID, invoiceData);
 
     if (diagnostics.droppedWorktags.length) {
@@ -2344,6 +2457,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   freightCleared?: boolean;
   taxCleared?: boolean;
@@ -2370,6 +2484,7 @@ export async function submitSupplierInvoiceUpdate(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
+    freightAsLines,
     extractedTaxAmount,
     freightCleared,
     taxCleared,
@@ -2436,6 +2551,7 @@ export async function submitSupplierInvoiceUpdate(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       freightCleared,
       taxCleared,
@@ -2481,6 +2597,7 @@ export interface SubmitNewSupplierInvoiceParams {
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
+  freightAsLines?: boolean;
   extractedTaxAmount?: string;
   freightCleared?: boolean;
   taxCleared?: boolean;
@@ -2511,6 +2628,7 @@ export async function submitNewSupplierInvoice(
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
+    freightAsLines,
     extractedTaxAmount,
     freightCleared,
     taxCleared,
@@ -2567,6 +2685,7 @@ export async function submitNewSupplierInvoice(
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       freightCleared,
       taxCleared,

@@ -424,6 +424,97 @@ describe('enrich_invoice', () => {
     expect(getSupplierInvoiceWithAttachments).not.toHaveBeenCalled();
   });
 
+  it('flags extracted totals that do not reconcile when it only annotates the invoice', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 115, extendedAmount: 115 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Widgets' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$100.00',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 1, unitCost: '115.00', totalPrice: '115.00', hasDiscount: false }
+      ]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    const mismatch = 'Lines $115.00 + freight $0.00 + tax $0.00 = $115.00, but the amount due is $100.00. Review lines and header charges.';
+    expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).toContain(`Amount check: ${mismatch}`);
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([mismatch]);
+  });
+
+  it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Carrier', memo: 'Freight' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$100.00',
+      extractedFreightAmount: '$15.00',
+      extractedInvoiceLines: [
+        { description: 'Shipping', quantity: 1, unitCost: '15.00', totalPrice: '15.00', hasDiscount: false }
+      ]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    const mismatch = 'Lines $0.00 + freight $15.00 + tax $0.00 = $15.00, but the amount due is $100.00. Review lines and header charges.';
+    expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).toContain(`Amount check: ${mismatch}`);
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([mismatch]);
+  });
+
   it('should record validation failures and avoid rethrowing them', async () => {
     const { annotateSupplierInvoice } = require('../lib/workday.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
@@ -614,6 +705,7 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: 'TEST041526',
         extractedFreightAmount: undefined,
+        freightAsLines: false,
         extractedTaxAmount: undefined,
         freightCleared: false,
         taxCleared: false,
@@ -737,6 +829,7 @@ describe('enrich_invoice', () => {
         extractedAmountDue: undefined,
         suppliersInvoiceNumber: undefined,
         extractedFreightAmount: undefined,
+        freightAsLines: false,
         extractedTaxAmount: undefined,
         freightCleared: false,
         taxCleared: false,
@@ -1071,8 +1164,68 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
+    const { getAiResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getAiResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'MyFreightWorld Carrier Management Inc', memo: 'Freight' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$4,595.00',
+      extractedFreightAmount: '$4,595.00',
+      extractedTaxAmount: null,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null }
+      ]
+    });
+    const builtLine = { lineOrder: 1, description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' };
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [builtLine],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+      .toEqual(['PRO 52118 - Linehaul - 42,000 lbs']);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.extractedFreightAmount).toBe('$4,595.00');
+    expect(params.freightAsLines).toBe(true);
+    expect(params.finalLines).toEqual([expect.objectContaining({ description: 'PRO 52118 - Linehaul - 42,000 lbs', extendedAmount: 4595 })]);
+    const note = 'Header freight equals the only line ($4,595.00), so header Freight_Amount is not set. Check the extracted freight.';
+    expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
+    expect(params.buildNotes([])).not.toContain('Line total review');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
+  });
+
   describe('mislabeled freight and tax', () => {
-    const enrichmentWith = (charges: Record<string, string | null>) => ({
+    const enrichmentWith = (charges: Record<string, unknown>) => ({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1146,6 +1299,41 @@ describe('enrich_invoice', () => {
         taxCleared: false,
       }));
       expect(params.buildNotes([])).toContain('Freight/Tax review: Freight amount 8.00 is labeled "Sales Tax" and a separate tax amount 10.00 was also read; both were kept as read.');
+    });
+
+    it('submits freight rows as header freight when the header printed a zero freight', async () => {
+      const { getAiResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const invoiceLines = require('../lib/invoice_lines.js');
+      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+        extractedAmountDue: '$125.00',
+        extractedFreightAmount: '0.00',
+        extractedFreightLabel: 'Shipping and Handling',
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+        extractedInvoiceLines: [
+          { description: 'Radio', quantity: 1, unitCost: '100.00', totalPrice: '$100.00', hasDiscount: false },
+          { description: 'Freight', quantity: 1, unitCost: '25.00', totalPrice: '$25.00', hasDiscount: false },
+        ],
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: 'Radio', quantity: 1, unitCost: 100, extendedAmount: 100 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((l: { description: string }) => l.description))
+        .toEqual(['Radio']);
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({
+        extractedFreightAmount: '25',
+        freightCleared: false,
+      }));
+      expect(params.buildNotes([])).toContain(
+        'Amount check: Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.'
+      );
     });
   });
 
