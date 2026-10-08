@@ -27,7 +27,15 @@ jest.mock('../lib/workday.js', () => ({
       Invoice_Number: 'SUPIN-412727',
       Attachment_Data: []
     },
-    presignedAttachments: []
+    presignedAttachments: [{
+      id: 'ocr-pdf',
+      fileName: 'ocr.pdf',
+      contentType: 'application/pdf',
+      presignedUrl: 'https://example.com/ocr.pdf',
+      expiresAt: new Date('2026-05-12T00:00:00Z'),
+      s3Key: 'attachments/test-invoice-id/ocr.pdf',
+      buffer: Buffer.from('ocr-pdf')
+    }]
   }),
   executeWorkdayQuery: jest.fn().mockResolvedValue({
     total: 1,
@@ -74,8 +82,11 @@ jest.mock('../lib/rag.js', () => ({
   createEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3])
 }));
 
-jest.mock('../lib/ai.js', () => ({
-  getAiResponse: jest.fn().mockResolvedValue({
+// Tests queue one full enrichment result on enrichmentResponse. The OCR pass gets its document fields and the
+// matching pass gets the full result, so the merged result equals the queued one.
+jest.mock('../lib/ai.js', () => {
+  const { InvoiceOcrSchema } = jest.requireActual('../prompts/invoice_ocr_prompt.js');
+  const enrichmentResponse = jest.fn().mockResolvedValue({
     supplier: {
       status: 'matching',
       confidence: 0.9,
@@ -98,8 +109,45 @@ jest.mock('../lib/ai.js', () => ({
       recommended: null,
       reason: 'Company matches existing assignment'
     }
-  })
-}));
+  });
+  let pendingFullResult: Promise<unknown> | undefined;
+  // Shapes a queued full result like the Haiku response: empty strings and arrays instead of null.
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const textFields = (fields: Record<string, unknown> = {}) =>
+    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, text(value)]));
+  const toOcrResult = (full: any) => {
+    const headerText = Object.fromEntries(
+      Object.entries(full ?? {})
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines'].includes(key))
+        .map(([key, value]) => [key, text(value)])
+    );
+    return {
+      printedSupplier: textFields(full?.supplier?.extractedInformation),
+      printedBillTo: textFields(full?.companyVerification?.extractedInformation),
+      ...headerText,
+      extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
+      invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
+      extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
+        ...line,
+        descriptionCells: line.descriptionCells ?? [],
+        unitCost: text(line.unitCost),
+        totalPrice: text(line.totalPrice),
+      })),
+    };
+  };
+  return {
+    enrichmentResponse,
+    getAiResponse: jest.fn(async (args: { schema?: unknown }) => {
+      if (args.schema === InvoiceOcrSchema) {
+        pendingFullResult = Promise.resolve(enrichmentResponse(args));
+        return toOcrResult(await pendingFullResult);
+      }
+      const full = pendingFullResult ?? enrichmentResponse(args);
+      pendingFullResult = undefined;
+      return full;
+    }),
+  };
+});
 
 jest.mock('../lib/slack.js', () => ({
   notifyEnrichmentResult: jest.fn().mockResolvedValue(undefined),
@@ -134,10 +182,10 @@ jest.mock('../lib/invoice_lines.js', () => {
 describe('enrich_invoice', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate, annotateSupplierInvoice } = require('../lib/workday.js');
     const validationFailures = require('../lib/invoice_validation_failures.js');
-    getAiResponse.mockResolvedValue({
+    enrichmentResponse.mockResolvedValue({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -222,7 +270,7 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
   });
 
-  it('should pass PDF attachments to the AI as file parts', async () => {
+  it('sends PDF attachments only to the Haiku OCR pass and the OCR JSON to the gpt-5.4 matching pass', async () => {
     const { getAiResponse } = require('../lib/ai.js');
     const { getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
     const pdfBuffer = Buffer.from('fake-pdf-data');
@@ -258,8 +306,21 @@ describe('enrich_invoice', () => {
 
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
-    const aiCall = getAiResponse.mock.calls[0][0];
-    const messageContent = aiCall.messages[0].content;
+    const { InvoiceOcrSchema } = require('../prompts/invoice_ocr_prompt.js');
+    expect(getAiResponse).toHaveBeenCalledTimes(2);
+    const [ocrCall] = getAiResponse.mock.calls[0];
+    const [matchingCall] = getAiResponse.mock.calls[1];
+    const messageContent = ocrCall.messages[0].content;
+
+    expect(ocrCall.schema).toBe(InvoiceOcrSchema);
+    expect(ocrCall.model).toEqual(expect.objectContaining({ modelId: 'anthropic/claude-haiku-5.5' }));
+    expect(ocrCall.tools).toEqual({});
+    expect(ocrCall.temperature).toBeNull();
+    expect(matchingCall.model).toEqual(expect.objectContaining({ modelId: 'openai/gpt-5.4' }));
+    expect(matchingCall.tools).toBeUndefined();
+    expect(matchingCall.messages[0].content.some((part: { type: string }) => part.type !== 'text')).toBe(false);
+    expect(matchingCall.messages[0].content[0].text).toContain('Invoice document extraction (read from the invoice documents by a separate OCR pass)');
+    expect(matchingCall.messages[0].content[0].text).toContain('"printedSupplier"');
 
     expect(messageContent).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -287,7 +348,8 @@ describe('enrich_invoice', () => {
   }
 
   function promptText(getAiResponse: jest.Mock): string {
-    const aiCall = getAiResponse.mock.calls[0][0];
+    const { InvoiceOcrSchema } = require('../prompts/invoice_ocr_prompt.js');
+    const [aiCall] = getAiResponse.mock.calls.find(([args]: [{ schema?: unknown }]) => args.schema !== InvoiceOcrSchema);
     return aiCall.messages[0].content.find((part: { type: string }) => part.type === 'text').text;
   }
 
@@ -427,7 +489,7 @@ describe('enrich_invoice', () => {
   });
 
   it('flags extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -437,7 +499,7 @@ describe('enrich_invoice', () => {
       relatedLobByCostCenter: new Map()
     });
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -475,11 +537,11 @@ describe('enrich_invoice', () => {
   });
 
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -563,10 +625,10 @@ describe('enrich_invoice', () => {
   });
 
   it('should continue throwing AI or Zod schema validation errors without recording in skip registry', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
 
-    getAiResponse.mockRejectedValueOnce(new Error('Type validation failed: Value must be object'));
+    enrichmentResponse.mockRejectedValueOnce(new Error('Type validation failed: Value must be object'));
 
     const mockEvent = {
       data: [{
@@ -584,10 +646,10 @@ describe('enrich_invoice', () => {
   });
 
   it('should continue throwing RAG tool failures without recording in skip registry', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { recordInvoiceValidationFailure } = require('../lib/invoice_validation_failures.js');
 
-    getAiResponse.mockRejectedValueOnce(new Error('Database connection failed'));
+    enrichmentResponse.mockRejectedValueOnce(new Error('Database connection failed'));
 
     const mockEvent = {
       data: [{
@@ -645,10 +707,10 @@ describe('enrich_invoice', () => {
   });
 
   it('should pass extracted invoice date to Workday update calls', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -722,10 +784,10 @@ describe('enrich_invoice', () => {
   });
 
   it('uses the existing Workday supplier name when the extracted name has no letters', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -770,10 +832,10 @@ describe('enrich_invoice', () => {
   it('should note when invoice date defaults to the first day of the current month', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-21T12:00:00Z'));
 
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -850,7 +912,7 @@ describe('enrich_invoice', () => {
   });
 
   it('should pass the email-coded company workdayId as companyWID on update', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { findDocumentsByReferenceIds } = require('../lib/database.js');
     findDocumentsByReferenceIds.mockResolvedValue(new Map([
@@ -862,7 +924,7 @@ describe('enrich_invoice', () => {
       }]],
     ]));
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -942,11 +1004,11 @@ describe('enrich_invoice', () => {
   });
 
   it('passes priorFailures from a successful submit retry to Slack', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1023,10 +1085,10 @@ describe('enrich_invoice', () => {
     };
 
     it('records the OCR baseline before the agent update and the invoice after it', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { getDatabaseConnection } = require('../lib/database.js');
       const { notifyEnrichmentResult } = require('../lib/slack.js');
-      getAiResponse.mockResolvedValueOnce(matchingSupplierResponse);
+      enrichmentResponse.mockResolvedValueOnce(matchingSupplierResponse);
 
       await expect(processor(event as any)).resolves.not.toThrow();
 
@@ -1039,10 +1101,10 @@ describe('enrich_invoice', () => {
     });
 
     it('reports snapshotSync failed without failing the enrichment when the read-back fails', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { getSupplierInvoice } = require('../lib/workday.js');
       const { notifyEnrichmentResult } = require('../lib/slack.js');
-      getAiResponse.mockResolvedValueOnce(matchingSupplierResponse);
+      enrichmentResponse.mockResolvedValueOnce(matchingSupplierResponse);
       getSupplierInvoice.mockRejectedValueOnce(new Error('soap down'));
 
       await expect(processor(event as any)).resolves.not.toThrow();
@@ -1054,9 +1116,9 @@ describe('enrich_invoice', () => {
     });
 
     it('takes no snapshot on the notes-only path', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { getDatabaseConnection } = require('../lib/database.js');
-      getAiResponse.mockResolvedValueOnce({
+      enrichmentResponse.mockResolvedValueOnce({
         ...matchingSupplierResponse,
         supplier: { ...matchingSupplierResponse.supplier, status: 'not_found', resolvedSupplier: null },
       });
@@ -1095,11 +1157,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should strip shipping extracted lines before merge and pass recovered freight on update', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1155,7 +1217,7 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
-      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      { description: 'Widgets', descriptionCells: null, quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
     ]);
     expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
       expect.anything(),
@@ -1167,12 +1229,12 @@ describe('enrich_invoice', () => {
   });
 
   it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1257,9 +1319,9 @@ describe('enrich_invoice', () => {
     };
 
     it('moves a sales-tax amount read as freight to tax and clears freight on update', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
-      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
         extractedFreightAmount: '510.86',
         extractedFreightLabel: 'Sales Tax',
         extractedTaxAmount: null,
@@ -1282,9 +1344,9 @@ describe('enrich_invoice', () => {
     });
 
     it('keeps both amounts and adds a review note when a tax-labeled freight amount differs from tax', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
-      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
         extractedFreightAmount: '8.00',
         extractedFreightLabel: 'Sales Tax',
         extractedTaxAmount: '10.00',
@@ -1304,10 +1366,10 @@ describe('enrich_invoice', () => {
     });
 
     it('submits freight rows as header freight when the header printed a zero freight', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const invoiceLines = require('../lib/invoice_lines.js');
-      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
         extractedAmountDue: '$125.00',
         extractedFreightAmount: '0.00',
         extractedFreightLabel: 'Shipping and Handling',
@@ -1340,11 +1402,11 @@ describe('enrich_invoice', () => {
   });
 
   it('concatenates Hashrocket Activity and Description into Workday line item description', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1413,7 +1475,7 @@ describe('enrich_invoice', () => {
   });
 
   it('omits PO line refs but keeps PO line coding when the PO is Pending Close', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -1432,7 +1494,7 @@ describe('enrich_invoice', () => {
         }
       }
     });
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1555,7 +1617,7 @@ describe('enrich_invoice', () => {
     ['some PO lines are fully invoiced', ['Fully Invoiced', 'Partially Invoiced'], [false, true]],
     ['every PO line is fully invoiced', ['Fully Invoiced', 'Fully Invoiced'], [false, false]],
   ])('handles PO line availability when %s', async (_label, invoiceStatuses, expectedAvailability) => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
@@ -1579,7 +1641,7 @@ describe('enrich_invoice', () => {
         }
       }
     });
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1638,11 +1700,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should submit amount-only lines with quantity zero when the invoice has no quantity column', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1697,11 +1759,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should submit amount-only lines when quantity times unit cost does not equal extended amount', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1755,11 +1817,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should note when invoice lines total more than the amount due', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1811,7 +1873,7 @@ describe('enrich_invoice', () => {
   });
 
   it('should count freight and tax already on the Workday invoice before noting a line total mismatch', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate, getSupplierInvoiceWithAttachments } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
@@ -1819,7 +1881,7 @@ describe('enrich_invoice', () => {
       invoice: { Invoice_ID: 'test-invoice-id', Freight_Amount: '15.00', Tax_Amount: '5.00' },
       presignedAttachments: []
     });
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1863,11 +1925,11 @@ describe('enrich_invoice', () => {
   });
 
   it('should put extracted identifiers on the header and line memos', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1928,10 +1990,10 @@ describe('enrich_invoice', () => {
   });
 
   it('submits an account number plus MMMYY when the printed invoice number is the account number', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1975,11 +2037,11 @@ describe('enrich_invoice', () => {
   });
 
   it('reports the timestamped supplier invoice number after a duplicate retry', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -2036,11 +2098,11 @@ describe('enrich_invoice', () => {
   });
 
   it('does not pass a header memo when enrichment has a description but no identifiers', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,

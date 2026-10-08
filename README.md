@@ -184,7 +184,8 @@ src/
 
 ### AI Processing
 
-- GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway for supplier identification
+- Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`) through the Vercel AI Gateway reads the invoice PDFs (OCR and field extraction only)
+- GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway matches the supplier and company and codes the invoice from that extraction, with the lookup tools
 - Structured responses with confidence scoring
 - Analyzes invoice content and metadata
 - Integrates with vector database for context
