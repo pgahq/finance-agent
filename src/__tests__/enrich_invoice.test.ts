@@ -1549,7 +1549,7 @@ describe('enrich_invoice', () => {
   });
 
   it('lets the update retry with the PO supplier when the invoice names the same company', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
@@ -1567,7 +1567,7 @@ describe('enrich_invoice', () => {
         }
       }
     });
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'found',
         confidence: 0.9,
