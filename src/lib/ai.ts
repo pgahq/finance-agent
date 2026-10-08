@@ -13,6 +13,7 @@ export async function getAiResponse({
   model = defaultModel,
   tools,
   abortSignal,
+  temperature = 0.2,
 }: {
   prompt: string;
   messages: ModelMessage[];
@@ -20,6 +21,8 @@ export async function getAiResponse({
   model?: LanguageModel;
   tools?: Record<string, any>;
   abortSignal?: AbortSignal;
+  // null omits temperature for models that reject sampling parameters.
+  temperature?: number | null;
 }): Promise<unknown> {
   try {
     const defaultTools = {
@@ -40,7 +43,7 @@ export async function getAiResponse({
       messages,
       system: prompt,
       stopWhen: stepCountIs(10),
-      temperature: 0.2,
+      ...(temperature === null ? {} : { temperature }),
       abortSignal,
       ...(hasTools
         ? { tools: toolsToUse }

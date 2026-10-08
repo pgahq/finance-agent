@@ -19,3 +19,10 @@ export function createLanguageModel(modelId: string): LanguageModel {
 }
 
 export const defaultModel: LanguageModel = createLanguageModel('openai/gpt-5.4');
+
+export const DEFAULT_OCR_MODEL_ID = 'anthropic/claude-haiku-5.5';
+
+// Reads invoice PDFs only; supplier and company matching stays on defaultModel. OCR_MODEL overrides the model ID.
+export function getOcrModel(): LanguageModel {
+  return createLanguageModel(process.env.OCR_MODEL || DEFAULT_OCR_MODEL_ID);
+}

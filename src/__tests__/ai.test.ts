@@ -79,6 +79,20 @@ describe('AI utilities', () => {
       expect(result).toEqual('{"supplierId": "test-id", "supplierName": "Test Supplier", "confidence": 0.9, "reasoning": "Test reasoning"}');
     });
 
+    it('omits temperature when the caller passes null', async () => {
+      mockGenerateText.mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+        tools: {},
+        temperature: null,
+      });
+
+      expect(mockGenerateText.mock.calls[0][0]).not.toHaveProperty('temperature');
+    });
+
     it('should use a supplied LanguageModel for the single generation pass when no tools are needed', async () => {
       const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
       mockGenerateText.mockResolvedValueOnce({ text: '', output: { ok: true } });
