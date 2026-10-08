@@ -137,6 +137,36 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Prior submit failures*');
   });
 
+  it('shows the PO supplier with its PO and asks to confirm the PO number when the invoice names another company', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      supplier: {
+        status: 'po',
+        resolvedName: 'CLUB PRO GOLF GROUP LLC',
+        isDefault: false,
+        purchaseOrderNumber: 'PO-414373',
+        review: 'Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.',
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Supplier* → CLUB PRO GOLF GROUP LLC (from PO-414373)');
+    expect(texts).toContain('• Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.');
+  });
+
+  it('shows a PO named in the email or conversation and the invoice PO it replaced', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      extracted: {
+        purchaseOrderNumber: 'PO-414373',
+        purchaseOrderSource: 'conversation',
+        invoicePurchaseOrderNumber: 'PO-411406',
+      },
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*PO #* → PO-414373 (from email or conversation; invoice shows PO-411406)');
+  });
+
   it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -691,6 +721,32 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
+  });
+
+  it('shows the PO supplier and the email PO that replaced the invoice PO on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-470001',
+      canModify: true,
+      supplier: {
+        status: 'different',
+        resolvedName: 'GOLF GEAR LTD',
+        isDefault: false,
+        purchaseOrder: {
+          name: 'CLUB PRO GOLF GROUP LLC',
+          purchaseOrderNumber: 'PO-414373',
+          review: 'Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.',
+        },
+      },
+      extracted: { purchaseOrderNumber: 'PO-414373', invoicePurchaseOrderNumber: 'PO-411406' },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Supplier* → CLUB PRO GOLF GROUP LLC (from PO-414373)');
+    expect(texts).not.toContain('GOLF GEAR LTD (was:');
+    expect(texts).toContain('Confirm the PO number.');
+    expect(texts).toContain('*PO #* → PO-414373 (from email; invoice shows PO-411406)');
   });
 
   it('shows corrected tax and cleared freight on enrich success', async () => {

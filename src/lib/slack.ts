@@ -165,13 +165,22 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   if (typeof details.invoiceNumber === 'string' && details.invoiceNumber) {
     changeLines.push(workdayInvoiceChangeLine(details.invoiceNumber, workdayUrlFromDetails(details)));
   }
-  const supplier = details.supplier as { status?: string; resolvedName?: string; isDefault?: boolean } | undefined;
+  const supplier = details.supplier as {
+    status?: string;
+    resolvedName?: string;
+    isDefault?: boolean;
+    purchaseOrderNumber?: string;
+    review?: string;
+  } | undefined;
   if (supplier?.isDefault) {
     fallbackLines.push('Default supplier — no match found in Workday');
   } else if (supplier?.resolvedName) {
-    const how = supplier.status === 'found' ? 'identified' : (supplier.status ?? 'set');
+    const how = supplier.status === 'found' ? 'identified'
+      : supplier.status === 'po' ? `from ${supplier.purchaseOrderNumber ?? 'PO'}`
+      : (supplier.status ?? 'set');
     changeLines.push(`*Supplier* → ${supplier.resolvedName} (${how})`);
   }
+  if (supplier?.review) fallbackLines.push(escapeSlackMrkdwn(supplier.review));
 
   const company = details.company as {
     appliedFrom?: string;
@@ -214,7 +223,9 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     const replaced = extracted.invoicePurchaseOrderNumber
       ? `; invoice shows ${extracted.invoicePurchaseOrderNumber}`
       : extracted.emailPurchaseOrderNumber ? `; email shows ${extracted.emailPurchaseOrderNumber}` : '';
-    const source = extracted.purchaseOrderSource === 'note' ? ` (from Intercom note${replaced})` : '';
+    const source = extracted.purchaseOrderSource === 'note' ? ` (from Intercom note${replaced})`
+      : extracted.purchaseOrderSource === 'conversation' ? ` (from email or conversation${replaced})`
+      : '';
     const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
   }
@@ -603,6 +614,8 @@ export interface EnrichmentNotification {
     resolvedName?: string;
     existingName?: string;
     isDefault: boolean;
+    /** Set when the invoice was submitted with its PO's supplier instead of the supplier it resolved to. */
+    purchaseOrder?: { name: string; purchaseOrderNumber: string; review?: string };
   };
   company?: {
     status: string;
@@ -621,6 +634,8 @@ export interface EnrichmentNotification {
     freightCleared?: boolean;
     taxCleared?: boolean;
     purchaseOrderNumber?: string;
+    /** Set when the email PO replaced a different PO printed on the invoice. */
+    invoicePurchaseOrderNumber?: string;
     paymentTerms?: string;
   };
   poLineCount?: number;
@@ -666,7 +681,10 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
 
   // Supplier
-  switch (supplier.status) {
+  if (canModify && supplier.purchaseOrder) {
+    changeLines.push(`*Supplier* → ${supplier.purchaseOrder.name} (from ${supplier.purchaseOrder.purchaseOrderNumber})`);
+    if (supplier.purchaseOrder.review) fallbackLines.push(escapeSlackMrkdwn(supplier.purchaseOrder.review));
+  } else switch (supplier.status) {
     case 'found':
       changeLines.push(`*Supplier* → ${supplier.resolvedName ?? 'Unknown'} (identified)`);
       break;
@@ -707,7 +725,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   else if (extracted.taxAmount) changeLines.push(`*Tax* → ${extracted.taxAmount}`);
   if (extracted.purchaseOrderNumber) {
     const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
-    changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${lineSuffix}`);
+    const source = extracted.invoicePurchaseOrderNumber ? ` (from email; invoice shows ${extracted.invoicePurchaseOrderNumber})` : '';
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${source}${lineSuffix}`);
   }
   if (extracted.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
   if (suggestedCostCenters?.length) {

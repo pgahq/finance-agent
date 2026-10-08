@@ -58,6 +58,7 @@ jest.mock('../lib/database.js', () => ({
   getCostCenterRelatedLobsByCodes: jest.fn().mockResolvedValue(new Map()),
   getCostCenterWorkdayIdsByCodes: jest.fn().mockResolvedValue(new Map()),
   getOrgWorktagKindsByIds: jest.fn().mockResolvedValue(new Map()),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([]),
   findCompanyByName: jest.fn().mockResolvedValue({
     workdayId: 'pga-america-wid',
     companyName: 'The Professional Golfers Association of America'
@@ -1689,6 +1690,105 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
+  describe('PO supplier', () => {
+    const poWithSupplier = {
+      documentNumber: 'PO-414373',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      supplier: { workdayId: 'club-pro-wid', descriptor: 'CLUB PRO GOLF GROUP LLC' },
+      lines: [{ lineOrder: 1, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143', purchaseOrderDocumentNumber: 'PO-414373', description: 'Cart' }],
+    };
+    const poLinkedLines = [{ lineOrder: 1, description: 'Cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' }];
+    const enrichmentFor = (supplierName: string) => ({
+      ...baseEnrichmentResult,
+      supplier: {
+        ...baseEnrichmentResult.supplier,
+        extractedInformation: { supplierName, memo: 'Carts' },
+        resolvedSupplier: { workdayId: 'golf-gear-wid', supplierName: 'GOLF GEAR LTD', confidence: 0.9, reason: 'Letterhead' },
+      },
+      extractedPurchaseOrderNumber: 'PO-414373',
+    });
+    const run = async (supplierName: string) => {
+      const loaded = freshRequire();
+      loaded.workday.loadPurchaseOrder.mockResolvedValue(poWithSupplier);
+      loaded.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichmentFor(supplierName));
+      loaded.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({ lines: poLinkedLines, appliedFallbacks: {}, relatedLobByCostCenter: new Map() });
+      return loaded;
+    };
+
+    const submitted = (workday: any) => workday.submitNewSupplierInvoice.mock.calls[0][1];
+
+    it('submits the PO supplier up front when the invoice names the same company', async () => {
+      const { processor, workday } = await run('Club Pro Golf Group');
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(submitted(workday).supplierWID).toBe('club-pro-wid');
+      expect(submitted(workday).buildNotes([])).toContain(
+        'Supplier from PO: Set to CLUB PRO GOLF GROUP LLC, the supplier on PO-414373. The invoice names GOLF GEAR LTD (name "Club Pro Golf Group" matches "CLUB PRO GOLF GROUP LLC").'
+      );
+    });
+
+    it('submits the PO supplier for PO-414373 and asks AP to confirm the PO number when the invoice names an unrelated company', async () => {
+      const { processor, workday, slack } = await run('GOLF GEAR LTD');
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-2/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(submitted(workday).supplierWID).toBe('club-pro-wid');
+      expect(submitted(workday).buildNotes([])).toContain(
+        'The invoice names GOLF GEAR LTD, which does not look like the same company; confirm the PO number.'
+      );
+      const details = slack.notifyResult.mock.calls.find((call: any[]) => call[1] === 'success')?.[3];
+      expect(details.supplier).toEqual({
+        status: 'po',
+        resolvedName: 'CLUB PRO GOLF GROUP LLC',
+        isDefault: false,
+        purchaseOrderNumber: 'PO-414373',
+        review: 'Supplier set from PO-414373 (CLUB PRO GOLF GROUP LLC); the invoice names GOLF GEAR LTD, which does not look like the same company. Confirm the PO number.',
+      });
+    });
+
+    it('submits the PO supplier when the invoice supplier was not resolved', async () => {
+      const loaded = await run('Club Pro Golf');
+      loaded.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...enrichmentFor('Club Pro Golf'),
+        supplier: { ...enrichmentFor('Club Pro Golf').supplier, status: 'not_found', resolvedSupplier: undefined },
+      });
+
+      await loaded.processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-3/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(submitted(loaded.workday).supplierWID).toBe('club-pro-wid');
+      const details = loaded.slack.notifyResult.mock.calls.find((call: any[]) => call[1] === 'success')?.[3];
+      expect(details.supplier).toEqual(expect.objectContaining({ status: 'po', isDefault: false }));
+    });
+
+    it('adds no supplier note when the invoice already resolved to the PO supplier', async () => {
+      const loaded = await run('Club Pro Golf Group');
+      loaded.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...enrichmentFor('Club Pro Golf Group'),
+        supplier: {
+          ...enrichmentFor('Club Pro Golf Group').supplier,
+          resolvedSupplier: { workdayId: 'club-pro-wid', supplierName: 'CLUB PRO GOLF GROUP LLC', confidence: 0.9, reason: 'Letterhead' },
+        },
+      });
+
+      await loaded.processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-4/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(submitted(loaded.workday).supplierWID).toBe('club-pro-wid');
+      expect(submitted(loaded.workday).buildNotes([])).not.toContain('Supplier from PO');
+    });
+
+    it('keeps the invoice supplier when the PO is not found in Workday', async () => {
+      const { processor, workday } = await run('GOLF GEAR LTD');
+      workday.loadPurchaseOrder.mockResolvedValue(undefined);
+
+      await processor({ data: [{ ...attachmentRequest('new-invoices/req-po-supplier-5/invoice.pdf'), emailContext: { plainTextBody: 'PO-414373' } }] } as any);
+
+      expect(submitted(workday).supplierWID).toBe('golf-gear-wid');
+      expect(submitted(workday).buildNotes([])).not.toContain('Supplier from PO');
+    });
+  });
+
   it('should keep PO company, memo, and line coding but omit PO line refs for a Closed PO', async () => {
     const parsedPo = {
       documentNumber: 'PO-414498',
@@ -2037,8 +2137,8 @@ describe('create_invoice', () => {
       expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
     });
 
-    it('keeps the invoice PO when only a supplier reply names another PO', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    it('uses the PO named in the supplier reply that carried the invoice over the invoice PO', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2050,11 +2150,133 @@ describe('create_invoice', () => {
         data: [arrowRequest('req-supplier-reply-po', {
           plainTextBody: 'Invoice attached\n\nPlease use PO-413672',
           conversationParts: 'Please use PO-413672',
+          messageBody: '<p>Please use PO-413672</p>',
         })]
       } as any);
 
-      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].memo).toContain('PO-411406');
-      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Intercom note');
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-413672');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: Used PO-413672 from the email or conversation instead of PO-411406 on the invoice.'
+      );
+      expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+        purchaseOrderNumber: 'PO-413672',
+        purchaseOrderSource: 'conversation',
+        invoicePurchaseOrderNumber: 'PO-411406',
+      }));
+    });
+
+    it('keeps the invoice PO when only an older message in the thread names another PO', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const olderReply = 'Please reference PO-413672 on future invoices';
+
+      await processor({
+        data: [arrowRequest('req-older-message-po', {
+          plainTextBody: `Invoice attached\n\n${olderReply}\n\nNew invoice attached`,
+          conversationParts: `${olderReply}\n\nNew invoice attached`,
+          messageBody: 'New invoice attached',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
+    });
+
+    it('ignores the thread subject for an invoice attached to a later reply', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-413672',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-stale-subject-po', {
+          subject: 'Re: Invoice 1182, PO-411406',
+          plainTextBody: 'Invoice 1182 attached\n\nOctober invoice attached',
+          conversationParts: 'October invoice attached',
+          messageBody: 'October invoice attached',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-413672');
+      expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
+    });
+
+    it('uses the PO in the subject of the source email that carried the invoice', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-source-subject-po', {
+          subject: 'Invoice 69962682 for PO-413672',
+          messageSubject: 'Invoice 69962682 for PO-413672',
+          messageBody: '',
+        })]
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+        'Purchase order: Used PO-413672 from the email or conversation instead of PO-411406 on the invoice.'
+      );
+    });
+
+    it('keeps the invoice PO when the email and conversation name several POs', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-supplier-reply-two-pos', {
+          plainTextBody: 'Invoices attached for PO-411406 and PO-413672\n\nThanks',
+          conversationParts: 'Thanks',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
+    });
+
+    it('falls back to the invoice PO when the conversation PO is not in Workday', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday, { 'PO-411406': invoicePo });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [arrowRequest('req-supplier-reply-po-missing', {
+          plainTextBody: 'Invoice attached\n\nPlease use PO-413672',
+          conversationParts: 'Please use PO-413672',
+          messageBody: 'Please use PO-413672',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).toContain(
+        'Purchase order: PO-413672 from the email or conversation was not found in Workday; used PO-411406 instead.'
+      );
     });
 
     it('falls back to the invoice PO when the note PO is not in Workday', async () => {
@@ -2373,7 +2595,7 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).toContain('Changed to: Tennessee Section PGA of America');
   });
 
-  it('should use the enrichment PO company when it differs from the email PO', async () => {
+  it('should use the email PO and its company when the invoice names a different PO', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
       if (poNumber === 'PO-111111') {
@@ -2409,64 +2631,24 @@ describe('create_invoice', () => {
       }]
     } as any);
 
-    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-111111');
-    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
+    expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-111111']);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('late-po-wid');
+    expect(submitArgs.companyWID).toBe('early-po-wid');
     expect(submitArgs.buildNotes([])).not.toContain('Changed to:');
+    expect(submitArgs.buildNotes([])).toContain('Purchase order: Used PO-111111 from the email or conversation instead of PO-222222 on the invoice.');
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
-      expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
+      expect.objectContaining({ purchaseOrderLineId: 'POL-A' })
     ]);
   });
 
-  it('should not keep the email PO company as default when enrichment finds a different PO without a company', async () => {
+  it('should use the invoice PO when the email PO fails to load', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
-      if (poNumber === 'PO-111111') {
+      if (poNumber === 'PO-222222') {
         return {
-          documentNumber: 'PO-111111',
-          company: { workdayId: 'early-po-wid', descriptor: 'Early PO Company' },
-          lines: []
-        };
-      }
-      return {
-        documentNumber: 'PO-222222',
-        company: undefined,
-        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-B', purchaseOrderDocumentNumber: 'PO-222222' }]
-      };
-    });
-    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
-      ...baseEnrichmentResult,
-      companyVerification: {
-        ...baseEnrichmentResult.companyVerification,
-        status: 'matching',
-        recommended: null
-      },
-      extractedPurchaseOrderNumber: 'PO-222222'
-    });
-    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
-
-    await processor({
-      data: [{
-        ...attachmentRequest('new-invoices/req-po-mismatch-no-company/invoice.pdf'),
-        emailContext: { plainTextBody: 'Please process PO-111111' }
-      }]
-    } as any);
-
-    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
-    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
-  });
-
-  it('should drop the email PO when enrichment names a different PO that fails to load', async () => {
-    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
-    workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => {
-      if (poNumber === 'PO-111111') {
-        return {
-          documentNumber: 'PO-111111',
-          company: { workdayId: 'early-po-wid', descriptor: 'Early PO Company' },
-          lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-A', purchaseOrderDocumentNumber: 'PO-111111' }]
+          documentNumber: 'PO-222222',
+          company: { workdayId: 'late-po-wid', descriptor: 'Late PO Company' },
+          lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-B', purchaseOrderDocumentNumber: 'PO-222222' }]
         };
       }
       return undefined;
@@ -2489,12 +2671,13 @@ describe('create_invoice', () => {
       }]
     } as any);
 
-    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-111111');
-    expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-222222');
+    expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-111111', 'PO-222222']);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.companyWID).toBe('Default_OCR_Company');
-    expect(submitArgs.companyReferenceType).toBe('Company_Reference_ID');
-    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+    expect(submitArgs.companyWID).toBe('late-po-wid');
+    expect(submitArgs.buildNotes([])).toContain('Purchase order: PO-111111 from the email or conversation was not found in Workday; used PO-222222 instead.');
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ purchaseOrderLineId: 'POL-B' })
+    ]);
   });
 
   it('should submit Default OCR Company when no email, PO, or PDF company is selected', async () => {
@@ -4054,6 +4237,37 @@ describe('create_invoice', () => {
 
       expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
       expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].supplierWID).toBe('supplier-wid-1');
+      expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ supplierWid: 'supplier-wid-1' })
+      );
+    });
+
+    it('resubmits with the PO supplier while the registry keeps the invoice supplier', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...baseEnrichmentResult, extractedPurchaseOrderNumber: 'PO-414373' });
+      workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414373',
+        supplier: { workdayId: 'club-pro-wid', descriptor: 'CLUB PRO GOLF GROUP LLC' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143', purchaseOrderDocumentNumber: 'PO-414373', description: 'Cart' }],
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.supplierWID).toBe('club-pro-wid');
+      expect(updateArgs.buildNotes([])).toContain('Supplier from PO: Set to CLUB PRO GOLF GROUP LLC, the supplier on PO-414373.');
       expect(registry.upsertConversationSupplierInvoice).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ supplierWid: 'supplier-wid-1' })

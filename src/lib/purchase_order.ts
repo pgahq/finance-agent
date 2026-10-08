@@ -31,6 +31,18 @@ export function findPurchaseOrderNumber(
   return findPurchaseOrderNumbers(...texts)[0];
 }
 
+/**
+ * The PO the texts name when they name exactly one distinct PO, leaving out `excluded`. Texts that name
+ * several POs (an email covering more than one invoice) name none.
+ */
+export function findSolePurchaseOrderNumber(
+  texts: Array<string | null | undefined>,
+  excluded: ReadonlySet<string> = new Set()
+): string | undefined {
+  const named = new Set(findPurchaseOrderNumbers(...texts).filter((po) => !excluded.has(po)));
+  return named.size === 1 ? [...named][0] : undefined;
+}
+
 // "Line 7", "Ln. 7", "line #7", "Line Number 7", "Line No: 7".
 const NOTE_LINE_LABEL = String.raw`(?:line|ln)\.?[ \t]*(?:(?:number|no\.?|#)[ \t]*)?:?[ \t]*`;
 // "PO-413672 Line 7", "PO# 413672 line #7", "PO number 413672, Ln 7". The line must follow on the same line of

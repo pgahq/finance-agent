@@ -453,7 +453,8 @@ Retry guardrails:
 - A duplicate supplier invoice number is not retried; the submit fails with the original Workday validation message so the team can investigate the conflict.
 - Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
 - The repair agent must inspect the latest failed request before deciding whether to retry.
-- Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available.
+- Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available. The default supplier is never used when a submitted line links to a PO line, because Workday only lets the PO's own supplier invoice it.
+- Create, resend updates, and enrich submit with the supplier on the PO whenever the PO exists in Workday, because Workday only lets that supplier invoice it (`You can't select this supplier to invoice this purchase order`). If Workday still returns that fault, submit fails without the classifier or the default supplier.
 - The loop tracks failed payload fingerprints and aborts if a repair would repeat a payload that already failed.
 - The final validation fault is rethrown after the third failed submit attempt or when the repair agent chooses `give_up`.
 

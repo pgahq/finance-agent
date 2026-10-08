@@ -674,6 +674,25 @@ export async function getDocumentsByType(
   }
 }
 
+export async function getDocumentsByWorkdayIds(
+  db: DatabaseConnection,
+  type: DocumentType,
+  workdayIds: string[]
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: unknown }>> {
+  const unique = [...new Set(workdayIds.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+
+  const results: unknown = await db.query(`
+    SELECT workday_id, content, metadata
+    FROM documents
+    WHERE type = $1 AND workday_id = ANY($2::text[])
+  `, [type, unique]);
+
+  const rows = (Array.isArray(results) ? results : []) as Array<{ workday_id: string; content?: string | null; metadata: unknown }>;
+  debug(`Found ${rows.length} cached ${type} document(s) for ${unique.length} Workday ID(s)`);
+  return rows;
+}
+
 // Bulk operations for better performance
 export async function bulkInsertDocuments(
   db: DatabaseConnection,
