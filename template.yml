@@ -93,7 +93,7 @@ Globals:
         PO_LINE_SELECTION_ENABLED: ssm:/finance-agent/po-line-selection-enabled
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
-        OPENAI_API_KEY: ssm:/finance-agent/openai-api-key
+        AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key
         SLACK_WEBHOOK_URL: ssm:/finance-agent/slack-webhook-url
         INTERCOM_APP_ID: !Ref IntercomAppId
         S3_BUCKET_NAME: !Ref FinanceAgentBucket

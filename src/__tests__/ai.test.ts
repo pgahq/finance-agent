@@ -4,6 +4,7 @@ import { getAiResponse } from '../lib/ai.js';
 // Mock the AI SDK
 jest.mock('ai', () => ({
   generateText: jest.fn(),
+  gateway: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'gateway', modelId })),
   tool: jest.fn((definition) => definition),
   stepCountIs: jest.fn(),
   NoObjectGeneratedError: {
@@ -15,10 +16,6 @@ jest.mock('ai', () => ({
   Output: {
     object: jest.fn()
   }
-}));
-
-jest.mock('@ai-sdk/openai', () => ({
-  openai: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'openai.responses', modelId }))
 }));
 
 jest.mock('../lib/rag.js', () => ({
@@ -46,7 +43,6 @@ describe('AI utilities', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'test-key';
 
     // Setup default mocks
     mockGenerateText.mockResolvedValue({
@@ -70,7 +66,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        model: expect.objectContaining({ modelId: 'openai/gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
@@ -125,7 +121,7 @@ describe('AI utilities', () => {
       });
 
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        model: expect.objectContaining({ modelId: 'openai/gpt-5.4' }),
         messages: [{ role: 'user', content: 'User message' }],
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
@@ -165,7 +161,7 @@ describe('AI utilities', () => {
 
       expect(mockGenerateText).toHaveBeenCalledTimes(1);
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        model: expect.objectContaining({ modelId: 'openai/gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
@@ -219,7 +215,7 @@ describe('AI utilities', () => {
 
       // Verify Step 1: generateText was called with tools
       expect(mockGenerateText).toHaveBeenCalledWith({
-        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        model: expect.objectContaining({ modelId: 'openai/gpt-5.4' }),
         messages: [{ role: 'user', content: 'Test message' }],
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
@@ -233,7 +229,7 @@ describe('AI utilities', () => {
 
       // Verify Step 2: structured output via generateText + Output.object
       expect(mockGenerateText).toHaveBeenNthCalledWith(2, {
-        model: expect.objectContaining({ modelId: 'gpt-5.4' }),
+        model: expect.objectContaining({ modelId: 'openai/gpt-5.4' }),
         messages: expect.arrayContaining([
           expect.objectContaining({ role: 'user' }),
           expect.objectContaining({ role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' })
@@ -284,13 +280,13 @@ describe('AI utilities', () => {
     });
 
     it('should handle API errors', async () => {
-      mockGenerateText.mockRejectedValue(new Error('OpenAI API error: 401 Unauthorized'));
+      mockGenerateText.mockRejectedValue(new Error('Gateway error: 401 Unauthorized'));
 
       await expect(getAiResponse({
         prompt: 'Test prompt',
         schema: undefined,
         messages: [{ role: 'user', content: 'Test message' }]
-      })).rejects.toThrow('OpenAI API error:');
+      })).rejects.toThrow('Gateway error:');
     });
   });
 });
