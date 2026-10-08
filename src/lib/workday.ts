@@ -4,7 +4,6 @@ import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValid
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, splitFreightLines } from './invoice_lines.js';
-import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   asArray,
@@ -753,7 +752,8 @@ function formatWorktagForLog(tag: any): string {
     .join('|');
 }
 
-function summarizeSubmittedLineWorktags(invoiceData: Record<string, unknown>): unknown[] {
+// Workday's read-back after a submit can show different line amounts than were sent, so log what was sent.
+function summarizeSubmittedLines(invoiceData: Record<string, unknown>): unknown[] {
   return ([] as any[]).concat(invoiceData.Invoice_Line_Replacement_Data ?? []).map((line: any) => ({
     line: line.Line_Order,
     worktags: ([] as any[]).concat(line.Worktags_Reference ?? []).map(formatWorktagForLog),
@@ -764,6 +764,10 @@ function summarizeSubmittedLineWorktags(invoiceData: Record<string, unknown>): u
           ),
         }
       : {}),
+    quantity: line.Quantity,
+    unitCost: line.Unit_Cost,
+    extendedAmount: line.Extended_Amount,
+    ...(line.Purchase_Order_Line_Reference ? { purchaseOrderLine: formatWorktagForLog(line.Purchase_Order_Line_Reference) } : {}),
   }));
 }
 
@@ -1886,6 +1890,7 @@ async function submitSupplierInvoiceWithRepair({
   const validationTriggeredFields = new Set<FallbackField>();
   const priorFailures: SupplierInvoiceSubmitPriorFailure[] = [];
 
+  let lastLoggedLines: { lines: string; attempt: number } | undefined;
   for (let attemptNumber = 1; attemptNumber <= MAX_SUPPLIER_INVOICE_SUBMIT_ATTEMPTS; attemptNumber += 1) {
     const appliedFallbacks = getAppliedFallbacks(attemptBuildOptions).map(f =>
       validationTriggeredFields.has(f.field) ? { ...f, dueToValidationError: true as const } : f
@@ -1901,6 +1906,13 @@ async function submitSupplierInvoiceWithRepair({
     if (requestDebugLabel) {
       debug(requestDebugLabel, JSON.stringify(request, null, 2));
     }
+    const submittedLines = JSON.stringify(summarizeSubmittedLines(invoiceData));
+    if (submittedLines === lastLoggedLines?.lines) {
+      debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): unchanged from attempt ${lastLoggedLines.attempt}`);
+    } else {
+      debug(`Submitted lines for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${submittedLines}`);
+      lastLoggedLines = { lines: submittedLines, attempt: attemptNumber };
+    }
 
     try {
       const result = await submitSupplierInvoiceSoap(client, request, submitLogMessage);
@@ -1910,8 +1922,6 @@ async function submitSupplierInvoiceWithRepair({
         appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
         throw sanitizeSoapError(error, priorFailures);
       }
-
-      debug(`Submitted line worktags for invoice ${invoiceLabel} (attempt ${attemptNumber}): ${JSON.stringify(summarizeSubmittedLineWorktags(invoiceData))}`);
 
       const validationError = summarizeValidationError(error);
       appendPriorFailure(priorFailures, attemptNumber, error, appliedFallbacks);
@@ -2771,19 +2781,15 @@ function countLineStatuses(
 // Consumed lines stay in the list so line matching still sees their service windows and
 // coding; an invoice line matched to one is coded from it but submitted without its reference.
 export function markPurchaseOrderLineAvailability(
-  lines: PurchaseOrderLine[] | undefined,
-  env: NodeJS.ProcessEnv = process.env
+  lines: PurchaseOrderLine[] | undefined
 ): PurchaseOrderLine[] | undefined {
   if (!lines?.length) return lines;
-  const enabled = isPoLineSelectionEnabled(env);
   debug('PO line status counts:', {
     invoiceStatus: countLineStatuses(lines, 'invoiceStatus'),
     paymentStatus: countLineStatuses(lines, 'paymentStatus'),
     closeStatus: countLineStatuses(lines, 'closeStatus'),
     unavailableLines: lines.filter((line) => !isPurchaseOrderLineAvailableForInvoicing(line)).length,
-    poLineSelectionEnabled: enabled,
   });
-  if (!enabled) return lines;
   return lines.map((line) => ({ ...line, availableForInvoicing: isPurchaseOrderLineAvailableForInvoicing(line) }));
 }
 

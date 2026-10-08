@@ -24,19 +24,30 @@ describe('touch reporting SQL', () => {
     expect(REFRESH_TOUCH_DAILY).toContain("t.touch_bucket = '21+'");
   });
 
-  it('creates the table and view inside a locked transaction and rolls back on failure', async () => {
+  const runner = (viewExists: boolean, calls: string[], failOn?: string) => async (sql: string) => {
+    calls.push(sql.trim());
+    if (failOn && sql.includes(failOn)) throw new Error('boom');
+    return sql.includes('to_regclass') ? { rows: [{ present: viewExists }] } : { rows: [] };
+  };
+
+  it('creates the table and a missing view inside a locked transaction and rolls back on failure', async () => {
     const calls: string[] = [];
-    await ensureTouchReporting(async (sql) => { calls.push(sql.trim().split('\n')[0].trim()); });
+    await ensureTouchReporting(runner(false, calls));
     expect(calls[0]).toBe('BEGIN');
     expect(calls[1]).toContain('pg_advisory_xact_lock');
+    expect(calls.some((sql) => sql.includes('CREATE OR REPLACE VIEW agent_invoice_touches'))).toBe(true);
     expect(calls[calls.length - 1]).toBe('COMMIT');
 
     const failed: string[] = [];
-    await expect(ensureTouchReporting(async (sql) => {
-      failed.push(sql.trim());
-      if (sql.includes('CREATE OR REPLACE VIEW')) throw new Error('boom');
-    })).rejects.toThrow('boom');
+    await expect(ensureTouchReporting(runner(false, failed, 'CREATE OR REPLACE VIEW'))).rejects.toThrow('boom');
     expect(failed[failed.length - 1]).toBe('ROLLBACK');
+  });
+
+  it('leaves an existing view alone, so a cold start takes no lock on it', async () => {
+    const calls: string[] = [];
+    await ensureTouchReporting(runner(true, calls));
+    expect(calls.some((sql) => sql.includes('CREATE OR REPLACE VIEW'))).toBe(false);
+    expect(calls.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS agent_invoice_touch_daily'))).toBe(true);
   });
 });
 

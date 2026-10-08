@@ -71,6 +71,6 @@ When several PO lines fit an extracted line's description equally (for example m
    - availableForInvoicing does not change which line matches by period or date. If the line whose window covers the period has availableForInvoicing false, still choose it and copy its purchaseOrderLineId and coding; never move to a different period's line because the matching one is unavailable. The reference is dropped downstream.
    - Only when nothing distinguishes the candidate lines (no period, no usable invoiceDate), prefer a line with availableForInvoicing true.`;
 
-export function mergeInvoiceLinesPromptFor(poLineSelectionEnabled: boolean): string {
-  return poLineSelectionEnabled ? mergeInvoiceLinesPrompt + poLineSelectionPromptRules : mergeInvoiceLinesPrompt;
+export function mergeInvoiceLinesPromptFor(poLineSelection: boolean): string {
+  return poLineSelection ? mergeInvoiceLinesPrompt + poLineSelectionPromptRules : mergeInvoiceLinesPrompt;
 }

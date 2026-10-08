@@ -11,6 +11,7 @@ jest.mock('../lib/workday.js', () => ({
 
 import { Pool } from 'pg';
 import {
+  CREATE_AGENT_INVOICE_SCORES_INDEXES,
   CREATE_AGENT_INVOICE_SCORES_TABLE,
   CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES,
   CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE,
@@ -18,12 +19,12 @@ import {
   type DatabaseConnection,
 } from '../lib/database.js';
 import type { ProcessingContext } from '../lib/handlers.js';
-import { getInvoiceScore, listPendingScoreInvoices, upsertInvoiceScore } from '../lib/invoice_scores.js';
+import { findOtherAgentInvoicesWithSameNumber, getInvoiceScore, listPendingScoreInvoices, recordStatusChecks, upsertInvoiceScore } from '../lib/invoice_scores.js';
 import { ensureTouchReporting, refreshTouchDaily } from '../lib/touch_reporting.js';
 import { getAgentInvoiceSnapshots, snapshotAgentWrite, snapshotEnrichBaseline } from '../lib/invoice_snapshots.js';
 import { buildDigestBlocks, digestWindow, summarizeScores } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
-import { loadDigestScores, loadUnlabeledCancels } from '../score_digest.js';
+import { CREATE_AUDIT_POSTS_TABLE, loadDigestScores, loadUnlabeledCancels } from '../score_digest.js';
 import { scoreInvoice } from '../score_invoices_processor.js';
 
 const url = process.env.SCORING_PG_URL;
@@ -57,10 +58,11 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
 
   beforeAll(async () => {
     await pool.query('DROP VIEW IF EXISTS agent_invoice_touches');
-    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily');
+    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily, agent_invoice_status_checks, agent_invoice_audit_posts');
     await pool.query(CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE);
     for (const sql of CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES) await pool.query(sql);
     await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
+    for (const sql of CREATE_AGENT_INVOICE_SCORES_INDEXES) await pool.query(sql);
     await pool.query(CREATE_CANCEL_LABELS_TABLE);
   });
 
@@ -90,7 +92,7 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
   });
 
   it('lists every agent invoice as pending until it is terminal', async () => {
-    const pending = await listPendingScoreInvoices(db);
+    const pending = await listPendingScoreInvoices(db, 100);
     expect(pending.map((row) => row.workdayInvoiceWid).sort()).toEqual([created, duplicate, enriched]);
   });
 
@@ -106,7 +108,7 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     const final = await scoreInvoice(context, { workdayInvoiceWid: created, status: { workdayID: created, invoiceStatusAsText: 'Approved' } });
     expect(final?.terminal).toBe(true);
     expect((await getInvoiceScore(db, created))?.lateDiff?.map((change) => change.field)).toEqual(['line.fund']);
-    expect((await listPendingScoreInvoices(db)).map((row) => row.workdayInvoiceWid)).not.toContain(created);
+    expect((await listPendingScoreInvoices(db, 100)).map((row) => row.workdayInvoiceWid)).not.toContain(created);
   });
 
   it('finds the live agent duplicate with the JSONB lookup and attributes the cancel to the agent', async () => {
@@ -123,7 +125,8 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     const score = await scoreInvoice(context, { workdayInvoiceWid: enriched, status: null });
     expect(score).toEqual(expect.objectContaining({ outcome: 'deleted', cancelAttribution: 'business', cancelBasis: 'ap_label', origin: 'enrich' }));
 
-    const window = digestWindow(new Date(Date.now() + 1000));
+    // The digest reports the last complete week, so ask as of next week to cover rows written today.
+    const window = digestWindow(new Date(Date.now() + 7 * 86_400_000));
     const summary = summarizeScores(await loadDigestScores(db, window.previousStart), window, await loadUnlabeledCancels(db));
     expect(summary.entered).toBe(1);
     expect(summary.cancels).toEqual({ agent: 1, business: 1, unattributed: 0, agentByBasis: { duplicate: 1 } });
@@ -175,5 +178,61 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(weekly.rows[0]).toEqual({ invoices: 3, zero: 1 });
 
     expect(await refreshTouchDaily(db)).toBe(15);
+  });
+
+  it('matches duplicates on each invoice latest write only', async () => {
+    const stale = 'f'.repeat(32);
+    await snapshotAgentWrite(context, { workdayInvoiceWid: stale, source: 'create', invoice: invoice() });
+    await snapshotAgentWrite(context, { workdayInvoiceWid: stale, source: 'resend_update', invoice: { ...invoice(), Suppliers_Invoice_Number: 'INV-43' } });
+    const matches = await findOtherAgentInvoicesWithSameNumber(db, 'none', 'Supplier_ID=S-1', 'INV-42');
+    expect(matches.map((match) => match.workdayInvoiceWid).sort()).toEqual([created, duplicate, enriched]);
+  });
+
+  it('reads pending statuses least recently checked first', async () => {
+    for (const wid of ['1'.repeat(32), '2'.repeat(32)]) {
+      await snapshotAgentWrite(context, { workdayInvoiceWid: wid, source: 'create', invoice: invoice() });
+    }
+    const pending = (await listPendingScoreInvoices(db, 100)).map((row) => row.workdayInvoiceWid);
+    expect(pending.length).toBeGreaterThan(1);
+    await recordStatusChecks(db, [pending[0]], new Date());
+    await recordStatusChecks(db, [pending[0]], new Date());
+    const next = (await listPendingScoreInvoices(db, 100)).map((row) => row.workdayInvoiceWid);
+    expect(next[next.length - 1]).toBe(pending[0]);
+    expect((await listPendingScoreInvoices(db, 1))[0].workdayInvoiceWid).not.toBe(pending[0]);
+  });
+
+  it('keeps an existing touch view instead of replacing it on every cold start', async () => {
+    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
+    await ensureTouchReporting(run);
+    const { rows } = await pool.query("SELECT to_regclass('agent_invoice_touches') IS NOT NULL AS present");
+    expect(rows[0].present).toBe(true);
+  });
+
+  it('stores when the daily audit post last went out', async () => {
+    await pool.query(CREATE_AUDIT_POSTS_TABLE);
+    await pool.query(CREATE_AUDIT_POSTS_TABLE);
+    await pool.query(
+      `INSERT INTO agent_invoice_audit_posts (mode, posted_through) VALUES ('daily', $1)
+       ON CONFLICT (mode) DO UPDATE SET posted_through = EXCLUDED.posted_through`,
+      [new Date('2026-10-07T14:20:00Z')]
+    );
+    const { rows } = await pool.query("SELECT posted_through FROM agent_invoice_audit_posts WHERE mode = 'daily'");
+    expect(rows).toHaveLength(1);
+  });
+
+  it('loads an invoice for the digest when it closes long after AP entered it', async () => {
+    const lateClose = '3'.repeat(32);
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
+    await upsertInvoiceScore(db, {
+      workdayInvoiceWid: lateClose, terminal: true, entryReadAt: daysAgo(20), finalReadAt: daysAgo(1),
+      finalStatus: 'Approved', outcome: 'submitted_clean', entryDiff: [],
+    });
+    const loaded = await loadDigestScores(db, daysAgo(7));
+    expect(loaded.map((score) => score.workdayInvoiceWid)).toContain(lateClose);
+  });
+
+  it('never reopens a terminal score', async () => {
+    await upsertInvoiceScore(db, { workdayInvoiceWid: created, terminal: false, outcome: 'submitted_edited' });
+    expect(await getInvoiceScore(db, created)).toEqual(expect.objectContaining({ terminal: true, finalStatus: 'Approved' }));
   });
 });

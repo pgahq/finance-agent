@@ -265,13 +265,21 @@ Deployment is automated via CircleCI:
 ### Agent invoice scoring
 
 The agent saves a snapshot of the fields it wrote after every create, resend
-update, and enrich write. `ScoreInvoices` runs daily and scores each invoice
-twice: when AP submits it (what AP changed before submitting) and when it is
-approved, paid, denied, or canceled (late corrections and cancel attribution).
-`ScoreDigest` posts a weekly summary by field to `#notify-finance-agent-audit`
+update, and enrich supplier-invoice update (the notes-only enrich path takes
+none). `ScoreInvoices` runs daily and records what AP
+changed when AP submits an invoice, then late corrections when it is approved,
+paid, or denied, or cancel attribution when it is canceled or deleted. A Draft
+is left alone until it has sat for two weeks, then flagged as stuck.
+`ScoreDigest` posts to `#notify-finance-agent-audit`
 (`#notify-finance-agent-audit-dev` in dev) through the
-`/finance-agent/audit-slack-webhook-url` SSM parameter. Details, settings, and
-how AP labels a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.
+`/finance-agent/audit-slack-webhook-url` SSM parameter: every day with
+something scored, a touch summary followed by one message per invoice scored
+since the last daily post with AP's before → after values (up to 40, then a
+count of the rest), and every
+Monday a summary of the previous week by field. Both lead with the share of invoices that needed zero AP
+touches and its daily or weekly trend, which is also stored in Postgres
+(`agent_invoice_touch_daily`) for reports. Details, settings, and how AP labels
+a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.
 
 ## 🔒 Security
 

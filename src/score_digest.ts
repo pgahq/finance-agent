@@ -4,9 +4,16 @@ import { withHandler, type ProcessingContext } from './lib/handlers.js';
 import { classifyStatus, statusConfigFromEnv, tenantRefreshWeekday, type StatusClass } from './lib/invoice_score.js';
 import { escapeWqlLiteral, rowToInvoiceScore, type InvoiceScore } from './lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, summarizeDay, summarizeScores, type DigestWindow } from './lib/score_digest.js';
-import { dailyTouchTrend, touchCalloutBlocks, touchPeriod, weeklyTouchTrend } from './lib/score_touches.js';
+import {
+  addCentralDays,
+  centralDayStart,
+  dailyTouchTrend,
+  touchCalloutBlocks,
+  touchPeriod,
+  weeklyTouchTrend,
+} from './lib/score_touches.js';
 import { refreshTouchDaily } from './lib/touch_reporting.js';
-import { notifyResult, postSlackBlocks } from './lib/slack.js';
+import { notifyResult, postSlackBlocks, type SlackBlock } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
 const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -62,8 +69,9 @@ export async function loadDigestScores(db: DatabaseConnection, since: Date): Pro
     `SELECT s.*, l.attribution AS label_attribution
        FROM agent_invoice_scores s
        LEFT JOIN cancel_labels l ON l.workday_invoice_wid = s.workday_invoice_wid
-      WHERE COALESCE(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
-         OR (s.terminal = false AND s.outcome = 'stuck_draft')`,
+      WHERE GREATEST(s.entry_read_at, s.final_read_at, s.updated_at) >= $1
+         OR (s.terminal = false AND s.outcome = 'stuck_draft')
+      ORDER BY GREATEST(s.entry_read_at, s.final_read_at, s.updated_at), s.workday_invoice_wid`,
     [since]
   ) as Array<Record<string, unknown>>;
   return rows.map(withCancelLabel);
@@ -95,87 +103,137 @@ function withCancelLabel(row: Record<string, unknown>): InvoiceScore {
 /** Scores AP entered since `since`, for the touch trend. */
 export async function loadEnteredScores(db: DatabaseConnection, since: Date): Promise<InvoiceScore[]> {
   const rows = await db.query(
-    'SELECT * FROM agent_invoice_scores WHERE entry_read_at >= $1',
+    'SELECT * FROM agent_invoice_scores WHERE entry_read_at >= $1 ORDER BY entry_read_at, workday_invoice_wid',
     [since]
   ) as Array<Record<string, unknown>>;
   return rows.map(rowToInvoiceScore);
 }
 
-const DAY_MS = 86_400_000;
 export const DAILY_TREND_DAYS = 14;
 export const WEEKLY_TREND_WEEKS = 8;
 
+async function postAudit(blocks: SlackBlock[]): Promise<boolean> {
+  return postSlackBlocks(blocks, process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
+}
+
+/** When each audit post last went out in full; created here so the invoice Lambdas' cold start stays out of it. */
+export const CREATE_AUDIT_POSTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_audit_posts (
+    mode VARCHAR(16) PRIMARY KEY,
+    posted_through TIMESTAMP NOT NULL
+  );
+`;
+export const MAX_DAILY_CATCH_UP_DAYS = 7;
+
+async function lastPostedThrough(db: DatabaseConnection, mode: string): Promise<Date | undefined> {
+  await db.query(CREATE_AUDIT_POSTS_TABLE);
+  const rows = await db.query('SELECT posted_through FROM agent_invoice_audit_posts WHERE mode = $1', [mode]) as Array<{ posted_through?: unknown }>;
+  const value = rows[0]?.posted_through;
+  if (value == null) return undefined;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+async function recordPostedThrough(db: DatabaseConnection, mode: string, at: Date): Promise<void> {
+  await db.query(
+    `INSERT INTO agent_invoice_audit_posts (mode, posted_through) VALUES ($1, $2)
+     ON CONFLICT (mode) DO UPDATE SET posted_through = EXCLUDED.posted_through`,
+    [mode, at]
+  );
+}
+
 async function postDailySummary(context: ProcessingContext, now: Date): Promise<void> {
-  const since = new Date(now.getTime() - DAY_MS);
-  const summary = summarizeDay(await loadDigestScores(context.dbConnection, since), since, now);
-  if (!summary.lines.length) {
-    debug('No agent invoices scored in the last day; skipping the daily audit post');
+  const db = context.dbConnection;
+  const today = centralDayStart(now);
+  // Invoice messages cover everything scored since the last full post (processors can finish after it, and a run can
+  // fail), at most a week back; the first post covers today. The touch lead covers the Central day.
+  const lastPosted = await lastPostedThrough(db, 'daily');
+  const floor = addCentralDays(today, -MAX_DAILY_CATCH_UP_DAYS);
+  const since = !lastPosted ? today : lastPosted > floor ? lastPosted : floor;
+  const summary = summarizeDay(await loadDigestScores(db, since), since, now);
+  if (!summary.lines.length && !summary.lostToRefresh) {
+    debug('No agent invoices scored since the last daily post; skipping it', { since });
+    await recordPostedThrough(db, 'daily', now);
     return;
   }
-  const trendScores = await loadEnteredScores(context.dbConnection, new Date(now.getTime() - (DAILY_TREND_DAYS + 1) * DAY_MS));
+  const trendScores = await loadEnteredScores(context.dbConnection, addCentralDays(today, -DAILY_TREND_DAYS));
   const callout = touchCalloutBlocks({
     periodName: 'today',
     previousName: 'yesterday',
-    current: touchPeriod(trendScores, 'today', since, now),
-    previous: touchPeriod(trendScores, 'yesterday', new Date(since.getTime() - DAY_MS), since),
+    current: touchPeriod(trendScores, 'today', today, addCentralDays(today, 1)),
+    previous: touchPeriod(trendScores, 'yesterday', addCentralDays(today, -1), today),
     trend: dailyTouchTrend(trendScores, now, DAILY_TREND_DAYS),
   });
   const messages = [callout, ...buildDailyInvoiceMessages(summary)];
   for (const [index, blocks] of messages.entries()) {
     // Incoming webhooks allow about one message per second.
     if (index > 0) await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
-    await postSlackBlocks(blocks, process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
+    if (!(await postAudit(blocks))) {
+      throw new Error(`Daily audit post stopped at message ${index + 1} of ${messages.length}; the rest were not sent`);
+    }
   }
+  await recordPostedThrough(db, 'daily', now);
   debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: messages.length });
 }
 
 // Audit posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL): `{ "mode": "daily" }` after each scoring
 // run, and the weekly digest otherwise.
-/** Keeps the stored daily touch rollup current; a failure is logged and never blocks the post. */
-async function refreshTouchRollup(context: ProcessingContext): Promise<void> {
+/**
+ * Keeps the stored daily touch rollup current. A failure never blocks the post (Slack reads scores directly);
+ * the handler fails the run afterwards so the error alert says the stored report is stale.
+ */
+async function refreshTouchRollup(context: ProcessingContext): Promise<Error | undefined> {
   try {
     const days = await refreshTouchDaily(context.dbConnection);
     debug('Refreshed agent_invoice_touch_daily', { days });
+    return undefined;
   } catch (error) {
     debug('Could not refresh agent_invoice_touch_daily; posting without it', error);
+    return new Error(`Posted the audit, but agent_invoice_touch_daily could not be refreshed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 export const handler = withHandler(async (context, event?: { mode?: string }) => {
   const startTime = Date.now();
   try {
-    await refreshTouchRollup(context);
+    const rollupError = await refreshTouchRollup(context);
     if (event?.mode === 'daily') {
       await postDailySummary(context, new Date());
-      return;
+    } else {
+      await postWeeklyDigest(context);
     }
-    const window = digestWindow(new Date());
-    const summary = summarizeScores(
-      await loadDigestScores(context.dbConnection, window.previousStart),
-      window,
-      await loadUnlabeledCancels(context.dbConnection)
-    );
-    const trendScores = await loadEnteredScores(context.dbConnection, new Date(window.end.getTime() - (WEEKLY_TREND_WEEKS + 1) * 7 * DAY_MS));
-    summary.touches = {
-      periodName: 'this week',
-      previousName: 'last week',
-      current: touchPeriod(trendScores, 'this week', window.start, window.end),
-      previous: touchPeriod(trendScores, 'last week', window.previousStart, window.start),
-      trend: weeklyTouchTrend(trendScores, window.end, WEEKLY_TREND_WEEKS),
-    };
-    // A refreshed sandbox holds production's agent invoices, which would all look like pre-snapshot work.
-    if (tenantRefreshWeekday() === undefined) {
-      try {
-        summary.backlog = await backlogOutcomes(context, window);
-      } catch (error) {
-        debug('Could not count pre-snapshot agent invoices; posting the digest without them', error);
-      }
-    }
-
-    await postSlackBlocks(buildDigestBlocks(summary), process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
-    debug('Posted agent invoice audit digest', { entered: summary.entered, canceled: summary.cancels });
+    if (rollupError) throw rollupError;
   } catch (error) {
     await notifyResult('score_digest', 'error', Date.now() - startTime, undefined, error);
     throw error;
   }
 });
+
+async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
+  const window = digestWindow(new Date());
+  const summary = summarizeScores(
+    await loadDigestScores(context.dbConnection, window.previousStart),
+    window,
+    await loadUnlabeledCancels(context.dbConnection)
+  );
+  const trendScores = await loadEnteredScores(context.dbConnection, addCentralDays(window.end, -7 * WEEKLY_TREND_WEEKS));
+  summary.touches = {
+    periodName: 'last week',
+    previousName: 'the week before',
+    current: touchPeriod(trendScores, 'last week', window.start, window.end),
+    previous: touchPeriod(trendScores, 'the week before', window.previousStart, window.start),
+    trend: weeklyTouchTrend(trendScores, window.end, WEEKLY_TREND_WEEKS),
+  };
+  // A refreshed sandbox holds production's agent invoices, which would all look like pre-snapshot work.
+  if (tenantRefreshWeekday() === undefined) {
+    try {
+      summary.backlog = await backlogOutcomes(context, window);
+    } catch (error) {
+      debug('Could not count pre-snapshot agent invoices; posting the digest without them', error);
+      summary.backlogUnavailable = true;
+    }
+  }
+
+  if (!(await postAudit(buildDigestBlocks(summary)))) throw new Error('Could not post the weekly audit digest');
+  debug('Posted agent invoice audit digest', { entered: summary.entered, canceled: summary.cancels });
+}

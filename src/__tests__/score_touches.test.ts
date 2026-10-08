@@ -1,6 +1,9 @@
 import type { ScoredChange } from '../lib/invoice_score.js';
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import {
+  addCentralDays,
+  centralDayStart,
+  centralWeekStart,
   countsForTouches,
   dailyTouchTrend,
   touchBucketIndex,
@@ -53,6 +56,7 @@ describe('touch periods and trends', () => {
     entered(12, hoursAgo(5)),
     entered(0, hoursAgo(30)),
     entered(5, hoursAgo(31)),
+    entered(1, hoursAgo(24 * 3)),
     entered(0, hoursAgo(24 * 9)),
     { workdayInvoiceWid: 'c', terminal: true, entryReadAt: hoursAgo(1), outcome: 'canceled' } as InvoiceScore,
   ];
@@ -61,15 +65,32 @@ describe('touch periods and trends', () => {
     expect(touchPeriod(scores, 'today', hoursAgo(24), now)).toEqual(expect.objectContaining({ counts: [2, 1, 0, 1, 0], total: 4 }));
   });
 
-  it('builds 14 daily periods and 8 weekly periods, oldest first', () => {
+  it('builds 14 Central days and 8 complete Central weeks, oldest first', () => {
     const daily = dailyTouchTrend(scores, now);
     expect(daily).toHaveLength(14);
-    expect(daily[13]).toEqual(expect.objectContaining({ label: 'Oct 6', total: 4 }));
+    expect(daily[13]).toEqual(expect.objectContaining({ label: 'Oct 6', start: new Date('2026-10-06T05:00:00Z'), total: 4 }));
     expect(daily[12]).toEqual(expect.objectContaining({ label: 'Oct 5', counts: [1, 0, 1, 0, 0] }));
     const weekly = weeklyTouchTrend(scores, now);
     expect(weekly).toHaveLength(8);
-    expect(weekly[7]).toEqual(expect.objectContaining({ label: 'Sep 29', total: 6 }));
-    expect(weekly[6].total).toBe(1);
+    // The week of Oct 5 is still open, so the last complete week starts Monday Sep 28.
+    expect(weekly[7]).toEqual(expect.objectContaining({ label: 'Sep 28', start: new Date('2026-09-28T05:00:00Z'), counts: [0, 1, 0, 0, 0] }));
+    expect(weekly[6]).toEqual(expect.objectContaining({ label: 'Sep 21', total: 1 }));
+  });
+});
+
+describe('Central calendar boundaries', () => {
+  it('starts days at Central midnight across the end of daylight saving time', () => {
+    expect(centralDayStart(new Date('2026-10-06T04:59:00Z'))).toEqual(new Date('2026-10-05T05:00:00Z'));
+    expect(centralDayStart(now)).toEqual(new Date('2026-10-06T05:00:00Z'));
+    const fallBack = centralDayStart(new Date('2026-11-01T12:00:00Z'));
+    expect(fallBack).toEqual(new Date('2026-11-01T05:00:00Z'));
+    expect(addCentralDays(fallBack, 1)).toEqual(new Date('2026-11-02T06:00:00Z'));
+    expect(addCentralDays(new Date('2026-11-02T06:00:00Z'), -1)).toEqual(fallBack);
+  });
+
+  it('starts weeks on Monday', () => {
+    expect(centralWeekStart(now)).toEqual(new Date('2026-10-05T05:00:00Z'));
+    expect(centralWeekStart(new Date('2026-10-05T04:00:00Z'))).toEqual(new Date('2026-09-28T05:00:00Z'));
   });
 });
 
@@ -100,12 +121,12 @@ describe('touchCalloutBlocks', () => {
     expect(worse[1].type === 'section' && worse[1].text.text).toContain('*▼ 25 pts worse* than yesterday');
     expect(worse.some((block) => block.type === 'image')).toBe(false);
     const first = touchCalloutBlocks({ periodName: 'this week', previousName: 'last week', current: trend[2], previous: trend[0], trend });
-    expect(first[1].type === 'section' && first[1].text.text).toContain('No invoices reached AP last week to compare with.');
+    expect(first[1].type === 'section' && first[1].text.text).toContain('AP submitted no agent invoices last week to compare with.');
   });
 
-  it('says so when no invoice reached AP', () => {
+  it('says so when AP submitted no agent invoices', () => {
     expect(touchCalloutBlocks({ periodName: 'this week', previousName: 'last week', current: trend[0], previous: trend[0], trend }))
-      .toEqual([{ type: 'header', text: { type: 'plain_text', text: 'No agent invoices reached AP this week' } }]);
+      .toEqual([{ type: 'header', text: { type: 'plain_text', text: 'AP submitted no agent invoices this week' } }]);
   });
 });
 
@@ -126,5 +147,8 @@ describe('touchChartUrl', () => {
   it('can be turned off or pointed at another renderer', () => {
     expect(touchChartUrl(trend, 'Share', { SCORE_CHART_BASE_URL: 'none' })).toBeUndefined();
     expect(touchChartUrl(trend, 'Share', { SCORE_CHART_BASE_URL: 'https://charts.example/render' })).toMatch(/^https:\/\/charts\.example\/render\?/);
+    for (const bad of ['http://charts.example/render', 'charts.example', 'https://charts.example/render?x=1']) {
+      expect(touchChartUrl(trend, 'Share', { SCORE_CHART_BASE_URL: bad })).toBeUndefined();
+    }
   });
 });

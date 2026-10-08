@@ -2,7 +2,6 @@ import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPromptFor, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
-import { isPoLineSelectionEnabled } from './po_line_selection_flag.js';
 import {
   extractLineOfBusinessId,
   relatedLobAllowsId,
@@ -20,6 +19,7 @@ export interface ExtractedInvoiceLine {
   unitCost?: string | null;
   totalPrice?: string | null;
   hasDiscount?: boolean | null;
+  tableNumber?: number | null;
 }
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
@@ -1143,39 +1143,267 @@ export interface LineTotalCharges {
   currentTaxAmount?: unknown;
 }
 
+interface ExpectedLineTotal {
+  amountDueCents: number;
+  freightCents: number;
+  taxCents: number;
+  expectedCents: number;
+}
+
+// Credit memos and amounts that do not parse cleanly leave nothing reliable to compare.
+function expectedLineTotal(charges: LineTotalCharges, freightFallbacks: unknown[]): ExpectedLineTotal | undefined {
+  const amountDue = parseCanonicalChargeAmount(charges.amountDue);
+  if (amountDue == null) return undefined;
+  const freight = submittedHeaderCharge(charges.freightAmount, charges.freightCleared, freightFallbacks);
+  const tax = submittedHeaderCharge(charges.taxAmount, charges.taxCleared, [charges.currentTaxAmount]);
+  if (freight === UNREADABLE || tax === UNREADABLE) return undefined;
+  const amountDueCents = toCents(amountDue);
+  const freightCents = toCents(freight);
+  const taxCents = toCents(tax);
+  return { amountDueCents, freightCents, taxCents, expectedCents: amountDueCents - freightCents - taxCents };
+}
+
 // Lines that restate another row (a monthly summary beside its hourly breakdown) would invoice
 // the charge twice, so a line sum that misses the document's amount due is flagged for AP review.
-// Credit memos and amounts that do not parse cleanly leave nothing reliable to compare, so they
-// get no note.
 export function lineTotalMismatchNote(lines: FinalInvoiceLine[], charges: LineTotalCharges): string | undefined {
-  const amountDue = parseCanonicalChargeAmount(charges.amountDue);
-  if (amountDue == null || lines.length === 0) return undefined;
+  if (lines.length === 0) return undefined;
   // A row with no amount, freight-described or not, leaves the subtotal unknown.
   if (lines.some(line => submittedLineAmount(line) == null)) return undefined;
   const { merchandiseLines, freightAmountFromLines } = splitFreightLines(lines);
   if (merchandiseLines.length === 0) return undefined;
   const lineAmounts = merchandiseLines.map(submittedLineAmount);
 
-  const freight = submittedHeaderCharge(
-    charges.freightAmount,
-    charges.freightCleared,
-    [charges.currentFreightAmount, freightAmountFromLines]
-  );
-  const tax = submittedHeaderCharge(charges.taxAmount, charges.taxCleared, [charges.currentTaxAmount]);
-  if (freight === UNREADABLE || tax === UNREADABLE) return undefined;
+  const expected = expectedLineTotal(charges, [charges.currentFreightAmount, freightAmountFromLines]);
+  if (!expected) return undefined;
+  const { amountDueCents, freightCents, taxCents, expectedCents } = expected;
 
   const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount!), 0);
-  const freightCents = toCents(freight);
-  const taxCents = toCents(tax);
-  const expectedCents = toCents(amountDue) - freightCents - taxCents;
   if (lineCents === expectedCents) return undefined;
 
   const likelyCause = lineCents > expectedCents
     ? 'Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.'
     : 'Check for a missing line or charge before approving.';
-  return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(toCents(amountDue))}`
+  return `Invoice lines total ${formatCents(lineCents)}, but the amount due ${formatCents(amountDueCents)}`
     + ` less freight ${formatCents(freightCents)} and tax ${formatCents(taxCents)} is ${formatCents(expectedCents)}.`
     + ` ${likelyCause}`;
+}
+
+const MONTH_TOKEN = String.raw`(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![a-z])`;
+// A two-digit year needs an apostrophe ("Sep'26"), so a day number ("May 15, 2026") is not read as a year.
+// Four-digit years are 20xx so a PO or invoice number ("PO 4500 - March") is not read as a year.
+const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d{2})(?!\d)|[\s,/-]*(20\d{2})(?!\d))`, 'i');
+const YEAR_THEN_MONTH = new RegExp(String.raw`\b(20\d{2})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
+// US dates (MM/DD/YYYY) are read before MM/YYYY, which must not start inside a date ("03/01/2026").
+const NUMERIC_DATE = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(20\d{2})(?![\d/])/;
+const NUMERIC_MONTH_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(20\d{2})(?![\d/])/;
+
+interface StatedMonth {
+  year: number;
+  month: number;
+}
+
+function monthIndex(token: string): number {
+  return ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    .indexOf(token.slice(0, 3).toLowerCase()) + 1;
+}
+
+// Reads one month and year a row bills for, e.g. "Sep'26", "September 2026", "2026 - September", "09/2026".
+function statedMonth(raw: string | null | undefined): StatedMonth | undefined {
+  if (!raw) return undefined;
+  // Collapsing whitespace keeps the overlapping separator patterns below linear on long runs.
+  const text = raw.replace(/\s+/g, ' ');
+  const monthThenYear = text.match(MONTH_THEN_YEAR);
+  if (monthThenYear) {
+    const year = monthThenYear[2] ? 2000 + Number(monthThenYear[2]) : Number(monthThenYear[3]);
+    return { year, month: monthIndex(monthThenYear[1]) };
+  }
+  const yearThenMonth = text.match(YEAR_THEN_MONTH);
+  if (yearThenMonth) return { year: Number(yearThenMonth[1]), month: monthIndex(yearThenMonth[2]) };
+  const date = text.match(NUMERIC_DATE);
+  if (date) {
+    const [year, month, day] = [Number(date[3]), Number(date[1]), Number(date[2])];
+    return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
+  }
+  const numeric = text.match(NUMERIC_MONTH_YEAR);
+  if (numeric) return { year: Number(numeric[2]), month: Number(numeric[1]) };
+  return undefined;
+}
+
+// The PO line's service window must span the whole stated month; one open side counts as covering
+// it, but a line with no dates says nothing about the month.
+function poLineCoversMonth(line: Pick<PurchaseOrderLine, 'startDate' | 'endDate'>, { year, month }: StatedMonth): boolean {
+  const startDate = toIsoDate(line.startDate);
+  const endDate = toIsoDate(line.endDate);
+  if (!startDate && !endDate) return false;
+  // A date that is present but unparseable is unknown, not an open side.
+  if ((line.startDate && !startDate) || (line.endDate && !endDate)) return false;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const firstDay = `${year}-${pad(month)}-01`;
+  const lastDay = `${year}-${pad(month)}-${pad(new Date(Date.UTC(year, month, 0)).getUTCDate())}`;
+  return (!startDate || startDate <= firstDay) && (!endDate || endDate >= lastDay);
+}
+
+function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
+  if (line.totalPrice) {
+    const amount = parseExtractedLineAmount(line.totalPrice);
+    return amount == null ? undefined : toCents(amount);
+  }
+  // A unit cost with no printed quantity or total does not show what the row charges.
+  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity < 0) return undefined;
+  const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
+  return unitCost == null ? undefined : toCents(unitCost * line.quantity);
+}
+
+export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost';
+
+export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
+  lines: T[];
+  removed: T[];
+  keptTable?: number;
+  keepReason?: RepeatedTableKeepReason;
+  note?: string;
+}
+
+const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
+  purchase_order: 'its lines match open PO lines by amount and service period',
+  service_period: 'its lines state the service period',
+  unit_cost: 'its quantities and unit costs reproduce the line totals to the cent',
+};
+
+// Keeps the Workday note and Slack section short when a long table is removed.
+const REMOVED_LINES_LISTED = 5;
+
+interface TableCandidate<T> {
+  tableNumber: number;
+  lines: T[];
+  lineCents: number[];
+}
+
+// Largest one-to-one pairing of a table's rows with PO lines of the same amount whose window spans
+// the row's stated month (augmenting paths), so the order PO lines are listed in cannot change the score.
+function maxPoLineMatches<T extends ExtractedInvoiceLine>(table: TableCandidate<T>, openPoLines: PurchaseOrderLine[]): number {
+  const candidates = table.lines.map((line, index) => {
+    const month = statedMonth(line.description);
+    if (!month) return [];
+    return openPoLines
+      .map((poLine, poIndex) => ({ poLine, poIndex }))
+      .filter(({ poLine }) => toCents(poLine.extendedAmount!) === table.lineCents[index] && poLineCoversMonth(poLine, month))
+      .map(({ poIndex }) => poIndex);
+  });
+  const rowForPoLine = new Map<number, number>();
+  const assign = (row: number, visited: Set<number>): boolean => {
+    for (const poIndex of candidates[row]) {
+      if (visited.has(poIndex)) continue;
+      visited.add(poIndex);
+      const holder = rowForPoLine.get(poIndex);
+      if (holder === undefined || assign(holder, visited)) {
+        rowForPoLine.set(poIndex, row);
+        return true;
+      }
+    }
+    return false;
+  };
+  return candidates.reduce((matches, _, row) => matches + (assign(row, new Set()) ? 1 : 0), 0);
+}
+
+function keepTable<T extends ExtractedInvoiceLine>(
+  tables: TableCandidate<T>[],
+  purchaseOrderLines: PurchaseOrderLine[]
+): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } | undefined {
+  const openPoLines = purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null);
+  const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
+    table.lines.filter((line, index) => matches(line, table.lineCents[index])).length / table.lines.length;
+  const criteria: Array<[RepeatedTableKeepReason, (table: TableCandidate<T>) => number]> = [
+    // One PO line backs at most one row, so a table that repeats a charge cannot score twice on it.
+    ['purchase_order', table => maxPoLineMatches(table, openPoLines) / table.lines.length],
+    ['service_period', table => share(table, line => !!statedMonth(line.description))],
+    ['unit_cost', table => share(table, (line, cents) => {
+      const unitCost = line.unitCost ? parseExtractedUnitCost(line.unitCost) : undefined;
+      return unitCost != null && line.quantity != null
+        && roundToDecimals(unitCost, AMOUNT_DECIMALS) === unitCost
+        && toCents(line.quantity * unitCost) === cents;
+    })],
+  ];
+
+  let remaining = tables;
+  for (const [reason, score] of criteria) {
+    const scores = remaining.map(score);
+    const best = Math.max(...scores);
+    remaining = remaining.filter((_, index) => scores[index] === best);
+    if (remaining.length === 1) return { table: remaining[0], reason };
+  }
+  // When nothing tells the tables apart, a misread amount due could make two real charges look
+  // like a repeat, so no table is removed.
+  return undefined;
+}
+
+// Some invoices print the same charges twice, for example an hourly line-item table plus a monthly
+// summary table. When extraction numbered the tables and each table on its own totals the amount due
+// less freight and tax, one table restates the other, so only one table is kept. Anything less
+// certain removes nothing and is left to lineTotalMismatchNote.
+export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
+  lines: T[],
+  charges: LineTotalCharges,
+  purchaseOrderLines: PurchaseOrderLine[] = []
+): RepeatedLineTables<T> {
+  const unchanged: RepeatedLineTables<T> = { lines, removed: [] };
+  if (lines.length < 2) return unchanged;
+  if (lines.some(line => !Number.isInteger(line.tableNumber) || line.tableNumber! < 1)) return unchanged;
+  // A credit or discount row is never removed with its table, and a malformed quantity leaves the
+  // row's charge in doubt, so either keeps every line.
+  if (lines.some(line => !line.description?.trim() || line.hasDiscount === true
+    || (line.quantity != null && (!Number.isFinite(line.quantity) || line.quantity < 0)))) return unchanged;
+  const lineCents = lines.map(extractedLineCents);
+  if (lineCents.some(cents => cents == null || cents < 0)) return unchanged;
+  const expected = expectedLineTotal(charges, [charges.currentFreightAmount]);
+  if (!expected) return unchanged;
+  const totalCents = lineCents.reduce<number>((sum, cents) => sum + cents!, 0);
+  if (totalCents === expected.expectedCents) return unchanged;
+
+  const byTable = new Map<number, TableCandidate<T>>();
+  lines.forEach((line, index) => {
+    const tableNumber = line.tableNumber as number;
+    const table = byTable.get(tableNumber) ?? { tableNumber, lines: [], lineCents: [] };
+    table.lines.push(line);
+    table.lineCents.push(lineCents[index]!);
+    byTable.set(tableNumber, table);
+  });
+  const tables = [...byTable.values()].sort((a, b) => a.tableNumber - b.tableNumber);
+  if (tables.length < 2) return unchanged;
+  // Numbering that skips a table means extraction lost track of the document's tables.
+  if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
+  const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
+  if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+  // Tables that state different months (a prior month's balance beside this month's charge) are
+  // separate charges, not a restatement. A table that states no month, like an hourly table, can
+  // still restate one that does.
+  const tableMonths = tables
+    .map(table => [...new Set(table.lines.map(line => statedMonth(line.description)).filter(month => !!month)
+      .map(month => `${month!.year}-${month!.month}`))].sort().join(','))
+    .filter(months => months.length > 0);
+  if (new Set(tableMonths).size > 1) return unchanged;
+
+  const choice = keepTable(tables, purchaseOrderLines);
+  if (!choice) return unchanged;
+  const { table: kept, reason } = choice;
+  const keptLines = lines.filter(line => line.tableNumber === kept.tableNumber);
+  const removed = lines.filter(line => line.tableNumber !== kept.tableNumber);
+
+  const removedTables = tables.filter(table => table !== kept).map(table => table.tableNumber);
+  const listed = removed
+    .slice(0, REMOVED_LINES_LISTED)
+    .map(line => `"${printable(line.description)}" (${formatCents(extractedLineCents(line)!)})`);
+  const unlisted = removed.length - listed.length;
+  if (unlisted > 0) {
+    const unlistedCents = removed.slice(REMOVED_LINES_LISTED).reduce((sum, line) => sum + extractedLineCents(line)!, 0);
+    listed.push(`${unlisted} more ${unlisted === 1 ? 'line' : 'lines'} (${formatCents(unlistedCents)})`);
+  }
+  const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${listed.join(', ')} because`
+    + ` ${removedTables.length === 1 ? `table ${removedTables[0]} repeats` : `tables ${removedTables.join(', ')} repeat`}`
+    + ` the charges in table ${kept.tableNumber}: each table totals ${formatCents(expected.expectedCents)},`
+    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${KEEP_REASON_TEXT[reason]}.`;
+
+  return { lines: keptLines, removed, keptTable: kept.tableNumber, keepReason: reason, note };
 }
 
 function hasNonZeroQuantityOrUnitCost(line: FinalInvoiceLine): boolean {
@@ -1340,11 +1568,12 @@ export async function buildFinalInvoiceLines(
 ): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
-  const poLineSelectionEnabled = isPoLineSelectionEnabled() && invoiceContext !== undefined;
+  // Invoices without PO lines also keep it; selection rules only apply to PO line matching.
+  const poLineSelection = invoiceContext !== undefined && parsedPoLines.length > 0;
   const invoiceServicePeriod = invoiceContext?.servicePeriod?.trim() || null;
   const mergeInput = {
     invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ?? true,
-    ...(poLineSelectionEnabled ? {
+    ...(poLineSelection ? {
       invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
       invoiceServicePeriod,
     } : {}),
@@ -1361,7 +1590,7 @@ export async function buildFinalInvoiceLines(
       worktagsReference: line.worktagsReference,
       shipToAddressId: line.shipToAddressId,
       splitLineData: line.splitLineData ?? [],
-      ...(poLineSelectionEnabled ? {
+      ...(poLineSelection ? {
         startDate: line.startDate,
         endDate: line.endDate,
         availableForInvoicing: line.availableForInvoicing,
@@ -1373,7 +1602,7 @@ export async function buildFinalInvoiceLines(
   let mergeResult: MergeInvoiceLinesResult;
   try {
     mergeResult = await getAiResponse({
-      prompt: mergeInvoiceLinesPromptFor(poLineSelectionEnabled),
+      prompt: mergeInvoiceLinesPromptFor(poLineSelection),
       schema: MergeInvoiceLinesSchema,
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
@@ -1399,7 +1628,7 @@ export async function buildFinalInvoiceLines(
   const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
   // invoiceServicePeriod covers every line that states no period of its own, so when it
   // names a period no line is left for the invoice-date fallback.
-  const selectedLines = !poLineSelectionEnabled
+  const selectedLines = !poLineSelection
     ? pinnedLines
     : markConsumedPoLineReferences(
       statesServicePeriod(invoiceServicePeriod)

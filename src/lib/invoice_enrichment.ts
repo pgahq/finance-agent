@@ -234,6 +234,10 @@ export function formatLineTotalReviewNotes(reviewNote: string | undefined): stri
   return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
 }
 
+export function formatRepeatedLineNotes(note: string | undefined): string {
+  return note ? `\n\nRepeated line review: ${note}` : '';
+}
+
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;
