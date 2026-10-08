@@ -7,13 +7,15 @@ import { parseCompanySearchQuery } from './company_search_query.js';
 import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
+import { gatewayProviderPin } from './models.js';
 export type { DocumentType } from './database.js';
 
 // Must stay text-embedding-3-small (1536 dimensions): stored vectors and the pgvector index depend on it.
-export const embeddingModel = gateway.embeddingModel('openai/text-embedding-3-small');
+const EMBEDDING_MODEL_ID = 'openai/text-embedding-3-small';
+export const embeddingModel = gateway.embeddingModel(EMBEDDING_MODEL_ID);
 
 export async function createEmbedding(text: string): Promise<number[]> {
-  const { embedding } = await embed({ model: embeddingModel, value: text });
+  const { embedding } = await embed({ model: embeddingModel, value: text, providerOptions: gatewayProviderPin(EMBEDDING_MODEL_ID) });
   return embedding;
 }
 

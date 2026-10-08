@@ -34,7 +34,11 @@ describe('rag', () => {
       const result = await createEmbedding('test text');
 
       expect(embeddingModel).toEqual(expect.objectContaining({ provider: 'gateway', modelId: 'openai/text-embedding-3-small' }));
-      expect(mockEmbed).toHaveBeenCalledWith({ model: embeddingModel, value: 'test text' });
+      expect(mockEmbed).toHaveBeenCalledWith({
+        model: embeddingModel,
+        value: 'test text',
+        providerOptions: { gateway: { only: ['openai'] } },
+      });
       expect(result).toEqual([0.1, 0.2, 0.3]);
     });
 

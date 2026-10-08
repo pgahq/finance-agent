@@ -5,6 +5,8 @@ import { getAiResponse } from '../lib/ai.js';
 jest.mock('ai', () => ({
   generateText: jest.fn(),
   gateway: jest.fn((modelId: string) => ({ specificationVersion: 'v3', provider: 'gateway', modelId })),
+  wrapLanguageModel: jest.fn(({ model }) => model),
+  defaultSettingsMiddleware: jest.fn(),
   tool: jest.fn((definition) => definition),
   stepCountIs: jest.fn(),
   NoObjectGeneratedError: {
