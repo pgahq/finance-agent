@@ -9,41 +9,12 @@ import {
   resolveSupplierIdHints,
   type ResolvedSupplierHint,
 } from './supplier_note_hints.js';
-import { invoiceEnrichmentPrompt, InvoiceEnrichmentSchema, type InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
+import { invoiceMatchingPrompt, InvoiceMatchingSchema, type InvoiceEnrichmentResult, type InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
+import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachmentRole } from './invoice_ocr.js';
 import { withComposedLineDescriptions } from './invoice_lines.js';
+import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
-
-function attachmentContentParts(processedAttachments: PresignedAttachment[]): Array<
-  { type: 'file'; data: Buffer; mediaType: string; filename: string }
-  | { type: 'image'; image: URL }
-> {
-  const parts: Array<
-    { type: 'file'; data: Buffer; mediaType: string; filename: string }
-    | { type: 'image'; image: URL }
-  > = [];
-
-  for (const att of processedAttachments) {
-    if (att.contentType === 'application/pdf' && att.buffer) {
-      parts.push({
-        type: 'file',
-        data: att.buffer,
-        mediaType: att.contentType,
-        filename: att.fileName
-      });
-      continue;
-    }
-
-    if (att.contentType.startsWith('image/')) {
-      parts.push({
-        type: 'image',
-        image: new URL(att.presignedUrl)
-      });
-    }
-  }
-
-  return parts;
-}
 
 async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
   const hints = extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody);
@@ -69,10 +40,7 @@ async function buildSupplierHintText(emailContext: InvoiceData['emailContext']):
   return formatSupplierNoteHintContext(hints, resolved, trustedSupplierIds);
 }
 
-export interface InvoiceAttachmentRole {
-  fileName: string;
-  role: 'invoice' | 'supporting';
-}
+export type { InvoiceAttachmentRole };
 
 export async function enrichInvoiceFromAttachments(
   invoice: WorkdayInvoice,
@@ -87,6 +55,8 @@ export async function enrichInvoiceFromAttachments(
   debug('Enriching invoice:', invoice.Invoice_Number);
 
   try {
+    const ocr = await extractInvoiceDocuments(processedAttachments, attachmentRoles, abortSignal);
+
     const company = existingCompany
       ? { name: existingCompany.descriptor, id: existingCompany.id }
       : undefined;
@@ -145,22 +115,23 @@ export async function enrichInvoiceFromAttachments(
       : 'Please identify the supplier and verify the company on this invoice';
 
     const poInstructions = purchaseOrder
-      ? ' A matching Workday purchase order is included — use its company as the billed-entity signal when email coding does not identify a company. Do not recommend a different company from the invoice PDF over the PO company. Use PO lines as context when extracting invoice lines.'
+      ? ' A matching Workday purchase order is included — use its company as the billed-entity signal when email coding does not identify a company. Do not recommend a different company from the invoice PDF over the PO company.'
       : '';
 
     const companySearchInstructions = ' When calling findCompanies, pass the billed company name or Company_Reference_ID in query and the bill-to street address in address. A billed name can be a Finance Agent alias, not only the legal companyName. Never concatenate street, city, state, or ZIP into query. Name rank is embedding similarity, plus exact companyName / Company_Reference_ID / Finance Agent alias at 1.0, not substring. Address tags (unique / shared / none) are independent of name order. Do not prefer address over name or name over address. Recommend a company when those signals agree; if they disagree, leave workdayId unset.';
 
     const taskInstructions = existingSupplier
-      ? `Extract supplier and company information from the invoice attachments. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`
-      : `Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Reference the invoice attachments to help you identify the supplier. Also verify the company using the findCompanies tool if needed.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`;
+      ? `Use the printed supplier and bill-to company from the invoice document extraction. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`
+      : `Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Use the printed supplier details in the invoice document extraction to help you identify the supplier. Also verify the company using the findCompanies tool if needed.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`;
 
-    const documentRolesText = attachmentRoles?.length
-      ? `\n\nDocument roles: ${attachmentRoles.map((role) => `${role.fileName} is ${role.role === 'invoice' ? 'the supplier invoice' : 'supporting backup'}`).join('; ')}. Extract header, lines, and amounts from the supplier invoice. Use supporting files only as backup context — do not extract a separate invoice from them.`
-      : '';
+    const documentExtractionText = ocr
+      ? `\n\nInvoice document extraction (read from the invoice documents by a separate OCR pass):\n${JSON.stringify(ocr, null, 2)}`
+      : '\n\nInvoice document extraction: none (no readable PDF or image was attached).';
 
-    const result = await getAiResponse({
-      prompt: invoiceEnrichmentPrompt,
-      schema: InvoiceEnrichmentSchema,
+    const matching = await getAiResponse({
+      prompt: invoiceMatchingPrompt,
+      schema: InvoiceMatchingSchema,
+      model: defaultModel,
       abortSignal,
       messages: [
         {
@@ -168,15 +139,14 @@ export async function enrichInvoiceFromAttachments(
           content: [
             {
               type: 'text',
-              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${documentRolesText}${emailContextText}${supplierHintText}${purchaseOrderText}`
-            },
-            ...attachmentContentParts(processedAttachments)
+              text: `${taskDescription}:${existingSupplierText}${existingCompanyText}\n\nInvoice Data: ${JSON.stringify(invoiceData, null, 2)}\n\n${taskInstructions}${documentExtractionText}${emailContextText}${supplierHintText}${purchaseOrderText}`
+            }
           ]
         }
       ]
-    });
+    }) as InvoiceMatchingResult;
 
-    return result as InvoiceEnrichmentResult;
+    return mergeInvoiceEnrichment(matching, ocr);
 
   } catch (error) {
     debug('Error in invoice enrichment:', error);
