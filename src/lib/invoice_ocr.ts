@@ -56,6 +56,8 @@ export async function extractInvoiceDocuments(
     ? `\n\nDocument roles: ${attachmentRoles.map((role) => `${role.fileName} is ${role.role === 'invoice' ? 'the supplier invoice' : 'supporting backup'}`).join('; ')}. Extract header, lines, and amounts from the supplier invoice. Use supporting files only as backup context — do not extract a separate invoice from them.`
     : '';
 
+  const documentBytes = processedAttachments.reduce((total, att) => total + (att.buffer?.byteLength ?? 0), 0);
+  const startedAt = Date.now();
   const result = await getAiResponse({
     prompt: invoiceOcrPrompt,
     schema: InvoiceOcrSchema,
@@ -73,6 +75,7 @@ export async function extractInvoiceDocuments(
       }
     ]
   }) as InvoiceOcrResult;
+  debug('Invoice OCR finished', { durationMs: Date.now() - startedAt, documentCount: parts.length, documentBytes });
   debug('Invoice OCR result:', result);
   return result;
 }

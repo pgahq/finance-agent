@@ -181,6 +181,11 @@ describe('invoice OCR pass', () => {
         { type: 'file', data: pdfBuffer, mediaType: 'application/pdf', filename: 'timesheet.pdf' },
       ]);
       expect(content[0].text).toContain('invoice.pdf is the supplier invoice; timesheet.pdf is supporting backup');
+      expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR finished', {
+        durationMs: expect.any(Number),
+        documentCount: 2,
+        documentBytes: pdfBuffer.byteLength * 2,
+      });
     });
 
     it('skips the model when there is no PDF or image to read', async () => {
