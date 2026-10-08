@@ -134,8 +134,9 @@ interface EmailPurchaseOrders {
   /** PO to use when neither a note PO nor an invoice PO resolves. */
   fallbackPurchaseOrderNumber?: string;
   /**
-   * The one PO the subject, email, filename, and conversation name, leaving out POs an AP note mentions. It wins
-   * over the invoice PO; when they name several POs it is unset.
+   * The one PO the subject, the message that carried this attachment, and the filename name, leaving out POs an AP
+   * note mentions. It wins over the invoice PO; when they name several POs it is unset. Older messages in the thread
+   * never count, since they often name another invoice's PO.
    */
   conversationPurchaseOrderNumber?: string;
 }
@@ -158,31 +159,33 @@ function findEmailPurchaseOrders(
   fileName: string,
   notePurchaseOrders: NotePurchaseOrder[]
 ): EmailPurchaseOrders {
+  // Other text never supplies a PO that an AP note mentions, so a PO AP rejected is never used.
+  const notePurchaseOrderNumbers = new Set([
+    ...notePurchaseOrders.map((po) => po.purchaseOrderNumber),
+    ...findPurchaseOrderNumbers(htmlToText(emailContext?.adminConversationParts ?? '')),
+  ]);
+  const messageText = emailContext?.messageBody ? htmlToText(emailContext.messageBody) : sourceEmailBody(emailContext);
+  const conversationPurchaseOrderNumber = findSolePurchaseOrderNumber(
+    [emailContext?.subject, messageText, fileName],
+    notePurchaseOrderNumbers
+  );
   if (!notePurchaseOrders.length) {
     const purchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, emailContext?.plainTextBody, fileName);
     return {
       supplierPurchaseOrderNumber: purchaseOrderNumber,
       fallbackPurchaseOrderNumber: purchaseOrderNumber,
-      conversationPurchaseOrderNumber: findSolePurchaseOrderNumber([emailContext?.subject, emailContext?.plainTextBody, fileName]),
+      conversationPurchaseOrderNumber,
     };
   }
   const sourceBody = sourceEmailBody(emailContext);
   const conversationText = htmlToText(emailContext?.conversationParts ?? '');
   const supplierPurchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, sourceBody, fileName);
-  // Conversation parts only add POs that no AP note mentions, so a PO AP rejected is never used.
-  const notePurchaseOrderNumbers = new Set([
-    ...notePurchaseOrders.map((po) => po.purchaseOrderNumber),
-    ...findPurchaseOrderNumbers(htmlToText(emailContext?.adminConversationParts ?? '')),
-  ]);
   const fallbackPurchaseOrderNumber = supplierPurchaseOrderNumber
     ?? findPurchaseOrderNumbers(conversationText).find((po) => !notePurchaseOrderNumbers.has(po));
   return {
     supplierPurchaseOrderNumber,
     fallbackPurchaseOrderNumber,
-    conversationPurchaseOrderNumber: findSolePurchaseOrderNumber(
-      [emailContext?.subject, sourceBody, fileName, conversationText],
-      notePurchaseOrderNumbers
-    ),
+    conversationPurchaseOrderNumber,
   };
 }
 

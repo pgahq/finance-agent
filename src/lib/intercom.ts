@@ -233,6 +233,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
   const mapAttachments = (
     attachments: IntercomPartAttachment[],
     emailContext: EmailContext,
+    messageBody: string | null | undefined,
     receivedAt?: number
   ): IntercomAttachment[] => attachments
     .filter((attachment): attachment is IntercomPartAttachment & { url: string } => Boolean(attachment.url))
@@ -240,12 +241,12 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
       name: attachment.name || 'attachment',
       url: attachment.url,
       contentType: attachment.content_type || 'application/octet-stream',
-      emailContext,
+      emailContext: messageBody?.trim() ? { ...emailContext, messageBody } : emailContext,
       ...(receivedAt != null ? { receivedAt } : {}),
     }));
 
   return [
-    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext, conversation.created_at),
+    ...mapAttachments(conversation.source?.attachments ?? [], sourceContext, conversation.source?.body, conversation.created_at),
     ...(conversation.conversation_parts?.conversation_parts ?? []).flatMap((part) =>
       mapAttachments(part.attachments ?? [], {
         emailFrom: part.author?.email || sourceContext.emailFrom,
@@ -253,7 +254,7 @@ function collectAttachments(conversation: IntercomConversationResponse): Interco
         plainTextBody,
         ...(conversationParts ? { conversationParts } : {}),
         ...(adminConversationParts ? { adminConversationParts } : {}),
-      }, part.created_at ?? conversation.created_at)
+      }, part.body, part.created_at ?? conversation.created_at)
     ),
   ];
 }

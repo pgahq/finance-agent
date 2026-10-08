@@ -2137,7 +2137,7 @@ describe('create_invoice', () => {
       expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
     });
 
-    it('uses the PO a supplier reply names over the invoice PO', async () => {
+    it('uses the PO named in the supplier reply that carried the invoice over the invoice PO', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -2150,6 +2150,7 @@ describe('create_invoice', () => {
         data: [arrowRequest('req-supplier-reply-po', {
           plainTextBody: 'Invoice attached\n\nPlease use PO-413672',
           conversationParts: 'Please use PO-413672',
+          messageBody: '<p>Please use PO-413672</p>',
         })]
       } as any);
 
@@ -2163,6 +2164,29 @@ describe('create_invoice', () => {
         purchaseOrderSource: 'conversation',
         invoicePurchaseOrderNumber: 'PO-411406',
       }));
+    });
+
+    it('keeps the invoice PO when only an older message in the thread names another PO', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      loadArrowPos(workday);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedPurchaseOrderNumber: 'PO-411406',
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      const olderReply = 'Please reference PO-413672 on future invoices';
+
+      await processor({
+        data: [arrowRequest('req-older-message-po', {
+          plainTextBody: `Invoice attached\n\n${olderReply}\n\nNew invoice attached`,
+          conversationParts: `${olderReply}\n\nNew invoice attached`,
+          messageBody: 'New invoice attached',
+        })]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.memo).toContain('PO-411406');
+      expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
     });
 
     it('keeps the invoice PO when the email and conversation name several POs', async () => {
@@ -2199,6 +2223,7 @@ describe('create_invoice', () => {
         data: [arrowRequest('req-supplier-reply-po-missing', {
           plainTextBody: 'Invoice attached\n\nPlease use PO-413672',
           conversationParts: 'Please use PO-413672',
+          messageBody: 'Please use PO-413672',
         })]
       } as any);
 

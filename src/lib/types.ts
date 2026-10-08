@@ -55,6 +55,8 @@ export interface InvoiceData {
     conversationParts?: string;
     /** Intercom internal notes written by teammates (part type note, author type admin); a PO they choose wins over every other PO. */
     adminConversationParts?: string;
+    /** Body of the Intercom source email or conversation part that carried this attachment. */
+    messageBody?: string;
   };
 }
 

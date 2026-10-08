@@ -473,6 +473,7 @@ describe('intercom', () => {
         subject: 'Invoice',
         plainTextBody: `${sourceBody}\n\n${autoReply}`,
         conversationParts: autoReply,
+        messageBody: sourceBody,
       });
       expect(result.attachments[0].emailContext.plainTextBody).not.toContain('550');
       expect(result.transcript.messages.map((message) => message.body)).toEqual([
@@ -512,6 +513,40 @@ describe('intercom', () => {
       expect(result.attachments[0].emailContext.conversationParts).toBe(
         `${supplierReply}\n\n${apNote}\n\nFin reply\n\nThanks! Please reference PO-500001 on future invoices.`
       );
+    });
+
+    it('gives each attachment the body of the message that carried it', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '215476273437317',
+          created_at: 1704067200,
+          source: {
+            subject: 'Invoices',
+            body: '<p>First invoice, PO-411406</p>',
+            author: { email: 'billing@arrowexterminators.com', type: 'user' },
+            attachments: [{ name: 'first.pdf', url: 'https://downloads.intercomcdn.com/first.pdf', content_type: 'application/pdf' }],
+          },
+          conversation_parts: {
+            conversation_parts: [
+              { part_type: 'comment', body: 'Thanks! Please reference PO-500001 on future invoices.', author: { email: 'ap@pgahq.com', type: 'admin' } },
+              {
+                part_type: 'comment',
+                body: '<p>Second invoice attached</p>',
+                author: { email: 'billing@arrowexterminators.com', type: 'user' },
+                attachments: [{ name: 'second.pdf', url: 'https://downloads.intercomcdn.com/second.pdf', content_type: 'application/pdf' }],
+              },
+            ],
+          },
+        }),
+      }) as unknown as typeof fetch;
+
+      const result = await fetchConversationInvoiceData(config, '215476273437317');
+      expect(result.attachments.map((attachment) => attachment.emailContext.messageBody)).toEqual([
+        '<p>First invoice, PO-411406</p>',
+        '<p>Second invoice attached</p>',
+      ]);
     });
 
     it('ignores conversation parts with null or whitespace-only bodies', async () => {
