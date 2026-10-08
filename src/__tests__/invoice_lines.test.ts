@@ -5,21 +5,31 @@ import {
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
+  chargeReconciliationMessages,
   constrainEmailLobToRelatedWorktags,
+  extractedChargeCheck,
+  formatChargeReconciliationNotes,
+  FREIGHT_HEADER_FALLBACK_MESSAGE,
+  mergeAmountCheckMessages,
   isDiscountLine,
   isFreightOrHandlingLine,
   lineTotalMismatchNote,
   normalizeExtractedFreightAndTax,
+  removeRepeatedLineTables,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  prepareInvoiceCharges,
+  reconcileSubmittedCharges,
   parseExtractedAmount,
   parseExtractedLineAmount,
   parseExtractedUnitCost,
   resolveHeaderChargeAmounts,
   resolveInvoiceLineQuantityDisplayed,
+  restoreClearedFreightFromRows,
   splitFreightLines,
   statesServicePeriod,
+  type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
 import { getAiResponse } from '../lib/ai.js';
@@ -1044,6 +1054,8 @@ describe('isFreightOrHandlingLine', () => {
     'Rush Shipping',
     'Local Delivery',
     'Deliveries',
+    'FRN52118A - Freight Charge - 42,000.00 Pounds',
+    'B12345 Freight 1,200 lbs',
   ])('treats %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(true);
   });
@@ -1057,6 +1069,12 @@ describe('isFreightOrHandlingLine', () => {
     'Delivery truck rental',
     'Consulting Services',
     'Widgets',
+    'SKU123 Shipping Supplies',
+    'SKU123 Freight Charge',
+    'SKU123 Freight Charge 42 lbs',
+    'ITEM2024 Shipping Fee',
+    'A100 Freightliner parts',
+    'PRO 52118 - Linehaul - 42,000 lbs',
   ])('does not treat %s as a freight/handling charge', (description) => {
     expect(isFreightOrHandlingLine(description)).toBe(false);
   });
@@ -1122,6 +1140,408 @@ describe('splitFreightLines', () => {
 
     expect(split.freightLines).toHaveLength(1);
     expect(split.freightAmountFromLines).toBe(30);
+  });
+
+  it('strips the MyFreightWorld carrier row (SUPIN-465729) so it is not also a merchandise line', () => {
+    const split = splitFreightLines([
+      { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00' },
+    ]);
+
+    expect(split.merchandiseLines).toEqual([]);
+    expect(split.freightAmountFromLines).toBe(4595);
+  });
+});
+
+describe('reconcileSubmittedCharges', () => {
+  it('drops a freight line that repeats header freight', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Freight Charge', totalPrice: '$15.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$115.00', freight: '$15.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateFreightLines).toEqual([lines[1]]);
+    expect(result.unreconciled).toBeUndefined();
+    expect(formatChargeReconciliationNotes(result)).toBe(
+      '\n\nAmount check: Removed invoice line "Freight Charge" ($15.00): that amount is already on the header Freight_Amount.'
+    );
+  });
+
+  it('drops the only line of an all-freight invoice only when the single-line rule is allowed', () => {
+    const line = { description: 'PRO 52118 - Linehaul - 42,000 lbs', quantity: 0, unitCost: null, totalPrice: '$4595.00' };
+    const charges = { amountDue: '$4,595.00', freight: '$4,595.00', tax: null };
+
+    const allowed = reconcileSubmittedCharges([line], charges, { allowSingleLineFreight: true });
+    expect(allowed.lines).toEqual([]);
+    expect(allowed.duplicateFreightLines).toEqual([line]);
+
+    const byDefault = reconcileSubmittedCharges([line], charges);
+    expect(byDefault.lines).toEqual([line]);
+    expect(byDefault.unreconciled).toEqual({ lineTotal: 4595, freight: 4595, tax: 0, amountDue: 4595 });
+  });
+
+  it.each(['Shipping Supplies', 'DHL Shipping Supplies', 'Shipping Container', 'FedEx branded boxes', 'Freight for order 88'])(
+    'never removes %s, which the freight matcher rejects, as duplicate freight',
+    (description) => {
+      const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description, totalPrice: '$15.00' }];
+      const result = reconcileSubmittedCharges(lines, { amountDue: '$115.00', freight: '$15.00' });
+
+      expect(result.lines).toBe(lines);
+      expect(result.unreconciled).toBeDefined();
+    }
+  );
+
+  it('reconciles a credit memo whose amount due and lines are printed negative', () => {
+    const lines = [{ description: 'Returned widgets', totalPrice: '-$100.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '($100.00)' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toBeUndefined();
+  });
+
+  it('lists at most five removed lines in the amount-check note', () => {
+    const taxLines = Array.from({ length: 7 }, () => ({ description: 'Sales Tax', totalPrice: '$1.00' }));
+    const result = reconcileSubmittedCharges(
+      [{ description: 'Widgets', totalPrice: '$100.00' }, ...taxLines],
+      { amountDue: '$107.00', tax: '$7.00' }
+    );
+
+    expect(result.duplicateTaxLines).toHaveLength(7);
+    expect(chargeReconciliationMessages(result)).toEqual([
+      'Removed invoice line "Sales Tax" ($1.00), "Sales Tax" ($1.00), "Sales Tax" ($1.00), "Sales Tax" ($1.00), "Sales Tax" ($1.00) and 2 more: that amount is already on the header Tax_Amount.',
+    ]);
+  });
+
+  it('counts a row printed as "Included" as zero instead of skipping the check', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Setup', totalPrice: 'Included' },
+      { description: 'Freight Charge', totalPrice: '$15.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$115.00', freight: '$15.00' });
+
+    expect(result.lines).toEqual([lines[0], lines[1]]);
+    expect(result.duplicateFreightLines).toEqual([lines[2]]);
+  });
+
+  it('flags header charges that do not match the amount due when no lines remain, if asked to', () => {
+    expect(reconcileSubmittedCharges([], { amountDue: '$500.00', freight: '$50.00' }).unreconciled).toBeUndefined();
+    expect(reconcileSubmittedCharges([], { amountDue: '$500.00', freight: '$50.00' }, { checkWithoutLines: true }).unreconciled)
+      .toEqual({ lineTotal: 0, freight: 50, tax: 0, amountDue: 500 });
+  });
+
+  it.each(['10.00-', '\u2212$10.00'])('reads %s as a credit', (printed) => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description: 'Credit', totalPrice: printed }];
+    expect(reconcileSubmittedCharges(lines, { amountDue: '$90.00' }).unreconciled).toBeUndefined();
+  });
+
+  it('reads the credit sign from a unit cost when no line total is printed', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Credit', quantity: 1, unitCost: '-$10.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$90.00' });
+
+    expect(result.unreconciled).toBeUndefined();
+  });
+
+  it('keeps header-only freight when lines + freight + tax already equal the amount due', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$121.00', freight: '$15.00', tax: '$6.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.duplicateFreightLines).toEqual([]);
+    expect(result.unreconciled).toBeUndefined();
+    expect(chargeReconciliationMessages(result)).toEqual([]);
+  });
+
+  it('reports totals and keeps every line when the extra amount cannot be tied to a charge line', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$4,595.00' },
+      { description: 'Gadgets', totalPrice: '$100.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$4,695.00', freight: '$4,595.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toEqual({ lineTotal: 4695, freight: 4595, tax: 0, amountDue: 4695 });
+    expect(chargeReconciliationMessages(result)).toEqual([
+      'Lines $4,695.00 + freight $4,595.00 + tax $0.00 = $9,290.00, but the amount due is $4,695.00. Review lines and header charges.',
+    ]);
+  });
+
+  it('does not collapse a single goods line into tax', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$6.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$6.00', tax: '$6.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toEqual({ lineTotal: 6, freight: 0, tax: 6, amountDue: 6 });
+  });
+
+  it.each(['Sales Tax 6%', 'VAT 20.00%', 'Tax 0.0825'])('drops the rate-printed tax row %s that repeats header tax', (description) => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description, totalPrice: '$6.00' }];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$106.00', tax: '$6.00' });
+
+    expect(result.duplicateTaxLines).toEqual([lines[1]]);
+  });
+
+  it('drops a sales tax line that repeats header tax', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Sales Tax', totalPrice: '$6.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$106.00', tax: '$6.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateTaxLines).toEqual([lines[1]]);
+  });
+
+  it('drops both freight and tax lines when both repeat header charges', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Freight Charge', totalPrice: '$15.00' },
+      { description: 'State Sales Tax', totalPrice: '$6.00' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$121.00', freight: '$15.00', tax: '$6.00' });
+
+    expect(result.lines).toEqual([lines[0]]);
+    expect(result.duplicateFreightLines).toEqual([lines[1]]);
+    expect(result.duplicateTaxLines).toEqual([lines[2]]);
+  });
+
+  it('counts printed credits as negative', () => {
+    const lines = [
+      { description: 'Widgets', totalPrice: '$100.00' },
+      { description: 'Credit', totalPrice: '-$10.00' },
+      { description: 'Return', totalPrice: '($5.00)' },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: '$100.00', freight: '$15.00' });
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toBeUndefined();
+  });
+
+  it('reads SOAP-shaped final lines and numeric header amounts', () => {
+    const lines = [
+      { description: 'Consulting', extendedAmount: 100 },
+      { description: 'Shipping Charge', extendedAmount: 15 },
+    ];
+    const result = reconcileSubmittedCharges(lines, { amountDue: 115, freight: 15, tax: 0 });
+
+    expect(result.lines).toEqual([lines[0]]);
+  });
+
+  it.each([
+    ['no amount due', [{ description: 'Widgets', totalPrice: '$100.00' }], { freight: '$15.00' }],
+    ['no lines', [], { amountDue: '$15.00', freight: '$15.00' }],
+    ['a line without an amount', [{ description: 'Widgets' }], { amountDue: '$15.00', freight: '$15.00' }],
+  ])('skips the check with %s', (_label, lines, charges) => {
+    const result = reconcileSubmittedCharges(lines as Array<{ description: string; totalPrice?: string }>, charges);
+
+    expect(result.lines).toBe(lines);
+    expect(result.unreconciled).toBeUndefined();
+  });
+});
+
+describe('restoreClearedFreightFromRows', () => {
+  const lines = [{ description: 'Radio', totalPrice: '$100.00' }, { description: 'Freight', totalPrice: '$25.00' }];
+
+  it('puts the freight rows on the header when a printed zero freight would lose them', () => {
+    expect(restoreClearedFreightFromRows(lines, { amountDue: '$125.00', freightCleared: true })).toEqual({
+      freight: '25',
+      message: 'Header freight printed as zero, but the freight rows ($25.00) make up the rest of the amount due, so they count as the invoice freight.',
+    });
+  });
+
+  it.each([
+    ['the header freight was not cleared', { amountDue: '$125.00', freightCleared: false }],
+    ['the rows do not close the gap to the amount due', { amountDue: '$100.00', freightCleared: true }],
+    ['there is no amount due', { freightCleared: true }],
+  ])('leaves a cleared freight alone when %s', (_label, charges) => {
+    expect(restoreClearedFreightFromRows(lines, charges)).toEqual({});
+  });
+
+  it('counts tax when checking the amount due', () => {
+    expect(restoreClearedFreightFromRows(lines, { amountDue: '$131.00', tax: '$6.00', freightCleared: true }).freight).toBe('25');
+  });
+
+  it('does not contradict the all-freight sentence on a carrier bill', () => {
+    const carrierLines = [{ description: 'Freight Charge', totalPrice: '$4,595.00' }];
+    const restored = restoreClearedFreightFromRows(carrierLines, { amountDue: '$4,595.00', freightCleared: true });
+    expect(restored.freight).toBe('4595');
+
+    const prepared = prepareInvoiceCharges(carrierLines, { amountDue: '$4,595.00', freight: restored.freight }, {
+      allowFreightAsLines: true,
+      removeDuplicates: true,
+    });
+    expect(prepared.freightAsLines).toBe(true);
+    const notes = [restored.message!, ...chargeReconciliationMessages(prepared.reconciliation)];
+    expect(notes).toEqual([
+      'Header freight printed as zero, but the freight rows ($4,595.00) make up the rest of the amount due, so they count as the invoice freight.',
+      expect.stringContaining('header Freight_Amount is not set'),
+    ]);
+    expect(notes.filter(note => note.includes('submitted as header Freight_Amount'))).toEqual([]);
+  });
+});
+
+describe('mergeAmountCheckMessages', () => {
+  it('drops the freight-as-line sentence when submit fell back to header freight', () => {
+    const extraction = [
+      'All-freight invoice: freight $15.00 submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.',
+      'Removed invoice line "Sales Tax" ($1.00): that amount is already on the header Tax_Amount.',
+    ];
+    expect(mergeAmountCheckMessages(extraction, [FREIGHT_HEADER_FALLBACK_MESSAGE])).toEqual([
+      extraction[1],
+      FREIGHT_HEADER_FALLBACK_MESSAGE,
+    ]);
+    expect(mergeAmountCheckMessages(extraction, [])).toEqual(extraction);
+  });
+});
+
+describe('prepareInvoiceCharges', () => {
+  const ON = { allowFreightAsLines: true, removeDuplicates: true };
+  const prepare = (
+    lines: Parameters<typeof prepareInvoiceCharges>[0],
+    charges: Parameters<typeof prepareInvoiceCharges>[1],
+    options: Parameters<typeof prepareInvoiceCharges>[2] = ON
+  ) => prepareInvoiceCharges(lines, charges, options);
+
+  it('keeps a single goods line equal to a misread header freight and says so plainly', () => {
+    const golfBalls = { description: 'Golf balls', totalPrice: '100.00' };
+    const prepared = prepare([golfBalls], { amountDue: '100.00', freight: '100.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([golfBalls]);
+    expect(chargeReconciliationMessages(prepared.reconciliation)).toEqual([
+      'Header freight equals the only line ($100.00), so header Freight_Amount is not set. Check the extracted freight.',
+    ]);
+  });
+
+  it('keeps freight on the header and every line when both behaviors are off (annotate-only enrichment)', () => {
+    const lines = [{ description: 'Widgets', totalPrice: '$100.00' }, { description: 'Sales Tax', totalPrice: '$6.00' }];
+    const prepared = prepare(lines, { amountDue: '$106.00', tax: '$6.00' }, { allowFreightAsLines: false, removeDuplicates: false });
+
+    expect(prepared.lines).toEqual(lines);
+    expect(prepared.reconciliation.duplicateTaxLines).toEqual([]);
+
+    const freightOnly = prepare([{ description: 'Shipping', totalPrice: '$15.00' }], { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false, removeDuplicates: false });
+    expect(freightOnly.freightAsLines).toBe(false);
+    expect(freightOnly.freightAmount).toBe('$15.00');
+  });
+
+  const allFreightNote = (amount: string) =>
+    `All-freight invoice: freight ${amount} submitted as an invoice line so it carries the line coding; header Freight_Amount is not set.`;
+
+  it('submits the MyFreightWorld carrier row (SUPIN-465729) as the line with no header freight', () => {
+    const carrier = { description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: null, totalPrice: '$4595.00', hasDiscount: null };
+    const prepared = prepare([carrier], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([carrier]);
+    expect(prepared.freightAmount).toBe('$4,595.00');
+    expect(chargeReconciliationMessages(prepared.reconciliation)).toEqual([allFreightNote('$4,595.00')]);
+  });
+
+  it('keeps an unrecognized single carrier line as the freight line instead of removing it', () => {
+    const linehaul = { description: 'PRO 52118 - Linehaul - 42,000 lbs', totalPrice: '$4595.00' };
+    const prepared = prepare([linehaul], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([linehaul]);
+    expect(prepared.reconciliation.duplicateFreightLines).toEqual([]);
+  });
+
+  it('synthesizes one freight line when freight was only extracted as the header amount', () => {
+    const prepared = prepare([], { amountDue: '$4,595.00', freight: '$4,595.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([
+      { description: 'Freight', quantity: null, unitCost: null, totalPrice: '4595', hasDiscount: null },
+    ]);
+  });
+
+  it('uses the header freight amount when the freight rows do not add up to it', () => {
+    const prepared = prepare(
+      [{ description: 'Shipping', totalPrice: '$10.00' }, { description: 'Handling', totalPrice: '$3.00' }],
+      { amountDue: '$15.00', freight: '$15.00' }
+    );
+
+    expect(prepared.lines).toEqual([
+      { description: 'Shipping', quantity: null, unitCost: null, totalPrice: '15', hasDiscount: null },
+    ]);
+  });
+
+  it('uses the header freight it is given and does not refill it from freight rows', () => {
+    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
+    // resolveHeaderChargeAmounts leaves a withheld ('n/a') or cleared freight out; it stays out here.
+    const prepared = prepare([shipping], { amountDue: '$15.00' });
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.freightAmount).toBeUndefined();
+    expect(prepared.lines).toEqual([]);
+  });
+
+  it('treats freight plus tax as the whole invoice', () => {
+    const shipping = { description: 'Shipping', totalPrice: '$15.00' };
+    const prepared = prepare([shipping], { amountDue: '$16.00', freight: '$15.00', tax: '$1.00' });
+
+    expect(prepared.freightAsLines).toBe(true);
+    expect(prepared.lines).toEqual([shipping]);
+  });
+
+  it('keeps header freight on a mixed invoice', () => {
+    const widgets = { description: 'Widgets', totalPrice: '$100.00' };
+    const prepared = prepare(
+      [widgets, { description: 'Shipping', totalPrice: '$15.00' }],
+      { amountDue: '$115.00', freight: '15' }
+    );
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.lines).toEqual([widgets]);
+    expect(prepared.freightAmount).toBe('15');
+  });
+
+  it('keeps header freight when the amount due also covers goods that were not extracted', () => {
+    const prepared = prepare(
+      [{ description: 'Shipping', totalPrice: '$15.00' }],
+      { amountDue: '$115.00', freight: '$15.00' }
+    );
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.lines).toEqual([]);
+    expect(prepared.freightAmount).toBe('$15.00');
+  });
+
+  it('flags header freight that disagrees with the amount due when no lines were extracted', () => {
+    expect(extractedChargeCheck([], { amountDue: '$500.00', freight: '$50.00' })).toEqual([
+      'Lines $0.00 + freight $50.00 + tax $0.00 = $50.00, but the amount due is $500.00. Review lines and header charges.',
+    ]);
+    expect(extractedChargeCheck([], { amountDue: '$500.00' })).toEqual([]);
+  });
+
+  it('does not flag a credit memo whose freight row is also a credit', () => {
+    expect(extractedChargeCheck(
+      [{ description: 'Widget', totalPrice: '-$100.00' }, { description: 'Freight', totalPrice: '-$10.00' }],
+      // resolveHeaderChargeAmounts fills a blank header from the signed freight-row sum.
+      { amountDue: '-$110.00', freight: '-10' }
+    )).toEqual([]);
+  });
+
+  it('does not turn a credit into a freight line', () => {
+    const prepared = prepare([], { amountDue: '-$15.00', freight: '-$15.00' });
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.freightAmount).toBe('-$15.00');
+  });
+
+  it.each([
+    ['freight as lines is not allowed', { amountDue: '$15.00', freight: '$15.00' }, { allowFreightAsLines: false, removeDuplicates: false }],
+    ['the amount due is missing', { freight: '$15.00' }, undefined],
+  ])('keeps header freight when %s', (_label, charges, options) => {
+    const prepared = prepare([{ description: 'Shipping', totalPrice: '$15.00' }], charges, options);
+
+    expect(prepared.freightAsLines).toBe(false);
+    expect(prepared.freightAmount).toBe('$15.00');
   });
 });
 
@@ -1442,6 +1862,257 @@ describe('lineTotalMismatchNote', () => {
   });
 });
 
+describe('removeRepeatedLineTables', () => {
+  const consultant = { description: 'PSO-RISK-ADVISORY - Consultant', quantity: 24.45, unitCost: '$224.9488753', totalPrice: '$5,500.00', tableNumber: 1 };
+  const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
+  const levelBlueCharges = { amountDue: '$5,500.00', taxAmount: '$0.00' };
+  const levelBluePoLines = [
+    poLine({ lineOrder: 1, purchaseOrderLineId: 'ORDER_SERVICE_LINE-3-29580', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30', availableForInvoicing: true }),
+    poLine({ lineOrder: 2, purchaseOrderLineId: 'ORDER_SERVICE_LINE-3-29577', extendedAmount: 5500, startDate: '2026-10-01', endDate: '2026-10-31', availableForInvoicing: true }),
+  ];
+
+  it('keeps the LevelBlue Sep\'26 summary row because it matches the open September PO line', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines);
+    expect(result.lines).toEqual([monthly]);
+    expect(result.removed).toEqual([consultant]);
+    expect(result.keptTable).toBe(2);
+    expect(result.keepReason).toBe('purchase_order');
+    expect(result.note).toBe(
+      'Removed line "PSO-RISK-ADVISORY - Consultant" ($5,500.00) because table 1 repeats the charges in table 2: each table totals $5,500.00, the amount due less freight and tax. Kept table 2 because its lines match open PO lines by amount and service period.'
+    );
+  });
+
+  it('keeps the row that states its service period when there are no PO lines', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], levelBlueCharges);
+    expect(result.lines).toEqual([monthly]);
+    expect(result.keepReason).toBe('service_period');
+  });
+
+  it('prefers a table matching an open PO line over one that only states a period', () => {
+    const halves = [
+      { description: 'Risk advisory September 2026 - part 1', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+      { description: 'Risk advisory September 2026 - part 2', quantity: null, unitCost: null, totalPrice: '2,750.00', tableNumber: 1 },
+    ];
+    const september = { ...monthly, tableNumber: 2 };
+    const result = removeRepeatedLineTables([...halves, september], levelBlueCharges, levelBluePoLines);
+    expect(result.lines).toEqual([september]);
+    expect(result.keepReason).toBe('purchase_order');
+  });
+
+  it('ignores consumed PO lines and PO lines for another month', () => {
+    const consumed = levelBluePoLines.map(line => ({ ...line, availableForInvoicing: false }));
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, consumed).keepReason).toBe('service_period');
+    const otherAmount = levelBluePoLines.map(line => ({ ...line, extendedAmount: 6000 }));
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, otherAmount).keepReason).toBe('service_period');
+  });
+
+  it('keeps the table whose quantity times a printed unit cost reproduces the total when neither states a period', () => {
+    const summary = { description: 'Risk advisory retainer', quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([consultant, summary], levelBlueCharges);
+    expect(result.lines).toEqual([summary]);
+    expect(result.keepReason).toBe('unit_cost');
+  });
+
+  it('removes nothing when nothing tells the tables apart', () => {
+    const first = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const second = { ...first, description: 'Risk advisory total', tableNumber: 2 };
+    expect(removeRepeatedLineTables([first, second], levelBlueCharges)).toEqual({ lines: [first, second], removed: [] });
+  });
+
+  it('removes nothing when two real same-month charges look like a repeat because the amount due was misread', () => {
+    const lines = [
+      { description: "Account 1001 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 1 },
+      { description: "Account 1002 - Hosting - Sep'26", quantity: null, unitCost: null, totalPrice: '500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, { amountDue: '$500.00' })).toEqual({ lines, removed: [] });
+  });
+
+  it('removes nothing from a valid multi-line invoice, including two equal charges in one table', () => {
+    const lines = [
+      { description: 'Router', quantity: 1, unitCost: '250.00', totalPrice: '250.00', tableNumber: 1 },
+      { description: 'Router', quantity: 1, unitCost: '250.00', totalPrice: '250.00', tableNumber: 1 },
+      { description: 'Install', quantity: 2, unitCost: '50.00', totalPrice: '100.00', tableNumber: 1 },
+    ];
+    const result = removeRepeatedLineTables(lines, { amountDue: '$600.00' });
+    expect(result).toEqual({ lines, removed: [] });
+  });
+
+  it('removes nothing when lines from two tables add up to the amount due', () => {
+    const lines = [
+      { description: 'Hardware', quantity: 1, unitCost: '400.00', totalPrice: '400.00', tableNumber: 1 },
+      { description: 'Services', quantity: 1, unitCost: '200.00', totalPrice: '200.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, { amountDue: '$600.00' }).removed).toEqual([]);
+  });
+
+  it('removes nothing when the mismatch is not one table repeating another', () => {
+    const extra = { description: 'Out-of-scope work', quantity: 1, unitCost: '1,250.00', totalPrice: '1,250.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([consultant, extra], { amountDue: '$5,000.00' });
+    expect(result).toEqual({ lines: [consultant, extra], removed: [] });
+  });
+
+  it('removes nothing when the lines total less than the amount due', () => {
+    expect(removeRepeatedLineTables([consultant, monthly], { amountDue: '$12,000.00' }).removed).toEqual([]);
+  });
+
+  it('credits one open PO line to only one row of a table', () => {
+    const septemberRow = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const repeatedRows = [septemberRow, { ...septemberRow }];
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const septemberPoLine = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const result = removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine]);
+    expect(result.keepReason).toBe('purchase_order');
+    expect(result.lines).toEqual(repeatedRows);
+
+    const twoPoLines = [septemberPoLine, { ...septemberPoLine, purchaseOrderLineId: 'POL-SEP-2' }];
+    const summaryMatch = poLine({ purchaseOrderLineId: 'POL-SEP-5500', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, [septemberPoLine, summaryMatch]).lines).toEqual([summary]);
+    expect(removeRepeatedLineTables([...repeatedRows, summary], levelBlueCharges, twoPoLines).lines).toEqual(repeatedRows);
+  });
+
+  it.each([
+    ['a mid-month start', { startDate: '2026-09-15', endDate: '2026-10-15' }, 'service_period'],
+    ['an end before the month ends', { startDate: '2026-08-01', endDate: '2026-09-29' }, 'service_period'],
+    ['exact month boundaries', { startDate: '2026-09-01', endDate: '2026-09-30' }, 'purchase_order'],
+    ['an annual window', { startDate: '2026-01-01', endDate: '2026-12-31' }, 'purchase_order'],
+    ['an open start', { startDate: undefined, endDate: '2026-09-30' }, 'purchase_order'],
+    ['no service dates', { startDate: undefined, endDate: undefined }, 'service_period'],
+  ])('matches a PO line with %s only when it spans the whole stated month', (_label, window, reason) => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, ...window });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe(reason);
+  });
+
+  it('keeps every line when a table that would be removed carries a credit or discount', () => {
+    const lines = [
+      { description: 'Consulting', quantity: 1, unitCost: '6,000.00', totalPrice: '6,000.00', tableNumber: 1 },
+      { description: 'Loyalty discount', quantity: null, unitCost: null, totalPrice: '-$500.00', hasDiscount: true, tableNumber: 1 },
+      { description: "Consulting Sep'26 net", quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  it('scores PO matches the same whatever order the PO lines are listed in', () => {
+    const september = { ...monthly, description: "Risk advisory Sep'26", totalPrice: '2,750.00', unitCost: '2,750.00', tableNumber: 1 };
+    const october = { ...september, description: "Risk advisory Oct'26" };
+    const summary = { description: 'Risk advisory - September 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const annual = poLine({ purchaseOrderLineId: 'POL-YEAR', extendedAmount: 2750, startDate: '2026-01-01', endDate: '2026-12-31' });
+    const septemberOnly = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 2750, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const summaryPo = poLine({ purchaseOrderLineId: 'POL-SUM', extendedAmount: 5500, startDate: '2026-09-01', endDate: '2026-09-30' });
+    const secondSeptember = { ...september, description: "Risk advisory Sep'26 - part 2" };
+    for (const poLines of [[annual, septemberOnly, summaryPo], [septemberOnly, annual, summaryPo]]) {
+      const result = removeRepeatedLineTables([september, secondSeptember, summary], levelBlueCharges, poLines);
+      expect(result.keepReason).toBe('unit_cost');
+      expect(result.lines).toEqual([september, secondSeptember]);
+    }
+    const mixedMonths = [september, october, summary];
+    expect(removeRepeatedLineTables(mixedMonths, levelBlueCharges, [annual, septemberOnly, summaryPo])).toEqual({ lines: mixedMonths, removed: [] });
+  });
+
+  it('treats a malformed PO service date as unknown rather than as an open side', () => {
+    const po = poLine({ purchaseOrderLineId: 'POL-SEP', extendedAmount: 5500, startDate: 'not-a-date', endDate: '2026-09-30' });
+    expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, [po]).keepReason).toBe('service_period');
+  });
+
+  it('lists at most five removed rows and sums the rest', () => {
+    const hourly = Array.from({ length: 7 }, (_, index) => ({
+      description: `Consultant ${index + 1}`, quantity: null, unitCost: null, totalPrice: '100.00', tableNumber: 1,
+    }));
+    const summary = { description: "Services Sep'26", quantity: null, unitCost: null, totalPrice: '700.00', tableNumber: 2 };
+    const result = removeRepeatedLineTables([...hourly, summary], { amountDue: '$700.00' });
+    expect(result.lines).toEqual([summary]);
+    expect(result.note).toContain('"Consultant 5" ($100.00), 2 more lines ($200.00) because table 1 repeats');
+    expect(result.note).not.toContain('Consultant 6');
+  });
+
+  it.each<[string, ExtractedInvoiceLine[]]>([
+    ['a row has no table number', [consultant, { ...monthly, tableNumber: null }]],
+    ['a table number is zero', [{ ...consultant, tableNumber: 0 }, monthly]],
+    ['a table number is negative', [{ ...consultant, tableNumber: -1 }, monthly]],
+    ['a table number is fractional', [consultant, { ...monthly, tableNumber: 1.5 }]],
+    ['a table number is not a number', [consultant, { ...monthly, tableNumber: Number.NaN }]],
+    ['the table numbers skip a table', [consultant, { ...monthly, tableNumber: 3 }]],
+    ['the numbering does not start at 1', [{ ...consultant, tableNumber: 2 }, { ...monthly, tableNumber: 3 }]],
+    ['a row has a unit cost but no quantity or total', [consultant, { ...monthly, quantity: null, totalPrice: null }]],
+    ['a row has a negative quantity', [consultant, { ...monthly, quantity: -1, totalPrice: null }]],
+    ['a row has a non-finite quantity', [consultant, { ...monthly, quantity: Number.POSITIVE_INFINITY, totalPrice: null }]],
+    ['a row has a negative quantity beside a printed total', [consultant, { ...monthly, quantity: -1 }]],
+    ['a row has a non-finite quantity beside a printed total', [consultant, { ...monthly, quantity: Number.NaN }]],
+    ['a row is marked discounted with a positive net total', [{ ...consultant, hasDiscount: true }, monthly]],
+    ['a row has a whitespace-only description', [{ ...consultant, description: '   ' }, monthly]],
+    ['all rows share one table', [consultant, { ...monthly, tableNumber: 1 }]],
+    ['a row has no amount', [consultant, { ...monthly, unitCost: null, totalPrice: null }]],
+    ['there is a single row', [consultant]],
+  ])('removes nothing when %s', (_label, lines) => {
+    expect(removeRepeatedLineTables(lines, levelBlueCharges).removed).toEqual([]);
+  });
+
+  it.each([
+    ['no amount due', {}],
+    ['a credit memo', { amountDue: '-$5,500.00' }],
+    ['an unreadable tax amount', { amountDue: '$5,500.00', taxAmount: 'N/A' }],
+  ])('removes nothing with %s', (_label, charges) => {
+    expect(removeRepeatedLineTables([consultant, monthly], charges).removed).toEqual([]);
+  });
+
+  it('subtracts freight and tax before comparing each table with the amount due', () => {
+    const result = removeRepeatedLineTables([consultant, monthly], { amountDue: '$5,940.00', freightAmount: '$15.00', taxAmount: '$425.00' });
+    expect(result.lines).toEqual([monthly]);
+    expect(result.note).toContain('each table totals $5,500.00');
+  });
+
+  it('keeps one table of several lines and removes the summary table', () => {
+    const lines = [
+      { description: 'Analyst hours', quantity: 10, unitCost: '150.00', totalPrice: '1,500.00', tableNumber: 1 },
+      { description: 'Engineer hours', quantity: 20, unitCost: '200.00', totalPrice: '4,000.00', tableNumber: 1 },
+      { description: 'Services total', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    const result = removeRepeatedLineTables(lines, levelBlueCharges);
+    expect(result.lines).toEqual(lines.slice(0, 2));
+    expect(result.keepReason).toBe('unit_cost');
+    expect(result.note).toContain('Removed line "Services total" ($5,500.00) because table 2 repeats the charges in table 1');
+  });
+
+  it.each([
+    ['September 2026', true],
+    ['Sept. 2026', true],
+    ['2026 - September', true],
+    ['09/2026', true],
+    ["Sep '26", true],
+    ['May 15, 2026', false],
+    ['Mayfield maintenance 2026', false],
+    ['Consultant', false],
+    ['PO 4500 - March retainer', false],
+    ['Invoice 1234 Dec services', false],
+    ['Retainer 03/01/2026 - 03/31/2026', true],
+    ['Retainer 02/30/2026', false],
+    [`may${' '.repeat(40000)}x`, false],
+  ])('reads "%s" as a stated month: %p', (description, states) => {
+    const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const plain = { description: 'Risk advisory', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const result = removeRepeatedLineTables([plain, row], levelBlueCharges);
+    expect(result.keepReason).toBe(states ? 'service_period' : undefined);
+    expect(result.lines).toEqual(states ? [row] : [plain, row]);
+  });
+
+  it('reads the month, not the day, of a US date when matching PO lines', () => {
+    const retainer = { description: 'Retainer 03/01/2026 - 03/31/2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 };
+    const summary = { description: 'Retainer March 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
+    const january = poLine({ purchaseOrderLineId: 'POL-JAN', extendedAmount: 5500, startDate: '2026-01-01', endDate: '2026-01-31' });
+    const march = poLine({ purchaseOrderLineId: 'POL-MAR', extendedAmount: 5500, startDate: '2026-03-01', endDate: '2026-03-31' });
+    const unchanged = { lines: [retainer, summary], removed: [] };
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [january])).toEqual(unchanged);
+    expect(removeRepeatedLineTables([retainer, summary], levelBlueCharges, [march])).toEqual(unchanged);
+  });
+
+  it('keeps both tables when they bill different months', () => {
+    const lines = [
+      { description: 'Services Aug 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 1 },
+      { description: 'Services Sep 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
+    ];
+    expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+});
+
 describe('extracted amount parsing', () => {
   it.each([
     ['$5,500.00', 5500],
@@ -1578,11 +2249,6 @@ describe('buildFinalInvoiceLines service-date matching', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.FALLBACK_COST_CENTER_ID;
-    process.env.PO_LINE_SELECTION_ENABLED = 'true';
-  });
-
-  afterEach(() => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
   });
 
   it('uses the legacy merge prompt and input when the caller passes no invoice context (Closed PO)', async () => {
@@ -1605,13 +2271,12 @@ describe('buildFinalInvoiceLines service-date matching', () => {
     expect(input).not.toHaveProperty('invoiceDate');
   });
 
-  it('keeps the pre-selection merge input, prompt, and model pick when PO line selection is off', async () => {
-    delete process.env.PO_LINE_SELECTION_ENABLED;
-    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine('POL-08')] } as any);
+  it('uses the legacy merge prompt and input when the invoice has no PO lines', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine(null)] } as any);
 
-    const result = await buildFinalInvoiceLines(
+    await buildFinalInvoiceLines(
       extracted,
-      [monthlyLine(8, { availableForInvoicing: false }), monthlyLine(9)],
+      undefined,
       undefined,
       {},
       undefined,
@@ -1622,14 +2287,9 @@ describe('buildFinalInvoiceLines service-date matching', () => {
 
     const call = mockGetAiResponse.mock.calls[0][0] as any;
     const input = JSON.parse(call.messages[0].content);
+    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
     expect(input).not.toHaveProperty('invoiceDate');
     expect(input).not.toHaveProperty('invoiceServicePeriod');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('startDate');
-    expect(input.purchaseOrderLines[0]).not.toHaveProperty('availableForInvoicing');
-    expect(call.prompt).toBe(mergeInvoiceLinesPromptFor(false));
-    expect(call.prompt).not.toContain('availableForInvoicing');
-    expect(result.lines[0].purchaseOrderLineId).toBe('POL-08');
-    expect(result.lines[0].omitPurchaseOrderLineReference).toBeUndefined();
   });
 
   it('sends the invoice date, service period, and PO line service windows to the merge model', async () => {

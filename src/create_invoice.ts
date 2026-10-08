@@ -16,6 +16,7 @@ import {
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
+  formatRepeatedLineNotes,
   formatSupplierNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
@@ -29,6 +30,8 @@ import {
   type ClassifiedAttachment,
   type ClusterableAttachment,
 } from './lib/invoice_attachment_clustering.js';
+import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
+import { snapshotAgentWrite } from './lib/invoice_snapshots.js';
 import {
   acquireConversationInvoiceClaim,
   getConversationSupplierInvoice,
@@ -48,11 +51,19 @@ import { employeeDisplayName, getEmployeeWidByEmail, type EmployeeLookupResult }
 import {
   applyDefaultCompanyLineWorktags,
   buildFinalInvoiceLines,
+  chargeReconciliationLogSummary,
+  chargeReconciliationMessages,
+  CHARGE_RECONCILIATION_FALLBACK_FIELD,
+  formatAmountCheckNotes,
+  mergeAmountCheckMessages,
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
   parseExtractedAmount,
+  prepareInvoiceCharges,
+  removeRepeatedLineTables,
   resolveHeaderChargeAmounts,
+  restoreClearedFreightFromRows,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -808,6 +819,12 @@ async function processInvoiceCluster(
   const [primary] = files;
   const { s3Key, fileName, contentType } = primary;
   const emailContext = requestEmailContext ?? primary.emailContext;
+  const snapshotContext = {
+    ...(conversationId ? { conversationId } : {}),
+    s3Keys: files.map((file) => file.s3Key),
+    attachmentKinds: files.map((file) => file.kind ?? 'unclassified'),
+    clusteringMode: invoiceAttachmentClusteringMode(),
+  };
   let assigneeLookup: { match?: EmployeeLookupResult } | undefined;
 
   try {
@@ -954,15 +971,14 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
-      (result.extractedInvoiceLines ?? [])
-        .filter(l => l.description && (l.totalPrice || l.unitCost))
-    );
-    const candidateLines = withComposedLineDescriptions(merchandiseLines);
+    const extractedRows = result.extractedInvoiceLines ?? [];
+    const extractedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
+    // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
+    // freight-as-lines and duplicate removal then work from those amounts.
     const {
-      extractedFreightAmount,
+      extractedFreightAmount: resolvedFreightAmount,
       extractedTaxAmount,
-      freightCleared,
+      freightCleared: headerFreightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
@@ -971,8 +987,41 @@ async function processInvoiceCluster(
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
-      freightAmountFromLines,
+      freightAmountFromLines: splitFreightLines(extractedLines).freightAmountFromLines,
     });
+    const restoredFreight = restoreClearedFreightFromRows(extractedLines, {
+      amountDue: extractedAmountDue,
+      tax: extractedTaxAmount,
+      freightCleared: headerFreightCleared,
+    });
+    const freightCleared = headerFreightCleared && restoredFreight.freight == null;
+    const charges = prepareInvoiceCharges(
+      extractedLines,
+      { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount },
+      { allowFreightAsLines: true, removeDuplicates: true }
+    );
+    const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
+    const chargeCheck = [
+      ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...chargeReconciliationMessages(chargeReconciliation),
+    ];
+    if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
+    const extractedCandidateLines = withComposedLineDescriptions(charges.lines);
+
+    // A withheld charge leaves the submitted header unknown, and a row dropped for a missing
+    // description or amount leaves its table's total unknown, so no line can be judged a repeat.
+    // Freight sent as lines is not on the header, so the header freight below would not apply.
+    const repeatedLines = chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+      ? { lines: extractedCandidateLines, note: undefined }
+      : removeRepeatedLineTables(extractedCandidateLines, {
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
+      }, poClosedForInvoicing ? undefined : poLines);
+    if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
+    const candidateLines = repeatedLines.lines;
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -1011,6 +1060,23 @@ async function processInvoiceCluster(
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
+
+    // An all-freight invoice must keep its coded freight line; if the PO merge returned none,
+    // build it again without the PO, the way the remainder line below is built.
+    if (finalLines.length === 0 && freightAsLines && candidateLines.length > 0) {
+      debug('PO merge returned no lines for an all-freight invoice; rebuilding the freight line without the PO');
+      const rebuilt = await buildFinalInvoiceLines(
+        candidateLines,
+        undefined,
+        emailContext?.plainTextBody,
+        fallbackIds,
+        emailWorktags,
+        relatedLobLookup,
+        invoiceLineQuantityDisplayed
+      );
+      finalLines = overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines);
+      relatedLobByCostCenter = rebuilt.relatedLobByCostCenter;
+    }
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
     // could be extracted or matched to a PO, synthesize a single line from the merchandise
@@ -1099,7 +1165,8 @@ async function processInvoiceCluster(
     });
     const purchaseOrderSupplier = purchaseOrderSupplierDecision?.purchaseOrderSupplier;
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
-    const lineTotalReviewNote = chargeWithheld ? undefined : lineTotalMismatchNote(finalLines, {
+    // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
+    const lineTotalReviewNote = chargeWithheld || freightAsLines ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
       freightAmount: extractedFreightAmount,
       taxAmount: extractedTaxAmount,
@@ -1107,6 +1174,10 @@ async function processInvoiceCluster(
       taxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
+    const lineReview = [
+      repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
+      lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
+    ].filter((note): note is string => Boolean(note));
 
     const appliedRecommended = selectedCompany.source === 'recommended';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
@@ -1126,11 +1197,21 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
+    const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
+      chargeCheck,
+      appliedFallbacks.filter(isAmountCheck).map(f => f.label)
+    );
+    const submittedSlackAmountCheck = (appliedFallbacks: AppliedFallback[]) => {
+      const lines = amountCheckLines(appliedFallbacks);
+      return lines.length ? { chargeCheck: lines } : {};
+    };
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
+      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
       return baseNotes
+        + formatAmountCheckNotes(amountCheckLines(appliedFallbacks))
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
@@ -1208,6 +1289,7 @@ async function processInvoiceCluster(
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       lineCount: finalLines.length,
+      ...(lineReview.length ? { lineReview } : {}),
     };
     const submittedSupplierDetails = (appliedFallbacks: AppliedFallback[]) =>
       purchaseOrderSupplier && appliedFallbacks.some((fallback) => fallback.field === 'purchaseOrderSupplier')
@@ -1354,8 +1436,8 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f));
-          return `${baseNotes}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
+          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
+          return `${baseNotes}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
@@ -1371,6 +1453,7 @@ async function processInvoiceCluster(
           extractedAmountDue,
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
           extractedFreightAmount,
+          freightAsLines,
           extractedTaxAmount,
           freightCleared,
           taxCleared,
@@ -1386,6 +1469,13 @@ async function processInvoiceCluster(
           ...(purchaseOrderSupplier ? { purchaseOrderSupplier } : {}),
         });
         run.workdayInvoiceWid = existing.workdayInvoiceWid;
+        const updateSnapshotSaved = await snapshotAgentWrite(context, {
+          workdayInvoiceWid: existing.workdayInvoiceWid,
+          source: 'resend_update',
+          previousInvoice: updateOutcome.previousInvoice,
+          ...(existing.workdayInvoiceNumber ? { workdayInvoiceNumber: existing.workdayInvoiceNumber } : {}),
+          ...snapshotContext,
+        });
         let updateRegistrySyncFailed = false;
         try {
           await upsertConversationSupplierInvoice(context.dbConnection, {
@@ -1413,9 +1503,11 @@ async function processInvoiceCluster(
           newAttachments: newFiles.map((file) => file.fileName),
           invoiceWID: existing.workdayInvoiceWid,
           invoiceNumber: existing.workdayInvoiceNumber,
-          appliedFallbacks: updateOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
+          ...submittedSlackAmountCheck(updateOutcome.appliedFallbacks),
+          appliedFallbacks: updateOutcome.appliedFallbacks.filter(f => !isAmountCheck(f)).map(f => purchaseOrderLineFallbackLabel(f.label)),
           ...(updateOutcome.priorFailures?.length ? { priorFailures: updateOutcome.priorFailures } : {}),
           ...(updateRegistrySyncFailed ? { registrySync: 'failed' } : {}),
+          ...(updateSnapshotSaved ? {} : { snapshotSync: 'failed' }),
         }, conversationId, intercomAppId));
         return;
       }
@@ -1438,6 +1530,7 @@ async function processInvoiceCluster(
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
       extractedFreightAmount,
+      freightAsLines,
       extractedTaxAmount,
       freightCleared,
       taxCleared,
@@ -1458,6 +1551,15 @@ async function processInvoiceCluster(
     const processingTime = Date.now() - startTime;
 
     run.workdayInvoiceWid = createOutcome.invoiceWID;
+    const snapshotSaved = createOutcome.invoiceWID
+      ? await snapshotAgentWrite(context, {
+        workdayInvoiceWid: createOutcome.invoiceWID,
+        source: 'create',
+        ...(createOutcome.createdInvoice ? { invoice: createOutcome.createdInvoice } : {}),
+        ...(createOutcome.invoiceNumber ? { workdayInvoiceNumber: createOutcome.invoiceNumber } : {}),
+        ...snapshotContext,
+      })
+      : false;
     let registrySyncFailed = false;
     if (trackResends && conversationId && registryNumber) {
       if (!createOutcome.invoiceWID) {
@@ -1495,9 +1597,11 @@ async function processInvoiceCluster(
         assigneeWorkdayId: assigneeMatch.workdayId,
         ...(assigneeName ? { assigneeName } : {}),
       } : {}),
-      appliedFallbacks: createOutcome.appliedFallbacks.map(f => purchaseOrderLineFallbackLabel(f.label)),
+      ...submittedSlackAmountCheck(createOutcome.appliedFallbacks),
+      appliedFallbacks: createOutcome.appliedFallbacks.filter(f => !isAmountCheck(f)).map(f => purchaseOrderLineFallbackLabel(f.label)),
       ...(createOutcome.priorFailures?.length ? { priorFailures: createOutcome.priorFailures } : {}),
       ...(registrySyncFailed ? { registrySync: 'failed' } : {}),
+      ...(snapshotSaved ? {} : { snapshotSync: 'failed' }),
     }, conversationId, intercomAppId));
   } catch (error) {
     const processingTime = Date.now() - startTime;

@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5.2-blue.svg)](https://www.typescriptlang.org/)
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-orange.svg)](https://aws.amazon.com/lambda/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.4-purple.svg)](https://openai.com/)
+[![Vercel AI Gateway](https://img.shields.io/badge/Vercel_AI_Gateway-GPT--5.4-purple.svg)](https://vercel.com/ai-gateway)
 
 ## 🎯 Overview
 
@@ -30,7 +30,7 @@ The Finance Agent automates financial data processing in Workday by intelligentl
 - **Intelligent Pagination**: Configurable page sizes for efficient large dataset processing
 - **Enhanced Test Coverage**: Focused Jest coverage for RAG, invoice enrichment, and Workday integration
 - **Self-Contained Refresh**: Refresh operations no longer depend on external Lambda invocations
-- **RAG Integration**: Added semantic search capabilities with OpenAI embeddings
+- **RAG Integration**: Added semantic search capabilities with `text-embedding-3-small` embeddings
 
 ## 🏗️ Architecture
 
@@ -63,7 +63,7 @@ graph TB
     end
 
     subgraph "AI & Storage"
-        AI[OpenAI GPT-5<br/>Supplier identification]
+        AI[GPT-5.4 via Vercel AI Gateway<br/>Supplier identification]
         DB[(PostgreSQL<br/>Supplier database)]
         S3[S3<br/>PDF attachments]
     end
@@ -170,7 +170,7 @@ src/
 
 ### RAG (Retrieval-Augmented Generation)
 
-- OpenAI embeddings for semantic search
+- `openai/text-embedding-3-small` embeddings through the Vercel AI Gateway for semantic search
 - Hybrid search combining semantic similarity with exact text matching
 - Configurable similarity thresholds and result limits
 - AI tools for supplier identification
@@ -184,7 +184,7 @@ src/
 
 ### AI Processing
 
-- OpenAI GPT-5 for supplier identification
+- GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway for supplier identification
 - Structured responses with confidence scoring
 - Analyzes invoice content and metadata
 - Integrates with vector database for context
@@ -208,7 +208,7 @@ AI analyzes invoice content and matches suppliers by examining metadata, OCR dat
 
 - Node.js 20+
 - Workday API access
-- OpenAI API key
+- Vercel AI Gateway API key (`AI_GATEWAY_API_KEY`)
 
 ### Local Development
 
@@ -222,7 +222,7 @@ npm test
 
 ### Configuration
 
-Set up parameters in AWS Systems Manager Parameter Store for Workday credentials, OpenAI API key, and Slack webhook URL.
+Set up parameters in AWS Systems Manager Parameter Store for Workday credentials, the Vercel AI Gateway API key (SecureString `/finance-agent/ai-gateway-api-key`), and Slack webhook URL.
 
 ## 🧪 Testing
 
@@ -262,6 +262,25 @@ Deployment is automated via CircleCI:
 - **Slack**: Real-time notifications to #notify-finance-agent-dev
 - **Error Tracking**: Detailed error context and processing statistics
 
+### Agent invoice scoring
+
+The agent saves a snapshot of the fields it wrote after every create, resend
+update, and enrich supplier-invoice update (the notes-only enrich path takes
+none). `ScoreInvoices` runs daily and records what AP
+changed when AP submits an invoice, then late corrections when it is approved,
+paid, or denied, or cancel attribution when it is canceled or deleted. A Draft
+is left alone until it has sat for two weeks, then flagged as stuck.
+`ScoreDigest` posts to `#notify-finance-agent-audit`
+(`#notify-finance-agent-audit-dev` in dev) through the
+`/finance-agent/audit-slack-webhook-url` SSM parameter: every day with
+something scored, a touch summary followed by one message per invoice scored
+since the last daily post with AP's before → after values (up to 40, then a
+count of the rest), and every
+Monday a summary of the previous week by field. Both lead with the share of invoices that needed zero AP
+touches and its daily or weekly trend, which is also stored in Postgres
+(`agent_invoice_touch_daily`) for reports. Details, settings, and how AP labels
+a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.
+
 ## 🔒 Security
 
 - Workday OAuth authentication
@@ -300,14 +319,14 @@ The RAG (Retrieval-Augmented Generation) pipeline enables semantic search for su
 ```mermaid
 sequenceDiagram
     participant Client
-    participant OpenAI as OpenAI Embeddings
+    participant Embed as Embeddings (AI Gateway)
     participant DB as PostgreSQL<br/>+ pgvector
     participant Workday
     participant ContentCreator as Content Creator
 
     Note over Client,DB: Query Flow
-    Client->>OpenAI: Create query embedding<br/>(text-embedding-3-small)
-    OpenAI-->>Client: Query embedding vector
+    Client->>Embed: Create query embedding<br/>(text-embedding-3-small)
+    Embed-->>Client: Query embedding vector
 
     Client->>DB: Hybrid search query<br/>(embedding + text)
     activate DB
@@ -323,8 +342,8 @@ sequenceDiagram
     Note over Workday,DB: Document Storage Flow
     Workday->>ContentCreator: Supplier data
     ContentCreator->>ContentCreator: Create content<br/>(Name, Address, Phone, Email)
-    ContentCreator->>OpenAI: Create document embedding
-    OpenAI-->>ContentCreator: Document embedding
+    ContentCreator->>Embed: Create document embedding
+    Embed-->>ContentCreator: Document embedding
     ContentCreator->>DB: Store document<br/>(content + embedding + metadata)
     DB-->>ContentCreator: Document stored
 ```
@@ -477,7 +496,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant WorkdayWQL as Workday WQL
     participant CacheProcessor as Cache Processor
-    participant OpenAI as OpenAI Embeddings
+    participant Embed as Embeddings (AI Gateway)
     participant Slack
 
     Trigger->>RefreshHandler: Start refresh
@@ -499,8 +518,8 @@ sequenceDiagram
         CacheProcessor->>CacheProcessor: Create supplier content<br/>(name, alternate names,<br/>phone, email, address)
 
         loop For each supplier (50 per batch)
-            CacheProcessor->>OpenAI: Create embedding<br/>(text-embedding-3-small)
-            OpenAI-->>CacheProcessor: Embedding vector
+            CacheProcessor->>Embed: Create embedding<br/>(text-embedding-3-small)
+            Embed-->>CacheProcessor: Embedding vector
         end
 
         CacheProcessor->>DB: Bulk insert<br/>(50 suppliers per batch)
@@ -523,7 +542,7 @@ sequenceDiagram
     participant WorkdayWQL as Workday WQL
     participant Processor as Cache Processor
     participant DB as PostgreSQL
-    participant OpenAI as OpenAI Embeddings
+    participant Embed as Embeddings (AI Gateway)
     participant Slack
 
     Scheduler->>QueryHandler: Trigger sync
@@ -542,8 +561,8 @@ sequenceDiagram
         Processor->>Processor: Filter Active only
         loop For each new supplier (50 per batch)
             Processor->>Processor: Create supplier content<br/>(name, alternate names,<br/>phone, email, address)
-            Processor->>OpenAI: Create embedding<br/>(text-embedding-3-small)
-            OpenAI-->>Processor: Embedding vector
+            Processor->>Embed: Create embedding<br/>(text-embedding-3-small)
+            Embed-->>Processor: Embedding vector
         end
         Processor->>DB: Bulk insert<br/>(50 suppliers per batch)
         DB-->>Processor: Insert complete
@@ -553,8 +572,8 @@ sequenceDiagram
         Processor->>Processor: Filter Active only
         loop For each updated supplier (50 per batch)
             Processor->>Processor: Create supplier content
-            Processor->>OpenAI: Create embedding
-            OpenAI-->>Processor: Embedding vector
+            Processor->>Embed: Create embedding
+            Embed-->>Processor: Embedding vector
         end
         Processor->>DB: Bulk update<br/>(50 suppliers per batch)
         DB-->>Processor: Update complete

@@ -21,13 +21,37 @@ interface SlackDividerBlock {
   type: 'divider';
 }
 
-type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock;
+interface SlackHeaderBlock {
+  type: 'header';
+  text: { type: 'plain_text'; text: string };
+}
+
+interface SlackImageBlock {
+  type: 'image';
+  image_url: string;
+  alt_text: string;
+}
+
+export type SlackBlock = SlackSectionBlock | SlackContextBlock | SlackDividerBlock | SlackHeaderBlock | SlackImageBlock;
 
 const SLACK_SECTION_TEXT_LIMIT = 2900;
 
 function truncateSlackText(text: string, limit = SLACK_SECTION_TEXT_LIMIT): string {
   if (text.length <= limit) return text;
   return `${text.slice(0, limit - 1)}…`;
+}
+
+const LINE_REVIEW_NOTES_SHOWN = 5;
+
+// Invoice-derived text must not form Slack links or mentions such as <!channel>.
+function escapeSlackText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Truncating escaped text must not leave half an entity such as "&am" or half an emoji.
+function truncateEscapedSlackText(text: string, limit: number): string {
+  const truncated = truncateSlackText(text, limit);
+  return truncated === text ? text : truncated.replace(/(?:&[a-z]*|[\uD800-\uDBFF])…$/, '…');
 }
 
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
@@ -120,6 +144,35 @@ function appendPriorFailureBlocks(
   blocks.push({
     type: 'section',
     text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+  });
+}
+
+const CHARGE_CHECK_LINE_LIMIT = 500;
+const CHARGE_CHECK_MAX_SECTIONS = 4;
+
+function escapeSlackMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Lines quote supplier-controlled invoice descriptions, so each is escaped, capped, and given its
+// own section. The section count is bounded and the last line (the submit-time check) is always kept.
+function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): void {
+  if (chargeCheck.length === 0) return;
+  const shown = chargeCheck.length > CHARGE_CHECK_MAX_SECTIONS
+    ? [
+        ...chargeCheck.slice(0, CHARGE_CHECK_MAX_SECTIONS - 2),
+        `${chargeCheck.length - (CHARGE_CHECK_MAX_SECTIONS - 1)} more amount-check notes are in the Workday note.`,
+        chargeCheck[chargeCheck.length - 1],
+      ]
+    : chargeCheck;
+  shown.forEach((line, index) => {
+    // Escape before capping so the cap bounds the text Slack receives; drop a cut-off entity.
+    const capped = truncateSlackText(escapeSlackMrkdwn(line), CHARGE_CHECK_LINE_LIMIT).replace(/&[a-z]{0,3}…$/, '…');
+    const bullet = `• ${capped}`;
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: index === 0 ? `*Amount Check*\n${bullet}` : bullet }
+    });
   });
 }
 
@@ -226,11 +279,30 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const chargeCheck = Array.isArray(details.chargeCheck)
+    ? details.chargeCheck.filter((line): line is string => typeof line === 'string')
+    : [];
+  appendChargeCheckBlock(blocks, chargeCheck);
+
   const priorFailures = Array.isArray(details.priorFailures) ? details.priorFailures : [];
   appendPriorFailureBlocks(
     blocks,
     priorFailures as Array<{ attempt?: number; fallback?: string; message?: string }>
   );
+
+  const lineReview = Array.isArray(details.lineReview)
+    ? details.lineReview.filter((note): note is string => typeof note === 'string' && note.length > 0)
+    : [];
+  if (lineReview.length && details.skipped !== true) {
+    // Each note gets its own share of the section, so a long note cannot hide the next one.
+    const shown = lineReview.slice(0, LINE_REVIEW_NOTES_SHOWN);
+    const noteLimit = Math.floor((SLACK_SECTION_TEXT_LIMIT - 20) / shown.length) - 3;
+    const notes = shown.map((note) => `• ${truncateEscapedSlackText(escapeSlackText(note), noteLimit)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Line review*\n${notes.join('\n')}`) }
+    });
+  }
 
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
@@ -265,6 +337,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       : {}),
     ...(details.skipped === true ? { skipped: true } : {}),
     ...(details.registrySync === 'failed' ? { registrySync: 'failed' } : {}),
+    ...(details.snapshotSync === 'failed' ? { snapshotSync: 'failed' } : {}),
     ...(typeof details.conversationId === 'string' ? { conversationId: details.conversationId } : {}),
     ...(typeof details.lineCount === 'number' ? { lineCount: details.lineCount } : {}),
   };
@@ -334,28 +407,41 @@ function buildCloudWatchLogUrl(): string | undefined {
 }
 
 /**
- * Send a message to Slack using blocks
+ * Send a message to Slack using blocks. Defaults to the per-invoice channel webhook.
  */
-async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
-  try {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+interface SlackSendResult {
+  ok: boolean;
+  /** HTTP status when Slack answered; unset for network errors. */
+  status?: number;
+  /** Slack's error body, such as `invalid_blocks`. */
+  error?: string;
+}
 
+async function sendSlackMessage(
+  blocks: SlackBlock[],
+  webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
+  webhookEnvName = 'SLACK_WEBHOOK_URL'
+): Promise<SlackSendResult> {
+  try {
     if (!webhookUrl) {
-      debug('SLACK_WEBHOOK_URL environment variable not set - skipping Slack notification');
-      return;
+      debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
+      return { ok: false };
     }
 
     // Create fallback text from the first section block for notifications
-    const fallbackText = blocks.length > 0 && blocks[0].type === 'section'
-      ? blocks[0].text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
-      : 'Slack notification';
+    const first = blocks[0];
+    const fallbackText = first?.type === 'section'
+      ? first.text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
+      : first?.type === 'header' ? first.text.text : 'Slack notification';
 
     const payload = {
       text: fallbackText, // Fallback for notifications
       blocks
     };
 
-    debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
+    // Audit posts carry invoice values, so only the per-invoice channel's payloads are logged in full.
+    if (webhookEnvName === 'SLACK_WEBHOOK_URL') debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
+    else debug('Posting Slack message', { webhook: webhookEnvName, blocks: blocks.length });
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
@@ -366,14 +452,39 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<void> {
     });
 
     if (!response.ok) {
-      throw new Error(`Slack webhook request failed: ${response.status} ${response.statusText}`);
+      const error = await response.text().catch(() => '');
+      debug('Slack webhook request failed', { status: response.status, statusText: response.statusText, error });
+      return { ok: false, status: response.status, error };
     }
 
     debug('Slack notification sent successfully');
+    return { ok: true };
   } catch (error) {
     debug('Error sending Slack notification:', error);
     // Don't throw - we don't want Slack failures to break the main process
+    return { ok: false };
   }
+}
+
+/**
+ * Posts blocks to a specific incoming webhook (for example the audit channel). Never throws, and never
+ * falls back to the per-invoice channel when the webhook is not configured.
+ */
+export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<boolean> {
+  // An undefined argument would pick up sendSlackMessage's per-invoice default, so stop here instead.
+  if (!webhookUrl) {
+    debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
+    return false;
+  }
+  const first = await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
+  if (first.ok) return true;
+  // Slack answers 400 and posts nothing when it cannot download an image block; any other failure may have
+  // been delivered, so it is not resent.
+  const withoutImages = blocks.filter((block) => block.type !== 'image');
+  const imageRejected = first.status === 400 && /image|invalid_blocks/i.test(first.error ?? '');
+  if (!imageRejected || withoutImages.length === blocks.length) return false;
+  debug('Slack rejected a message with an image; resending without it', { error: first.error });
+  return (await sendSlackMessage(withoutImages, webhookUrl, webhookEnvName)).ok;
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
@@ -534,9 +645,13 @@ export interface EnrichmentNotification {
     paymentTerms?: string;
   };
   poLineCount?: number;
+  /** Duplicate charge lines removed, or lines + freight + tax that do not match the amount due. */
+  chargeCheck?: string[];
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
+  /** The scoring snapshot for this write could not be saved; the invoice itself was processed. */
+  snapshotSync?: 'failed';
   fallbacks: {
     defaultSupplier: boolean;
     fallbackFund?: string;
@@ -549,7 +664,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -677,6 +792,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     });
   }
 
+  appendChargeCheckBlock(blocks, chargeCheck ?? []);
+
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {
       const fallback = failure.fallback ? ` (${failure.fallback})` : '';
@@ -685,6 +802,13 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: truncateSlackText(`*Prior submit failures*\n${lines.join('\n')}`) }
+    });
+  }
+
+  if (notification.snapshotSync === 'failed') {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '```{\n  "snapshotSync": "failed"\n}```' }]
     });
   }
 

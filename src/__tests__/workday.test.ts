@@ -948,6 +948,7 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
       expect(capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-15');
       expect(capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2025-02-01');
+      expect(debug).toHaveBeenCalledWith(expect.stringMatching(/^Submitted lines for invoice .* \(attempt 2\): unchanged from attempt 1$/));
 
       const { proposeWorkdaySubmitRepair } = require('../lib/workday_submit_repair.js');
       const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
@@ -2237,7 +2238,7 @@ describe('Workday utilities', () => {
       ]);
     });
 
-    it('should replace OCR freight-only lines with a remainder Invoice line so existing shipping rows are replaced', async () => {
+    it('keeps an all-freight OCR line as the coded invoice line when the extracted freight equals it', async () => {
       process.env.FALLBACK_SPEND_CATEGORY_ID = 'DEFAULT-SPEND-CAT';
 
       const mockClient = {
@@ -2286,18 +2287,9 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
 
       const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(data.Freight_Amount).toBe(15);
+      expect(data).not.toHaveProperty('Freight_Amount');
       expect(data.Invoice_Line_Replacement_Data).toEqual([
-        expect.objectContaining({
-          Line_Order: 1,
-          Item_Description: 'Invoice',
-          Quantity: 1,
-          Unit_Cost: 0,
-          Extended_Amount: 0,
-          Spend_Category_Reference: {
-            ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'DEFAULT-SPEND-CAT' }],
-          },
-        })
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Ground Shipping', Extended_Amount: '15' })
       ]);
     });
 
@@ -2417,7 +2409,7 @@ describe('Workday utilities', () => {
       ]);
     });
 
-    it('should split a single SOAP OCR line object so freight-only updates replace that row with a remainder Invoice line', async () => {
+    it('unwraps a single SOAP OCR line object and keeps it as the coded line of an all-freight invoice', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
         setEndpoint: jest.fn(),
@@ -2464,14 +2456,325 @@ describe('Workday utilities', () => {
       await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$15.00' });
 
       const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
-      expect(data.Freight_Amount).toBe(15);
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({ Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Ground Shipping' })
+      ]);
+    });
+
+    const mockUpdateClient = (invoiceData: Record<string, unknown>) => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn((_request: any, callback: any) => {
+          callback(null, { Response_Data: { Supplier_Invoice: { Supplier_Invoice_Data: {
+            Invoice_Number: '12345',
+            Company_Reference: { ID: 'company-wid' },
+            Currency_Reference: { ID: 'USD' },
+            Invoice_Date: '2024-01-01',
+            ...invoiceData,
+          } } } });
+        }),
+        Submit_Supplier_Invoice: jest.fn(),
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      const captured: { request?: any } = {};
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        captured.request = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+      return () => captured.request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+    };
+
+    it('drops an OCR line that repeats header tax when no final lines were built', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '106.00',
+        Tax_Amount: '6.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting', Quantity: '1', Unit_Cost: '100', Extended_Amount: '100' },
+          { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Sales Tax', Quantity: '1', Unit_Cost: '6', Extended_Amount: '6' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Tax_Amount).toBe('6.00');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting']);
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Removed invoice line "Sales Tax" ($6.00): that amount is already on the header Tax_Amount.',
+      }]));
+    });
+
+    it('keeps the coded freight line of an all-freight invoice on a resubmit without final lines', async () => {
+      const freightLine = {
+        Supplier_Invoice_Line_ID: 'LINE-1',
+        Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+        Quantity: '0',
+        Unit_Cost: '0',
+        Extended_Amount: '4595',
+        Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
+      };
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [freightLine],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
       expect(data.Invoice_Line_Replacement_Data).toEqual([
         expect.objectContaining({
-          Line_Order: 1,
-          Item_Description: 'Invoice',
-          Quantity: 1,
-          Unit_Cost: 0,
-          Extended_Amount: 0,
+          Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+          Extended_Amount: '4595',
+          Spend_Category_Reference: freightLine.Spend_Category_Reference,
+        })
+      ]);
+    });
+
+    it.each([
+      ['($110.00)', '-100.00', '($10.00)', '0.00'],
+      ['110.00-', '100.00-', '10.00-', '0.00'],
+      ['\u2212110.00', '\u2212100.00', '0.00', '\u221210.00'],
+    ])('does not flag a credit with control %s, line %s, freight %s, tax %s', async (control, line, freight, tax) => {
+      mockUpdateClient({
+        Control_Amount_Total: control,
+        Freight_Amount: freight,
+        Tax_Amount: tax,
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Returned widgets', Quantity: '1', Unit_Cost: line, Extended_Amount: line },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+    });
+
+    it('flags rather than removes a negative freight credit that repeats on an OCR line', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '-110.00',
+        Freight_Amount: '-10.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Returned widgets', Quantity: '1', Unit_Cost: '-100', Extended_Amount: '-100.00' },
+          { Supplier_Invoice_Line_ID: 'LINE-2', Item_Description: 'Freight credit for return 9', Quantity: '1', Unit_Cost: '-10', Extended_Amount: '-10.00' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(getData().Invoice_Line_Replacement_Data).toHaveLength(2);
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Lines -$110.00 + freight -$10.00 + tax $0.00 = -$120.00, but the amount due is -$110.00. Review lines and header charges.',
+      }]));
+    });
+
+    it('keeps a coded freight credit line and clears the matching negative header on resubmit', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '-10.00',
+        Freight_Amount: '-10.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '-10.00' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
+    it('keeps the existing Workday freight when the extracted freight is unparseable', async () => {
+      const getData = mockUpdateClient({ Control_Amount_Total: '155.00', Freight_Amount: '40.00', Tax_Amount: '0.00' });
+
+      await submitSupplierInvoiceUpdateForTest({
+        extractedAmountDue: '$155.00',
+        extractedFreightAmount: 'n/a',
+        finalLines: [
+          { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          { lineOrder: 2, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 },
+        ],
+      });
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe('40.00');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+    });
+
+    it('keeps coded OCR freight lines when the extracted freight equals them', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount: '$4,595.00' });
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
+    it.each(['n/a', '$0.00', ' '])('keeps coded OCR freight lines when the extracted freight is %p', async (extractedFreightAmount) => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest({ extractedFreightAmount });
+
+      const data = getData();
+      expect(data).not.toHaveProperty('Freight_Amount');
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
+    it('never sends an unparseable Workday Freight_Amount on a goods invoice', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '100.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Consulting', Quantity: '1', Unit_Cost: '100', Extended_Amount: '100' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      expect(getData()).not.toHaveProperty('Freight_Amount');
+    });
+
+    it('does not report a header-freight fallback when a resubmit keeps coded OCR freight lines', async () => {
+      mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      const result = await submitSupplierInvoiceUpdateForTest({ freightAsLines: true });
+
+      expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+    });
+
+    it('zeroes an unparseable header freight when a resubmit keeps coded freight lines', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '4595.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+        Invoice_Line_Replacement_Data: [
+          { Supplier_Invoice_Line_ID: 'LINE-1', Item_Description: 'Freight Charge', Quantity: '0', Unit_Cost: '0', Extended_Amount: '4595' },
+        ],
+      });
+
+      await submitSupplierInvoiceUpdateForTest();
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Freight Charge']);
+    });
+
+    it('flags header freight that disagrees with the control total on an update with no lines', async () => {
+      mockUpdateClient({ Control_Amount_Total: '100.00', Freight_Amount: '15.00', Tax_Amount: '0.00' });
+
+      const result = await submitSupplierInvoiceUpdateForTest();
+
+      expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+        field: 'chargeReconciliation',
+        label: 'Lines $0.00 + freight $15.00 + tax $0.00 = $15.00, but the amount due is $100.00. Review lines and header charges.',
+      }]));
+    });
+
+    it('zeroes an unparseable OCR Freight_Amount when freightAsLines is set', async () => {
+      const getData = mockUpdateClient({
+        Control_Amount_Total: '15.00',
+        Freight_Amount: 'n/a',
+        Tax_Amount: '0.00',
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        freightAsLines: true,
+        finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+      });
+
+      const data = getData();
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+    });
+
+    it('keeps freight lines and zeroes the OCR Freight_Amount when freightAsLines is set on update', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '4595.00',
+                Freight_Amount: '4595.00',
+                Tax_Amount: '0.00',
+                Invoice_Line_Replacement_Data: [{
+                  Supplier_Invoice_Line_ID: 'LINE-1',
+                  Item_Description: 'FRN52118A Freight Charge',
+                  Quantity: '1',
+                  Unit_Cost: '4595',
+                  Extended_Amount: '4595'
+                }]
+              }
+            }
+          }
+        });
+      });
+
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+
+      await submitSupplierInvoiceUpdateForTest({
+        freightAsLines: true,
+        finalLines: [
+          { lineOrder: 1, description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' },
+        ],
+      });
+
+      const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      expect(data.Freight_Amount).toBe(0);
+      expect(data.Invoice_Line_Replacement_Data).toEqual([
+        expect.objectContaining({
+          Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+          Extended_Amount: 4595,
+          Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
         })
       ]);
     });
@@ -5459,8 +5762,18 @@ describe('Workday utilities', () => {
           expect.objectContaining({ field: 'poPassthroughWorktags', label: 'omitted PO pass-through worktags (kept PO split rows)' }),
         ]));
         expect(debug).toHaveBeenCalledWith(expect.stringContaining(
-          'Submitted line worktags for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
+          'Submitted lines for invoice (new invoice) (attempt 1): [{"line":1,"worktags":'
         ));
+        const submittedLineLogs = (debug as jest.Mock).mock.calls
+          .map(([message]) => message)
+          .filter((message): message is string => typeof message === 'string' && message.startsWith('Submitted lines for invoice'));
+        expect(submittedLineLogs).toHaveLength(2);
+        expect(submittedLineLogs[1]).toContain('(attempt 2)');
+        for (const message of submittedLineLogs) {
+          expect(message).toMatch(/"quantity":2,"unitCost":150,"extendedAmount":300\b/);
+          expect(message).toContain('"splits":[[');
+          expect(message).toContain('Cost_Center_Reference_ID=CC-Hospitality');
+        }
       });
 
       it('fails without a classifier or fallback cost center retry when no PO pass-through worktags remain', async () => {
@@ -5848,6 +6161,226 @@ describe('Workday utilities', () => {
       const data = capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
       expect(data.Freight_Amount).toBe(15);
       expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+    });
+
+    describe('header freight already on a line', () => {
+      const captureCreate = () => {
+        const mockClient = mockSoapClient();
+        const captured: { request?: any } = {};
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          captured.request = request;
+          callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+        });
+        return () => captured.request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+      };
+
+      it('submits the SUPIN-465729 carrier row as a coded line with no Freight_Amount when freightAsLines is set', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,595.00',
+          freightAsLines: true,
+          invoiceLineQuantityDisplayed: false,
+          finalLines: [
+            { lineOrder: 1, description: 'FRN52118A - Freight Charge - 42,000.00 Pounds', quantity: 0, unitCost: 0, extendedAmount: 4595, spendCategoryId: 'SC-Freight' },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Control_Amount_Total).toBe(4595);
+        expect(data).not.toHaveProperty('Freight_Amount');
+        expect(data.Invoice_Line_Replacement_Data).toEqual([
+          expect.objectContaining({
+            Item_Description: 'FRN52118A - Freight Charge - 42,000.00 Pounds',
+            Quantity: 0,
+            Unit_Cost: 0,
+            Extended_Amount: 4595,
+            Spend_Category_Reference: { ID: [{ $attributes: { type: 'Spend_Category_ID' }, $value: 'SC-Freight' }] },
+          })
+        ]);
+      });
+
+      it('drops a final tax line that repeats header tax and reports it for the amount check', async () => {
+        const getData = captureCreate();
+        const buildNotes = jest.fn().mockReturnValue('');
+
+        const result = await submitNewSupplierInvoiceForTest({
+          buildNotes,
+          extractedAmountDue: '$106.00',
+          extractedTaxAmount: '$6.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Consulting Services', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Sales Tax', quantity: 1, unitCost: 6, extendedAmount: 6 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Tax_Amount).toBe(6);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Consulting Services']);
+        const removal = {
+          field: 'chargeReconciliation',
+          label: 'Removed invoice line "Sales Tax" ($6.00): that amount is already on the header Tax_Amount.',
+        };
+        expect(buildNotes).toHaveBeenCalledWith(expect.arrayContaining([removal]), []);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([removal]));
+      });
+
+      it('submits a freight row as the line with no raw unparseable Freight_Amount', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$15.00',
+          extractedFreightAmount: 'n/a',
+          freightAsLines: true,
+          finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        });
+
+        const data = getData();
+        expect(data).not.toHaveProperty('Freight_Amount');
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Shipping']);
+      });
+
+      it('does not claim a header-freight fallback when the header freight is zero', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$0.00',
+          extractedFreightAmount: '$0.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+      });
+
+      it('does not claim a header-freight fallback when no freight amount is sent', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$15.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        const amountChecks = result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation');
+        expect(amountChecks.map((f: { label: string }) => f.label)).toEqual([
+          'Lines $0.00 + freight $0.00 + tax $0.00 = $0.00, but the amount due is $15.00. Review lines and header charges.',
+        ]);
+      });
+
+      it('puts freight on the header when freightAsLines lines do not add up to the amount due', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$15.00',
+          freightAsLines: true,
+          finalLines: [{ lineOrder: 1, description: 'Shipping', quantity: 1, unitCost: 15, extendedAmount: 15 }],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
+        }]));
+      });
+
+      it('falls back to header freight when freightAsLines is set but no line survived merge', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,595.00',
+          extractedFreightAmount: '$4,595.00',
+          freightAsLines: true,
+          finalLines: [],
+        });
+
+        expect(getData().Freight_Amount).toBe(4595);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.',
+        }]));
+      });
+
+      it('reports header freight that exceeds the amount due when no lines are submitted', async () => {
+        const getData = captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$40.00',
+          extractedFreightAmount: '$50.00',
+          finalLines: [],
+        });
+
+        expect(getData().Invoice_Line_Replacement_Data).toBeUndefined();
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Lines $0.00 + freight $50.00 + tax $0.00 = $50.00, but the amount due is $40.00. Review lines and header charges.',
+        }]));
+      });
+
+      it('does not flag an extracted credit, whose amount due and final lines are both parsed unsigned', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '-$110.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Returned widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+            { lineOrder: 2, description: 'Restocking credit', quantity: 1, unitCost: 10, extendedAmount: 10 },
+          ],
+        });
+
+        expect(result.appliedFallbacks.filter((f: { field: string }) => f.field === 'chargeReconciliation')).toEqual([]);
+      });
+
+      it('reports submitted lines + freight + tax that do not equal the amount due', async () => {
+        captureCreate();
+
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$100.00',
+          extractedFreightAmount: '$15.00',
+          finalLines: [{ lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 }],
+        });
+
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([{
+          field: 'chargeReconciliation',
+          label: 'Lines $100.00 + freight $15.00 + tax $0.00 = $115.00, but the amount due is $100.00. Review lines and header charges.',
+        }]));
+      });
+
+      it('keeps header-only freight and every line when the totals already reconcile', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$115.00',
+          extractedFreightAmount: '$15.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(15);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets']);
+      });
+
+      it('leaves goods lines alone when the extra amount cannot be tied to freight', async () => {
+        const getData = captureCreate();
+
+        await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$4,695.00',
+          extractedFreightAmount: '$4,595.00',
+          finalLines: [
+            { lineOrder: 1, description: 'Widgets', quantity: 1, unitCost: 4595, extendedAmount: 4595 },
+            { lineOrder: 2, description: 'Gadgets', quantity: 1, unitCost: 100, extendedAmount: 100 },
+          ],
+        });
+
+        const data = getData();
+        expect(data.Freight_Amount).toBe(4595);
+        expect(data.Invoice_Line_Replacement_Data.map((l: any) => l.Item_Description)).toEqual(['Widgets', 'Gadgets']);
+      });
     });
 
     it('includes PO passthrough worktags and split line data on create submit', async () => {
@@ -6836,17 +7369,8 @@ describe('Workday utilities', () => {
       ...(invoiced ? { invoiceStatus: { descriptor: 'Fully Invoiced' } } : {}),
     });
 
-    const enabledEnv = { PO_LINE_SELECTION_ENABLED: 'true' };
-
-    it('should leave lines unflagged when PO line availability is off', () => {
-      const lines = [poLine('POL-1', true), poLine('POL-2')];
-
-      expect(markPurchaseOrderLineAvailability(lines, {})).toBe(lines);
-      expect(markPurchaseOrderLineAvailability(lines, { PO_LINE_SELECTION_ENABLED: 'shadow' })).toBe(lines);
-    });
-
     it('should keep every line and flag the ones that can no longer be invoiced', () => {
-      const result = markPurchaseOrderLineAvailability([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')], enabledEnv);
+      const result = markPurchaseOrderLineAvailability([poLine('POL-1', true), poLine('POL-2'), poLine('POL-3')]);
 
       expect(result?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
         ['POL-1', false],
@@ -6889,7 +7413,7 @@ describe('Workday utilities', () => {
         }
       });
 
-      expect(markPurchaseOrderLineAvailability(parsed?.lines, enabledEnv)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
+      expect(markPurchaseOrderLineAvailability(parsed?.lines)?.map((line) => [line.purchaseOrderLineId, line.availableForInvoicing])).toEqual([
         ['POL-1', true],
         ['POL-2', true],
         ['POL-3', false],
