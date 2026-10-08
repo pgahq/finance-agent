@@ -487,7 +487,7 @@ describe('enrich_invoice', () => {
   });
 
   it('flags extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -497,7 +497,7 @@ describe('enrich_invoice', () => {
       relatedLobByCostCenter: new Map()
     });
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -535,11 +535,11 @@ describe('enrich_invoice', () => {
   });
 
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -1227,12 +1227,12 @@ describe('enrich_invoice', () => {
   });
 
   it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1364,10 +1364,10 @@ describe('enrich_invoice', () => {
     });
 
     it('submits freight rows as header freight when the header printed a zero freight', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const invoiceLines = require('../lib/invoice_lines.js');
-      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
         extractedAmountDue: '$125.00',
         extractedFreightAmount: '0.00',
         extractedFreightLabel: 'Shipping and Handling',
