@@ -2,7 +2,7 @@ import { enrichInvoiceFromAttachments } from '../lib/invoice_enrichment.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment } from '../lib/invoice_ocr.js';
 import { DEFAULT_OCR_MODEL_ID, getOcrModel } from '../lib/models.js';
 import { InvoiceMatchingSchema } from '../prompts/enrich_invoice_prompt.js';
-import { InvoiceOcrSchema, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
+import { InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PurchaseOrderEnrichmentContext } from '../lib/purchase_order.js';
 import type { PresignedAttachment } from '../lib/types.js';
@@ -83,6 +83,51 @@ const ocrResult: InvoiceOcrResult = {
   }],
 };
 
+// The same extraction as Haiku returns it: empty strings and arrays instead of null.
+const ocrResponse: InvoiceOcrResponse = {
+  printedSupplier: {
+    supplierName: 'Kristina Sawyer Privacy Consultants',
+    address: '6767 Collins Ave Apt 302, Miami Beach, FL 33141',
+    remitToAddress: 'PO Box 100, Miami, FL 33101',
+    phone: '',
+    email: 'kristysawyer@sawyerprivacyconsultants.com',
+    taxId: '12-3456789',
+    website: '',
+    industry: 'Privacy consulting',
+    contactPerson: '',
+    memo: 'Privacy consulting services for the week of Sept 28',
+  },
+  printedBillTo: {
+    companyName: 'The PGA of America',
+    address: '1916 PGA Pkwy, Frisco, TX 75033',
+    phone: '',
+    email: '',
+  },
+  extractedInvoiceDate: '2026-10-02',
+  extractedAmountDue: '$1,540.00',
+  extractedSuppliersInvoiceNumber: '401',
+  extractedFreightAmount: '',
+  extractedFreightLabel: '',
+  extractedTaxAmount: '$40.00',
+  extractedTaxLabel: 'Sales Tax',
+  extractedPurchaseOrderNumber: 'PO-414007',
+  extractedAccountNumber: 'AC-1033562',
+  extractedJobNumber: '',
+  extractedCustomerId: ' ',
+  extractedServicePeriod: 'Sept 28 - Oct 2',
+  extractedPaymentTerms: 'Due on receipt',
+  invoiceLineQuantityDisplayed: true,
+  extractedInvoiceLines: [{
+    description: 'Privacy consulting',
+    descriptionCells: [],
+    quantity: 14,
+    unitCost: '$110.00',
+    totalPrice: '$1,540.00',
+    hasDiscount: null,
+    tableNumber: 1,
+  }],
+};
+
 const matchingResult: InvoiceMatchingResult = {
   supplier: {
     status: 'found',
@@ -151,6 +196,36 @@ describe('invoice OCR pass', () => {
     });
   });
 
+  it('stays within the Anthropic structured-output limits of 16 union-typed and 24 optional parameters', async () => {
+    const { zodSchema } = jest.requireActual<typeof import('ai')>('ai');
+    const jsonSchema = await zodSchema(InvoiceOcrSchema).jsonSchema;
+    let unions = 0;
+    let optional = 0;
+    const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+      for (const [key, property] of Object.entries<any>(node.properties ?? {})) {
+        if (Array.isArray(property.type) || property.anyOf) unions++;
+        if (!(node.required ?? []).includes(key)) optional++;
+        walk(property);
+      }
+      walk(node.items);
+      (node.anyOf ?? []).forEach(walk);
+    };
+    walk(jsonSchema);
+
+    expect(unions).toBeLessThanOrEqual(16);
+    expect(unions).toBe(3);
+    expect(optional).toBe(0);
+  });
+
+  it('turns empty strings and arrays from Haiku back into null', () => {
+    expect(normalizeInvoiceOcrResult(ocrResponse)).toEqual(ocrResult);
+    expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedPaymentTerms: '', extractedInvoiceLines: [] })).toMatchObject({
+      extractedPaymentTerms: null,
+      extractedInvoiceLines: null,
+    });
+  });
+
   it('builds an OCR schema without numeric bounds, which Anthropic structured outputs reject', async () => {
     const { zodSchema } = jest.requireActual<typeof import('ai')>('ai');
     const jsonSchema = JSON.stringify(await zodSchema(InvoiceOcrSchema).jsonSchema);
@@ -161,14 +236,14 @@ describe('invoice OCR pass', () => {
 
   describe('extractInvoiceDocuments', () => {
     it('sends the PDFs and document roles to the OCR model with no tools and no temperature', async () => {
-      mockGetAiResponse.mockResolvedValueOnce(ocrResult);
+      mockGetAiResponse.mockResolvedValueOnce(ocrResponse);
 
       const result = await extractInvoiceDocuments(
         [pdf, backup],
         [{ fileName: 'invoice.pdf', role: 'invoice' }, { fileName: 'timesheet.pdf', role: 'supporting' }]
       );
 
-      expect(result).toBe(ocrResult);
+      expect(result).toEqual(normalizeInvoiceOcrResult(ocrResponse));
       expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       const [call] = mockGetAiResponse.mock.calls[0];
       expect(call.schema).toBe(InvoiceOcrSchema);
@@ -264,7 +339,7 @@ describe('invoice OCR pass', () => {
     };
 
     it('runs OCR on the PDFs, then matching on gpt-5.4 with the OCR JSON and no file parts', async () => {
-      mockGetAiResponse.mockResolvedValueOnce(ocrResult).mockResolvedValueOnce(matchingResult);
+      mockGetAiResponse.mockResolvedValueOnce(ocrResponse).mockResolvedValueOnce(matchingResult);
 
       const result = await enrichInvoiceFromAttachments(
         {},
@@ -288,11 +363,11 @@ describe('invoice OCR pass', () => {
       const matchingContent = matchingCall.messages[0].content;
       expect(matchingContent).toHaveLength(1);
       expect(matchingContent[0].type).toBe('text');
-      expect(matchingContent[0].text).toContain(JSON.stringify(ocrResult, null, 2));
+      expect(matchingContent[0].text).toContain(JSON.stringify(normalizeInvoiceOcrResult(ocrResponse), null, 2));
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
-      expect(result).toEqual(mergeInvoiceEnrichment(matchingResult, ocrResult));
+      expect(result).toEqual(mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)));
     });
 
     it('throws when OCR fails and never calls the matching model', async () => {

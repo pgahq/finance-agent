@@ -109,15 +109,28 @@ jest.mock('../lib/ai.js', () => {
     }
   });
   let pendingFullResult: Promise<unknown> | undefined;
+  // Shapes a queued full result like the Haiku response: empty strings and arrays instead of null.
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const textFields = (fields: Record<string, unknown> = {}) =>
+    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, text(value)]));
   const toOcrResult = (full: any) => {
-    const documentFields = Object.fromEntries(
-      Object.entries(full ?? {}).filter(([key]) => key.startsWith('extracted') || key === 'invoiceLineQuantityDisplayed')
+    const headerText = Object.fromEntries(
+      Object.entries(full ?? {})
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines'].includes(key))
+        .map(([key, value]) => [key, text(value)])
     );
     return {
-      printedSupplier: full?.supplier?.extractedInformation ?? {},
-      printedBillTo: full?.companyVerification?.extractedInformation ?? {},
-      ...documentFields,
-      extractedPaymentTerms: full?.extractedPaymentTerms ? { name: full.extractedPaymentTerms.name } : null,
+      printedSupplier: textFields(full?.supplier?.extractedInformation),
+      printedBillTo: textFields(full?.companyVerification?.extractedInformation),
+      ...headerText,
+      extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
+      invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
+      extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
+        ...line,
+        descriptionCells: line.descriptionCells ?? [],
+        unitCost: text(line.unitCost),
+        totalPrice: text(line.totalPrice),
+      })),
     };
   };
   return {
@@ -474,7 +487,7 @@ describe('enrich_invoice', () => {
   });
 
   it('flags extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
@@ -484,7 +497,7 @@ describe('enrich_invoice', () => {
       relatedLobByCostCenter: new Map()
     });
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -522,11 +535,11 @@ describe('enrich_invoice', () => {
   });
 
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'not_found',
         confidence: 0.2,
@@ -1202,7 +1215,7 @@ describe('enrich_invoice', () => {
     await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
-      { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      { description: 'Widgets', descriptionCells: null, quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
     ]);
     expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
       expect.anything(),
@@ -1214,12 +1227,12 @@ describe('enrich_invoice', () => {
   });
 
   it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
-    const { getAiResponse } = require('../lib/ai.js');
+    const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
     const { notifyEnrichmentResult } = require('../lib/slack.js');
     const invoiceLines = require('../lib/invoice_lines.js');
 
-    getAiResponse.mockResolvedValueOnce({
+    enrichmentResponse.mockResolvedValueOnce({
       supplier: {
         status: 'matching',
         confidence: 0.9,
@@ -1351,10 +1364,10 @@ describe('enrich_invoice', () => {
     });
 
     it('submits freight rows as header freight when the header printed a zero freight', async () => {
-      const { getAiResponse } = require('../lib/ai.js');
+      const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const invoiceLines = require('../lib/invoice_lines.js');
-      getAiResponse.mockResolvedValueOnce(enrichmentWith({
+      enrichmentResponse.mockResolvedValueOnce(enrichmentWith({
         extractedAmountDue: '$125.00',
         extractedFreightAmount: '0.00',
         extractedFreightLabel: 'Shipping and Handling',
