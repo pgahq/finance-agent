@@ -29,7 +29,7 @@ Out of scope examples:
 
 - Social engineering attacks against PGA staff
 - Denial-of-service attacks against PGA production infrastructure
-- Issues in third-party services (Workday, AWS, OpenAI) unless introduced by this project's integration code
+- Issues in third-party services (Workday, AWS, Vercel AI Gateway, OpenAI, Anthropic) unless introduced by this project's integration code
 
 ## Safe harbor
 
