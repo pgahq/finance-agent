@@ -453,7 +453,7 @@ Retry guardrails:
 - Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
 - The repair agent must inspect the latest failed request before deciding whether to retry.
 - Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available. The default supplier is never used when a submitted line links to a PO line, because Workday only lets the PO's own supplier invoice it.
-- When Workday rejects the supplier for a PO (`You can't select this supplier to invoice this purchase order`), submit retries once with the supplier on the PO, but only if the invoice supplier looks like the same company (matching name or alternate name, phone, or business email domain). Otherwise it fails, and Slack shows a *PO supplier mismatch* block naming the PO's supplier.
+- When Workday rejects the supplier for a PO (`You can't select this supplier to invoice this purchase order`), submit retries once with the supplier on the PO, but only if the invoice supplier looks like the same company (matching name or alternate name of at least two distinctive words, matching phone, or a shared business email domain plus a shared name word; free mail, ISP, billing-platform, and PGA domains never count). Otherwise it fails, and Slack shows a *PO supplier mismatch* block naming the PO's supplier.
 - The loop tracks failed payload fingerprints and aborts if a repair would repeat a payload that already failed.
 - The final validation fault is rethrown after the third failed submit attempt or when the repair agent chooses `give_up`.
 

@@ -37,9 +37,22 @@ const NAME_STOPWORDS = new Set([
   'intl', 'international', 'enterprises', 'holdings', 'lp', 'llp', 'pllc', 'pc',
 ]);
 
-const FREE_EMAIL_DOMAINS = new Set([
-  'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'aol.com', 'icloud.com',
+// Domains many unrelated senders share: free mail, ISP mail, billing platforms that send on a vendor's
+// behalf, and PGA's own domains (a misread bill-to block or a supplier record can carry them).
+const SHARED_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'rocketmail.com', 'outlook.com', 'hotmail.com',
+  'live.com', 'msn.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com', 'protonmail.com', 'proton.me',
+  'gmx.com', 'mail.com', 'zoho.com',
+  'comcast.net', 'att.net', 'sbcglobal.net', 'bellsouth.net', 'verizon.net', 'cox.net', 'charter.net',
+  'spectrum.net', 'earthlink.net', 'frontier.com', 'frontiernet.net', 'centurylink.net', 'optonline.net',
+  'windstream.net', 'roadrunner.com', 'twc.com',
+  'intuit.com', 'quickbooks.com', 'bill.com', 'hq.bill.com', 'paypal.com', 'squareup.com', 'stripe.com',
+  'freshbooks.com', 'xero.com', 'invoicecloud.com',
+  'pgahq.com', 'pga.com', 'pgaofamerica.com',
 ]);
+
+/** A name-only match needs this many distinctive words, so generic one-word names like "Golf" never tie suppliers. */
+const MIN_NAME_MATCH_TOKENS = 2;
 
 function nameTokens(name: string): Set<string> {
   const tokens = name
@@ -52,11 +65,16 @@ function nameTokens(name: string): Set<string> {
   return new Set(tokens);
 }
 
-/** Names match only when they reduce to the same non-empty set of distinctive words. */
+/** Names match only when they reduce to the same set of at least two distinctive words. */
 export function supplierNamesMatch(left: string, right: string): boolean {
   const a = nameTokens(left);
   const b = nameTokens(right);
-  return a.size > 0 && a.size === b.size && [...a].every((token) => b.has(token));
+  return a.size >= MIN_NAME_MATCH_TOKENS && a.size === b.size && [...a].every((token) => b.has(token));
+}
+
+function namesShareToken(left: string[], right: string[]): boolean {
+  const rightTokens = new Set(right.flatMap((name) => [...nameTokens(name)]));
+  return left.some((name) => [...nameTokens(name)].some((token) => rightTokens.has(token)));
 }
 
 function phoneKey(phone: string): string | undefined {
@@ -65,17 +83,21 @@ function phoneKey(phone: string): string | undefined {
 }
 
 function businessEmailDomain(email: string): string | undefined {
-  const domain = email.trim().toLowerCase().split('@')[1]?.replace(/[>\s].*$/, '');
-  return domain && !FREE_EMAIL_DOMAINS.has(domain) ? domain : undefined;
+  const domain = email.trim().toLowerCase().split('@')[1]?.replace(/[>\s,;].*$/, '');
+  return domain && !SHARED_EMAIL_DOMAINS.has(domain) ? domain : undefined;
 }
 
 function present(values: Array<string | null | undefined>): string[] {
   return values.map((value) => value?.trim()).filter((value): value is string => Boolean(value));
 }
 
-function contentField(content: string, label: string): string[] {
-  const line = content.split('\n').find((row) => row.startsWith(`${label}:`));
-  return line ? present(line.slice(label.length + 1).split(',')) : [];
+/** Splits a comma-joined list, as cached supplier documents and enrichment both write phones and emails. */
+function listValues(value: string | null | undefined): string[] {
+  return present(value?.split(',') ?? []);
+}
+
+function contentLine(content: string, label: string): string | undefined {
+  return content.split('\n').find((row) => row.startsWith(`${label}:`))?.slice(label.length + 1);
 }
 
 /** Reads a cached supplier document (see `createSupplierContent`) into the names and contacts used to relate suppliers. */
@@ -86,12 +108,12 @@ export function supplierIdentityFromDocument(row: { content?: string | null; met
     : undefined;
   return {
     names: present([
-      ...contentField(content, 'Company Name'),
-      ...contentField(content, 'Alternate Names'),
+      contentLine(content, 'Company Name'),
+      ...listValues(contentLine(content, 'Alternate Names')),
       typeof metadataName === 'string' ? metadataName : undefined,
     ]),
-    phones: contentField(content, 'Phone'),
-    emails: contentField(content, 'Email'),
+    phones: listValues(contentLine(content, 'Phone')),
+    emails: listValues(contentLine(content, 'Email')),
   };
 }
 
@@ -115,6 +137,8 @@ export function relateSupplierIdentities(invoice: SupplierIdentity, purchaseOrde
     return key !== undefined && poPhones.has(key);
   });
   if (sharedPhone) return `phone ${sharedPhone} matches`;
+  // A shared business domain counts only alongside a shared name word, since one sender can bill for several companies.
+  if (!namesShareToken(invoice.names, purchaseOrder.names)) return undefined;
   const poDomains = new Set(present(purchaseOrder.emails.map(businessEmailDomain)));
   for (const email of invoice.emails) {
     const domain = businessEmailDomain(email);
@@ -149,8 +173,8 @@ export function decidePurchaseOrderSupplier(
   const invoiceIdentity = mergeIdentities(
     {
       names: present([invoiceSupplier.resolvedName, invoiceSupplier.extractedName]),
-      phones: present([invoiceSupplier.phone]),
-      emails: present([invoiceSupplier.email]),
+      phones: listValues(invoiceSupplier.phone),
+      emails: listValues(invoiceSupplier.email),
     },
     profiles.submitted,
   );

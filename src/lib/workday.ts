@@ -732,12 +732,21 @@ function submitLinksPurchaseOrderLines(options: buildSubmitInvoiceDataOptions): 
   return !options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options);
 }
 
-/** True when a new supplier invoice built from these lines would link at least one PO line. */
+/**
+ * True when a submit built from these lines would link at least one PO line. Pass the current invoice on
+ * update, where OCR lines that carry a PO line reference are kept when there are no final lines.
+ */
 export function finalLinesLinkPurchaseOrderLines(
-  finalLines: FinalInvoiceLine[],
-  options: { omitPurchaseOrderLineReference?: boolean; invoiceLineQuantityDisplayed?: boolean } = {}
+  finalLines: FinalInvoiceLine[] | undefined,
+  options: {
+    currentInvoice?: unknown;
+    filterInvoiceLines?: boolean;
+    omitPurchaseOrderLineReference?: boolean;
+    invoiceLineQuantityDisplayed?: boolean;
+  } = {}
 ): boolean {
-  return submitLinksPurchaseOrderLines({ currentInvoice: {}, finalLines, ...options });
+  const { currentInvoice, ...rest } = options;
+  return submitLinksPurchaseOrderLines({ currentInvoice: currentInvoice ?? {}, finalLines, ...rest });
 }
 
 function linesCarryPoPassthroughWorktags(options: buildSubmitInvoiceDataOptions): boolean {

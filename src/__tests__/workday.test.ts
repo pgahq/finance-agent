@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, finalLinesLinkPurchaseOrderLines, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -8314,6 +8314,32 @@ describe('Workday utilities', () => {
         message: 'Processing error occurred. The task submitted is not authorized.'
       });
       await expect(getRelatedWorktagsForCostCenters(mockContext, ['cc-wid-1'])).rejects.not.toHaveProperty('body');
+    });
+  });
+
+  describe('finalLinesLinkPurchaseOrderLines', () => {
+    const currentInvoice = {
+      Invoice_Line_Replacement_Data: [{
+        Line_Order: 1,
+        Extended_Amount: 100,
+        Purchase_Order_Line_Reference: { ID: [{ attributes: { 'wd:type': 'Purchase_Order_Line_ID' }, $value: 'POL-1' }] },
+      }],
+    };
+
+    it('counts kept OCR lines that carry a PO line reference on update', () => {
+      expect(finalLinesLinkPurchaseOrderLines(undefined, { currentInvoice, filterInvoiceLines: true })).toBe(true);
+    });
+
+    it('reports no link when the PO line reference is omitted', () => {
+      expect(finalLinesLinkPurchaseOrderLines(undefined, {
+        currentInvoice,
+        filterInvoiceLines: true,
+        omitPurchaseOrderLineReference: true,
+      })).toBe(false);
+    });
+
+    it('reports no link without a current invoice or final lines', () => {
+      expect(finalLinesLinkPurchaseOrderLines(undefined)).toBe(false);
     });
   });
 

@@ -386,7 +386,9 @@ async function processInvoice(
     const purchaseOrderSupplier = (await resolvePurchaseOrderSupplier(context.dbConnection, {
       purchaseOrderNumber: extractedPurchaseOrderNumber,
       purchaseOrderSupplier: poSupplier,
-      linksPurchaseOrderLines: Boolean(finalLines?.length) && finalLinesLinkPurchaseOrderLines(finalLines ?? [], {
+      linksPurchaseOrderLines: finalLinesLinkPurchaseOrderLines(finalLines, {
+        currentInvoice: detailedInvoice,
+        filterInvoiceLines: true,
         omitPurchaseOrderLineReference: poClosedForInvoicing,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       }),

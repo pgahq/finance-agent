@@ -47,7 +47,7 @@ describe('supplierNamesMatch', () => {
   it.each([
     ['Club Pro Manufacturing USA', 'CLUB PRO MFG'],
     ['Club Pro Manufacturing', 'Club Pro Mfg., Inc.'],
-    ['A & B Golf Co', 'A and B Golf Company'],
+    ['Pro Golf & Turf Co', 'Pro Golf and Turf Company'],
   ])('matches %s and %s', (left, right) => {
     expect(supplierNamesMatch(left, right)).toBe(true);
   });
@@ -56,6 +56,8 @@ describe('supplierNamesMatch', () => {
     ['GOLF GEAR LTD', 'Club Pro Manufacturing USA'],
     ['Club Pro', 'Club Pro Golf'],
     ['Inc.', 'LLC'],
+    ['Golf Holdings Inc', 'Golf Group LLC'],
+    ['Golf America', 'Golf International'],
   ])('does not match %s and %s', (left, right) => {
     expect(supplierNamesMatch(left, right)).toBe(false);
   });
@@ -69,6 +71,25 @@ describe('supplierIdentityFromDocument', () => {
       emails: ['ar@golfgear.example'],
     });
   });
+
+  it('keeps a comma inside the company name and splits comma-joined phones and emails', () => {
+    expect(supplierIdentityFromDocument({
+      content: [
+        'Company Name: Smith, Jones & Co',
+        'Phone: 214-555-0100, 214-555-0199',
+        'Email: ar@smithjones.example, billing@smithjones.example',
+      ].join('\n'),
+    })).toEqual({
+      names: ['Smith, Jones & Co'],
+      phones: ['214-555-0100', '214-555-0199'],
+      emails: ['ar@smithjones.example', 'billing@smithjones.example'],
+    });
+  });
+
+  it('does not tie a company name containing a comma to its first word', () => {
+    const smithJones = supplierIdentityFromDocument({ content: 'Company Name: Smith, Jones & Co' });
+    expect(relateSupplierIdentities({ names: ['Smith LLC'], phones: [], emails: [] }, smithJones)).toBeUndefined();
+  });
 });
 
 describe('relateSupplierIdentities', () => {
@@ -79,18 +100,25 @@ describe('relateSupplierIdentities', () => {
     )).toBe('phone (214) 555-0100 matches');
   });
 
-  it('ignores free email domains', () => {
+  it.each(['gmail.com', 'comcast.net', 'quickbooks.com', 'pgahq.com', 'pga.com'])('ignores the shared domain %s', (domain) => {
     expect(relateSupplierIdentities(
-      { names: ['A'], phones: [], emails: ['owner@gmail.com'] },
-      { names: ['B'], phones: [], emails: ['someone@gmail.com'] },
+      { names: ['Club Pro'], phones: [], emails: [`owner@${domain}`] },
+      { names: ['Club Pro Golf'], phones: [], emails: [`someone@${domain}`] },
     )).toBeUndefined();
   });
 
-  it('relates suppliers on a shared business email domain', () => {
+  it('relates suppliers on a shared business email domain when their names share a word', () => {
     expect(relateSupplierIdentities(
-      { names: ['A'], phones: [], emails: ['ar@clubpro.example'] },
-      { names: ['B'], phones: [], emails: ['billing@clubpro.example'] },
+      { names: ['Club Pro'], phones: [], emails: ['ar@clubpro.example'] },
+      { names: ['Club Pro Golf'], phones: [], emails: ['billing@clubpro.example'] },
     )).toBe('email domain clubpro.example matches');
+  });
+
+  it('ignores a shared business email domain when the names share no word', () => {
+    expect(relateSupplierIdentities(
+      { names: ['Fairway Turf Supply'], phones: [], emails: ['ar@billingpartner.example'] },
+      { names: ['Club Pro Manufacturing USA'], phones: [], emails: ['billing@billingpartner.example'] },
+    )).toBeUndefined();
   });
 });
 
@@ -137,6 +165,14 @@ describe('decidePurchaseOrderSupplier', () => {
       submittedSupplierWID: 'default-supplier-wid',
       invoiceSupplier: { extractedName: 'Club Pro Manufacturing' },
     }))?.purchaseOrderSupplier.allowRetry).toBe(true);
+  });
+
+  it('splits comma-joined invoice phones before relating suppliers', () => {
+    expect(decidePurchaseOrderSupplier(incidentInput({
+      invoiceSupplier: { resolvedName: 'GOLF GEAR LTD', phone: '972-555-0000, (214) 555-0100', email: 'ar@golfgear.example, x@gmail.com' },
+    }), {
+      purchaseOrder: supplierIdentityFromDocument(clubProDocument),
+    })?.reason).toBe('phone (214) 555-0100 matches');
   });
 
   it('refuses the PO supplier retry when nothing ties the suppliers together', () => {
