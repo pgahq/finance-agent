@@ -30,9 +30,19 @@ import { normalizePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
+  chargeReconciliationLogSummary,
+  chargeReconciliationMessages,
+  CHARGE_RECONCILIATION_FALLBACK_FIELD,
+  extractedChargeCheck,
+  extractedChargeReconciliation,
+  formatAmountCheckNotes,
+  mergeAmountCheckMessages,
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
+  overlaySharedPoWorktagsOnUnmatchedLines,
+  prepareInvoiceCharges,
   resolveHeaderChargeAmounts,
+  restoreClearedFreightFromRows,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -257,16 +267,13 @@ async function processInvoice(
       spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
     } : undefined;
 
-    const { merchandiseLines, freightAmountFromLines } = splitFreightLines(
-      canModifyInvoice
-        ? (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost))
-        : []
-    );
-    const candidateLines = withComposedLineDescriptions(merchandiseLines);
+    const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
+    // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
+    // freight-as-lines and duplicate removal then work from those amounts.
     const {
-      extractedFreightAmount,
+      extractedFreightAmount: resolvedFreightAmount,
       extractedTaxAmount,
-      freightCleared,
+      freightCleared: headerFreightCleared,
       taxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
@@ -275,8 +282,39 @@ async function processInvoice(
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
-      freightAmountFromLines,
+      freightAmountFromLines: canModifyInvoice ? splitFreightLines(extractedLines).freightAmountFromLines : undefined,
     });
+    // Annotate-only runs submit nothing, so there is no header freight to restore.
+    const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && targetSupplierWID ? extractedLines : [], {
+      amountDue: extractedAmountDue,
+      tax: extractedTaxAmount,
+      freightCleared: headerFreightCleared,
+    });
+    const freightCleared = headerFreightCleared && restoredFreight.freight == null;
+    const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
+    const submitsLines = canModifyInvoice && Boolean(targetSupplierWID);
+    // Annotate-only runs never change lines, so both freight behaviors need a submit.
+    const reconcilesFreight = submitsLines;
+    const charges = prepareInvoiceCharges(
+      canModifyInvoice ? extractedLines : [],
+      extractedCharges,
+      { allowFreightAsLines: reconcilesFreight, removeDuplicates: reconcilesFreight }
+    );
+    const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
+    // Without a submit, buildSubmitInvoiceData never runs its amount check, so check the extracted totals here.
+    const checkedReconciliation = submitsLines
+      ? chargeReconciliation
+      : extractedChargeReconciliation(extractedLines, extractedCharges);
+    const chargeCheck = [
+      ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(submitsLines
+        ? chargeReconciliationMessages(chargeReconciliation)
+        : extractedChargeCheck(extractedLines, extractedCharges)),
+    ];
+    if (chargeCheck.length) {
+      debug('Invoice amount check', { ...chargeReconciliationLogSummary(checkedReconciliation), annotateOnly: !submitsLines });
+    }
+    const candidateLines = withComposedLineDescriptions(charges.lines);
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -288,23 +326,40 @@ async function processInvoice(
     let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
     if (candidateLines.length > 0) {
       debug(`Building final invoice lines from ${candidateLines.length} extracted line(s)`);
-      const built = await buildFinalInvoiceLines(
+      const fallbackIds = {
+        fundId: process.env.FALLBACK_FUND_ID,
+        costCenterId: process.env.FALLBACK_COST_CENTER_ID,
+        spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
+        lineOfBusinessId: process.env.FALLBACK_LOB_ID,
+      };
+      const relatedLobLookup = (costCenterIds: string[]) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
+      let built = await buildFinalInvoiceLines(
         candidateLines,
         poLines,
         invoiceData.emailContext?.plainTextBody,
-        {
-          fundId: process.env.FALLBACK_FUND_ID,
-          costCenterId: process.env.FALLBACK_COST_CENTER_ID,
-          spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
-          lineOfBusinessId: process.env.FALLBACK_LOB_ID,
-        },
+        fallbackIds,
         emailWorktags,
-        (costCenterIds) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds),
+        relatedLobLookup,
         invoiceLineQuantityDisplayed,
         // A Closed or Pending Close PO omits every line reference, so it skips date-based selection.
         poClosedForInvoicing ? undefined : { invoiceDate: extractedInvoiceDate, servicePeriod: result.extractedServicePeriod },
         abortSignal
       );
+      // An all-freight invoice must keep its coded freight line; if the PO merge returned none,
+      // build it again without the PO.
+      if (built.lines.length === 0 && freightAsLines) {
+        debug('PO merge returned no lines for an all-freight invoice; rebuilding the freight line without the PO');
+        const rebuilt = await buildFinalInvoiceLines(
+          candidateLines,
+          undefined,
+          invoiceData.emailContext?.plainTextBody,
+          fallbackIds,
+          emailWorktags,
+          relatedLobLookup,
+          invoiceLineQuantityDisplayed
+        );
+        built = { ...rebuilt, lines: overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines) };
+      }
       finalLines = built.lines;
       lineFallbacks = built.appliedFallbacks;
       relatedLobByCostCenter = built.relatedLobByCostCenter;
@@ -326,7 +381,8 @@ async function processInvoice(
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
-    const lineTotalReviewNote = finalLines && !chargeWithheld ? lineTotalMismatchNote(finalLines, {
+    // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
+    const lineTotalReviewNote = finalLines && !chargeWithheld && !freightAsLines ? lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
       freightAmount: extractedFreightAmount,
       taxAmount: extractedTaxAmount,
@@ -345,6 +401,7 @@ async function processInvoice(
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
       return baseNotes
+        + formatAmountCheckNotes(mergeAmountCheckMessages(chargeCheck, merged.chargeReconciliationLabels ?? []))
         + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
         + (invoiceNumberFallback.length ? `\n\nFallback values applied: ${invoiceNumberFallback.join('; ')}` : '');
@@ -375,6 +432,7 @@ async function processInvoice(
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         extractedFreightAmount,
+        freightAsLines,
         extractedTaxAmount,
         freightCleared,
         taxCleared,
@@ -452,6 +510,9 @@ async function processInvoice(
         paymentTerms: result.extractedPaymentTerms?.name,
       },
       poLineCount: poLines?.length,
+      ...(chargeCheck.length || fallbacks.chargeReconciliationLabels?.length
+        ? { chargeCheck: mergeAmountCheckMessages(chargeCheck, fallbacks.chargeReconciliationLabels ?? []) }
+        : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
         : undefined,
@@ -516,6 +577,7 @@ interface Fallbacks extends UpfrontFallbacks {
   purchaseOrderLineNotes: string[];
   poPassthroughWorktagsOmitted: boolean;
   duplicateWorktagsLabel?: string;
+  chargeReconciliationLabels?: string[];
   omittedWorktags?: string[];
   validationErrorFields?: Set<string>;
 }
@@ -542,6 +604,7 @@ function mergeFallbacks(upfront: UpfrontFallbacks, submissionFallbacks: AppliedF
       .filter((note): note is string => !!note))],
     poPassthroughWorktagsOmitted: submissionFallbacks.some(f => f.field === 'poPassthroughWorktags'),
     duplicateWorktagsLabel: submissionFallbacks.find(f => f.field === 'duplicateWorktags')?.label,
+    chargeReconciliationLabels: submissionFallbacks.filter(f => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD).map(f => f.label),
     omittedWorktags: omittedWorktags.length ? omittedWorktags : undefined,
     validationErrorFields: validationErrorFields.size ? validationErrorFields : undefined,
   };

@@ -129,6 +129,35 @@ function appendPriorFailureBlocks(
   });
 }
 
+const CHARGE_CHECK_LINE_LIMIT = 500;
+const CHARGE_CHECK_MAX_SECTIONS = 4;
+
+function escapeSlackMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Lines quote supplier-controlled invoice descriptions, so each is escaped, capped, and given its
+// own section. The section count is bounded and the last line (the submit-time check) is always kept.
+function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): void {
+  if (chargeCheck.length === 0) return;
+  const shown = chargeCheck.length > CHARGE_CHECK_MAX_SECTIONS
+    ? [
+        ...chargeCheck.slice(0, CHARGE_CHECK_MAX_SECTIONS - 2),
+        `${chargeCheck.length - (CHARGE_CHECK_MAX_SECTIONS - 1)} more amount-check notes are in the Workday note.`,
+        chargeCheck[chargeCheck.length - 1],
+      ]
+    : chargeCheck;
+  shown.forEach((line, index) => {
+    // Escape before capping so the cap bounds the text Slack receives; drop a cut-off entity.
+    const capped = truncateSlackText(escapeSlackMrkdwn(line), CHARGE_CHECK_LINE_LIMIT).replace(/&[a-z]{0,3}…$/, '…');
+    const bullet = `• ${capped}`;
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: index === 0 ? `*Amount Check*\n${bullet}` : bullet }
+    });
+  });
+}
+
 function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
   const changeLines: string[] = [];
   const fallbackLines: string[] = [];
@@ -229,6 +258,11 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       text: { type: 'mrkdwn', text: truncateSlackText(`*Fallbacks Applied*\n${fallbackLines.map((line) => `• ${line}`).join('\n')}`) }
     });
   }
+
+  const chargeCheck = Array.isArray(details.chargeCheck)
+    ? details.chargeCheck.filter((line): line is string => typeof line === 'string')
+    : [];
+  appendChargeCheckBlock(blocks, chargeCheck);
 
   const priorFailures = Array.isArray(details.priorFailures) ? details.priorFailures : [];
   appendPriorFailureBlocks(
@@ -591,6 +625,8 @@ export interface EnrichmentNotification {
     paymentTerms?: string;
   };
   poLineCount?: number;
+  /** Duplicate charge lines removed, or lines + freight + tax that do not match the amount due. */
+  chargeCheck?: string[];
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
@@ -608,7 +644,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -735,6 +771,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
       text: { type: 'mrkdwn', text: `*Fallbacks Applied*\n${fallbackLines.map(l => `• ${l}`).join('\n')}` }
     });
   }
+
+  appendChargeCheckBlock(blocks, chargeCheck ?? []);
 
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {
