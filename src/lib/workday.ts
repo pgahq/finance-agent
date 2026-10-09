@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
@@ -495,9 +495,16 @@ export interface PurchaseOrderDocumentStatus {
   descriptor?: string;
 }
 
+export interface PurchaseOrderSupplier {
+  workdayId: string;
+  descriptor: string;
+  supplierId?: string;
+}
+
 export interface ParsedPurchaseOrder {
   documentNumber: string;
   company?: PurchaseOrderCompany;
+  supplier?: PurchaseOrderSupplier;
   documentStatus?: PurchaseOrderDocumentStatus;
   lines: PurchaseOrderLine[];
 }
@@ -706,6 +713,9 @@ function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoi
   return lines.some((line: any) => line.Purchase_Order_Line_Reference);
 }
 
+function submitLinksPurchaseOrderLines(options: buildSubmitInvoiceDataOptions): boolean {
+  return !options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options);
+}
 function linesCarryPoPassthroughWorktags(options: buildSubmitInvoiceDataOptions): boolean {
   return (options.finalLines ?? []).some(line => Boolean(line.poPassthroughWorktagsReference?.length));
 }
@@ -1038,6 +1048,15 @@ async function getValidationFallbackField(
     return undefined;
   }
 
+  // Callers already submit the PO's supplier, and the default supplier can never invoice a PO, so this fault
+  // never reaches the classifier.
+  if (isSupplierNotAllowedForPurchaseOrderError(validationText)) {
+    debug('Validation rejects the supplier for this PO; failing without fallback retry', {
+      supplierWID: options.supplierWID,
+    });
+    return undefined;
+  }
+
   if (options.assigneeWID && isAssigneeValidationError(validationText)) {
     debug('Validation references assignee; retrying without Assignee_Reference');
     return 'assignee';
@@ -1139,11 +1158,13 @@ function getFallbackRetryBuildOptions(
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
+  // Workday only lets the PO's own supplier invoice PO-linked lines, so the default supplier cannot.
   if (
     field === 'supplier'
     &&
     defaultSupplierWID
     && normalizeSupplierWID(options.supplierWID) !== defaultSupplierWID
+    && !submitLinksPurchaseOrderLines(options)
   ) {
     return {
       buildOptions: {
@@ -2816,6 +2837,21 @@ function parsePurchaseOrderCompany(poData: any): PurchaseOrderCompany | undefine
   return { workdayId, descriptor };
 }
 
+function parsePurchaseOrderSupplier(poData: any): PurchaseOrderSupplier | undefined {
+  const ref = ([] as any[]).concat(poData?.Supplier_Reference ?? [])[0];
+  if (!ref) return undefined;
+  const ids = ([] as any[]).concat(ref.ID ?? []);
+  const workdayId = ids.find((id: any) => id.$attributes?.type === 'WID')?.$value;
+  if (!workdayId) return undefined;
+  const supplierId = ids.find((id: any) => id.$attributes?.type === 'Supplier_ID')?.$value;
+  const descriptor = ref.descriptor ?? ref.$attributes?.Descriptor ?? supplierId ?? workdayId;
+  return {
+    workdayId: String(workdayId),
+    descriptor: String(descriptor),
+    ...(supplierId ? { supplierId: String(supplierId) } : {}),
+  };
+}
+
 function parsePurchaseOrderDocumentStatus(poData: any): PurchaseOrderDocumentStatus | undefined {
   return parseStatusReference(poData?.Purchase_Order_Document_Status_Reference, 'Document_Status_ID');
 }
@@ -2840,9 +2876,11 @@ export function parsePurchaseOrder(poResponse: any): ParsedPurchaseOrder | undef
   const poData = getPurchaseOrderData(poResponse);
   if (!poData?.Document_Number) return undefined;
   const documentStatus = parsePurchaseOrderDocumentStatus(poData);
+  const supplier = parsePurchaseOrderSupplier(poData);
   return {
     documentNumber: poData.Document_Number,
     company: parsePurchaseOrderCompany(poData),
+    ...(supplier ? { supplier } : {}),
     ...(documentStatus ? { documentStatus } : {}),
     lines: parsePurchaseOrderLines(poResponse),
   };
@@ -2964,6 +3002,9 @@ export async function loadPurchaseOrder(
       debug(`PO ${purchaseOrderNumber} not found in Workday (returned: ${parsed?.documentNumber ?? 'none'}) - skipping PO processing`);
       return undefined;
     }
+    debug(`PO ${purchaseOrderNumber} supplier: ${parsed.supplier
+      ? `${parsed.supplier.descriptor} (WID=${parsed.supplier.workdayId}${parsed.supplier.supplierId ? `, Supplier_ID=${parsed.supplier.supplierId}` : ''})`
+      : 'none'}`);
     return parsed;
   } catch (poError) {
     debug(`Failed to fetch PO ${purchaseOrderNumber} from Workday - skipping PO processing:`, poError);

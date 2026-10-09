@@ -513,6 +513,10 @@ export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));
 }
 
+export function isSupplierNotAllowedForPurchaseOrderError(value: unknown): boolean {
+  return /can['’]?t select this supplier to invoice this purchase order/i.test(validationHaystack(value));
+}
+
 export function isDuplicateWorktagTypeError(text: unknown): boolean {
   return /Only one worktag for each type is allowed/i.test(asValidationText(text));
 }

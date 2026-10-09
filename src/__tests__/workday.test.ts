@@ -6647,6 +6647,91 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
     });
 
+    describe('PO supplier', () => {
+      const supplierNotAllowedForPo = () => new Error(
+        'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}'
+      );
+      const poLinkedLines = [
+        { lineOrder: 1, description: 'Club fitting cart', quantity: 1, unitCost: 100, extendedAmount: 100, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29143' },
+      ];
+      const submittedSupplier = (request: any) =>
+        request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value;
+      const created = (callback: any) => callback(null, {
+        Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] },
+      });
+
+      it('fails a PO supplier rejection without the classifier or the default supplier', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(supplierNotAllowedForPo(), null);
+        });
+
+        const error: any = await submitNewSupplierInvoiceForTest({ finalLines: poLinkedLines }).catch((thrown: unknown) => thrown);
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(error.message).toBe("You can't select this supplier to invoice this purchase order.");
+      });
+
+      it('does not offer the default supplier for a supplier fault on PO-linked lines', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+            detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+          }), null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({ finalLines: poLinkedLines })).rejects.toMatchObject({
+          message: 'Validation_Fault: supplier is invalid',
+        });
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      });
+
+      it('still offers the default supplier when a Closed PO omits every line reference', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        const requests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+              detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+            }), null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            requests.push(request);
+            created(callback);
+          });
+
+        await submitNewSupplierInvoiceForTest({ finalLines: poLinkedLines, omitPurchaseOrderLineReference: true });
+
+        expect(requests.map(submittedSupplier)).toEqual([mockSupplierID, 'default-supplier-wid']);
+      });
+
+      it('does not retry a duplicate supplier invoice number on a PO-linked invoice', async () => {
+        const mockClient = mockSoapClient();
+        process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(new Error(
+            'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice. detail: {"Validation_Fault":{"Validation_Error":{"Message":"Enter a Supplier\'s Invoice Number that isn\'t already in use on another supplier invoice","Detail_Message":"The supplier\'s invoice number entered is already in use.","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Suppliers_Invoice_Number[1]"}}}'
+          ), null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest({
+          suppliersInvoiceNumber: '11255346',
+          finalLines: poLinkedLines,
+        })).rejects.toMatchObject({
+          message: "Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice",
+        });
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      });
+    });
+
     it('should attach priorFailures when a fallback retry fails as a non-validation SOAP error', async () => {
       const mockClient = mockSoapClient();
       process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
@@ -7272,6 +7357,44 @@ describe('Workday utilities', () => {
   });
 
   describe('parsePurchaseOrder', () => {
+    it('parses the PO supplier from Supplier_Reference', () => {
+      const parsed = parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-414373',
+              Supplier_Reference: {
+                $attributes: { Descriptor: 'Club Pro Manufacturing USA' },
+                ID: [
+                  { $attributes: { type: 'WID' }, $value: 'club-pro-wid' },
+                  { $attributes: { type: 'Supplier_ID' }, $value: 'S-012345' },
+                ],
+              },
+              Goods_Line_Data: { Line_Number: 1, Goods_Order_Line_ID: 'ITEM_ORDER_LINE-3-29143', Item_Description: 'Cart' },
+            },
+          },
+        },
+      });
+
+      expect(parsed?.supplier).toEqual({ workdayId: 'club-pro-wid', descriptor: 'Club Pro Manufacturing USA', supplierId: 'S-012345' });
+    });
+
+    it('omits the PO supplier when Supplier_Reference has no WID', () => {
+      const parsed = parsePurchaseOrder({
+        Response_Data: {
+          Purchase_Order: {
+            Purchase_Order_Data: {
+              Document_Number: 'PO-414373',
+              Supplier_Reference: { ID: [{ $attributes: { type: 'Supplier_ID' }, $value: 'S-012345' }] },
+            },
+          },
+        },
+      });
+
+      expect(parsed).toBeDefined();
+      expect(parsed).not.toHaveProperty('supplier');
+    });
+
     it('should parse company WID and descriptor from Company_Reference', () => {
       const parsed = parsePurchaseOrder({
         Response_Data: {

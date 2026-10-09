@@ -73,6 +73,7 @@ import {
   findNotePurchaseOrdersForOtherInvoices,
   findPurchaseOrderNumber,
   findPurchaseOrderNumbers,
+  findSolePurchaseOrderNumber,
   normalizePurchaseOrderNumber,
   selectNotePurchaseOrder,
   type NotePurchaseOrder,
@@ -95,6 +96,7 @@ import {
   markInvoiceClusterUndispatched,
   releaseInvoiceCluster,
 } from './lib/invoice_cluster_plans.js';
+import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import {
   formatPurchaseOrderLineFallbackNotes,
   getSupplierInvoiceEditability,
@@ -131,6 +133,12 @@ interface EmailPurchaseOrders {
   supplierPurchaseOrderNumber?: string;
   /** PO to use when neither a note PO nor an invoice PO resolves. */
   fallbackPurchaseOrderNumber?: string;
+  /**
+   * The one PO the message that carried this attachment (its subject only for the source email) and the filename
+   * name, leaving out POs an AP note mentions. It wins over the invoice PO; when they name several POs it is unset. Older messages in the thread
+   * never count, since they often name another invoice's PO.
+   */
+  conversationPurchaseOrderNumber?: string;
 }
 
 /**
@@ -151,20 +159,33 @@ function findEmailPurchaseOrders(
   fileName: string,
   notePurchaseOrders: NotePurchaseOrder[]
 ): EmailPurchaseOrders {
-  if (!notePurchaseOrders.length) {
-    const purchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, emailContext?.plainTextBody, fileName);
-    return { supplierPurchaseOrderNumber: purchaseOrderNumber, fallbackPurchaseOrderNumber: purchaseOrderNumber };
-  }
-  const supplierPurchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, sourceEmailBody(emailContext), fileName);
-  // Conversation parts can only add a fallback PO that no AP note mentions, so a PO AP rejected is never used.
+  // Other text never supplies a PO that an AP note mentions, so a PO AP rejected is never used.
   const notePurchaseOrderNumbers = new Set([
     ...notePurchaseOrders.map((po) => po.purchaseOrderNumber),
     ...findPurchaseOrderNumbers(htmlToText(emailContext?.adminConversationParts ?? '')),
   ]);
+  const messageTexts = emailContext?.messageBody !== undefined
+    ? [emailContext.messageSubject, htmlToText(emailContext.messageBody)]
+    : [emailContext?.subject, sourceEmailBody(emailContext)];
+  const conversationPurchaseOrderNumber = findSolePurchaseOrderNumber([...messageTexts, fileName], notePurchaseOrderNumbers);
+  if (!notePurchaseOrders.length) {
+    const purchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, emailContext?.plainTextBody, fileName);
+    return {
+      supplierPurchaseOrderNumber: purchaseOrderNumber,
+      fallbackPurchaseOrderNumber: purchaseOrderNumber,
+      conversationPurchaseOrderNumber,
+    };
+  }
+  const sourceBody = sourceEmailBody(emailContext);
+  const conversationText = htmlToText(emailContext?.conversationParts ?? '');
+  const supplierPurchaseOrderNumber = findPurchaseOrderNumber(emailContext?.subject, sourceBody, fileName);
   const fallbackPurchaseOrderNumber = supplierPurchaseOrderNumber
-    ?? findPurchaseOrderNumbers(htmlToText(emailContext?.conversationParts ?? ''))
-      .find((po) => !notePurchaseOrderNumbers.has(po));
-  return { supplierPurchaseOrderNumber, fallbackPurchaseOrderNumber };
+    ?? findPurchaseOrderNumbers(conversationText).find((po) => !notePurchaseOrderNumbers.has(po));
+  return {
+    supplierPurchaseOrderNumber,
+    fallbackPurchaseOrderNumber,
+    conversationPurchaseOrderNumber,
+  };
 }
 
 interface PrefetchedPurchaseOrder {
@@ -181,9 +202,9 @@ async function resolvePurchaseOrder(
 ): Promise<PrefetchedPurchaseOrder> {
   const notePurchaseOrderNumber = selectNotePurchaseOrder(notePurchaseOrders, emailPurchaseOrders.supplierPurchaseOrderNumber)
     ?.purchaseOrderNumber;
-  const { fallbackPurchaseOrderNumber } = emailPurchaseOrders;
+  const { conversationPurchaseOrderNumber, fallbackPurchaseOrderNumber } = emailPurchaseOrders;
   const notFoundPurchaseOrderNumbers = new Set<string>();
-  for (const purchaseOrderNumber of new Set([notePurchaseOrderNumber, fallbackPurchaseOrderNumber])) {
+  for (const purchaseOrderNumber of new Set([notePurchaseOrderNumber, conversationPurchaseOrderNumber, fallbackPurchaseOrderNumber])) {
     if (!purchaseOrderNumber) continue;
     debug(`Fetching PO data before enrichment: ${purchaseOrderNumber}`);
     const purchaseOrder = await loadPurchaseOrder(context, purchaseOrderNumber);
@@ -197,14 +218,19 @@ interface SelectedPurchaseOrder {
   purchaseOrder?: ParsedPurchaseOrder;
   /** Set when an Intercom note chose the PO. */
   fromNote?: NotePurchaseOrder;
+  /** Set when the email or conversation PO was used. */
+  fromConversation?: boolean;
   /** A note PO that Workday did not return. */
   notePurchaseOrderNotFound?: string;
+  /** An email or conversation PO that Workday did not return. */
+  conversationPurchaseOrderNotFound?: string;
   /** Note POs tied to other invoice numbers, set when the notes tie none to this invoice. */
   notePurchaseOrdersForOtherInvoices?: NotePurchaseOrder[];
   invoiceNumber?: string;
 }
 
-// An Intercom note from AP wins over the PO printed on the invoice; invoices often carry a stale PO.
+// An Intercom note from AP wins, then the one PO the email or conversation names, then the PO printed on the
+// invoice; invoices often carry a stale PO.
 async function selectPurchaseOrder(
   context: ProcessingContext,
   prefetched: PrefetchedPurchaseOrder,
@@ -235,14 +261,33 @@ async function selectPurchaseOrder(
     }
     notePurchaseOrderNotFound = notePurchaseOrder.purchaseOrderNumber;
   }
+  const { conversationPurchaseOrderNumber } = emailPurchaseOrders;
+  let conversationPurchaseOrder: ParsedPurchaseOrder | undefined;
+  let conversationPurchaseOrderNotFound: string | undefined;
+  if (conversationPurchaseOrderNumber && conversationPurchaseOrderNumber !== notePurchaseOrderNotFound) {
+    conversationPurchaseOrder = await load(conversationPurchaseOrderNumber);
+    if (conversationPurchaseOrder) {
+      if (invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== conversationPurchaseOrder.documentNumber) {
+        debug(`Using ${conversationPurchaseOrder.documentNumber} from the email or conversation instead of invoice PO ${invoicePurchaseOrderNumber}`);
+      }
+    } else {
+      conversationPurchaseOrderNotFound = conversationPurchaseOrderNumber;
+    }
+  }
   const fallbackPurchaseOrderNumber = invoicePurchaseOrderNumber ?? emailPurchaseOrders.fallbackPurchaseOrderNumber;
-  const purchaseOrder = fallbackPurchaseOrderNumber && fallbackPurchaseOrderNumber !== notePurchaseOrderNotFound
-    ? await load(fallbackPurchaseOrderNumber)
-    : undefined;
+  const purchaseOrder = conversationPurchaseOrder ?? (
+    fallbackPurchaseOrderNumber
+      && fallbackPurchaseOrderNumber !== notePurchaseOrderNotFound
+      && fallbackPurchaseOrderNumber !== conversationPurchaseOrderNotFound
+      ? await load(fallbackPurchaseOrderNumber)
+      : undefined
+  );
   const forOtherInvoices = notePurchaseOrder ? [] : findNotePurchaseOrdersForOtherInvoices(notePurchaseOrders, invoiceNumber);
   return {
     purchaseOrder,
+    ...(conversationPurchaseOrder ? { fromConversation: true } : {}),
     ...(notePurchaseOrderNotFound ? { notePurchaseOrderNotFound } : {}),
+    ...(conversationPurchaseOrderNotFound ? { conversationPurchaseOrderNotFound } : {}),
     ...(forOtherInvoices.length
       ? { notePurchaseOrdersForOtherInvoices: forOtherInvoices, ...(invoiceNumber ? { invoiceNumber } : {}) }
       : {}),
@@ -283,6 +328,14 @@ function formatPurchaseOrderSelectionNotes(input: {
       .join(' and ');
     const thisInvoice = selected.invoiceNumber ? ` (${selected.invoiceNumber})` : '';
     return `\n\nPurchase order: The Intercom note names ${named}, not this invoice${thisInvoice}; ${loadedPurchaseOrderNumber ? `kept ${loadedPurchaseOrderNumber}` : 'no PO was loaded'}.`;
+  }
+  if (selected.fromConversation && loadedPurchaseOrderNumber) {
+    return invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== loadedPurchaseOrderNumber
+      ? `\n\nPurchase order: Used ${loadedPurchaseOrderNumber} from the email or conversation instead of ${invoicePurchaseOrderNumber} on the invoice.`
+      : '';
+  }
+  if (selected.conversationPurchaseOrderNotFound) {
+    return `\n\nPurchase order: ${selected.conversationPurchaseOrderNotFound} from the email or conversation was not found in Workday; ${loadedPurchaseOrderNumber ? `used ${loadedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
   }
   const { fromNote } = selected;
   if (!fromNote || !loadedPurchaseOrderNumber) return '';
@@ -930,6 +983,18 @@ async function processInvoiceCluster(
     );
     const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
     const matchedPo = pinnedPo.purchaseOrder;
+    const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
+      purchaseOrderNumber: matchedPo?.documentNumber,
+      purchaseOrderSupplier: matchedPo?.supplier,
+      invoiceSupplierWID: result.supplier.resolvedSupplier?.workdayId ?? undefined,
+      invoiceSupplier: {
+        resolvedName: result.supplier.resolvedSupplier?.supplierName,
+        extractedName: result.supplier.extractedInformation?.supplierName,
+        phone: result.supplier.extractedInformation?.phone,
+        email: result.supplier.extractedInformation?.email,
+      },
+    });
+    const submitSupplierWID = purchaseOrderSupplier?.workdayId ?? targetSupplierWID;
 
     const poCompanyWID = matchedPo?.company?.workdayId;
     const defaultCompany = resolveDefaultCompany();
@@ -966,7 +1031,7 @@ async function processInvoiceCluster(
       description: result.supplier.extractedInformation?.memo,
     });
 
-    debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
+    debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}, submitSupplierWID=${submitSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
     const extractedRows = result.extractedInvoiceLines ?? [];
@@ -1179,7 +1244,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1243,7 +1308,13 @@ async function processInvoiceCluster(
       ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
-      supplier: {
+      supplier: purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
+        status: 'po',
+        resolvedName: purchaseOrderSupplier.descriptor,
+        isDefault: false,
+        purchaseOrderNumber: purchaseOrderSupplier.purchaseOrderNumber,
+        ...(purchaseOrderSupplierReviewLine(purchaseOrderSupplier) ? { review: purchaseOrderSupplierReviewLine(purchaseOrderSupplier) } : {}),
+      } : {
         status: result.supplier.status,
         resolvedName: result.supplier.resolvedSupplier?.supplierName,
         isDefault: !result.supplier.resolvedSupplier?.workdayId,
@@ -1267,6 +1338,10 @@ async function processInvoiceCluster(
               && emailPurchaseOrders.supplierPurchaseOrderNumber !== matchedPo.documentNumber
               ? { emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber }
               : {})),
+        } : {}),
+        ...(selectedPo.fromConversation && matchedPo && enrichmentPoNumber && enrichmentPoNumber !== matchedPo.documentNumber ? {
+          purchaseOrderSource: 'conversation',
+          invoicePurchaseOrderNumber: enrichmentPoNumber,
         } : {}),
         paymentTerms: result.extractedPaymentTerms?.name,
       },
@@ -1422,7 +1497,7 @@ async function processInvoiceCluster(
         };
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
-          supplierWID: resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
+          supplierWID: purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
@@ -1494,7 +1569,7 @@ async function processInvoiceCluster(
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
     const createOutcome = await submitNewSupplierInvoice(context, {
-      supplierWID: targetSupplierWID,
+      supplierWID: submitSupplierWID,
       companyWID,
       companyReferenceType,
       buildNotes: (appliedFallbacks) =>

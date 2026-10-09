@@ -53,8 +53,12 @@ export interface InvoiceData {
     plainTextBody?: string;
     /** Intercom conversation part bodies only (no source email); the only text whose Supplier IDs may override the invoice. */
     conversationParts?: string;
-    /** Intercom internal notes written by teammates (part type note, author type admin); the only text whose PO may override the invoice PO. */
+    /** Intercom internal notes written by teammates (part type note, author type admin); a PO they choose wins over every other PO. */
     adminConversationParts?: string;
+    /** Body of the Intercom source email or conversation part that carried this attachment; empty when it had none. */
+    messageBody?: string;
+    /** Subject of that message; only the source email has one, so a reply never inherits the thread's first subject. */
+    messageSubject?: string;
   };
 }
 
