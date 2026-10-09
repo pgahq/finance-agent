@@ -1,7 +1,7 @@
 import { htmlToText } from './html_text.js';
 
 /** Phrases that mean "code the invoice to"; a bare "code" is too common (zip code, promo code, customer code). */
-export const CODING_LINE_KEYWORD = /\b(?:coding|coded\s+to|code\s+(?:to|this|these)|(?:please|kindly)\s+code|(?:company|entity)\s+code|charge(?:d)?\s+to|allocat(?:e|ed|ion)\s+to|worktags?|gl\s+string)\b/i;
+export const CODING_LINE_KEYWORD = /\b(?:coding|coded\s+to|code\s+(?:to|this|these)|(?:please|kindly)\s+code|(?:company|entity)\s+code|charge(?:\s+(?:this|it|these|all))?\s+to|allocat(?:e|ed|ion)\s+to|worktags?|gl\s+string)\b/i;
 const COMPANY_LABEL_LINE = /^\s*(?:company|entity)\b\s*[:#=-]/i;
 
 export interface EmailBodies {

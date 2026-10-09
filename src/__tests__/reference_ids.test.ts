@@ -175,6 +175,14 @@ describe('explicitCodingCodes', () => {
     expect(explicitCodingCodes('Order 12345 has been coded and shipped')).toEqual([]);
   });
 
+  it('does not treat card receipt text as coding', () => {
+    expect(explicitCodingCodes('This amount was charged to your card ending in 2600')).toEqual([]);
+    expect(explicitCodingCodes('Payment of $1,250.00 charged to Visa ending 2600')).toEqual([]);
+    expect(explicitCodingCodes('Amount charged to account 2600')).toEqual([]);
+    expect(explicitCodingCodes('Please charge to card ending in 2600')).toEqual([]);
+    expect(explicitCodingCodes('Charge to 912')).toEqual(['912']);
+  });
+
   it('accepts coding phrases', () => {
     expect(explicitCodingCodes('Please code 912')).toEqual(['912']);
     expect(explicitCodingCodes('Coded to 912')).toEqual(['912']);

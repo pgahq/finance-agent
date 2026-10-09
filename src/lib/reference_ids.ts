@@ -96,7 +96,10 @@ function isZipFragment(text: string, index: number, token: string): boolean {
   return /^[ \t]*(?:USA|US|United States)\b/.test(text.slice(index + token.length));
 }
 
+const CARD_DIGITS_BEFORE_NUMBER = /(?:\bending(?:[ \t]+in)?|\blast[ \t]+(?:4|four)(?:[ \t]+digits)?(?:[ \t]+of)?|[x*•]{2,})[ \t]*:?[ \t]*$/i;
+
 function isIdentifierOrStatusFragment(text: string, index: number, token: string): boolean {
+  if (CARD_DIGITS_BEFORE_NUMBER.test(text.slice(Math.max(0, index - 24), index))) return true;
   if (/^[-_][A-Za-z]/.test(text.slice(index + token.length))) return true;
   if (index >= 2 && /[-_]/.test(text[index - 1]) && /[A-Za-z]/.test(text[index - 2])) return true;
   return /^[ \t]+\d\.\d\.\d/.test(text.slice(index + token.length));
