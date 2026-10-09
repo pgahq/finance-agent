@@ -1,5 +1,9 @@
 import { htmlToText } from './html_text.js';
 
+/** Phrases that mean "code the invoice to"; a bare "code" is too common (zip code, promo code, customer code). */
+export const CODING_LINE_KEYWORD = /\b(?:coding|coded\s+to|code\s+(?:to|this|these)|(?:please|kindly)\s+code|(?:company|entity)\s+code|charge(?:d)?\s+to|allocat(?:e|ed|ion)\s+to|worktags?|gl\s+string)\b/i;
+const COMPANY_LABEL_LINE = /^\s*(?:company|entity)\b\s*[:#=-]/i;
+
 export interface EmailBodies {
   plainTextBody?: string;
   conversationParts?: string;
@@ -20,13 +24,14 @@ export function sourceEmailBody(emailContext: EmailBodies | undefined): string |
 }
 
 /**
- * Text where a company may be named: the supplier's source email and AP's internal notes. The automatic
- * acknowledgement the AP inbox sends back ("...at The PGA of America headquarters office") is excluded so
- * it never reads as coding.
+ * Text where a company may be named without a code: AP's internal notes, and only the coding or company-label
+ * lines of the supplier's email. A supplier naming its customer ("624065 PGA OF AMERICA", "PGA Hotline Fee")
+ * is the bill-to, not coding, and the inbox's automatic reply is excluded too.
  */
 export function emailCodingText(emailContext: EmailBodies | undefined): string {
-  return [sourceEmailBody(emailContext), emailContext?.adminConversationParts]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .map((part) => htmlToText(part))
-    .join('\n\n');
+  const sourceLines = htmlToText(sourceEmailBody(emailContext) ?? '')
+    .split('\n')
+    .filter((line) => CODING_LINE_KEYWORD.test(line) || COMPANY_LABEL_LINE.test(line));
+  const apNotes = emailContext?.adminConversationParts ? htmlToText(emailContext.adminConversationParts) : '';
+  return [...sourceLines, apNotes].filter((part) => part.trim()).join('\n');
 }

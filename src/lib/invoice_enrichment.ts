@@ -194,7 +194,7 @@ export function describeEmailCompanyReview(review: EmailCompanyReview): { note: 
     : `the invoice bill-to company${review.conflictName ? ` (${review.conflictName})` : ''}`;
   return {
     note: `${note} This differs from ${other}; verify the company before approving.`,
-    review: `Company ${name} came from email coding${review.referenceId ? ` ${review.referenceId}` : ''} but differs from ${other}; verify.`,
+    review: `Company ${name} ${review.origin === 'name' ? 'was named in the email' : `came from email coding${review.referenceId ? ` ${review.referenceId}` : ''}`} but differs from ${other}; verify.`,
   };
 }
 

@@ -1,5 +1,7 @@
 import { findDocumentsByReferenceId, findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
 import { createEmbedding } from '../lib/rag.js';
+import { emailCodingText } from '../lib/email_coding_text.js';
+import { describeEmailCompanyReview } from '../lib/invoice_enrichment.js';
 import {
   explicitCodingCodes,
   extractReferenceCodeCandidates,
@@ -164,6 +166,20 @@ describe('explicitCodingCodes', () => {
     expect(explicitCodingCodes('Company code 912, cost center 72200')).toEqual(expect.arrayContaining(['912']));
     expect(explicitCodingCodes('Please code to 912 and 72200')).toEqual(['912', '72200']);
     expect(explicitCodingCodes('Thanks\n912 / 72200\nBye')).toEqual(['912', '72200']);
+  });
+
+  it('does not treat a bare "code" as coding (zip, promo, customer codes, "coded")', () => {
+    expect(explicitCodingCodes('Use promo code 2600 at checkout')).toEqual([]);
+    expect(explicitCodingCodes('Your customer code is 2600')).toEqual([]);
+    expect(explicitCodingCodes('Zip code: 18976')).toEqual([]);
+    expect(explicitCodingCodes('Order 12345 has been coded and shipped')).toEqual([]);
+  });
+
+  it('accepts coding phrases', () => {
+    expect(explicitCodingCodes('Please code 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Coded to 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Charge to 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Company code 912')).toEqual(['912']);
   });
 
   it('rejects account numbers and other bare numbers in prose', () => {
@@ -486,6 +502,38 @@ describe('resolveCompanyFromEmail KMRD Partners regression (SUPIN-466170)', () =
       name: 'Kentucky Section PGA of America',
       origin: 'code',
     });
+  });
+
+  it('counts a code in an AP note as coding, e.g. "Please use 912 for this one"', async () => {
+    mockReferenceLookup({ '912': [companyDoc()] });
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: `${KMRD_EMAIL}\n\nPlease use 912 for this one`,
+      apNotes: '<p>Please use 912 for this one</p>',
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+      origin: 'code',
+    });
+  });
+
+  it('does not count the customer name in a supplier account line or "PGA Hotline Fee" as a company name', () => {
+    const text = emailCodingText({
+      plainTextBody: '624065 PGA OF AMERICA\nMonthly PGA Hotline Fee\nCompany: PGA Tournament Corp',
+    });
+    expect(text).toContain('PGA Tournament Corp');
+    expect(text).not.toContain('624065');
+    expect(text).not.toContain('Hotline');
+  });
+
+  it('includes AP notes in the text where a company may be named', () => {
+    const text = emailCodingText({
+      plainTextBody: 'hello\n\n<p>Bill to PGA Tournament Corp</p>',
+      conversationParts: '<p>Bill to PGA Tournament Corp</p>',
+      adminConversationParts: '<p>Bill to PGA Tournament Corp</p>',
+    });
+    expect(text).toContain('Bill to PGA Tournament Corp');
   });
 
   it('does not read the PGA of America name from the inbox auto-reply as email coding', async () => {
@@ -826,5 +874,25 @@ describe('resolveReferenceCodesFromText', () => {
       }),
       expect.objectContaining({ code: '333', matches: [] }),
     ]));
+  });
+});
+
+describe('describeEmailCompanyReview', () => {
+  it('says "named in the email" in both the note and the Slack review for a name-origin company', () => {
+    const { note, review } = describeEmailCompanyReview({
+      appliedName: 'PGA REACH',
+      origin: 'name',
+      conflictWith: 'bill_to',
+      conflictName: 'PGA Foundation',
+    });
+    expect(note).toContain('the company named in the email');
+    expect(review).toContain('PGA REACH was named in the email but differs from the invoice bill-to company (PGA Foundation)');
+    expect(review).not.toContain('email coding');
+  });
+
+  it('names the code for a code-origin company and has no review when nothing conflicts', () => {
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code' }).review).toBeUndefined();
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code', conflictWith: 'po', conflictName: 'PGA' }).review)
+      .toContain('came from email coding 2600 but differs from the purchase order company (PGA)');
   });
 });

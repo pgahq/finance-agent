@@ -16,6 +16,7 @@ import {
 } from './cost_center_match.js';
 import { createEmbedding } from './rag.js';
 import { htmlToText } from './html_text.js';
+import { CODING_LINE_KEYWORD } from './email_coding_text.js';
 
 export const REFERENCE_CODE_DOCUMENT_TYPES = [
   'company',
@@ -297,7 +298,6 @@ export async function resolveReferenceCodesFromText(
   }));
 }
 
-const CODING_LINE_KEYWORD = /\b(?:cod(?:e|ed|ing)|charge(?:d)?\s+to|allocat(?:e|ed|ion)|worktags?|gl\s+string)\b/i;
 const CODE_ONLY_SEPARATORS = /[\s/,;|&\-–]/g;
 
 function escapeRegExp(value: string): string {
@@ -334,7 +334,7 @@ function normalizeForNameMatch(value: string): string {
 
 function companyNamedInText(extracted: string | null | undefined, text: string | undefined): boolean {
   const name = normalizeForNameMatch(extracted ?? '');
-  if (name.length < 3 || !text) return false;
+  if (name.length < 4 || !text) return false;
   return ` ${normalizeForNameMatch(text)} `.includes(` ${name} `);
 }
 
@@ -359,8 +359,10 @@ function isShortNumericReferenceId(value: string): boolean {
 export async function resolveCompanyFromEmail(options: {
   db: DatabaseConnection;
   emailBody?: string;
-  /** Text where a company may be named without a code (source email and AP notes, not the inbox's auto-reply). */
+  /** Text where a company may be named without a code: AP notes and the email's coding lines (`emailCodingText`). */
   codingText?: string;
+  /** AP's internal notes: any code in them is coding, since AP wrote it. */
+  apNotes?: string;
   emailCompany?: {
     extracted?: string | null;
     workdayId?: string | null;
@@ -368,7 +370,7 @@ export async function resolveCompanyFromEmail(options: {
     name?: string | null;
   } | null;
 }): Promise<EmailCompanyMatch | undefined> {
-  const { emailCompany, emailBody, codingText } = options;
+  const { emailCompany, emailBody, codingText, apNotes } = options;
   const rawWorkdayId = emailCompany?.workdayId?.trim() || undefined;
   const claimedWid = rawWorkdayId && !isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined;
   const claimedReferenceId = (
@@ -376,7 +378,8 @@ export async function resolveCompanyFromEmail(options: {
     || (rawWorkdayId && isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined)
   ) || undefined;
 
-  const bodyCodes = emailBody ? explicitCodingCodes(htmlToText(emailBody)) : [];
+  const apCodes = apNotes ? extractReferenceCodeCandidates(htmlToText(apNotes)) : [];
+  const bodyCodes = [...(emailBody ? explicitCodingCodes(htmlToText(emailBody)) : []), ...apCodes];
   const extractedCodes = emailCompany?.extracted
     ? extractReferenceCodeCandidates(emailCompany.extracted)
     : [];

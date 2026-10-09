@@ -950,6 +950,7 @@ async function processInvoiceCluster(
       db: context.dbConnection,
       emailBody: emailContext?.plainTextBody,
       codingText: emailCodingText(emailContext),
+      apNotes: emailContext?.adminConversationParts,
       emailCompany: result.emailWorktags?.company,
     });
 
