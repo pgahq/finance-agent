@@ -6,6 +6,8 @@ import {
   formatAmountNotes,
   formatChargeReviewNotes,
   formatCompanyNotes,
+  formatEmailCompanyNotes,
+  describeEmailCompanyReview,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
@@ -57,6 +59,7 @@ import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
+import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
@@ -208,9 +211,19 @@ async function processInvoice(
     const emailCompany = await resolveCompanyFromEmail({
       db: context.dbConnection,
       emailBody: invoiceData.emailContext?.plainTextBody,
+      codingText: emailCodingText(invoiceData.emailContext),
+      apNotes: invoiceData.emailContext?.adminConversationParts,
       emailCompany: result.emailWorktags?.company,
     });
     const companyWID = emailCompany?.workdayId ?? recommendedCompanyWID;
+    const emailCompanyReview = emailCompany?.workdayId ? {
+      appliedName: emailCompany.name,
+      referenceId: emailCompany.referenceId,
+      origin: emailCompany.origin,
+      ...(emailCompany.workdayId && recommendedCompanyWID && emailCompany.workdayId !== recommendedCompanyWID
+        ? { conflictWith: 'bill_to' as const, conflictName: result.companyVerification?.recommended?.companyName }
+        : {}),
+    } : undefined;
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
@@ -429,7 +442,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -528,11 +541,15 @@ async function processInvoice(
           },
         } : {}),
       },
-      company: emailCompany ? {
+      company: emailCompany?.workdayId ? {
         status: 'email_resolved',
         existingName: existingCompany?.descriptor,
         recommendedName: result.companyVerification?.recommended?.companyName,
         appliedFromEmail: true,
+        emailOrigin: emailCompany.origin,
+        ...(emailCompanyReview && describeEmailCompanyReview(emailCompanyReview).review
+          ? { review: describeEmailCompanyReview(emailCompanyReview).review }
+          : {}),
         appliedName: emailCompany.name,
         appliedReferenceId: emailCompany.referenceId,
       } : result.companyVerification ? {
