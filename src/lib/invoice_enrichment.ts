@@ -161,15 +161,45 @@ export function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
 export function formatCompanyNotes(
   result: InvoiceEnrichmentResult,
   existingCompanyDescriptor?: string,
-  options?: { appliedRecommended?: boolean }
+  options?: { appliedRecommended?: boolean; overriddenByEmail?: boolean }
 ): string {
   const cv = result.companyVerification;
   if (!cv || cv.status === 'matching') return '';
-  let notes = `\n\nCompany: ${cv.reason}`;
+  let notes = `\n\n${options?.overriddenByEmail ? 'Invoice bill-to check' : 'Company'}: ${cv.reason}`;
   if (cv.status === 'different' && cv.recommended && options?.appliedRecommended !== false) {
     notes += ` Changed to: ${cv.recommended.companyName}${existingCompanyDescriptor ? ` (was: ${existingCompanyDescriptor})` : ''}`;
   }
   return notes;
+}
+
+export interface EmailCompanyReview {
+  appliedName?: string;
+  referenceId?: string;
+  origin?: 'code' | 'name';
+  conflictWith?: 'po' | 'bill_to';
+  /** Name of the PO company or bill-to company the email company replaced. */
+  conflictName?: string;
+}
+
+/** One line saying where the applied company came from, and whether it replaced a different verified company. */
+export function describeEmailCompanyReview(review: EmailCompanyReview): { note: string; review?: string } {
+  const name = review.appliedName ?? review.referenceId ?? 'the email company';
+  const source = review.origin === 'name'
+    ? 'the company named in the email'
+    : `email coding${review.referenceId ? ` (code ${review.referenceId})` : ''}`;
+  const note = `Company applied from ${source}: ${name}.`;
+  if (!review.conflictWith) return { note };
+  const other = review.conflictWith === 'po'
+    ? `the purchase order company${review.conflictName ? ` (${review.conflictName})` : ''}`
+    : `the invoice bill-to company${review.conflictName ? ` (${review.conflictName})` : ''}`;
+  return {
+    note: `${note} This differs from ${other}; verify the company before approving.`,
+    review: `Company ${name} came from email coding${review.referenceId ? ` ${review.referenceId}` : ''} but differs from ${other}; verify.`,
+  };
+}
+
+export function formatEmailCompanyNotes(review: EmailCompanyReview): string {
+  return `\n\n${describeEmailCompanyReview(review).note}`;
 }
 
 function getFirstDayOfCurrentMonth(): string {

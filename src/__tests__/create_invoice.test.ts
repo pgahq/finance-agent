@@ -2954,6 +2954,118 @@ describe('create_invoice', () => {
     );
   });
 
+  it('should submit the verified bill-to company when the only number in the email is the supplier address (KMRD SUPIN-466170)', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockImplementation((_db: unknown, codes: string[]) => Promise.resolve(new Map(
+      codes.map((code) => [code, code === '2600' ? [{
+        workday_id: 'cab0b1d2505a012c97d7da178227ceea',
+        type: 'company',
+        content: 'Kentucky Section PGA of America',
+        metadata: { companyReferenceId: '2600', companyName: 'Kentucky Section PGA of America' },
+      }] : []])
+    )));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.98,
+        extractedInformation: { companyName: 'PGA of America', address: '1916 PGA Parkway, Frisco, TX 75033' },
+        recommended: {
+          workdayId: 'cab0b1d2505a01338fcd651982277bec',
+          companyName: 'The Professional Golfers Association of America',
+          confidence: 0.98,
+          reason: 'Bill-to PGA of America matches an exact alias.',
+        },
+        reason: 'The invoice clearly bills PGA of America.',
+      },
+      emailWorktags: {
+        company: {
+          extracted: 'PGA of America',
+          name: 'The Professional Golfers Association of America',
+          workdayId: 'cab0b1d2505a01338fcd651982277bec',
+          referenceId: '310',
+        },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-kmrd/invoice.pdf'),
+        emailContext: {
+          emailFrom: 'tquinn@kmrdpartners.com',
+          subject: 'PGA - Invoice attached for October 2026 Monthly HRO Support Services',
+          plainTextBody: 'Attached is an invoice.\nTheresa Quinn, CISR\n+1 267.482.8292\n2600 KELLY ROAD, SUITE 120 , WARRINGTON, PA 18976 USA',
+        },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('cab0b1d2505a01338fcd651982277bec');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'recommended',
+          appliedName: 'The Professional Golfers Association of America',
+        }),
+      })
+    );
+    expect(findDocumentsByReferenceIds).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['2600']), expect.anything());
+  });
+
+  it('should apply explicit email company coding over the bill-to company but flag the conflict', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'pdf-company-wid', companyName: 'PDF Company', confidence: 0.9, reason: 'Better match' },
+        reason: 'Extracted company differs from the default placeholder',
+      },
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-company-conflict/invoice.pdf'),
+        emailContext: { plainTextBody: 'Company: 912' },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(workday.submitNewSupplierInvoice.mock.calls[0][1].companyWID).toBe('email-company-wid');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'email',
+          emailOrigin: 'code',
+          review: expect.stringContaining('differs from the invoice bill-to company (PDF Company)'),
+        }),
+      })
+    );
+  });
+
   it('should not apply a cost center code that is actually the email company reference ID', async () => {
     const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
     const { findDocumentsByReferenceIds } = require('../lib/database.js');

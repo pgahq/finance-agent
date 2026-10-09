@@ -167,6 +167,33 @@ describe('notifyResult', () => {
     expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*PO #* → PO-414373 (from email or conversation; invoice shows PO-411406)');
   });
 
+  it('labels an email code company with its code and flags a conflict with the verified bill-to', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      company: {
+        status: 'email_resolved',
+        appliedFrom: 'email',
+        emailOrigin: 'code',
+        appliedName: 'Kentucky Section PGA of America',
+        appliedReferenceId: '2600',
+        review: 'Company Kentucky Section PGA of America came from email coding 2600 but differs from the invoice bill-to company (The Professional Golfers Association of America); verify.',
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Company* → Kentucky Section PGA of America (from email coding `2600`)');
+    expect(texts).toContain('differs from the invoice bill-to company');
+  });
+
+  it('labels a company the email names without a code', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      company: { status: 'email_resolved', appliedFrom: 'email', emailOrigin: 'name', appliedName: 'PGA Tournament Corporation, Inc.' },
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*Company* → PGA Tournament Corporation, Inc. (named in email)');
+  });
+
   it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -197,7 +224,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Workday Invoice* → `SUPIN-412727`');
     expect(texts).toContain('*Changes*');
     expect(texts).toContain('*Supplier* → ACUSHNET COMPANY (identified)');
-    expect(texts).toContain('*Company* → PGA Foundation Inc (recommended)');
+    expect(texts).toContain('*Company* → PGA Foundation Inc (from invoice bill-to)');
     expect(texts).toContain('*Invoice Date* → 2026-08-21');
     expect(texts).toContain('*Amount Due* → $448.92');
     expect(texts).toContain('*Assignee* → Joe Carey (jcarey@pgahq.com)');
