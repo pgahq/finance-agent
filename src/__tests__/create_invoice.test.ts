@@ -1148,6 +1148,87 @@ describe('create_invoice', () => {
     ]);
   });
 
+  describe('SUPIN-467011 printed environmental charge', () => {
+    const incidentLines = [
+      { description: 'KING tickets', quantity: null, unitCost: '180.50', totalPrice: '180.50', hasDiscount: false },
+      { description: 'KARLESKNT tickets', quantity: null, unitCost: '162.00', totalPrice: '162.00', hasDiscount: false },
+    ];
+    const incidentFinalLines = {
+      lines: [
+        { lineOrder: 1, description: 'KING tickets', quantity: 0, unitCost: 0, extendedAmount: 180.5 },
+        { lineOrder: 2, description: 'KARLESKNT tickets', quantity: 0, unitCost: 0, extendedAmount: 162 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    };
+    const incident = {
+      extractedAmountDue: '$387.76',
+      extractedTaxAmount: '$28.26',
+      extractedTaxLabel: 'Sales Tax',
+      extractedInvoiceLines: incidentLines,
+    };
+
+    it('adds the EnvChg Tax row to header tax so lines + freight + tax equal the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...incident,
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(incidentFinalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-envchg/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('45.26');
+      expect(submitArgs.taxCleared).toBe(false);
+      expect(submitArgs.extractedAmountDue).toBe('$387.76');
+      const added = 'Added "EnvChg Tax" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.';
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Tax Amount (from document): 45.26 ("Sales Tax" $28.26 + "EnvChg Tax" $17.00)');
+      expect(notes).toContain(`Amount check: ${added}`);
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('but the amount due is');
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([added]);
+      expect(slack.notifyResult.mock.calls[0][3].amountMismatch).toBeUndefined();
+    });
+
+    it('keeps tax at 28.26 and flags the $17.00 gap when no charge explains it', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      const mismatch = 'Lines $342.50 + freight $0.00 + tax $28.26 = $370.76, but the amount due is $387.76. Review lines and header charges.';
+      const amountCheck = { field: 'chargeReconciliation', label: mismatch };
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...baseEnrichmentResult, ...incident, extractedOtherCharges: null });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(incidentFinalLines);
+      workday.submitNewSupplierInvoice.mockResolvedValueOnce({
+        success: true, invoiceWID: 'new-invoice-wid', invoiceNumber: 'SUPIN-467011', appliedFallbacks: [amountCheck]
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-envchg-missing/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('$28.26');
+      const notes = submitArgs.buildNotes([amountCheck]);
+      expect(notes.startsWith(`Amount check: ${mismatch}`)).toBe(true);
+      expect(notes.match(/Amount check:/g)).toHaveLength(1);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.chargeCheck).toEqual([mismatch]);
+      expect(slackDetails.amountMismatch).toBe(true);
+    });
+
+    it('leaves the gap alone when the printed charge is not the missing amount', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...incident,
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.13' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(incidentFinalLines);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-envchg-rate/invoice.pdf')] } as any);
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedTaxAmount).toBe('$28.26');
+    });
+  });
+
   it('moves a mislabeled sales-tax amount from freight to tax before submit', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -2949,6 +3030,118 @@ describe('create_invoice', () => {
           appliedFromEmail: true,
           appliedName: 'PGA Company',
           appliedReferenceId: '912',
+        }),
+      })
+    );
+  });
+
+  it('should submit the verified bill-to company when the only number in the email is the supplier address (KMRD SUPIN-466170)', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockImplementation((_db: unknown, codes: string[]) => Promise.resolve(new Map(
+      codes.map((code) => [code, code === '2600' ? [{
+        workday_id: 'cab0b1d2505a012c97d7da178227ceea',
+        type: 'company',
+        content: 'Kentucky Section PGA of America',
+        metadata: { companyReferenceId: '2600', companyName: 'Kentucky Section PGA of America' },
+      }] : []])
+    )));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.98,
+        extractedInformation: { companyName: 'PGA of America', address: '1916 PGA Parkway, Frisco, TX 75033' },
+        recommended: {
+          workdayId: 'cab0b1d2505a01338fcd651982277bec',
+          companyName: 'The Professional Golfers Association of America',
+          confidence: 0.98,
+          reason: 'Bill-to PGA of America matches an exact alias.',
+        },
+        reason: 'The invoice clearly bills PGA of America.',
+      },
+      emailWorktags: {
+        company: {
+          extracted: 'PGA of America',
+          name: 'The Professional Golfers Association of America',
+          workdayId: 'cab0b1d2505a01338fcd651982277bec',
+          referenceId: '310',
+        },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-kmrd/invoice.pdf'),
+        emailContext: {
+          emailFrom: 'tquinn@kmrdpartners.com',
+          subject: 'PGA - Invoice attached for October 2026 Monthly HRO Support Services',
+          plainTextBody: 'Attached is an invoice.\nTheresa Quinn, CISR\n+1 267.482.8292\n2600 KELLY ROAD, SUITE 120 , WARRINGTON, PA 18976 USA',
+        },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.companyWID).toBe('cab0b1d2505a01338fcd651982277bec');
+    expect(submitArgs.companyReferenceType).toBe('WID');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'recommended',
+          appliedName: 'The Professional Golfers Association of America',
+        }),
+      })
+    );
+    expect(findDocumentsByReferenceIds).not.toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['2600']), expect.anything());
+  });
+
+  it('should apply explicit email company coding over the bill-to company but flag the conflict', async () => {
+    const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+      ...baseEnrichmentResult,
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'pdf-company-wid', companyName: 'PDF Company', confidence: 0.9, reason: 'Better match' },
+        reason: 'Extracted company differs from the default placeholder',
+      },
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        ...attachmentRequest('new-invoices/req-company-conflict/invoice.pdf'),
+        emailContext: { plainTextBody: 'Company: 912' },
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(workday.submitNewSupplierInvoice.mock.calls[0][1].companyWID).toBe('email-company-wid');
+    expect(slack.notifyResult).toHaveBeenCalledWith(
+      'create_invoice',
+      'success',
+      expect.any(Number),
+      expect.objectContaining({
+        company: expect.objectContaining({
+          appliedFrom: 'email',
+          emailOrigin: 'code',
+          review: expect.stringContaining('differs from the invoice bill-to company (PDF Company)'),
         }),
       })
     );

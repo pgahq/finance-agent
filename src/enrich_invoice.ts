@@ -6,6 +6,8 @@ import {
   formatAmountNotes,
   formatChargeReviewNotes,
   formatCompanyNotes,
+  formatEmailCompanyNotes,
+  describeEmailCompanyReview,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
@@ -50,6 +52,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
+import { applyPrintedTaxCharges } from './lib/header_charges.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -57,6 +60,7 @@ import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
+import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
 import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
@@ -208,9 +212,19 @@ async function processInvoice(
     const emailCompany = await resolveCompanyFromEmail({
       db: context.dbConnection,
       emailBody: invoiceData.emailContext?.plainTextBody,
+      codingText: emailCodingText(invoiceData.emailContext),
+      apNotes: invoiceData.emailContext?.adminConversationParts,
       emailCompany: result.emailWorktags?.company,
     });
     const companyWID = emailCompany?.workdayId ?? recommendedCompanyWID;
+    const emailCompanyReview = emailCompany?.workdayId ? {
+      appliedName: emailCompany.name,
+      referenceId: emailCompany.referenceId,
+      origin: emailCompany.origin,
+      ...(emailCompany.workdayId && recommendedCompanyWID && emailCompany.workdayId !== recommendedCompanyWID
+        ? { conflictWith: 'bill_to' as const, conflictName: result.companyVerification?.recommended?.companyName }
+        : {}),
+    } : undefined;
 
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, companyWID=${companyWID ?? '(none - keeping existing)'}`);
@@ -307,9 +321,9 @@ async function processInvoice(
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
       extractedFreightAmount: resolvedFreightAmount,
-      extractedTaxAmount,
+      extractedTaxAmount: resolvedTaxAmount,
       freightCleared: headerFreightCleared,
-      taxCleared,
+      taxCleared: headerTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
     } = resolveHeaderChargeAmounts({
@@ -322,10 +336,22 @@ async function processInvoice(
     // Annotate-only runs submit nothing, so there is no header freight to restore.
     const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && submitSupplierWID ? extractedLines : [], {
       amountDue: extractedAmountDue,
-      tax: extractedTaxAmount,
+      tax: resolvedTaxAmount,
       freightCleared: headerFreightCleared,
     });
     const freightCleared = headerFreightCleared && restoredFreight.freight == null;
+    // A printed environmental or other tax-like charge joins header tax when it exactly explains the shortfall.
+    const taxCharges = applyPrintedTaxCharges({
+      charges: result.extractedOtherCharges,
+      amountDue: extractedAmountDue,
+      lines: extractedLines,
+      freight: restoredFreight.freight ?? resolvedFreightAmount,
+      tax: resolvedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      taxCleared: headerTaxCleared,
+      chargeWithheld,
+    });
+    const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
     const extractedCharges = { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount };
     const submitsLines = canModifyInvoice && Boolean(submitSupplierWID);
     // Annotate-only runs never change lines, so both freight behaviors need a submit.
@@ -342,6 +368,7 @@ async function processInvoice(
       : extractedChargeReconciliation(extractedLines, extractedCharges);
     const chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(taxCharges.message ? [taxCharges.message] : []),
       ...(submitsLines
         ? chargeReconciliationMessages(chargeReconciliation)
         : extractedChargeCheck(extractedLines, extractedCharges)),
@@ -429,7 +456,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -528,11 +555,15 @@ async function processInvoice(
           },
         } : {}),
       },
-      company: emailCompany ? {
+      company: emailCompany?.workdayId ? {
         status: 'email_resolved',
         existingName: existingCompany?.descriptor,
         recommendedName: result.companyVerification?.recommended?.companyName,
         appliedFromEmail: true,
+        emailOrigin: emailCompany.origin,
+        ...(emailCompanyReview && describeEmailCompanyReview(emailCompanyReview).review
+          ? { review: describeEmailCompanyReview(emailCompanyReview).review }
+          : {}),
         appliedName: emailCompany.name,
         appliedReferenceId: emailCompany.referenceId,
       } : result.companyVerification ? {

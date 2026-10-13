@@ -15,6 +15,8 @@ import {
   shouldSkipDoNotUseTieBreak,
 } from './cost_center_match.js';
 import { createEmbedding } from './rag.js';
+import { htmlToText } from './html_text.js';
+import { CODING_LINE_KEYWORD } from './email_coding_text.js';
 
 export const REFERENCE_CODE_DOCUMENT_TYPES = [
   'company',
@@ -36,10 +38,14 @@ export const MIN_REFERENCE_MATCH_CONFIDENCE = 0.55;
 const MIN_TOP_MATCH_MARGIN = 0.05;
 export const MAX_INEXACT_REFERENCE_LOOKUPS = 4;
 
+/** `code`: an explicit company code in the email. `name`: a company the email names without a code. */
+export type EmailCompanyOrigin = 'code' | 'name';
+
 export interface EmailCompanyMatch {
   workdayId?: string;
   referenceId?: string;
   name?: string;
+  origin?: EmailCompanyOrigin;
 }
 
 function isCalendarYearToken(code: string): boolean {
@@ -69,6 +75,36 @@ function isPhoneNumberFragment(text: string, index: number, token: string): bool
   return /\d{3}[-.\s]\d{3}[-.\s]\d{4}/.test(window);
 }
 
+const US_STATE_ABBREVIATIONS = new Set(
+  'AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' ')
+);
+
+const STREET_SUFFIX = '(?:street|st|road|rd|avenue|ave|av|boulevard|blvd|drive|dr|lane|ln|way|parkway|pkwy|pky|court|ct|circle|cir|place|pl|highway|hwy|trail|trl|terrace|ter|square|sq|plaza|plz|loop|pike|turnpike)';
+const STREET_AFTER_NUMBER = new RegExp(String.raw`^[ \t]+(?:[A-Za-z0-9.'&-]+[ \t]+){0,3}?${STREET_SUFFIX}\b`, 'i');
+const UNIT_BEFORE_NUMBER = /\b(?:suite|ste|unit|apt|apartment|floor|fl|room|rm|bldg|building|box|branch|ext|extension)\.?[ \t]*#?[ \t]*$/i;
+
+function isStreetAddressFragment(text: string, index: number, token: string): boolean {
+  if (STREET_AFTER_NUMBER.test(text.slice(index + token.length))) return true;
+  return UNIT_BEFORE_NUMBER.test(text.slice(Math.max(0, index - 16), index));
+}
+
+function isZipFragment(text: string, index: number, token: string): boolean {
+  if (token.length !== 5) return false;
+  const before = text.slice(Math.max(0, index - 4), index);
+  const state = /\b([A-Z]{2})[ \t]+$/.exec(before)?.[1];
+  if (state && US_STATE_ABBREVIATIONS.has(state)) return true;
+  return /^[ \t]*(?:USA|US|United States)\b/.test(text.slice(index + token.length));
+}
+
+const CARD_DIGITS_BEFORE_NUMBER = /(?:\bending(?:[ \t]+in)?|\blast[ \t]+(?:4|four)(?:[ \t]+digits)?(?:[ \t]+of)?|[x*•]{2,})[ \t]*:?[ \t]*$/i;
+
+function isIdentifierOrStatusFragment(text: string, index: number, token: string): boolean {
+  if (CARD_DIGITS_BEFORE_NUMBER.test(text.slice(Math.max(0, index - 24), index))) return true;
+  if (/^[-_][A-Za-z]/.test(text.slice(index + token.length))) return true;
+  if (index >= 2 && /[-_]/.test(text[index - 1]) && /[A-Za-z]/.test(text[index - 2])) return true;
+  return /^[ \t]+\d\.\d\.\d/.test(text.slice(index + token.length));
+}
+
 export function extractReferenceCodeCandidates(text: string): string[] {
   const tokens = new Set<string>();
   for (const match of text.matchAll(/\b\d{3,8}\b/g)) {
@@ -78,6 +114,9 @@ export function extractReferenceCodeCandidates(text: string): string[] {
     if (isCurrencyAmountFragment(text, index, token)) continue;
     if (isPostalCodeFragment(text, index, token)) continue;
     if (isPhoneNumberFragment(text, index, token)) continue;
+    if (isStreetAddressFragment(text, index, token)) continue;
+    if (isZipFragment(text, index, token)) continue;
+    if (isIdentifierOrStatusFragment(text, index, token)) continue;
     tokens.add(token);
   }
   for (const match of text.matchAll(/\b[A-Za-z]{1,8}[-_][A-Za-z0-9][A-Za-z0-9_-]{0,60}\b/g)) {
@@ -262,6 +301,46 @@ export async function resolveReferenceCodesFromText(
   }));
 }
 
+const CODE_ONLY_SEPARATORS = /[\s/,;|&\-–]/g;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Reference codes the email actually uses as coding: a code right after a company label, any code on a line
+ * that says it is coding, or a line that is only codes ("912 / 72200"). Numbers inside signatures, addresses,
+ * account numbers, and phone extensions are candidates but never coding.
+ */
+export function explicitCodingCodes(text: string): string[] {
+  const codes = new Set<string>();
+  for (const line of text.split('\n')) {
+    const candidates = extractReferenceCodeCandidates(line);
+    if (candidates.length === 0) continue;
+    const keywordLine = CODING_LINE_KEYWORD.test(line);
+    const remainder = candidates.reduce((rest, code) => rest.split(code).join(''), line);
+    const codesOnly = remainder.replace(CODE_ONLY_SEPARATORS, '') === '';
+    for (const code of candidates) {
+      const labeled = new RegExp(
+        String.raw`\b(?:company|co|entity)\b\.?[ \t]*(?:code|id|no\.?|number|#)?[ \t]*[:=#\-–]?[ \t]*${escapeRegExp(code)}\b`,
+        'i'
+      ).test(line);
+      if (labeled || keywordLine || codesOnly) codes.add(code);
+    }
+  }
+  return [...codes];
+}
+
+function normalizeForNameMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function companyNamedInText(extracted: string | null | undefined, text: string | undefined): boolean {
+  const name = normalizeForNameMatch(extracted ?? '');
+  if (name.length < 4 || !text) return false;
+  return ` ${normalizeForNameMatch(text)} `.includes(` ${name} `);
+}
+
 function uniqueCompanies(matches: CachedReferenceMatch[]): EmailCompanyMatch[] {
   const byId = new Map<string, EmailCompanyMatch>();
   for (const match of matches.filter((item) => item.type === 'company')) {
@@ -283,6 +362,10 @@ function isShortNumericReferenceId(value: string): boolean {
 export async function resolveCompanyFromEmail(options: {
   db: DatabaseConnection;
   emailBody?: string;
+  /** Text where a company may be named without a code: AP notes and the email's coding lines (`emailCodingText`). */
+  codingText?: string;
+  /** AP's internal notes: any code in them is coding, since AP wrote it. */
+  apNotes?: string;
   emailCompany?: {
     extracted?: string | null;
     workdayId?: string | null;
@@ -290,7 +373,7 @@ export async function resolveCompanyFromEmail(options: {
     name?: string | null;
   } | null;
 }): Promise<EmailCompanyMatch | undefined> {
-  const { emailCompany, emailBody } = options;
+  const { emailCompany, emailBody, codingText, apNotes } = options;
   const rawWorkdayId = emailCompany?.workdayId?.trim() || undefined;
   const claimedWid = rawWorkdayId && !isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined;
   const claimedReferenceId = (
@@ -298,7 +381,8 @@ export async function resolveCompanyFromEmail(options: {
     || (rawWorkdayId && isShortNumericReferenceId(rawWorkdayId) ? rawWorkdayId : undefined)
   ) || undefined;
 
-  const bodyCodes = emailBody ? extractReferenceCodeCandidates(emailBody) : [];
+  const apCodes = apNotes ? extractReferenceCodeCandidates(htmlToText(apNotes)) : [];
+  const bodyCodes = [...(emailBody ? explicitCodingCodes(htmlToText(emailBody)) : []), ...apCodes];
   const extractedCodes = emailCompany?.extracted
     ? extractReferenceCodeCandidates(emailCompany.extracted)
     : [];
@@ -308,11 +392,13 @@ export async function resolveCompanyFromEmail(options: {
   const uniqueCodes = [...new Set(emailCodes.map((code) => code.trim()).filter(Boolean))];
 
   if (uniqueCodes.length === 0) {
-    if (claimedWid) {
+    // The model also fills this from the invoice bill-to, so a name counts only when the email itself says it.
+    if (claimedWid && companyNamedInText(emailCompany?.extracted, codingText)) {
       return {
         workdayId: claimedWid,
         referenceId: claimedReferenceId,
         name: emailCompany?.name || undefined,
+        origin: 'name',
       };
     }
     return undefined;
@@ -330,6 +416,7 @@ export async function resolveCompanyFromEmail(options: {
         workdayId: claimedWid,
         referenceId: matching.referenceId || claimedReferenceId,
         name: emailCompany?.name || matching.name,
+        origin: 'code',
       };
     }
   }
@@ -342,24 +429,44 @@ export async function resolveCompanyFromEmail(options: {
       return {
         ...referencedExact[0],
         name: emailCompany?.name || referencedExact[0].name,
+        origin: 'code',
       };
     }
   }
 
   if (exactCompanies.length === 1) {
-    debug('Resolved a unique company from exact email reference codes', exactCompanies[0]);
-    return exactCompanies[0];
+    debug('Resolved a unique company from explicit email coding', exactCompanies[0]);
+    return { ...exactCompanies[0], origin: 'code' };
   }
   return undefined;
 }
 
 export type CreateInvoiceCompanySource = 'email' | 'po' | 'recommended' | 'default';
 
+/** The company an email override replaced: the matched PO's company, or the invoice's verified bill-to company. */
+export type CompanyConflict = { with: 'po' | 'bill_to'; workdayId: string };
+
 export type SelectedCreateInvoiceCompany = {
   companyId: string;
   companyReferenceType: 'WID' | 'Company_Reference_ID';
   source: CreateInvoiceCompanySource;
+  emailOrigin?: EmailCompanyOrigin;
+  conflict?: CompanyConflict;
 };
+
+function emailCompanyConflict(options: {
+  emailWorkdayId?: string;
+  recommendedCompanyWID?: string;
+  poCompanyWID?: string;
+}): CompanyConflict | undefined {
+  const { emailWorkdayId, poCompanyWID, recommendedCompanyWID } = options;
+  if (!emailWorkdayId) return undefined;
+  if (poCompanyWID && poCompanyWID !== emailWorkdayId) return { with: 'po', workdayId: poCompanyWID };
+  if (recommendedCompanyWID && recommendedCompanyWID !== emailWorkdayId) {
+    return { with: 'bill_to', workdayId: recommendedCompanyWID };
+  }
+  return undefined;
+}
 
 export function selectCompanyForCreateInvoice(options: {
   emailCompany?: EmailCompanyMatch;
@@ -367,11 +474,28 @@ export function selectCompanyForCreateInvoice(options: {
   poCompanyWID?: string;
   defaultCompany?: { companyId: string; companyReferenceType: 'WID' | 'Company_Reference_ID' };
 }): SelectedCreateInvoiceCompany {
+  const emailOrigin = options.emailCompany?.origin;
   if (options.emailCompany?.workdayId && !isShortNumericReferenceId(options.emailCompany.workdayId)) {
-    return { companyId: options.emailCompany.workdayId, companyReferenceType: 'WID', source: 'email' };
+    const conflict = emailCompanyConflict({
+      emailWorkdayId: options.emailCompany.workdayId,
+      recommendedCompanyWID: options.recommendedCompanyWID,
+      poCompanyWID: options.poCompanyWID,
+    });
+    return {
+      companyId: options.emailCompany.workdayId,
+      companyReferenceType: 'WID',
+      source: 'email',
+      ...(emailOrigin ? { emailOrigin } : {}),
+      ...(conflict ? { conflict } : {}),
+    };
   }
   if (options.emailCompany?.referenceId) {
-    return { companyId: options.emailCompany.referenceId, companyReferenceType: 'Company_Reference_ID', source: 'email' };
+    return {
+      companyId: options.emailCompany.referenceId,
+      companyReferenceType: 'Company_Reference_ID',
+      source: 'email',
+      ...(emailOrigin ? { emailOrigin } : {}),
+    };
   }
   if (options.poCompanyWID) {
     return { companyId: options.poCompanyWID, companyReferenceType: 'WID', source: 'po' };

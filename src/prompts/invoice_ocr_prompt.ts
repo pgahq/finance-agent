@@ -41,6 +41,10 @@ export const InvoiceOcrSchema = z.object({
   extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
   extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
   extractedTaxLabel: printedText(enrichment.extractedTaxLabel),
+  extractedOtherCharges: z.array(z.object({
+    label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
+    amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
+  })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedJobNumber: printedText(enrichment.extractedJobNumber),
@@ -54,13 +58,18 @@ export const InvoiceOcrSchema = z.object({
 export type InvoiceOcrResponse = z.infer<typeof InvoiceOcrSchema>;
 
 type NullableText<T> = { [K in keyof T]: T[K] extends string ? string | null : T[K] };
+export interface InvoiceOcrOtherCharge {
+  label: string;
+  amount: string;
+}
 type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLines'][number]>, 'description' | 'descriptionCells'> & {
   description: string;
   descriptionCells: string[] | null;
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges'> & {
+  extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
   printedBillTo: NullableText<InvoiceOcrResponse['printedBillTo']>;
   extractedPaymentTerms: { name: string } | null;
@@ -78,10 +87,14 @@ function nullableTextFields<T extends Record<string, unknown>>(fields: T): Nulla
 }
 
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
-  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, ...headerFields } = response;
+  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, ...headerFields } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
+  const otherCharges = (extractedOtherCharges ?? [])
+    .filter(charge => charge.label.trim() && charge.amount.trim())
+    .map(charge => ({ label: charge.label.trim(), amount: charge.amount.trim() }));
   return {
     ...nullableTextFields(headerFields),
+    extractedOtherCharges: otherCharges.length ? otherCharges : null,
     printedSupplier: nullableTextFields(printedSupplier),
     printedBillTo: nullableTextFields(printedBillTo),
     extractedPaymentTerms: paymentTerms ? { name: paymentTerms } : null,
@@ -151,6 +164,19 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 ---
 
+## Part 5.6: Additional Tax Rows
+
+An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
+
+- Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
+- Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
+- Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
+- Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
+- For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, and a "5% EnvChg Tax" row of $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }].
+- If there is no additional tax row, return an empty array.
+
+---
+
 ## Part 6: Supplier's Invoice Number
 
 Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
@@ -199,7 +225,7 @@ Extract the individual line items from the invoice document:
    - **Total Price**: The total/extended price for the line (if stated)
    - **Table Number**: Which table on the document the row came from, numbered 1, 2, 3... in document order. Some invoices print the same charges in more than one table, for example an hourly line-item table and a monthly summary or remittance table that restates it. When you extract rows from more than one table, give each table its own number so code can tell a restated table from the original. Use 1 when the document has one line-item table.
 
-Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
+Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
 Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.

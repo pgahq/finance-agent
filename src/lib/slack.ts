@@ -185,15 +185,22 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   const company = details.company as {
     appliedFrom?: string;
     appliedName?: string;
+    appliedReferenceId?: string;
+    emailOrigin?: string;
+    review?: string;
   } | undefined;
   if (company?.appliedName) {
-    const from = company.appliedFrom === 'recommended' ? 'recommended'
+    const emailSource = company.emailOrigin === 'name'
+      ? 'named in email'
+      : `from email coding${company.appliedReferenceId ? ` \`${company.appliedReferenceId}\`` : ''}`;
+    const from = company.appliedFrom === 'recommended' ? 'from invoice bill-to'
       : company.appliedFrom === 'po' ? 'from PO'
-      : company.appliedFrom === 'email' ? 'from email coding'
+      : company.appliedFrom === 'email' ? emailSource
       : company.appliedFrom === 'default' ? 'default'
       : (company.appliedFrom ?? 'set');
     changeLines.push(`*Company* → ${company.appliedName} (${from})`);
   }
+  if (company?.review) fallbackLines.push(escapeSlackMrkdwn(company.review));
 
   const extracted = details.extracted as {
     invoiceDate?: string;
@@ -560,7 +567,9 @@ export async function notifyResult(
       : updatedInvoice
         ? `${statusEmoji} *${lambdaName}* updated${resendInvoiceLabel ? ` \`${resendInvoiceLabel}\`` : ' invoice'} in ${timeText}`
         : createdInvoiceNumber
-          ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+          ? ((details as { amountMismatch?: unknown } | undefined)?.amountMismatch === true
+            ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` with an amount mismatch (review before approving) in ${timeText}`
+            : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {
@@ -622,6 +631,8 @@ export interface EnrichmentNotification {
     existingName?: string;
     recommendedName?: string;
     appliedFromEmail?: boolean;
+    emailOrigin?: 'code' | 'name';
+    review?: string;
     appliedName?: string;
     appliedReferenceId?: string;
   };
@@ -701,7 +712,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   if (company?.appliedFromEmail) {
     const label = company.appliedName ?? company.appliedReferenceId ?? 'Unknown';
     const code = company.appliedReferenceId ? ` (\`${company.appliedReferenceId}\`)` : '';
-    changeLines.push(`*Company* → ${label}${code} from email coding`);
+    changeLines.push(`*Company* → ${label}${code} ${company.emailOrigin === 'name' ? 'named in email' : 'from email coding'}`);
+    if (company.review) fallbackLines.push(escapeSlackMrkdwn(company.review));
   } else {
     switch (company?.status) {
       case 'different':

@@ -7,6 +7,8 @@ import {
   formatAmountNotes,
   formatChargeReviewNotes,
   formatCompanyNotes,
+  describeEmailCompanyReview,
+  formatEmailCompanyNotes,
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
@@ -54,6 +56,7 @@ import {
   chargeReconciliationLogSummary,
   chargeReconciliationMessages,
   CHARGE_RECONCILIATION_FALLBACK_FIELD,
+  isAmountMismatchMessage,
   formatAmountCheckNotes,
   mergeAmountCheckMessages,
   lineTotalMismatchNote,
@@ -68,6 +71,7 @@ import {
   splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
+import { applyPrintedTaxCharges } from './lib/header_charges.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -84,6 +88,7 @@ import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
+import { emailCodingText, sourceEmailBody } from './lib/email_coding_text.js';
 import {
   costCenterCodeExcludingCompany,
   resolveCompanyFromEmail,
@@ -139,19 +144,6 @@ interface EmailPurchaseOrders {
    * never count, since they often name another invoice's PO.
    */
   conversationPurchaseOrderNumber?: string;
-}
-
-/**
- * The source email body: `plainTextBody` without the conversation parts appended after it. Unset when the
- * boundary cannot be found, so note text never passes as the supplier's own text.
- */
-function sourceEmailBody(emailContext: InvoiceData['emailContext'] | undefined): string | undefined {
-  const plainTextBody = emailContext?.plainTextBody;
-  const parts = emailContext?.conversationParts;
-  if (!plainTextBody) return undefined;
-  if (!parts) return emailContext?.adminConversationParts ? undefined : plainTextBody;
-  const suffix = `\n\n${parts}`;
-  return plainTextBody.endsWith(suffix) ? plainTextBody.slice(0, -suffix.length) : undefined;
 }
 
 function findEmailPurchaseOrders(
@@ -959,6 +951,8 @@ async function processInvoiceCluster(
     const emailCompany = await resolveCompanyFromEmail({
       db: context.dbConnection,
       emailBody: emailContext?.plainTextBody,
+      codingText: emailCodingText(emailContext),
+      apNotes: emailContext?.adminConversationParts,
       emailCompany: result.emailWorktags?.company,
     });
 
@@ -1040,9 +1034,9 @@ async function processInvoiceCluster(
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
       extractedFreightAmount: resolvedFreightAmount,
-      extractedTaxAmount,
+      extractedTaxAmount: resolvedTaxAmount,
       freightCleared: headerFreightCleared,
-      taxCleared,
+      taxCleared: headerTaxCleared,
       reviewNote: chargeReviewNote,
       chargeWithheld,
     } = resolveHeaderChargeAmounts({
@@ -1054,10 +1048,22 @@ async function processInvoiceCluster(
     });
     const restoredFreight = restoreClearedFreightFromRows(extractedLines, {
       amountDue: extractedAmountDue,
-      tax: extractedTaxAmount,
+      tax: resolvedTaxAmount,
       freightCleared: headerFreightCleared,
     });
     const freightCleared = headerFreightCleared && restoredFreight.freight == null;
+    // A printed environmental or other tax-like charge joins header tax when it exactly explains the shortfall.
+    const taxCharges = applyPrintedTaxCharges({
+      charges: result.extractedOtherCharges,
+      amountDue: extractedAmountDue,
+      lines: extractedLines,
+      freight: restoredFreight.freight ?? resolvedFreightAmount,
+      tax: resolvedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      taxCleared: headerTaxCleared,
+      chargeWithheld,
+    });
+    const { taxAmount: extractedTaxAmount, taxCleared } = taxCharges;
     const charges = prepareInvoiceCharges(
       extractedLines,
       { amountDue: extractedAmountDue, freight: restoredFreight.freight ?? resolvedFreightAmount, tax: extractedTaxAmount },
@@ -1066,6 +1072,7 @@ async function processInvoiceCluster(
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
     const chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
+      ...(taxCharges.message ? [taxCharges.message] : []),
       ...chargeReconciliationMessages(chargeReconciliation),
     ];
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
@@ -1227,6 +1234,16 @@ async function processInvoiceCluster(
     ].filter((note): note is string => Boolean(note));
 
     const appliedRecommended = selectedCompany.source === 'recommended';
+    const emailCompanyReview = selectedCompany.source === 'email' && emailCompany ? {
+      appliedName: emailCompany.name,
+      referenceId: emailCompany.referenceId,
+      origin: selectedCompany.emailOrigin,
+      conflictWith: selectedCompany.conflict?.with,
+      conflictName: selectedCompany.conflict?.with === 'po'
+        ? matchedPo?.company?.descriptor
+        : result.companyVerification?.recommended?.companyName,
+    } : undefined;
+    const emailCompanyNotes = emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '';
     // existingCompany here is a synthetic placeholder fed to the AI for comparison, not a
     // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
     const emailWorktagNotes = formatEmailWorktagNotes(result);
@@ -1244,7 +1261,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended }) + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1252,13 +1269,19 @@ async function processInvoiceCluster(
     );
     const submittedSlackAmountCheck = (appliedFallbacks: AppliedFallback[]) => {
       const lines = amountCheckLines(appliedFallbacks);
-      return lines.length ? { chargeCheck: lines } : {};
+      return lines.length
+        ? { chargeCheck: lines, ...(lines.some(isAmountMismatchMessage) ? { amountMismatch: true } : {}) }
+        : {};
     };
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
       const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
-      return baseNotes
-        + formatAmountCheckNotes(amountCheckLines(appliedFallbacks))
+      const amountCheck = amountCheckLines(appliedFallbacks);
+      // An unexplained gap goes first so AP sees it before the supporting detail.
+      const mismatchFirst = amountCheck.some(isAmountMismatchMessage);
+      return (mismatchFirst ? formatAmountCheckNotes(amountCheck).trimStart() + '\n\n' : '')
+        + baseNotes
+        + (mismatchFirst ? '' : formatAmountCheckNotes(amountCheck))
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
           assigneeName,
@@ -1275,9 +1298,13 @@ async function processInvoiceCluster(
       status: 'email_resolved',
       appliedFrom: 'email',
       appliedFromEmail: true,
+      emailOrigin: selectedCompany.emailOrigin,
       appliedName: emailCompany.name,
       appliedId: companyWID,
       appliedReferenceId: emailCompany.referenceId,
+      ...(emailCompanyReview && describeEmailCompanyReview(emailCompanyReview).review
+        ? { review: describeEmailCompanyReview(emailCompanyReview).review }
+        : {}),
       recommendedName: result.companyVerification?.recommended?.companyName,
     } : selectedCompany.source === 'po' ? {
       status: 'po',

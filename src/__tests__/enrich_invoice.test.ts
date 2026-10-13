@@ -1002,6 +1002,73 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('does not say the company changed to the bill-to when explicit email coding won, and flags the conflict', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const { findDocumentsByReferenceIds } = require('../lib/database.js');
+    findDocumentsByReferenceIds.mockResolvedValue(new Map([
+      ['912', [{
+        workday_id: 'email-company-wid',
+        type: 'company',
+        content: 'PGA Company',
+        metadata: { companyReferenceId: '912', companyName: 'PGA Company' },
+      }]],
+    ]));
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'different',
+        confidence: 0.9,
+        extractedInformation: {},
+        recommended: { workdayId: 'pdf-company-wid', companyName: 'PDF Co', confidence: 0.9, reason: 'Bill-to differs' },
+        reason: 'Bill-to differs'
+      },
+      emailWorktags: {
+        company: { extracted: '912', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '912' },
+        costCenter: { extracted: null, name: null, code: null },
+        event: { extracted: null, workdayId: null },
+        lineOfBusiness: { extracted: null, referenceId: null },
+        fund: { extracted: null, referenceId: null },
+        spendCategory: { extracted: null, name: null, referenceId: null }
+      }
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.companyWID).toBe('email-company-wid');
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Invoice bill-to check: Bill-to differs');
+    expect(notes).not.toContain('Changed to: PDF Co');
+    expect(notes).toContain('Company applied from email coding (code 912): PGA Company.');
+    expect(notes).toContain('differs from the invoice bill-to company (PDF Co)');
+    expect(notifyEnrichmentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        company: expect.objectContaining({
+          review: expect.stringContaining('differs from the invoice bill-to company (PDF Co)'),
+        }),
+      })
+    );
+  });
+
   it('passes priorFailures from a successful submit retry to Slack', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

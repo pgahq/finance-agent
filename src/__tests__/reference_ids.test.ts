@@ -1,6 +1,9 @@
 import { findDocumentsByReferenceId, findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
 import { createEmbedding } from '../lib/rag.js';
+import { emailCodingText } from '../lib/email_coding_text.js';
+import { describeEmailCompanyReview } from '../lib/invoice_enrichment.js';
 import {
+  explicitCodingCodes,
   extractReferenceCodeCandidates,
   findCachedReferenceMatches,
   resolveCompanyFromEmail,
@@ -113,6 +116,87 @@ describe('extractReferenceCodeCandidates', () => {
   });
 });
 
+const KMRD_EMAIL = [
+  'Hello,',
+  'Attached is an invoice for our October 2026 monthly HRO Support services and monthly PGA Hotline Fee.',
+  'Thank you,',
+  'Terri',
+  'Theresa Quinn, CISR',
+  'Account Manager',
+  'O +1 267.482.8292',
+  'tquinn@kmrdpartners.com',
+  '2600 KELLY ROAD, SUITE 120 , WARRINGTON, PA 18976 USA',
+].join('\n');
+
+describe('extractReferenceCodeCandidates address and noise filters', () => {
+  it('returns no codes for the KMRD Partners signature', () => {
+    expect(extractReferenceCodeCandidates(KMRD_EMAIL)).toEqual([]);
+  });
+
+  it('skips street numbers, suites, zips, and phone extensions (Dynamic Brands)', () => {
+    const text = [
+      '624065 PGA OF AMERICA',
+      'contact us at 804-262-3000 ext. 2200 or credit@dynamicbrands.com',
+      '2701 Emerywood Pkwy, Suite 200',
+      'Richmond, VA 23294',
+      'for purchase order PO-414064',
+    ].join('\n');
+    const codes = extractReferenceCodeCandidates(text);
+    expect(codes).not.toContain('2200');
+    expect(codes).not.toContain('2701');
+    expect(codes).not.toContain('200');
+    expect(codes).not.toContain('23294');
+    expect(codes).not.toContain('414064');
+  });
+
+  it('skips a street number and an SMTP status code (Makse Group, United Rentals)', () => {
+    expect(extractReferenceCodeCandidates('550 Reserve Street, STE 190, Southlake, TX 76092')).toEqual([]);
+    expect(extractReferenceCodeCandidates('smtp;550 5.7.129 RESOLVER.RST.RestrictedToRecipientsPermission')).toEqual([]);
+    expect(extractReferenceCodeCandidates('800-UR-RENTS (800-877-3687)')).not.toContain('800');
+  });
+
+  it('still extracts coding codes', () => {
+    expect(extractReferenceCodeCandidates('Coding: 912 / 72200')).toEqual(['912', '72200']);
+  });
+});
+
+describe('explicitCodingCodes', () => {
+  it('accepts a code after a company label, on a coding line, or on a codes-only line', () => {
+    expect(explicitCodingCodes('Company: 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Company code 912, cost center 72200')).toEqual(expect.arrayContaining(['912']));
+    expect(explicitCodingCodes('Please code to 912 and 72200')).toEqual(['912', '72200']);
+    expect(explicitCodingCodes('Thanks\n912 / 72200\nBye')).toEqual(['912', '72200']);
+  });
+
+  it('does not treat a bare "code" as coding (zip, promo, customer codes, "coded")', () => {
+    expect(explicitCodingCodes('Use promo code 2600 at checkout')).toEqual([]);
+    expect(explicitCodingCodes('Your customer code is 2600')).toEqual([]);
+    expect(explicitCodingCodes('Zip code: 18976')).toEqual([]);
+    expect(explicitCodingCodes('Order 12345 has been coded and shipped')).toEqual([]);
+  });
+
+  it('does not treat card receipt text as coding', () => {
+    expect(explicitCodingCodes('This amount was charged to your card ending in 2600')).toEqual([]);
+    expect(explicitCodingCodes('Payment of $1,250.00 charged to Visa ending 2600')).toEqual([]);
+    expect(explicitCodingCodes('Amount charged to account 2600')).toEqual([]);
+    expect(explicitCodingCodes('Please charge to card ending in 2600')).toEqual([]);
+    expect(explicitCodingCodes('Charge to 912')).toEqual(['912']);
+  });
+
+  it('accepts coding phrases', () => {
+    expect(explicitCodingCodes('Please code 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Coded to 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Charge to 912')).toEqual(['912']);
+    expect(explicitCodingCodes('Company code 912')).toEqual(['912']);
+  });
+
+  it('rejects account numbers and other bare numbers in prose', () => {
+    expect(explicitCodingCodes('624065 PGA OF AMERICA')).toEqual([]);
+    expect(explicitCodingCodes('Your reference is 2600 for this order')).toEqual([]);
+    expect(explicitCodingCodes('Call +1 267.482.8292 today')).toEqual([]);
+  });
+});
+
 describe('resolveCompanyFromEmail', () => {
   const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
 
@@ -132,6 +216,7 @@ describe('resolveCompanyFromEmail', () => {
       db,
       emailBody: 'Coding: 912 / 72200',
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -153,11 +238,13 @@ describe('resolveCompanyFromEmail', () => {
     })).resolves.toBeUndefined();
   });
 
-  it('returns an already-resolved workdayId without looking up when no codes are present', async () => {
+  it('applies a claimed company WID when the email itself names that company', async () => {
     await expect(resolveCompanyFromEmail({
       db,
+      emailBody: 'Please bill this to PGA Company.',
+      codingText: 'Please bill this to PGA Company.',
       emailCompany: {
-        extracted: null,
+        extracted: 'PGA Company',
         workdayId: 'email-company-wid',
         referenceId: null,
         name: 'PGA Company',
@@ -166,8 +253,23 @@ describe('resolveCompanyFromEmail', () => {
       workdayId: 'email-company-wid',
       referenceId: undefined,
       name: 'PGA Company',
+      origin: 'name',
     });
     expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
+  });
+
+  it('ignores a claimed company the email never names, such as the invoice bill-to', async () => {
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: 'Attached is our October invoice.',
+      codingText: 'Attached is our October invoice.',
+      emailCompany: {
+        extracted: 'PGA of America',
+        workdayId: 'email-company-wid',
+        referenceId: '310',
+        name: 'The Professional Golfers Association of America',
+      },
+    })).resolves.toBeUndefined();
   });
 
   it('keeps a claimed company WID that matches an exact cache hit', async () => {
@@ -182,6 +284,7 @@ describe('resolveCompanyFromEmail', () => {
         name: 'PGA Company',
       },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -201,6 +304,7 @@ describe('resolveCompanyFromEmail', () => {
         name: 'PGA Company',
       },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -242,6 +346,7 @@ describe('resolveCompanyFromEmail', () => {
         name: 'Other Company',
       },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -274,6 +379,7 @@ describe('resolveCompanyFromEmail', () => {
         name: 'Other Company',
       },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -288,6 +394,7 @@ describe('resolveCompanyFromEmail', () => {
       db,
       emailCompany: { extracted: '912', workdayId: null, referenceId: '912', name: 'PGA Company' },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -305,6 +412,7 @@ describe('resolveCompanyFromEmail', () => {
       emailBody: 'Coding: 912 / 72200',
       emailCompany: { extracted: '72200', workdayId: null, referenceId: '72200', name: null },
     })).resolves.toEqual({
+      origin: 'code',
       workdayId: 'company-wid-912',
       referenceId: '912',
       name: 'PGA Company',
@@ -363,6 +471,95 @@ describe('resolveCompanyFromEmail', () => {
   });
 });
 
+describe('resolveCompanyFromEmail KMRD Partners regression (SUPIN-466170)', () => {
+  const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
+  const kentucky = companyDoc({
+    workday_id: 'cab0b1d2505a012c97d7da178227ceea',
+    metadata: { companyReferenceId: '2600', companyName: 'Kentucky Section PGA of America' },
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSearchDocumentsByTypes.mockResolvedValue([]);
+    mockReferenceLookup({ '2600': [kentucky] });
+  });
+
+  it('does not turn the supplier address 2600 Kelly Road into the Kentucky Section company', async () => {
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: KMRD_EMAIL,
+      codingText: KMRD_EMAIL,
+      emailCompany: {
+        extracted: 'PGA of America',
+        name: 'The Professional Golfers Association of America',
+        workdayId: 'cab0b1d2505a01338fcd651982277bec',
+        referenceId: '310',
+      },
+    })).resolves.toBeUndefined();
+    expect(mockFindDocumentsByReferenceIds).not.toHaveBeenCalled();
+  });
+
+  it('still honors 2600 when the email actually codes it', async () => {
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: `${KMRD_EMAIL}\n\nCompany: 2600`,
+      codingText: `${KMRD_EMAIL}\n\nCompany: 2600`,
+    })).resolves.toEqual({
+      workdayId: 'cab0b1d2505a012c97d7da178227ceea',
+      referenceId: '2600',
+      name: 'Kentucky Section PGA of America',
+      origin: 'code',
+    });
+  });
+
+  it('counts a code in an AP note as coding, e.g. "Please use 912 for this one"', async () => {
+    mockReferenceLookup({ '912': [companyDoc()] });
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: `${KMRD_EMAIL}\n\nPlease use 912 for this one`,
+      apNotes: '<p>Please use 912 for this one</p>',
+    })).resolves.toEqual({
+      workdayId: 'company-wid-912',
+      referenceId: '912',
+      name: 'PGA Company',
+      origin: 'code',
+    });
+  });
+
+  it('does not count the customer name in a supplier account line or "PGA Hotline Fee" as a company name', () => {
+    const text = emailCodingText({
+      plainTextBody: '624065 PGA OF AMERICA\nMonthly PGA Hotline Fee\nCompany: PGA Tournament Corp',
+    });
+    expect(text).toContain('PGA Tournament Corp');
+    expect(text).not.toContain('624065');
+    expect(text).not.toContain('Hotline');
+  });
+
+  it('includes AP notes in the text where a company may be named', () => {
+    const text = emailCodingText({
+      plainTextBody: 'hello\n\n<p>Bill to PGA Tournament Corp</p>',
+      conversationParts: '<p>Bill to PGA Tournament Corp</p>',
+      adminConversationParts: '<p>Bill to PGA Tournament Corp</p>',
+    });
+    expect(text).toContain('Bill to PGA Tournament Corp');
+  });
+
+  it('does not read the PGA of America name from the inbox auto-reply as email coding', async () => {
+    const autoReply = 'Thank you for contacting the Corporate Accounts Payable Team at The PGA of America headquarters office.';
+    await expect(resolveCompanyFromEmail({
+      db,
+      emailBody: `${KMRD_EMAIL}\n\n${autoReply}`,
+      codingText: KMRD_EMAIL,
+      emailCompany: {
+        extracted: 'PGA of America',
+        name: 'The Professional Golfers Association of America',
+        workdayId: 'cab0b1d2505a01338fcd651982277bec',
+        referenceId: '310',
+      },
+    })).resolves.toBeUndefined();
+  });
+});
+
 describe('selectCompanyForCreateInvoice', () => {
   it('prefers email company WID over email reference ID, PO, recommended WID, and the default', () => {
     expect(selectCompanyForCreateInvoice({
@@ -370,7 +567,12 @@ describe('selectCompanyForCreateInvoice', () => {
       recommendedCompanyWID: 'pdf-wid',
       poCompanyWID: 'po-wid',
       defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
-    })).toEqual({ companyId: 'email-wid', companyReferenceType: 'WID', source: 'email' });
+    })).toEqual({
+      companyId: 'email-wid',
+      companyReferenceType: 'WID',
+      source: 'email',
+      conflict: { with: 'po', workdayId: 'po-wid' },
+    });
   });
 
   it('uses the email company reference ID when no WID is available', () => {
@@ -379,6 +581,43 @@ describe('selectCompanyForCreateInvoice', () => {
       recommendedCompanyWID: 'pdf-wid',
       defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
     })).toEqual({ companyId: '912', companyReferenceType: 'Company_Reference_ID', source: 'email' });
+  });
+
+  it('selects the verified bill-to company when the email supplies no company (KMRD)', () => {
+    expect(selectCompanyForCreateInvoice({
+      emailCompany: undefined,
+      recommendedCompanyWID: 'cab0b1d2505a01338fcd651982277bec',
+      defaultCompany: { companyId: 'Default_OCR_Company', companyReferenceType: 'Company_Reference_ID' },
+    })).toEqual({
+      companyId: 'cab0b1d2505a01338fcd651982277bec',
+      companyReferenceType: 'WID',
+      source: 'recommended',
+    });
+  });
+
+  it('flags an explicit email company that conflicts with the bill-to company and keeps its origin', () => {
+    expect(selectCompanyForCreateInvoice({
+      emailCompany: { workdayId: 'email-wid', referenceId: '2600', origin: 'code' },
+      recommendedCompanyWID: 'bill-to-wid',
+    })).toEqual({
+      companyId: 'email-wid',
+      companyReferenceType: 'WID',
+      source: 'email',
+      emailOrigin: 'code',
+      conflict: { with: 'bill_to', workdayId: 'bill-to-wid' },
+    });
+  });
+
+  it('does not flag an email company that agrees with the PO company', () => {
+    expect(selectCompanyForCreateInvoice({
+      emailCompany: { workdayId: 'same-wid', origin: 'code' },
+      poCompanyWID: 'same-wid',
+    })).toEqual({
+      companyId: 'same-wid',
+      companyReferenceType: 'WID',
+      source: 'email',
+      emailOrigin: 'code',
+    });
   });
 
   it('uses the PO company WID over a PDF recommendation', () => {
@@ -643,5 +882,25 @@ describe('resolveReferenceCodesFromText', () => {
       }),
       expect.objectContaining({ code: '333', matches: [] }),
     ]));
+  });
+});
+
+describe('describeEmailCompanyReview', () => {
+  it('says "named in the email" in both the note and the Slack review for a name-origin company', () => {
+    const { note, review } = describeEmailCompanyReview({
+      appliedName: 'PGA REACH',
+      origin: 'name',
+      conflictWith: 'bill_to',
+      conflictName: 'PGA Foundation',
+    });
+    expect(note).toContain('the company named in the email');
+    expect(review).toContain('PGA REACH was named in the email but differs from the invoice bill-to company (PGA Foundation)');
+    expect(review).not.toContain('email coding');
+  });
+
+  it('names the code for a code-origin company and has no review when nothing conflicts', () => {
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code' }).review).toBeUndefined();
+    expect(describeEmailCompanyReview({ appliedName: 'Kentucky', referenceId: '2600', origin: 'code', conflictWith: 'po', conflictName: 'PGA' }).review)
+      .toContain('came from email coding 2600 but differs from the purchase order company (PGA)');
   });
 });
