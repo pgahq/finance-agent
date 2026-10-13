@@ -5413,6 +5413,57 @@ describe('Workday utilities', () => {
       return mockClient;
     };
 
+    describe('SUPIN-467011 header tax with a printed environmental charge', () => {
+      const incidentLines = [
+        { lineOrder: 1, description: 'KING tickets', quantity: 0, unitCost: 0, extendedAmount: 180.5 },
+        { lineOrder: 2, description: 'KARLESKNT tickets', quantity: 0, unitCost: 0, extendedAmount: 162 },
+      ];
+
+      const submitIncident = async (extractedTaxAmount: string) => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+        });
+        const result = await submitNewSupplierInvoiceForTest({
+          extractedAmountDue: '$387.76',
+          extractedTaxAmount,
+          finalLines: incidentLines as any,
+        });
+        return { result, data: capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data };
+      };
+
+      it('submits tax 45.26 with control total 387.76 and no amount-check sentence', async () => {
+        const { result, data } = await submitIncident('45.26');
+
+        expect(data.Tax_Amount).toBe(45.26);
+        expect(data.Control_Amount_Total).toBe(387.76);
+        expect(result.appliedFallbacks.filter((fallback: any) => fallback.field === 'chargeReconciliation')).toEqual([]);
+      });
+
+      it('adds the amount-mismatch work queue tag only when the tag is configured and a gap remains', async () => {
+        const tagIds = (data: any) => ([] as any[]).concat(data.Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? [])
+          .flatMap((tag: any) => tag.ID.map((id: any) => id.$value));
+        process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'modified-tag';
+        process.env.WORKDAY_AMOUNT_MISMATCH_TAG_WID = 'amount-mismatch-tag';
+        try {
+          const gap = await submitIncident('28.26');
+          expect(tagIds(gap.data)).toEqual(['modified-tag', 'amount-mismatch-tag']);
+          expect(gap.result.appliedFallbacks.some((fallback: any) => fallback.field === 'chargeReconciliation')).toBe(true);
+
+          const balanced = await submitIncident('45.26');
+          expect(tagIds(balanced.data)).toEqual(['modified-tag']);
+
+          delete process.env.WORKDAY_AMOUNT_MISMATCH_TAG_WID;
+          const unconfigured = await submitIncident('28.26');
+          expect(tagIds(unconfigured.data)).toEqual(['modified-tag']);
+        } finally {
+          delete process.env.WORKDAY_AMOUNT_MISMATCH_TAG_WID;
+        }
+      });
+    });
+
     it('should submit a request without a Supplier_Invoice_Reference so Workday creates a new invoice', async () => {
       const mockClient = mockSoapClient();
 

@@ -568,7 +568,9 @@ export async function notifyResult(
       : updatedInvoice
         ? `${statusEmoji} *${lambdaName}* updated${resendInvoiceLabel ? ` \`${resendInvoiceLabel}\`` : ' invoice'} in ${timeText}`
         : createdInvoiceNumber
-          ? `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`
+          ? ((details as { amountMismatch?: unknown } | undefined)?.amountMismatch === true
+            ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` with an amount mismatch (review before approving) in ${timeText}`
+            : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {

@@ -220,10 +220,10 @@ export function formatFreightAmountNotes(freightAmount: string | undefined, frei
   return `\n\nFreight Amount (from document): ${freightAmount}`;
 }
 
-export function formatTaxAmountNotes(taxAmount: string | undefined, taxCleared: boolean): string {
+export function formatTaxAmountNotes(taxAmount: string | undefined, taxCleared: boolean, breakdown?: string): string {
   if (taxCleared) return '\n\nTax Amount (from document): none';
   if (!taxAmount) return '';
-  return `\n\nTax Amount (from document): ${taxAmount}`;
+  return `\n\nTax Amount (from document): ${taxAmount}${breakdown ? ` (${breakdown})` : ''}`;
 }
 
 export function formatChargeReviewNotes(reviewNote: string | undefined): string {
