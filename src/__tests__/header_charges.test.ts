@@ -1,20 +1,20 @@
 import { applyPrintedTaxCharges, isTaxLikeChargeLabel } from '../lib/header_charges.js';
 import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges } from '../lib/invoice_lines.js';
 
-// SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg of $17.00, amount due $387.76.
+// SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg tax row of $17.00, amount due $387.76.
 const lines = [
   { description: '4001 - Concierge Dry Clean & Laundry Ticket - KING', quantity: null, unitCost: '180.50', totalPrice: '180.50', hasDiscount: false },
   { description: '4001 - Concierge Dry Clean & Laundry Ticket - KARLESKNT', quantity: null, unitCost: '162.00', totalPrice: '162.00', hasDiscount: false },
 ];
 const base = { amountDue: '$387.76', lines, tax: '$28.26', taxLabel: 'Sales Tax', taxCleared: false };
-const envChg = { label: 'EnvChg', amount: '$17.00' };
+const envChg = { label: 'EnvChg Tax', amount: '$17.00' };
 
 describe('isTaxLikeChargeLabel', () => {
-  it.each(['EnvChg', 'Env Chg', 'Environmental Charge', 'Environmental Fee 5%', 'Environmental Surcharge', 'Recycling Fee', 'Eco Fee', 'Sales Tax', 'State Tax'])(
-    'treats %s as tax-like', (label) => expect(isTaxLikeChargeLabel(label)).toBe(true)
+  it.each(['EnvChg Tax', 'Env Chg Tax', 'Environmental Tax 5%', 'Tax - EnvChg', 'Sales Tax', 'State Tax', 'VAT'])(
+    'treats %s as tax-like because it says tax', (label) => expect(isTaxLikeChargeLabel(label)).toBe(true)
   );
 
-  it.each(['Fuel Surcharge', 'Service Charge', 'Convenience Fee', 'Delivery Surcharge', 'Subtotal', 'Balance Due', 'Environmental Services Consulting', '', null])(
+  it.each(['EnvChg', 'Environmental Charge', 'Recycling Fee', 'Fuel Surcharge', 'Service Charge', 'Delivery Surcharge', 'Subtotal', 'Balance Due', 'Tax ID', 'Tax Exempt', 'Taxable Amount', '', null])(
     'does not treat %s as tax-like', (label) => expect(isTaxLikeChargeLabel(label)).toBe(false)
   );
 });
@@ -32,8 +32,8 @@ describe('applyPrintedTaxCharges', () => {
 
     expect(applied.taxAmount).toBe('45.26');
     expect(applied.taxCleared).toBe(false);
-    expect(applied.message).toBe('Added "EnvChg" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
-    expect(applied.breakdown).toBe('"Sales Tax" $28.26 + "EnvChg" $17.00');
+    expect(applied.message).toBe('Added "EnvChg Tax" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
+    expect(applied.breakdown).toBe('"Sales Tax" $28.26 + "EnvChg Tax" $17.00');
     const prepared = prepareInvoiceCharges(lines, { amountDue: '$387.76', tax: applied.taxAmount }, { allowFreightAsLines: true, removeDuplicates: true });
     expect(prepared.reconciliation.unreconciled).toBeUndefined();
     expect(reconcileSubmittedCharges(lines, { amountDue: '$387.76', tax: applied.taxAmount }).unreconciled).toBeUndefined();
@@ -45,7 +45,7 @@ describe('applyPrintedTaxCharges', () => {
     });
 
     expect(applied.taxAmount).toBe('17.00');
-    expect(applied.breakdown).toBe('"EnvChg" $17.00');
+    expect(applied.breakdown).toBe('"EnvChg Tax" $17.00');
   });
 
   it('replaces a cleared zero tax instead of adding to it', () => {
@@ -57,18 +57,18 @@ describe('applyPrintedTaxCharges', () => {
 
   it('adds several tax-like charges when together they equal the gap', () => {
     const applied = applyPrintedTaxCharges({
-      ...base, charges: [envChg, { label: 'Recycling Fee', amount: '$3.00' }], amountDue: '$390.76',
+      ...base, charges: [envChg, { label: 'Recycling Tax', amount: '$3.00' }], amountDue: '$390.76',
     });
 
     expect(applied.taxAmount).toBe('48.26');
-    expect(applied.message).toBe('Added "EnvChg" $17.00 and "Recycling Fee" $3.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
+    expect(applied.message).toBe('Added "EnvChg Tax" $17.00 and "Recycling Tax" $3.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
   });
 
   it('adds only the one charge that equals the gap', () => {
-    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'Recycling Fee', amount: '$3.00' }, envChg] });
+    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'Recycling Tax', amount: '$3.00' }, envChg] });
 
     expect(applied.taxAmount).toBe('45.26');
-    expect(applied.message).toContain('"EnvChg" $17.00');
+    expect(applied.message).toContain('"EnvChg Tax" $17.00');
     expect(applied.message).not.toContain('Recycling');
   });
 
@@ -97,25 +97,27 @@ describe('applyPrintedTaxCharges', () => {
   });
 
   it('leaves the gap for the amount check when the charge does not explain it', () => {
-    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg', amount: '$17.13' }] });
+    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg Tax', amount: '$17.13' }] });
 
     expect(applied).toEqual({ taxAmount: '$28.26', taxCleared: false });
   });
 
   it('never computes an amount from a printed rate', () => {
-    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg 5%', amount: '' }] });
+    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg Tax 5%', amount: '' }] });
 
     expect(applied).toEqual({ taxAmount: '$28.26', taxCleared: false });
   });
 
-  it('does not move a fuel or service fee into tax, even when it explains the gap', () => {
-    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'Fuel Surcharge', amount: '$17.00' }] });
+  it('does not move a charge whose printed label has no tax word, even when it explains the gap', () => {
+    for (const label of ['EnvChg', 'Environmental Fee', 'Fuel Surcharge']) {
+      const applied = applyPrintedTaxCharges({ ...base, charges: [{ label, amount: '$17.00' }] });
 
-    expect(applied).toEqual({ taxAmount: '$28.26', taxCleared: false });
+      expect(applied).toEqual({ taxAmount: '$28.26', taxCleared: false });
+    }
   });
 
   it('ignores credits and unparseable amounts', () => {
-    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg', amount: '-$17.00' }, { label: 'EnvChg', amount: 'n/a' }] });
+    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: 'EnvChg Tax', amount: '-$17.00' }, { label: 'EnvChg Tax', amount: 'n/a' }] });
 
     expect(applied).toEqual({ taxAmount: '$28.26', taxCleared: false });
   });
@@ -135,7 +137,7 @@ describe('applyPrintedTaxCharges', () => {
       freight: '$10.00',
       amountDue: '$195.50',
       tax: '$5.00',
-      charges: [{ label: 'EnvChg', amount: '$3.00' }],
+      charges: [{ label: 'EnvChg Tax', amount: '$3.00' }],
     });
 
     expect(balanced).toEqual({ taxAmount: '$5.00', taxCleared: false });
@@ -145,7 +147,7 @@ describe('applyPrintedTaxCharges', () => {
       freight: '$10.00',
       amountDue: '$198.50',
       tax: '$5.00',
-      charges: [{ label: 'EnvChg', amount: '$3.00' }],
+      charges: [{ label: 'EnvChg Tax', amount: '$3.00' }],
     });
     expect(raised.taxAmount).toBe('8.00');
   });

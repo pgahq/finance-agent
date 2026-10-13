@@ -1167,12 +1167,12 @@ describe('create_invoice', () => {
       extractedInvoiceLines: incidentLines,
     };
 
-    it('adds the EnvChg to header tax so lines + freight + tax equal the amount due', async () => {
+    it('adds the EnvChg Tax row to header tax so lines + freight + tax equal the amount due', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
         ...incident,
-        extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.00' }],
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
       });
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(incidentFinalLines);
 
@@ -1182,9 +1182,9 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedTaxAmount).toBe('45.26');
       expect(submitArgs.taxCleared).toBe(false);
       expect(submitArgs.extractedAmountDue).toBe('$387.76');
-      const added = 'Added "EnvChg" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.';
+      const added = 'Added "EnvChg Tax" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.';
       const notes = submitArgs.buildNotes([]);
-      expect(notes).toContain('Tax Amount (from document): 45.26 ("Sales Tax" $28.26 + "EnvChg" $17.00)');
+      expect(notes).toContain('Tax Amount (from document): 45.26 ("Sales Tax" $28.26 + "EnvChg Tax" $17.00)');
       expect(notes).toContain(`Amount check: ${added}`);
       expect(notes).not.toContain('Line total review');
       expect(notes).not.toContain('but the amount due is');
@@ -1219,7 +1219,7 @@ describe('create_invoice', () => {
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
         ...incident,
-        extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.13' }],
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.13' }],
       });
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(incidentFinalLines);
 

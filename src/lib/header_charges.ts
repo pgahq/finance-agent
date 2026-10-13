@@ -7,6 +7,8 @@ import {
   printable,
   reconcileSubmittedCharges,
   splitFreightLines,
+  TAX_CORE_WORDS,
+  TAX_METADATA_WORDS,
   type ExtractedInvoiceLine,
 } from './invoice_lines.js';
 
@@ -16,23 +18,16 @@ export interface PrintedCharge {
   amount: string;
 }
 
-const ENVIRONMENTAL_WORDS = new Set(['env', 'envchg', 'enviro', 'environmental', 'environment', 'eco', 'recycling', 'recycle']);
-const ENVIRONMENTAL_ALLOWED_WORDS = new Set([
-  ...ENVIRONMENTAL_WORDS,
-  'chg', 'charge', 'charges', 'fee', 'fees', 'surcharge', 'levy', 'tax', 'taxes', 'and', 'amount', 'total',
-]);
-
 /**
- * Charges that belong in the header tax amount: anything the tax matcher accepts, plus environmental
- * charges (`EnvChg`, `Environmental Fee 5%`). Fuel, service, and other fees are not tax-like.
+ * A charge belongs in header tax when its printed label says tax (`Sales Tax`, `EnvChg Tax`,
+ * `Tax - Environmental 5%`). A label without a tax word (`EnvChg`, `Fuel Surcharge`) is not moved,
+ * and tax metadata such as `Tax ID` or `Tax Exempt` is not an amount.
  */
 export function isTaxLikeChargeLabel(label: string | null | undefined): boolean {
   if (labelMatchesTax(label)) return true;
-  const normalized = normalizeLabel(label);
-  if (!normalized) return false;
-  const tokens = normalized.split(' ').filter(token => token && !/^\d+(\.\d+)?%?$/.test(token));
-  return tokens.some(token => ENVIRONMENTAL_WORDS.has(token))
-    && tokens.every(token => ENVIRONMENTAL_ALLOWED_WORDS.has(token));
+  const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
+  return tokens.some(token => TAX_CORE_WORDS.has(token))
+    && !tokens.some(token => TAX_METADATA_WORDS.has(token));
 }
 
 export interface AppliedTaxCharges {

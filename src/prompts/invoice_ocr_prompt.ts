@@ -166,13 +166,15 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 ## Part 5.6: Other Charges
 
-Read the totals block and any charge rows for every charge other than the tax in \`extractedTaxAmount\` and the freight in \`extractedFreightAmount\`, and list each one in \`extractedOtherCharges\` with its exact printed label and printed amount. Examples: "EnvChg", "Environmental Fee", "Recycling Fee", "Fuel Surcharge", "Service Charge", "Convenience Fee".
+Read the totals block and any charge rows for every charge other than the tax in \`extractedTaxAmount\` and the freight in \`extractedFreightAmount\`, and list each one in \`extractedOtherCharges\` with its exact printed label and printed amount. Examples: "EnvChg Tax", "Environmental Tax", "Fuel Surcharge", "Service Charge", "Convenience Fee".
 
-- Never skip a charge because its amount is small or because a similar tax is already captured. Sales tax goes in \`extractedTaxAmount\`; every additional charge goes here.
-- Copy the printed amount. If a rate is printed (for example "EnvChg 5%") and the amount is not, leave that charge out. Never compute an amount from a rate.
+- An invoice can print more than one tax row. The main sales tax goes in \`extractedTaxAmount\`; every additional row whose label says tax goes here, even when it is printed as a row in the line table, and never in \`extractedInvoiceLines\`.
+- Never skip a charge because its amount is small or because a similar tax is already captured.
+- Copy the label exactly as printed. Do not rename a charge or add the word "Tax" to a label that does not print it.
+- Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that charge out. Never compute an amount from a rate.
 - Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
-- An environmental, EnvChg, or recycling charge goes here even when it is printed as a row in the line table. Other fees printed as rows in the line table (fuel, service) stay in \`extractedInvoiceLines\`; list them here only when they appear in the totals block.
-- For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, EnvChg $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "EnvChg", amount: "$17.00" }].
+- Other fees printed as rows in the line table (fuel, service) stay in \`extractedInvoiceLines\`; list them here only when they appear in the totals block.
+- For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, EnvChg Tax $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "EnvChg Tax", amount: "$17.00" }].
 - If no other charge is printed, return an empty array.
 
 ---
@@ -225,9 +227,8 @@ Extract the individual line items from the invoice document:
    - **Total Price**: The total/extended price for the line (if stated)
    - **Table Number**: Which table on the document the row came from, numbered 1, 2, 3... in document order. Some invoices print the same charges in more than one table, for example an hourly line-item table and a monthly summary or remittance table that restates it. When you extract rows from more than one table, give each table its own number so code can tell a restated table from the original. Use 1 when the document has one line-item table.
 
-Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
+Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
 Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
-Exclude any lines that represent environmental, EnvChg, or recycling charges — capture those in \`extractedOtherCharges\` instead.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

@@ -691,14 +691,14 @@ export function prepareInvoiceCharges(
   };
 }
 
-const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'vats', 'gst', 'hst']);
+export const TAX_CORE_WORDS = new Set(['tax', 'taxes', 'vat', 'vats', 'gst', 'hst']);
 const TAX_COMPOUND_ANCHORS = new Set([
   'sales tax', 'sales taxes', 'use tax', 'use taxes', 'state tax', 'state taxes',
   'local tax', 'local taxes', 'county tax', 'county taxes', 'city tax', 'city taxes',
   'total tax', 'total taxes', 'provincial tax', 'provincial taxes', 'municipal tax',
   'municipal taxes', 'tax on sales', 'taxes on sales', 'sales and use tax', 'sales and use taxes',
 ]);
-const TAX_METADATA_WORDS = new Set([
+export const TAX_METADATA_WORDS = new Set([
   'rate', 'id', 'number', 'exempt', 'registration', 'code', 'inclusion',
   'basis', 'subtotal', 'table', 'schedule', 'jurisdiction', 'percentage', 'percent',
   'taxable', 'taxability', 'withholding', 'recoverable', 'deductible', 'reclaimable',

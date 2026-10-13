@@ -65,7 +65,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedFreightLabel: null,
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
-  extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.00' }],
+  extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedJobNumber: null,
@@ -111,7 +111,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedFreightLabel: '',
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
-  extractedOtherCharges: [{ label: ' EnvChg ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
+  extractedOtherCharges: [{ label: ' EnvChg Tax ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedJobNumber: '',
@@ -308,7 +308,7 @@ describe('invoice OCR pass', () => {
         extractedSuppliersInvoiceNumber: '401',
         extractedTaxAmount: '$40.00',
         extractedTaxLabel: 'Sales Tax',
-        extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.00' }],
+        extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
         extractedServicePeriod: 'Sept 28 - Oct 2',
@@ -337,12 +337,12 @@ describe('invoice OCR pass', () => {
 
   describe('other printed charges', () => {
     it('keeps printed charges with a label and an amount and drops blank entries', () => {
-      expect(normalizeInvoiceOcrResult(ocrResponse).extractedOtherCharges).toEqual([{ label: 'EnvChg', amount: '$17.00' }]);
+      expect(normalizeInvoiceOcrResult(ocrResponse).extractedOtherCharges).toEqual([{ label: 'EnvChg Tax', amount: '$17.00' }]);
       expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedOtherCharges: [] }).extractedOtherCharges).toBeNull();
     });
 
-    it('asks the model for environmental charges with the SUPIN-467011 example', () => {
-      expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "EnvChg", amount: "$17.00" }]');
+    it('asks the model for additional tax rows with the SUPIN-467011 example', () => {
+      expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "EnvChg Tax", amount: "$17.00" }]');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
     });
   });
