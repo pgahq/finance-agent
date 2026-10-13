@@ -97,6 +97,25 @@ describe('applyPrintedTaxCharges', () => {
     expect(applied.message).toBeUndefined();
   });
 
+  it('counts two different taxes that have the same amount', () => {
+    const applied = applyPrintedTaxCharges({
+      ...base,
+      tax: '$10.00',
+      taxLabel: 'State Tax',
+      amountDue: '$362.50',
+      charges: [{ label: 'County Tax', amount: '$10.00' }],
+    });
+
+    expect(applied.taxAmount).toBe('20.00');
+    expect(applied.message).toBe('Added "County Tax" $10.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
+  });
+
+  it('skips a total-tax row with the same amount as the header tax', () => {
+    const applied = applyPrintedTaxCharges({ ...base, tax: '$10.00', taxLabel: 'State Tax', amountDue: '$362.50', charges: [{ label: 'Total Tax', amount: '$10.00' }] });
+
+    expect(applied).toEqual({ taxAmount: '$10.00', taxCleared: false });
+  });
+
   it('skips a tax row that repeats the tax already read', () => {
     const applied = applyPrintedTaxCharges({ ...base, amountDue: '$398.76', charges: [{ label: 'Sales Tax', amount: '$28.26' }] });
 

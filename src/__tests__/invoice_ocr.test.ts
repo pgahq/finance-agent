@@ -342,7 +342,8 @@ describe('invoice OCR pass', () => {
     });
 
     it('asks the model for additional tax rows with the SUPIN-467011 example', () => {
-      expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "EnvChg Tax", amount: "$17.00" }]');
+      expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }]');
+      expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
     });
   });

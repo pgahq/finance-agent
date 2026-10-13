@@ -12,7 +12,7 @@ import {
   type ExtractedInvoiceLine,
 } from './invoice_lines.js';
 
-/** A printed charge row other than the header tax and freight (environmental, fuel, service, and so on). */
+/** A printed tax row besides the main tax, as OCR read it. Only rows whose label says tax are applied. */
 export interface PrintedCharge {
   label: string;
   amount: string;
@@ -90,8 +90,11 @@ export function applyPrintedTaxCharges(input: {
     const amount = parseCanonicalChargeAmount(charge.amount);
     if (amount == null || amount <= 0) continue;
     const cents = toCents(amount);
-    // The tax row the header already carries, listed again.
-    if (cents === currentTaxCents && labelMatchesTax(charge.label)) continue;
+    // A row that restates the header tax (same label, or a total row) is not a second tax; two different
+    // taxes with the same amount (State Tax and County Tax) both count.
+    const label = normalizeLabel(charge.label) ?? '';
+    const restatesHeaderTax = label === normalizeLabel(input.taxLabel) || /\btotal\b/.test(label);
+    if (cents === currentTaxCents && restatesHeaderTax) continue;
     const key = `${normalizeLabel(charge.label)}|${cents}`;
     if (seen.has(key)) continue;
     seen.add(key);

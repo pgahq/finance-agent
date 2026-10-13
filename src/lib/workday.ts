@@ -1310,7 +1310,10 @@ function lineWorktagTypeContext(
 
 // Line sets and header charges exactly as buildSubmitInvoiceData submits them. getAppliedFallbacks
 // reads the same result so lines removed here reach the Workday note and Slack.
-function resolveSubmittedCharges(options: buildSubmitInvoiceDataOptions) {
+type SubmittedChargeOptions = Pick<buildSubmitInvoiceDataOptions,
+  'currentInvoice' | 'extractedAmountDue' | 'extractedFreightAmount' | 'freightAsLines' | 'extractedTaxAmount' | 'freightCleared' | 'taxCleared' | 'finalLines'>;
+
+function resolveSubmittedCharges(options: SubmittedChargeOptions) {
   const { currentInvoice, extractedAmountDue, extractedFreightAmount, freightAsLines, extractedTaxAmount, freightCleared, taxCleared, finalLines } = options;
   const controlAmountTotal = extractedAmountDue
     ? (parseExtractedAmount(extractedAmountDue) ?? currentInvoice.Control_Amount_Total)
@@ -2692,7 +2695,7 @@ export async function submitNewSupplierInvoice(
     freightCleared,
     taxCleared,
     finalLines,
-  } as buildSubmitInvoiceDataOptions).reconciliations.some(reconciliation => reconciliation.unreconciled);
+  }).reconciliations.some(reconciliation => reconciliation.unreconciled);
   const tagIDs = [agentModifiedTagID, hasAmountMismatch ? amountMismatchTagID : undefined]
     .filter((tagID): tagID is string => Boolean(tagID));
   const workQueueTags = tagIDs.length ? tagIDs.map(tagID => createWorkQueueTag(tagID)) : undefined;

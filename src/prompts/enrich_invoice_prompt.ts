@@ -78,9 +78,9 @@ export const InvoiceEnrichmentSchema = z.object({
   extractedTaxLabel: z.string().nullable().describe('The exact label on the invoice for the tax amount (e.g. "Sales Tax", "VAT", "GST"). Null if no tax amount was found.'),
 
   extractedOtherCharges: z.array(z.object({
-    label: z.string().describe('The exact printed label of the charge (e.g. "EnvChg", "Environmental Fee", "Fuel Surcharge").'),
+    label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
-  })).nullable().optional().describe('Every other charge printed in the totals block, besides the tax in extractedTaxAmount and the freight in extractedFreightAmount. Null when there is none.'),
+  })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Null when there is none.'),
 
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
