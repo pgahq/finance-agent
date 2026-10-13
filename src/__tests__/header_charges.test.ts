@@ -10,7 +10,7 @@ const base = { amountDue: '$387.76', lines, tax: '$28.26', taxLabel: 'Sales Tax'
 const envChg = { label: 'EnvChg Tax', amount: '$17.00' };
 
 describe('isTaxLikeChargeLabel', () => {
-  it.each(['EnvChg Tax', 'Env Chg Tax', 'Environmental Tax 5%', 'Tax - EnvChg', 'Sales Tax', 'State Tax', 'VAT'])(
+  it.each(['5% EnvChg Tax', 'EnvChg Tax', 'Env Chg Tax', 'Environmental Tax 5%', 'Tax - EnvChg', 'Sales Tax', 'State Tax', 'VAT'])(
     'treats %s as tax-like because it says tax', (label) => expect(isTaxLikeChargeLabel(label)).toBe(true)
   );
 
@@ -37,6 +37,13 @@ describe('applyPrintedTaxCharges', () => {
     const prepared = prepareInvoiceCharges(lines, { amountDue: '$387.76', tax: applied.taxAmount }, { allowFreightAsLines: true, removeDuplicates: true });
     expect(prepared.reconciliation.unreconciled).toBeUndefined();
     expect(reconcileSubmittedCharges(lines, { amountDue: '$387.76', tax: applied.taxAmount }).unreconciled).toBeUndefined();
+  });
+
+  it('applies the label as printed on invoice 20256324, "5% EnvChg Tax" $17.00 beside "Sales Tax" 8.25% $28.26', () => {
+    const applied = applyPrintedTaxCharges({ ...base, charges: [{ label: '5% EnvChg Tax', amount: '17.00' }] });
+
+    expect(applied.taxAmount).toBe('45.26');
+    expect(applied.message).toBe('Added "5% EnvChg Tax" $17.00 to header Tax_Amount so lines, freight, and tax equal the amount due.');
   });
 
   it('uses the charge as the tax when no tax was read', () => {
