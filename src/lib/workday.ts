@@ -2682,10 +2682,26 @@ export async function submitNewSupplierInvoice(
   const client = await buildResourceManagementClient(context);
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+  const amountMismatchTagID = process.env.WORKDAY_AMOUNT_MISMATCH_TAG_WID;
+  const hasAmountMismatch = Boolean(amountMismatchTagID) && resolveSubmittedCharges({
+    currentInvoice: {},
+    extractedAmountDue,
+    extractedFreightAmount,
+    freightAsLines,
+    extractedTaxAmount,
+    freightCleared,
+    taxCleared,
+    finalLines,
+  } as buildSubmitInvoiceDataOptions).reconciliations.some(reconciliation => reconciliation.unreconciled);
+  const tagIDs = [agentModifiedTagID, hasAmountMismatch ? amountMismatchTagID : undefined]
+    .filter((tagID): tagID is string => Boolean(tagID));
+  const workQueueTags = tagIDs.length ? tagIDs.map(tagID => createWorkQueueTag(tagID)) : undefined;
 
   if (agentModifiedTagID) {
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
+  }
+  if (hasAmountMismatch) {
+    debug(`Adding amount-mismatch work queue tag: ${amountMismatchTagID}`);
   }
 
   const { result, finalBuildOptions, priorFailures, validationTriggeredFields } = await submitSupplierInvoiceWithRepair({

@@ -2,7 +2,7 @@ import { enrichInvoiceFromAttachments } from '../lib/invoice_enrichment.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment } from '../lib/invoice_ocr.js';
 import { DEFAULT_OCR_MODEL_ID, getOcrModel } from '../lib/models.js';
 import { InvoiceMatchingSchema } from '../prompts/enrich_invoice_prompt.js';
-import { InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
+import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PurchaseOrderEnrichmentContext } from '../lib/purchase_order.js';
 import type { PresignedAttachment } from '../lib/types.js';
@@ -65,6 +65,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedFreightLabel: null,
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
+  extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.00' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedJobNumber: null,
@@ -110,6 +111,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedFreightLabel: '',
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
+  extractedOtherCharges: [{ label: ' EnvChg ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedJobNumber: '',
@@ -306,6 +308,7 @@ describe('invoice OCR pass', () => {
         extractedSuppliersInvoiceNumber: '401',
         extractedTaxAmount: '$40.00',
         extractedTaxLabel: 'Sales Tax',
+        extractedOtherCharges: [{ label: 'EnvChg', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
         extractedServicePeriod: 'Sept 28 - Oct 2',
@@ -328,6 +331,19 @@ describe('invoice OCR pass', () => {
       expect(merged.extractedSuppliersInvoiceNumber).toBeNull();
       expect(merged.extractedInvoiceLines).toBeNull();
       expect(merged.invoiceLineQuantityDisplayed).toBe(false);
+      expect(merged.extractedOtherCharges).toBeNull();
+    });
+  });
+
+  describe('other printed charges', () => {
+    it('keeps printed charges with a label and an amount and drops blank entries', () => {
+      expect(normalizeInvoiceOcrResult(ocrResponse).extractedOtherCharges).toEqual([{ label: 'EnvChg', amount: '$17.00' }]);
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedOtherCharges: [] }).extractedOtherCharges).toBeNull();
+    });
+
+    it('asks the model for environmental charges with the SUPIN-467011 example', () => {
+      expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "EnvChg", amount: "$17.00" }]');
+      expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
     });
   });
 

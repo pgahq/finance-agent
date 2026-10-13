@@ -41,6 +41,10 @@ export const InvoiceOcrSchema = z.object({
   extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
   extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
   extractedTaxLabel: printedText(enrichment.extractedTaxLabel),
+  extractedOtherCharges: z.array(z.object({
+    label: z.string().describe('The exact printed label of the charge (e.g. "EnvChg", "Environmental Fee", "Fuel Surcharge").'),
+    amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
+  })).describe('Every other charge printed in the totals block, besides the tax in extractedTaxAmount and the freight in extractedFreightAmount. Return an empty array when there is none.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedJobNumber: printedText(enrichment.extractedJobNumber),
@@ -54,13 +58,18 @@ export const InvoiceOcrSchema = z.object({
 export type InvoiceOcrResponse = z.infer<typeof InvoiceOcrSchema>;
 
 type NullableText<T> = { [K in keyof T]: T[K] extends string ? string | null : T[K] };
+export interface InvoiceOcrOtherCharge {
+  label: string;
+  amount: string;
+}
 type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLines'][number]>, 'description' | 'descriptionCells'> & {
   description: string;
   descriptionCells: string[] | null;
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges'> & {
+  extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
   printedBillTo: NullableText<InvoiceOcrResponse['printedBillTo']>;
   extractedPaymentTerms: { name: string } | null;
@@ -78,10 +87,14 @@ function nullableTextFields<T extends Record<string, unknown>>(fields: T): Nulla
 }
 
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
-  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, ...headerFields } = response;
+  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, ...headerFields } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
+  const otherCharges = (extractedOtherCharges ?? [])
+    .filter(charge => charge.label.trim() && charge.amount.trim())
+    .map(charge => ({ label: charge.label.trim(), amount: charge.amount.trim() }));
   return {
     ...nullableTextFields(headerFields),
+    extractedOtherCharges: otherCharges.length ? otherCharges : null,
     printedSupplier: nullableTextFields(printedSupplier),
     printedBillTo: nullableTextFields(printedBillTo),
     extractedPaymentTerms: paymentTerms ? { name: paymentTerms } : null,
@@ -151,6 +164,19 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 ---
 
+## Part 5.6: Other Charges
+
+Read the totals block and any charge rows for every charge other than the tax in \`extractedTaxAmount\` and the freight in \`extractedFreightAmount\`, and list each one in \`extractedOtherCharges\` with its exact printed label and printed amount. Examples: "EnvChg", "Environmental Fee", "Recycling Fee", "Fuel Surcharge", "Service Charge", "Convenience Fee".
+
+- Never skip a charge because its amount is small or because a similar tax is already captured. Sales tax goes in \`extractedTaxAmount\`; every additional charge goes here.
+- Copy the printed amount. If a rate is printed (for example "EnvChg 5%") and the amount is not, leave that charge out. Never compute an amount from a rate.
+- Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
+- An environmental, EnvChg, or recycling charge goes here even when it is printed as a row in the line table. Other fees printed as rows in the line table (fuel, service) stay in \`extractedInvoiceLines\`; list them here only when they appear in the totals block.
+- For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, EnvChg $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "EnvChg", amount: "$17.00" }].
+- If no other charge is printed, return an empty array.
+
+---
+
 ## Part 6: Supplier's Invoice Number
 
 Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
@@ -201,6 +227,7 @@ Extract the individual line items from the invoice document:
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture those in \`extractedTaxAmount\` instead.
 Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
+Exclude any lines that represent environmental, EnvChg, or recycling charges — capture those in \`extractedOtherCharges\` instead.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

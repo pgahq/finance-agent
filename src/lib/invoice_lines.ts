@@ -483,7 +483,7 @@ export function reconcileSubmittedCharges<T extends ChargeLine>(
   };
 }
 
-function formatChargeDollars(amount: number): string {
+export function formatChargeDollars(amount: number): string {
   const sign = amount < 0 ? '-' : '';
   return `${sign}$${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -526,7 +526,7 @@ export function chargeReconciliationMessages(reconciliation: SubmittedChargeReco
     const submitted = (toCents(totals.lineTotal) + toCents(totals.freight) + toCents(totals.tax)) / 100;
     messages.push(
       `Lines ${formatChargeDollars(totals.lineTotal)} + freight ${formatChargeDollars(totals.freight)} + tax ${formatChargeDollars(totals.tax)} = ${formatChargeDollars(submitted)}, `
-      + `but the amount due is ${formatChargeDollars(totals.amountDue)}. Review lines and header charges.`
+      + `${AMOUNT_MISMATCH_MARKER} ${formatChargeDollars(totals.amountDue)}. Review lines and header charges.`
     );
   }
   return messages;
@@ -582,6 +582,12 @@ export interface PreparedInvoiceCharges {
 }
 
 export const CHARGE_RECONCILIATION_FALLBACK_FIELD = 'chargeReconciliation';
+const AMOUNT_MISMATCH_MARKER = 'but the amount due is';
+
+/** True for the sentence reporting lines + freight + tax that still miss the amount due. */
+export function isAmountMismatchMessage(message: string): boolean {
+  return message.includes(AMOUNT_MISMATCH_MARKER);
+}
 export const ALL_FREIGHT_LINES_PREFIX = 'All-freight invoice:';
 const FREIGHT_EQUALS_ONLY_LINE_PREFIX = 'Header freight equals the only line';
 export const FREIGHT_HEADER_FALLBACK_MESSAGE = 'Freight could not be submitted as the invoice line after merge, so it was submitted as header Freight_Amount.';
@@ -716,7 +722,7 @@ const TAX_QUALIFIERS = new Set([
   'mt', 'ri', 'de', 'sd', 'nd', 'ak', 'vt', 'wy',
 ]);
 
-function normalizeLabel(label: string | null | undefined): string | undefined {
+export function normalizeLabel(label: string | null | undefined): string | undefined {
   if (!label) return undefined;
   const normalized = label
     .toLowerCase()
@@ -730,13 +736,13 @@ function normalizeLabel(label: string | null | undefined): string | undefined {
 
 const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
 
-function labelMatchesFreight(label: string | null | undefined): boolean {
+export function labelMatchesFreight(label: string | null | undefined): boolean {
   const normalized = normalizeLabel(label);
   if (!normalized) return false;
   return isFreightOrHandlingLine(normalized.split(' ').filter(token => !FREIGHT_LABEL_QUALIFIERS.has(token)).join(' '));
 }
 
-function labelMatchesTax(label: string | null | undefined): boolean {
+export function labelMatchesTax(label: string | null | undefined): boolean {
   const normalized = normalizeLabel(label);
   if (!normalized) return false;
   if (TAX_METADATA_WORDS.has(normalized)) return false;
@@ -760,7 +766,7 @@ function labelMatchesTax(label: string | null | undefined): boolean {
 
 const SUPPORTED_CURRENCY_PREFIXES = /^(?:\$|€|£|¥|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR)?\s*/i;
 
-function parseCanonicalChargeAmount(value: string | number | null | undefined): number | undefined {
+export function parseCanonicalChargeAmount(value: string | number | null | undefined): number | undefined {
   if (value == null) return undefined;
   if (typeof value === 'number') {
     return Number.isFinite(value) && value >= 0 ? roundToDecimals(value, AMOUNT_DECIMALS) : undefined;
@@ -801,7 +807,7 @@ function sameAmount(a: string | undefined, b: string | undefined): boolean {
   return a != null && b != null && parseCanonicalChargeAmount(a) === parseCanonicalChargeAmount(b);
 }
 
-function printable(value: string | null | undefined): string {
+export function printable(value: string | null | undefined): string {
   const singleLine = (value ?? '').replace(/["\p{Cc}\p{Cf}\u2028\u2029]+/gu, ' ').replace(/\s+/g, ' ').trim();
   return singleLine.length > 60 ? `${singleLine.slice(0, 57)}...` : singleLine;
 }

@@ -194,6 +194,20 @@ describe('notifyResult', () => {
     expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*Company* → PGA Tournament Corporation, Inc. (named in email)');
   });
 
+  it('flags a created invoice whose lines, freight, and tax miss the amount due', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-467011',
+      amountMismatch: true,
+      chargeCheck: ['Lines $342.50 + freight $0.00 + tax $28.26 = $370.76, but the amount due is $387.76. Review lines and header charges.'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('⚠️ *create_invoice* created `SUPIN-467011` with an amount mismatch (review before approving)');
+    expect(texts).not.toContain('✅');
+    expect(texts).toContain('*Amount Check*');
+  });
+
   it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
