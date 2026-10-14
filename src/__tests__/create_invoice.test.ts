@@ -286,6 +286,99 @@ describe('create_invoice', () => {
     );
   });
 
+  describe('IBS invoice 1026465 printed due date', () => {
+    // Invoice Date 10/10/26, Due Date 11/11/26, PO-413821, Net 30.
+    const ibsEnrichmentResult = {
+      ...baseEnrichmentResult,
+      extractedInvoiceDate: '2026-10-10',
+      extractedDueDate: '2026-11-11',
+      extractedSuppliersInvoiceNumber: '1026465',
+      extractedPurchaseOrderNumber: 'PO-413821',
+      extractedPaymentTerms: { name: 'Net 30', workdayId: 'NET_30' },
+    };
+
+    it('sends the due date with the invoice date and payment terms, and shows it in the note and Slack', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(ibsEnrichmentResult);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs).toMatchObject({ invoiceDate: '2026-10-10', dueDate: '2026-11-11', paymentTermsId: 'NET_30' });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Invoice Date (from document): 2026-10-10\n\nDue Date (from document): 2026-11-11');
+      expect(notes).toContain('Payment Terms (from document): Net 30');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({ invoiceDate: '2026-10-10', dueDate: '2026-11-11', paymentTerms: 'Net 30' }),
+        }),
+      );
+      expect(slack.notifyResult.mock.calls[0][3].extracted).not.toHaveProperty('dueDateNotApplied');
+    });
+
+    it('notes a due date removed on retry once, not again under fallback values, and marks it in Slack', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(ibsEnrichmentResult);
+      const omitted = { field: 'dueDate', label: 'omitted due date', dueToValidationError: true };
+      workday.submitNewSupplierInvoice.mockResolvedValueOnce({
+        success: true,
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-470100',
+        appliedFallbacks: [omitted],
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([omitted]);
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (removed on retry after a Workday due date validation error; Workday derives the due date from the payment terms)');
+      expect(notes).not.toContain('Fallback values applied: omitted due date');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({ dueDate: '2026-11-11', dueDateNotApplied: true }),
+          appliedFallbacks: ['omitted due date'],
+        }),
+      );
+    });
+
+    it('notes a due date earlier than the invoice date as not applied', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...ibsEnrichmentResult, extractedDueDate: '2026-10-01' });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([
+        { field: 'dueDate', label: 'due date not applied (2026-10-01 is earlier than invoice date 2026-10-10)' },
+      ]);
+      expect(notes).toContain('Due Date (from document): 2026-10-01 (not applied because it is earlier than the invoice date; Workday derives the due date from the payment terms)');
+      expect(notes).not.toContain('Fallback values applied');
+    });
+
+    it('sends no due date when none is printed', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...ibsEnrichmentResult, extractedDueDate: null });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.dueDate).toBeUndefined();
+      expect(submitArgs.buildNotes([])).not.toContain('Due Date');
+    });
+  });
+
   it('uses legal name on Slack when preferredName is not cached', async () => {
     process.env.INVOICE_MOD_ENABLED = 'true';
     const { processor, slack, invoiceEnrichment, invoiceLines, employees } = freshRequire();
@@ -3871,6 +3964,31 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({ updated: true, invoiceNumber: 'SUPIN-1' }),
       );
+    });
+
+    it('sends the printed due date on a resend update', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedInvoiceDate: '2026-10-10',
+        extractedDueDate: '2026-11-11',
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs).toMatchObject({ invoiceDate: '2026-10-10', dueDate: '2026-11-11' });
+      expect(updateArgs.buildNotes([])).toContain('Due Date (from document): 2026-11-11');
     });
 
     it('snapshots a resend update and keeps the AP edits the update overwrote', async () => {

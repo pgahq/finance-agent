@@ -6,6 +6,7 @@ import {
   isConfigurableAttributeValidationError,
   isDuplicateSuppliersInvoiceNumberError,
   isDisallowedLineOfBusinessWorktagError,
+  isDueDateValidationError,
   isLineOfBusinessRelatedWorktagError,
   isLineQuantityOrUnitCostPrecisionError,
   isQuantityUnitExtendedMismatchError,
@@ -67,6 +68,21 @@ describe('invoice_validation_failures', () => {
       }
     })).toBe(true);
     expect(isClosedPurchaseOrderLineError('Spend Category is required')).toBe(false);
+  });
+
+  it('recognizes the Workday due date and payment schedule faults', () => {
+    expect(isDueDateValidationError('Due Date must not be earlier than Invoice Date.')).toBe(true);
+    expect(isDueDateValidationError("You can't override the invoice due date when you enter payment schedules.")).toBe(true);
+    expect(isDueDateValidationError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Invalid value',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+        },
+      },
+    })).toBe(true);
+    expect(isDueDateValidationError('Invoice Date must be in an open period')).toBe(false);
+    expect(isDueDateValidationError("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice")).toBe(false);
   });
 
   it('does not treat other Purchase_Order_Line_Reference faults as a closed PO', () => {

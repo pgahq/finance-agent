@@ -127,6 +127,16 @@ describe('diffScoredFields', () => {
     ]);
   });
 
+  it('scores the Due_Date_Override as dueDate, so an AP change to it is a header change', () => {
+    const agentWrite = extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11-08:00' });
+    const apSaved = extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-25' });
+
+    expect(agentWrite.dueDate).toBe('2026-11-11');
+    expect(base.dueDate).toBeUndefined();
+    expect(diffScoredFields(agentWrite, apSaved)).toEqual([{ field: 'dueDate', before: '2026-11-11', after: '2026-11-25' }]);
+    expect(diffScoredFields(agentWrite, base)).toEqual([{ field: 'dueDate', before: '2026-11-11', after: undefined }]);
+  });
+
   it('pairs reordered lines by amount instead of reporting every field as changed', () => {
     const reordered: ScoredFields = { ...base, lines: [base.lines[1], base.lines[0]] };
     expect(diffScoredFields(base, reordered)).toEqual([]);

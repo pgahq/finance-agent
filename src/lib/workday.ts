@@ -1094,9 +1094,15 @@ async function getValidationFallbackField(
     return 'assignee';
   }
 
-  if (submitsDueDateOverride(options) && isDueDateValidationError(validationText)) {
-    debug('Validation references the due date or payment schedules; retrying without Due_Date_Override');
-    return 'dueDate';
+  if (isDueDateValidationError(validationText)) {
+    if (submitsDueDateOverride(options)) {
+      debug('Validation references the due date or payment schedules; retrying without Due_Date_Override');
+      return 'dueDate';
+    }
+    if (options.omitDueDateOverride) {
+      debug('Validation references the due date after Due_Date_Override was removed; failing without another retry');
+      return undefined;
+    }
   }
 
   if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {

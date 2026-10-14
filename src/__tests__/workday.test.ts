@@ -1846,6 +1846,54 @@ describe('Workday utilities', () => {
       );
     });
 
+    describe('Due_Date_Override on update', () => {
+      const submitOverDraft = async (overrides: Partial<Parameters<typeof submitSupplierInvoiceUpdate>[1]>) => {
+        const mockClient = {
+          setSecurity: jest.fn(),
+          setEndpoint: jest.fn(),
+          Get_Supplier_Invoices: jest.fn((_request: any, callback: any) => callback(null, {
+            Response_Data: {
+              Supplier_Invoice: {
+                Supplier_Invoice_Data: {
+                  Invoice_Number: '12345',
+                  Company_Reference: { ID: 'company-wid' },
+                  Currency_Reference: { ID: 'USD' },
+                  Invoice_Date: '2026-10-10',
+                  Control_Amount_Total: '100.00',
+                  Due_Date_Override: '2026-12-01',
+                },
+              },
+            },
+          })),
+          Submit_Supplier_Invoice: jest.fn(),
+        };
+        const { soap } = require('strong-soap');
+        soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => callback(null, mockClient));
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, { Response_Data: { success: true } });
+        });
+        const result = await submitSupplierInvoiceUpdateForTest(overrides);
+        return { result, data: capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data };
+      };
+
+      it('replaces the draft override with the extracted due date', async () => {
+        const { data } = await submitOverDraft({ invoiceDate: '2026-10-10', dueDate: '2026-11-11' });
+
+        expect(data.Due_Date_Override).toBe('2026-11-11');
+      });
+
+      it('drops the draft override when the extracted due date is earlier than the invoice date', async () => {
+        const { data, result } = await submitOverDraft({ invoiceDate: '2026-10-10', dueDate: '2026-10-09' });
+
+        expect(data).not.toHaveProperty('Due_Date_Override');
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          { field: 'dueDate', label: 'due date not applied (2026-10-09 is earlier than invoice date 2026-10-10)' },
+        ]));
+      });
+    });
+
     it('should include work queue tag when environment variable is set', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
@@ -5589,6 +5637,162 @@ describe('Workday utilities', () => {
       expect(result.appliedFallbacks).toEqual(
         expect.arrayContaining([expect.objectContaining({ label: 'omitted assignee' })]),
       );
+    });
+
+    describe('Due_Date_Override from the printed due date', () => {
+      // IBS invoice 1026465: Invoice Date 10/10/26, Due Date 11/11/26, PO-413821.
+      const ibs = { invoiceDate: '2026-10-10', dueDate: '2026-11-11', suppliersInvoiceNumber: '1026465' };
+      const createdResponse = { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } };
+      const validationFault = (message: string) => Object.assign(new Error(message), {
+        detail: {
+          Validation_Fault: {
+            Validation_Error: {
+              Message: message,
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+            },
+          },
+        },
+      });
+      const invoiceData = (request: any) => request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+
+      it('sends the IBS 1026465 due date as ISO Due_Date_Override next to the ISO Invoice_Date', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ ...ibs, paymentTermsId: 'NET_30' });
+
+        expect(invoiceData(capturedRequest)).toMatchObject({
+          Invoice_Date: '2026-10-10',
+          Due_Date_Override: '2026-11-11',
+          Payment_Terms_Reference: { ID: [{ $attributes: { type: 'Payment_Terms_ID' }, $value: 'NET_30' }] },
+        });
+        expect(result.appliedFallbacks.filter((fallback) => fallback.field === 'dueDate')).toEqual([]);
+      });
+
+      it('omits Due_Date_Override when no due date was extracted', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+
+        await submitNewSupplierInvoiceForTest({ invoiceDate: ibs.invoiceDate });
+
+        expect(invoiceData(capturedRequest)).not.toHaveProperty('Due_Date_Override');
+      });
+
+      it('accepts a due date on the invoice date', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+
+        await submitNewSupplierInvoiceForTest({ invoiceDate: '2026-10-10', dueDate: '2026-10-10' });
+
+        expect(invoiceData(capturedRequest).Due_Date_Override).toBe('2026-10-10');
+      });
+
+      it('does not send a due date earlier than the invoice date and notes why', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+        const buildNotes = jest.fn(() => 'notes');
+
+        const result = await submitNewSupplierInvoiceForTest({ invoiceDate: '2026-10-10', dueDate: '2026-10-01', buildNotes });
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(invoiceData(capturedRequest)).not.toHaveProperty('Due_Date_Override');
+        const notApplied = { field: 'dueDate', label: 'due date not applied (2026-10-01 is earlier than invoice date 2026-10-10)' };
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([notApplied]));
+        expect(buildNotes).toHaveBeenCalledWith(expect.arrayContaining([notApplied]), []);
+      });
+
+      it('compares against the first-of-month default when no invoice date was extracted', async () => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ dueDate: '2000-01-31' });
+
+        expect(invoiceData(capturedRequest).Invoice_Date).toMatch(/^\d{4}-\d{2}-01$/);
+        expect(invoiceData(capturedRequest)).not.toHaveProperty('Due_Date_Override');
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'dueDate', label: expect.stringMatching(/^due date not applied \(2000-01-31 is earlier than invoice date \d{4}-\d{2}-01\)$/) }),
+        ]));
+      });
+
+      it.each([
+        'Due Date must not be earlier than Invoice Date.',
+        "You can't override the invoice due date when you enter payment schedules.",
+      ])('retries once without Due_Date_Override on "%s", without the classifier', async (message) => {
+        const mockClient = mockSoapClient();
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(validationFault(message), null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, createdResponse);
+          });
+        const buildNotes = jest.fn(() => 'notes');
+
+        const result = await submitNewSupplierInvoiceForTest({ ...ibs, buildNotes });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(invoiceData(capturedRequests[0]).Due_Date_Override).toBe('2026-11-11');
+        expect(invoiceData(capturedRequests[1])).not.toHaveProperty('Due_Date_Override');
+        expect(invoiceData(capturedRequests[1]).Invoice_Date).toBe('2026-10-10');
+        const omitted = { field: 'dueDate', label: 'omitted due date', dueToValidationError: true };
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([omitted]));
+        expect(result.priorFailures).toEqual([expect.objectContaining({ attempt: 1, message: expect.stringContaining(message.slice(0, 20)) })]);
+        expect(buildNotes).toHaveBeenLastCalledWith(expect.arrayContaining([omitted]), expect.any(Array));
+      });
+
+      it('fails a duplicate supplier invoice number with no due date retry', async () => {
+        const mockClient = mockSoapClient();
+        const duplicateInvoiceNumber = validationFault("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice");
+        mockClient.Submit_Supplier_Invoice.mockImplementationOnce((_request: any, callback: any) => {
+          callback(duplicateInvoiceNumber, null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest(ibs)).rejects.toMatchObject({
+          message: expect.stringContaining('already in use'),
+        });
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      });
+
+      it('fails a second due date fault after the override was removed', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(validationFault('Due Date must not be earlier than Invoice Date.'), null);
+        });
+
+        await expect(submitNewSupplierInvoiceForTest(ibs)).rejects.toMatchObject({
+          priorFailures: [
+            expect.objectContaining({ attempt: 1 }),
+            expect.objectContaining({ attempt: 2, fallback: 'omitted due date' }),
+          ],
+        });
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+      });
     });
 
     describe('duplicate worktag types', () => {
