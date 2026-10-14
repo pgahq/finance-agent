@@ -187,7 +187,17 @@ src/
 - Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`) through the Vercel AI Gateway reads the invoice PDFs (OCR and field extraction only)
 - GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway matches the supplier and company and codes the invoice from that extraction, with the lookup tools
 - Structured responses with confidence scoring
+- When the invoice prints an explicit due date, it is sent to Workday as `Due_Date_Override` (ISO `YYYY-MM-DD`, like `Invoice_Date`); see [Due date](#due-date)
 - Analyzes invoice content and metadata
+
+### Due date
+
+- **Source:** the OCR pass returns `extractedDueDate` only for a date printed as the due date, payment due date, or pay-by date. It is never computed from payment terms such as "Net 30", and "Due on receipt" gives none. Code normalizes it to `YYYY-MM-DD` and reads a two-digit year as 20YY (`11/11/26` is `2026-11-11`).
+- **Submit:** create, resend updates, and enrich send it as `Due_Date_Override` next to `Payment_Terms_Reference`. It replaces the invoice's current override; a manually set override is kept only when nothing is extracted.
+- **Earlier than the invoice date:** Workday rejects that ("Due Date must not be earlier than Invoice Date"), so the override is not sent. The comparison uses the submitted invoice date, including the first-of-month default.
+- **Retry:** a Due Date or payment-schedules validation fault ("You can't override the invoice due date when you enter payment schedules") retries once without the override, labeled `omitted due date`. A second due date fault fails.
+- **No printed due date:** nothing is sent, and Workday derives the due date from the invoice date and payment terms as before.
+- The Workday note records `Due Date (from document)` and why it was not applied; Slack shows a `Due Date` line. AP changes to the override count as agent touches (`dueDate` scored field).
 - Integrates with vector database for context
 
 ## 🧠 AI-Powered Features
@@ -451,6 +461,7 @@ flowchart TD
 Retry guardrails:
 
 - A duplicate supplier invoice number is not retried; the submit fails with the original Workday validation message so the team can investigate the conflict.
+- A Due Date or payment-schedules fault on a submitted `Due_Date_Override` retries once without the override (`omitted due date`) and never reaches the classifier.
 - Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
 - The repair agent must inspect the latest failed request before deciding whether to retry.
 - Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available. The default supplier is never used when a submitted line links to a PO line, because Workday only lets the PO's own supplier invoice it.
