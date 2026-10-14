@@ -27,12 +27,14 @@ export interface ScoredFields {
   company?: string;
   suppliersInvoiceNumber?: string;
   invoiceDate?: string;
+  /** Due_Date_Override; absent when Workday derives the due date from the payment terms. */
+  dueDate?: string;
   controlTotal?: number;
   memo?: string;
   lines: ScoredLine[];
 }
 
-export const HEADER_FIELDS = ['supplier', 'company', 'suppliersInvoiceNumber', 'invoiceDate', 'controlTotal', 'memo'] as const;
+export const HEADER_FIELDS = ['supplier', 'company', 'suppliersInvoiceNumber', 'invoiceDate', 'dueDate', 'controlTotal', 'memo'] as const;
 export const LINE_FIELDS = [
   'amount',
   'purchaseOrderLine',
@@ -188,6 +190,7 @@ function withDefined<K extends string, V>(key: K, value: V | undefined): Partial
 export function extractScoredFields(invoice: unknown): ScoredFields {
   const data = (invoice && typeof invoice === 'object' ? invoice : {}) as Record<string, unknown>;
   const invoiceDate = text(data.Invoice_Date)?.slice(0, 10);
+  const dueDate = text(data.Due_Date_Override)?.slice(0, 10);
   const lines = asArray(data.Invoice_Line_Replacement_Data)
     .filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
     .map(extractLine)
@@ -197,6 +200,7 @@ export function extractScoredFields(invoice: unknown): ScoredFields {
     ...withDefined('company', referenceKey(data.Company_Reference)),
     ...withDefined('suppliersInvoiceNumber', text(data.Suppliers_Invoice_Number)),
     ...withDefined('invoiceDate', invoiceDate),
+    ...withDefined('dueDate', dueDate),
     ...withDefined('controlTotal', amount(data.Control_Amount_Total)),
     ...withDefined('memo', text(data.Memo)),
     lines,

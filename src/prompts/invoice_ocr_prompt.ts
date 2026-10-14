@@ -35,6 +35,7 @@ export const InvoiceOcrSchema = z.object({
   printedBillTo: z.object(printedTextShape(enrichment.companyVerification.shape.extractedInformation.shape))
     .describe('The bill-to company (the buyer being billed, not the supplier) exactly as printed on the invoice'),
   extractedInvoiceDate: printedText(enrichment.extractedInvoiceDate),
+  extractedDueDate: printedText(enrichment.extractedDueDate),
   extractedAmountDue: printedText(enrichment.extractedAmountDue),
   extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
   extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
@@ -86,6 +87,45 @@ function nullableTextFields<T extends Record<string, unknown>>(fields: T): Nulla
   ) as NullableText<T>;
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+function isoCalendarDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function fullYear(year: string): number {
+  return year.length === 2 ? 2000 + Number(year) : Number(year);
+}
+
+/**
+ * A printed date as YYYY-MM-DD: ISO, US month/day/year (11/11/26, 11-11-2026), or a month name
+ * ("Nov 11, 2026", "11 November 2026"). Two-digit years are 20YY. Anything else is null.
+ */
+export function normalizePrintedDate(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  if (!text) return null;
+
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|T)/);
+  if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+
+  const numeric = text.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})$/);
+  if (numeric) return isoCalendarDate(fullYear(numeric[3]), Number(numeric[1]), Number(numeric[2]));
+
+  const monthFirst = text.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4}|\d{2})$/);
+  const dayFirst = text.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?,?\s+(\d{4}|\d{2})$/);
+  const named = monthFirst
+    ? { month: monthFirst[1], day: monthFirst[2], year: monthFirst[3] }
+    : dayFirst ? { month: dayFirst[2], day: dayFirst[1], year: dayFirst[3] } : undefined;
+  if (named) {
+    const month = MONTHS.indexOf(named.month.slice(0, 3).toLowerCase()) + 1;
+    return month ? isoCalendarDate(fullYear(named.year), month, Number(named.day)) : null;
+  }
+
+  return null;
+}
+
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, ...headerFields } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -94,6 +134,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
     .map(charge => ({ label: charge.label.trim(), amount: charge.amount.trim() }));
   return {
     ...nullableTextFields(headerFields),
+    extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     printedSupplier: nullableTextFields(printedSupplier),
     printedBillTo: nullableTextFields(printedBillTo),
@@ -137,6 +178,18 @@ Guidelines:
 - Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or Default_OCR_Spend_Category dates.
 - If the document shows multiple dates and the invoice date is ambiguous, omit the field.
 - Do not guess a date.
+
+---
+
+## Part 3.5: Due Date
+
+Populate \`extractedDueDate\` only with a date explicitly printed as the due date, payment due date, or pay-by date (e.g. "Due Date", "Payment Due", "Pay By", "Due"), normalized to \`YYYY-MM-DD\`.
+
+Guidelines:
+- Never compute a due date from payment terms such as "Net 30", and never add days to the invoice date.
+- Return an empty string for "Due on receipt", "Due upon receipt", or "Immediate" with no printed date, when no due date is printed, or when it is ambiguous.
+- Expand a two-digit year to 20YY. For example, an invoice that prints Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11".
+- Read numeric dates as month/day/year, the same as the invoice date.
 
 ---
 

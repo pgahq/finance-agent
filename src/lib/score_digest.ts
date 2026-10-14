@@ -219,6 +219,7 @@ const FIELD_LABELS: Record<ScoredFieldName, string> = {
   company: 'Company',
   suppliersInvoiceNumber: 'Supplier invoice number',
   invoiceDate: 'Invoice date',
+  dueDate: 'Due date',
   controlTotal: 'Control total',
   memo: 'Header memo',
   'line.amount': 'Line amount',

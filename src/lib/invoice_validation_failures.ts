@@ -508,6 +508,13 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+// "Due Date must not be earlier than Invoice Date" and "You can't override the invoice due date when you
+// enter payment schedules."
+export function isDueDateValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return /Due[\s_]*Date/i.test(validationText) || /payment schedules?/i.test(validationText);
+}
+
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));

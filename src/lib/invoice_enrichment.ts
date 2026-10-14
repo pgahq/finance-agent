@@ -366,6 +366,20 @@ export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string 
   return `\n\nInvoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (${fallbackInvoiceDate}).`;
 }
 
+/** A due-date fallback means the printed date was not sent, so Workday derives the due date from the payment terms. */
+export function formatDueDateNotes(
+  result: InvoiceEnrichmentResult,
+  appliedFallbacks: Array<{ field?: string; label?: string }> = [],
+): string {
+  if (!result.extractedDueDate) return '';
+  const fallback = appliedFallbacks.find((f) => f.field === 'dueDate');
+  if (!fallback) return `\n\nDue Date (from document): ${result.extractedDueDate}`;
+  const reason = fallback.label === 'omitted due date'
+    ? 'removed on retry after a Workday due date validation error'
+    : 'not applied because it is earlier than the invoice date';
+  return `\n\nDue Date (from document): ${result.extractedDueDate} (${reason}; Workday derives the due date from the payment terms)`;
+}
+
 // Helper functions to extract data from invoice
 function extractAddressFromInvoice(invoice: WorkdayInvoice): string | undefined {
   if (invoice.allAddresses && invoice.allAddresses.length > 0) {

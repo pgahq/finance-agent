@@ -65,6 +65,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedInvoiceDate: z.string().nullable().describe('The invoice date as shown on the document, normalized to YYYY-MM-DD. Only include this if the document clearly provides an invoice date you can read confidently. Null if no invoice date is visible or the date is ambiguous.'),
 
+  extractedDueDate: z.string().nullable().describe('The due date explicitly printed on the invoice (labeled "Due Date", "Payment Due", "Pay By", or similar), normalized to YYYY-MM-DD. Expand a two-digit year to 20YY (11/11/26 is 2026-11-11). Never compute it from payment terms such as "Net 30". Null for "Due on receipt", when no due date is printed, or when it is ambiguous.'),
+
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
   extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Prefer letters, digits, hyphen, period, and slash. Do not use pipe |, greater-than, or less-than characters. Null if not visible or unclear.'),

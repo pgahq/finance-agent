@@ -11,6 +11,7 @@ import {
   formatEmailWorktagNotes,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
+  formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
@@ -202,6 +203,7 @@ async function processInvoice(
 
     const processingTime = Date.now() - startTime;
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
+    const extractedDueDate = result.extractedDueDate || undefined;
 
     const resolvedSupplierWID = result.supplier.resolvedSupplier?.workdayId
       ?? (result.supplier.status === 'matching' ? existingSupplier?.id : undefined);
@@ -456,13 +458,13 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
         .map((fallback) => fallback.label);
-      return baseNotes
+      return baseNotes(submissionFallbacks)
         + formatAmountCheckNotes(mergeAmountCheckMessages(chargeCheck, merged.chargeReconciliationLabels ?? []))
         + formatPurchaseOrderLineFallbackNotes(submissionFallbacks, extractedPurchaseOrderNumber)
         + formatFallbackNotes(merged)
@@ -473,6 +475,7 @@ async function processInvoice(
     let priorFailures: Array<{ attempt: number; fallback?: string; message: string }> | undefined;
     let submittedSuppliersInvoiceNumber = extractedSuppliersInvoiceNumber;
     let invoiceNumberFallbackLabels: string[] = [];
+    let dueDateFallbackLabels: string[] = [];
     let snapshotSyncFailed = false;
     if (canModifyInvoice && submitSupplierWID) {
       debug(`Setting supplier to WID=${submitSupplierWID}`);
@@ -490,6 +493,7 @@ async function processInvoice(
         buildNotes,
         memo,
         invoiceDate: extractedInvoiceDate,
+        dueDate: extractedDueDate,
         companyWID,
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
@@ -524,6 +528,9 @@ async function processInvoice(
       submittedSuppliersInvoiceNumber = updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber;
       invoiceNumberFallbackLabels = updateOutcome.appliedFallbacks
         .filter((fallback) => fallback.field === 'suppliersInvoiceNumber')
+        .map((fallback) => fallback.label);
+      dueDateFallbackLabels = updateOutcome.appliedFallbacks
+        .filter((fallback) => fallback.field === 'dueDate')
         .map((fallback) => fallback.label);
     } else {
       debug('Invoice modification disabled or no supplier available - recording notes only');
@@ -573,6 +580,8 @@ async function processInvoice(
       } : undefined,
       extracted: {
         invoiceDate: extractedInvoiceDate,
+        dueDate: extractedDueDate,
+        ...(dueDateFallbackLabels.length ? { dueDateNotApplied: true } : {}),
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: submittedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
@@ -603,7 +612,9 @@ async function processInvoice(
           ? fallbacks.purchaseOrderLineNotes.join(' ')
           : undefined,
       },
-      ...(invoiceNumberFallbackLabels.length ? { appliedFallbackLabels: invoiceNumberFallbackLabels } : {}),
+      ...(invoiceNumberFallbackLabels.length || dueDateFallbackLabels.length
+        ? { appliedFallbackLabels: [...invoiceNumberFallbackLabels, ...dueDateFallbackLabels] }
+        : {}),
       ...(priorFailures?.length ? { priorFailures } : {}),
       ...(snapshotSyncFailed ? { snapshotSync: 'failed' as const } : {}),
     });
