@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -5758,7 +5758,7 @@ describe('Workday utilities', () => {
 
         expect(parsed?.documentNumber).toBe('PO-414007');
         expect(debug).toHaveBeenCalledWith(
-          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]]}]'
+          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]],"splitQuantities":[null],"splitAmounts":[100]}]'
         );
         expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('PO response for PO-414007'));
       });
@@ -5825,6 +5825,310 @@ describe('Workday utilities', () => {
           expect(message).toContain('"splits":[[');
           expect(message).toContain('Cost_Center_Reference_ID=CC-Hospitality');
         }
+      });
+
+      describe('PO lines distributed by quantity', () => {
+        const costCenter = (value: string, wid: string) => ({
+          ID: [
+            { $attributes: { type: 'WID' }, $value: wid },
+            { $attributes: { type: 'Organization_Reference_ID' }, $value: value },
+            { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: value },
+          ],
+        });
+        const lob = (value: string, wid: string) => ({
+          ID: [
+            { $attributes: { type: 'WID' }, $value: wid },
+            { $attributes: { type: 'Organization_Reference_ID' }, $value: value },
+            { $attributes: { type: 'Custom_Organization_Reference_ID' }, $value: value },
+          ],
+        });
+        const fund = ref('Fund_ID', 'FUND-General_Fund_Unrestricted', 'wid-fund');
+        const execSplitTags = [lob('LOB-Executive', 'wid-lob-exec'), fund, costCenter('CC-Executive_Dept', 'wid-cc-exec')];
+        const pdSplitTags = [lob('LOB-Partnership_Development', 'wid-lob-pd'), fund, costCenter('CC-Partnership_Development', 'wid-cc-pd')];
+        const quantitySplits = [
+          { quantity: 1, extendedAmount: 251.5, worktagReference: execSplitTags },
+          { quantity: 1, extendedAmount: 251.5, worktagReference: pdSplitTags },
+        ];
+        const amountSplits = [
+          { extendedAmount: 251.5, worktagReference: execSplitTags },
+          { extendedAmount: 251.5, worktagReference: pdSplitTags },
+        ];
+        const quantityFault = {
+          Validation_Fault: {
+            Validation_Error: [{
+              Message: "The distribution method for the provided purchase order line is 'Quantity,' but the sum of the line split quantities is 0. Modify the line splits or change the purchase order line reference.",
+              Detail_Message: 'Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]',
+            }],
+          },
+        };
+        const tagValues = (worktags: any[] | undefined) => ([] as any[]).concat(worktags ?? []).map((tag: any) =>
+          ([] as any[]).concat(tag.ID ?? []).filter((id: any) => id.$attributes?.type !== 'WID').pop().$value
+        );
+        const splitRows = (line: any) => ([] as any[]).concat(line.Supplier_Invoice_Split_Line_Data ?? []);
+        const stAndrewsLines = (splits: any[]) => [
+          {
+            lineOrder: 1,
+            description: 'BAG, NAVY, 16X6X12, PGA, MATTE, EURO TOTE, P/100',
+            quantity: 2,
+            unitCost: 204,
+            extendedAmount: 408,
+            purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29655',
+            poPassthroughWorktagsReference: [],
+            supplierInvoiceSplitLineData: splits,
+          },
+          {
+            lineOrder: 2,
+            description: 'PLATE CHARGE',
+            quantity: 1,
+            unitCost: 95,
+            extendedAmount: 95,
+            purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29655',
+            poPassthroughWorktagsReference: [],
+            supplierInvoiceSplitLineData: splits,
+          },
+        ];
+
+        it('submits St. Andrews PO-414594 with per-split quantities and the plate charge unlinked, in one attempt', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+
+          const result = await submitNewSupplierInvoiceForTest({ finalLines: stAndrewsLines(quantitySplits) });
+
+          expect(result.success).toBe(true);
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+          const [bags, plate] = submittedLines(capturedRequests[0]);
+
+          expect(bags.Purchase_Order_Line_Reference).toBeDefined();
+          expect(bags.Quantity).toBe(2);
+          expect(bags.Worktags_Reference).toBeUndefined();
+          expect(splitRows(bags).map((split: any) => ({
+            Quantity: split.Quantity,
+            Extended_Amount: split.Extended_Amount,
+            worktags: tagValues(split.Worktag_Reference),
+          }))).toEqual([
+            { Quantity: 1, Extended_Amount: 204, worktags: ['LOB-Executive', 'FUND-General_Fund_Unrestricted', 'CC-Executive_Dept'] },
+            { Quantity: 1, Extended_Amount: 204, worktags: ['LOB-Partnership_Development', 'FUND-General_Fund_Unrestricted', 'CC-Partnership_Development'] },
+          ]);
+
+          expect(plate.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(plate.Quantity).toBe(1);
+          expect(plate.Worktags_Reference).toBeUndefined();
+          expect(splitRows(plate).map((split: any) => ({
+            Quantity: split.Quantity,
+            Extended_Amount: split.Extended_Amount,
+            worktags: tagValues(split.Worktag_Reference),
+          }))).toEqual([
+            { Quantity: undefined, Extended_Amount: 47.5, worktags: ['LOB-Executive', 'FUND-General_Fund_Unrestricted', 'CC-Executive_Dept'] },
+            { Quantity: undefined, Extended_Amount: 47.5, worktags: ['LOB-Partnership_Development', 'FUND-General_Fund_Unrestricted', 'CC-Partnership_Development'] },
+          ]);
+
+          expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ field: 'quantityPurchaseOrderLine', label: QUANTITY_PO_LINE_REFERENCE_LABEL }),
+          ]));
+          expect(formatPurchaseOrderLineFallbackNotes(result.appliedFallbacks, 'PO-414594'))
+            .toContain('not linked to the PO line');
+        });
+
+        describe('non-split PO line with a Workday cost center ref (Organization_Reference_ID + Cost_Center_Reference_ID)', () => {
+          const poCostCenter = costCenter('CC-Operations', 'wid-cc-ops');
+          const cases: Array<[string, string, string[]]> = [
+            ['matches the PO cost center', 'CC-Operations', ['CC-Operations']],
+            ['differs from the PO cost center', 'CC-Email', ['CC-Email']],
+          ];
+
+          it.each(cases)('sends one cost center when the line cost center %s', async (_label, lineCostCenter, expected) => {
+            const mockClient = mockSoapClient();
+            const capturedRequests: any[] = [];
+            mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(null, newInvoiceResponse);
+            });
+
+            const result = await submitNewSupplierInvoiceForTest({
+              finalLines: [{
+                lineOrder: 1,
+                description: 'Consulting',
+                quantity: 1,
+                unitCost: 100,
+                extendedAmount: 100,
+                costCenterId: lineCostCenter,
+                purchaseOrderLineId: 'POL-1',
+                poPassthroughWorktagsReference: [poCostCenter, fund],
+              }],
+            });
+
+            expect(result.success).toBe(true);
+            expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+            const [line] = submittedLines(capturedRequests[0]);
+            const costCenters = ([] as any[]).concat(line.Worktags_Reference ?? []).filter((tag: any) =>
+              ([] as any[]).concat(tag.ID).some((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+            );
+            expect(tagValues(costCenters)).toEqual(expected);
+            expect(tagValues(line.Worktags_Reference)).toContain('FUND-General_Fund_Unrestricted');
+          });
+        });
+
+        it('keeps the PO link and sends no split quantities for a PO line split by amount', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+
+          const result = await submitNewSupplierInvoiceForTest({ finalLines: stAndrewsLines(amountSplits).slice(0, 1) });
+
+          expect(result.success).toBe(true);
+          const [line] = submittedLines(capturedRequests[0]);
+          expect(line.Purchase_Order_Line_Reference).toBeDefined();
+          expect(splitRows(line).map((split: any) => split.Quantity)).toEqual([undefined, undefined]);
+          expect(splitRows(line).map((split: any) => split.Extended_Amount)).toEqual([204, 204]);
+          expect(result.appliedFallbacks.map(fallback => fallback.field)).not.toContain('quantityPurchaseOrderLine');
+        });
+
+        it('keeps the link and quantities for a single invoice line on a quantity-split PO line', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+
+          const result = await submitNewSupplierInvoiceForTest({ finalLines: stAndrewsLines(quantitySplits).slice(0, 1) });
+
+          expect(result.success).toBe(true);
+          const [line] = submittedLines(capturedRequests[0]);
+          expect(line.Purchase_Order_Line_Reference).toBeDefined();
+          expect(splitRows(line).map((split: any) => split.Quantity)).toEqual([1, 1]);
+          expect(result.appliedFallbacks.map(fallback => fallback.field)).not.toContain('quantityPurchaseOrderLine');
+        });
+
+        it('unlinks an amount-only line on a quantity-split PO line instead of sending zero split quantities', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, newInvoiceResponse);
+          });
+
+          const result = await submitNewSupplierInvoiceForTest({
+            invoiceLineQuantityDisplayed: false,
+            finalLines: [{
+              lineOrder: 1,
+              description: 'Consulting',
+              extendedAmount: 503,
+              purchaseOrderLineId: 'POL-1',
+              poPassthroughWorktagsReference: [],
+              supplierInvoiceSplitLineData: quantitySplits,
+            }],
+          });
+
+          expect(result.success).toBe(true);
+          const [line] = submittedLines(capturedRequests[0]);
+          expect(line.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(splitRows(line).map((split: any) => split.Extended_Amount)).toEqual([251.5, 251.5]);
+          expect(splitRows(line).map((split: any) => split.Quantity)).toEqual([undefined, undefined]);
+        });
+
+        it('retries a zero-split-quantity fault by unlinking the PO line from split lines and coding by amount', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice
+            .mockImplementationOnce((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(quantityFault, null);
+            })
+            .mockImplementationOnce((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(null, newInvoiceResponse);
+            });
+          const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+
+          const result = await submitNewSupplierInvoiceForTest({
+            finalLines: [{
+              lineOrder: 1,
+              description: 'Bags',
+              quantity: 2,
+              unitCost: 204,
+              extendedAmount: 408,
+              purchaseOrderLineId: 'POL-1',
+              poPassthroughWorktagsReference: [],
+              supplierInvoiceSplitLineData: amountSplits,
+            }],
+          });
+
+          expect(result.success).toBe(true);
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+          expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+          const [firstLine] = submittedLines(capturedRequests[0]);
+          const [retryLine] = submittedLines(capturedRequests[1]);
+          expect(firstLine.Purchase_Order_Line_Reference).toBeDefined();
+          expect(retryLine.Purchase_Order_Line_Reference).toBeUndefined();
+          expect(splitRows(retryLine).map((split: any) => tagValues(split.Worktag_Reference))).toEqual([
+            ['LOB-Executive', 'FUND-General_Fund_Unrestricted', 'CC-Executive_Dept'],
+            ['LOB-Partnership_Development', 'FUND-General_Fund_Unrestricted', 'CC-Partnership_Development'],
+          ]);
+          expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+            expect.objectContaining({ field: 'quantityPurchaseOrderLine', label: QUANTITY_PO_LINE_REFERENCE_LABEL }),
+          ]));
+        });
+
+        it('does not retry a split-quantity fault when no line with splits links a PO line', async () => {
+          const mockClient = mockSoapClient();
+          mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+            callback(quantityFault, null);
+          });
+
+          await expect(submitNewSupplierInvoiceForTest({
+            finalLines: [{
+              lineOrder: 1,
+              description: 'Consulting',
+              quantity: 1,
+              unitCost: 100,
+              extendedAmount: 100,
+              costCenterId: 'CC-Operations',
+            }],
+          })).rejects.toThrow('sum of the line split quantities is 0');
+
+          expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps split quantities when the duplicate worktag retry omits PO pass-through worktags', async () => {
+          const mockClient = mockSoapClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice
+            .mockImplementationOnce((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(duplicateWorktagFault, null);
+            })
+            .mockImplementationOnce((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(null, newInvoiceResponse);
+            });
+
+          const result = await submitNewSupplierInvoiceForTest({
+            finalLines: [{
+              lineOrder: 1,
+              description: 'Bags',
+              quantity: 2,
+              unitCost: 204,
+              extendedAmount: 408,
+              purchaseOrderLineId: 'POL-1',
+              poPassthroughWorktagsReference: [org('VENU-Something', 'wid-unknown')],
+              supplierInvoiceSplitLineData: quantitySplits,
+            }],
+          });
+
+          expect(result.success).toBe(true);
+          const [retryLine] = submittedLines(capturedRequests[1]);
+          expect(retryLine.Purchase_Order_Line_Reference).toBeDefined();
+          expect(splitRows(retryLine).map((split: any) => split.Quantity)).toEqual([1, 1]);
+        });
       });
 
       it('fails without a classifier or fallback cost center retry when no PO pass-through worktags remain', async () => {
