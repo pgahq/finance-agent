@@ -5934,6 +5934,45 @@ describe('Workday utilities', () => {
             .toContain('not linked to the PO line');
         });
 
+        describe('non-split PO line with a Workday cost center ref (Organization_Reference_ID + Cost_Center_Reference_ID)', () => {
+          const poCostCenter = costCenter('CC-Operations', 'wid-cc-ops');
+          const cases: Array<[string, string, string[]]> = [
+            ['matches the PO cost center', 'CC-Operations', ['CC-Operations']],
+            ['differs from the PO cost center', 'CC-Email', ['CC-Email']],
+          ];
+
+          it.each(cases)('sends one cost center when the line cost center %s', async (_label, lineCostCenter, expected) => {
+            const mockClient = mockSoapClient();
+            const capturedRequests: any[] = [];
+            mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(null, newInvoiceResponse);
+            });
+
+            const result = await submitNewSupplierInvoiceForTest({
+              finalLines: [{
+                lineOrder: 1,
+                description: 'Consulting',
+                quantity: 1,
+                unitCost: 100,
+                extendedAmount: 100,
+                costCenterId: lineCostCenter,
+                purchaseOrderLineId: 'POL-1',
+                poPassthroughWorktagsReference: [poCostCenter, fund],
+              }],
+            });
+
+            expect(result.success).toBe(true);
+            expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+            const [line] = submittedLines(capturedRequests[0]);
+            const costCenters = ([] as any[]).concat(line.Worktags_Reference ?? []).filter((tag: any) =>
+              ([] as any[]).concat(tag.ID).some((id: any) => id.$attributes?.type === 'Cost_Center_Reference_ID')
+            );
+            expect(tagValues(costCenters)).toEqual(expected);
+            expect(tagValues(line.Worktags_Reference)).toContain('FUND-General_Fund_Unrestricted');
+          });
+        });
+
         it('keeps the PO link and sends no split quantities for a PO line split by amount', async () => {
           const mockClient = mockSoapClient();
           const capturedRequests: any[] = [];

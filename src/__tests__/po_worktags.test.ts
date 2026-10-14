@@ -507,6 +507,19 @@ describe('po_worktags', () => {
       expect(sum(allocateSplitQuantities([split(2, 1, 'A'), split(3, 1, 'B'), split(5, 1, 'C')], 7))).toBe(7);
     });
 
+    it('never gives a split zero units: lopsided PO weights fall back to fractional quantities', () => {
+      const lopsided = [split(1, 100, 'CC-A'), split(9, 900, 'CC-B')];
+      const quantities = allocateSplitQuantities(lopsided, 2);
+      expect(quantities).toEqual([0.2, 1.8]);
+      expect(quantities.every(value => value > 0)).toBe(true);
+    });
+
+    it('prices splits from the line total when it disagrees with quantity x unit cost', () => {
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(poSplits, 400, [], undefined, { quantity: 2, unitCost: 204 });
+      expect(result!.map(row => row.Quantity)).toEqual([1, 1]);
+      expect(result!.map(row => row.Extended_Amount)).toEqual([200, 200]);
+    });
+
     it('falls back to fractional quantities when the line quantity cannot give every split a whole unit', () => {
       expect(allocateSplitQuantities(poSplits, 1)).toEqual([0.5, 0.5]);
       expect(allocateSplitQuantities(poSplits, 2.5)).toEqual([1.25, 1.25]);

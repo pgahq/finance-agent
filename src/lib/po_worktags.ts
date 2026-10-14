@@ -34,8 +34,9 @@ export function worktagIdentity(tag: any): string | null {
   return wid?.$value != null ? `WID:${wid.$value}` : null;
 }
 
-// Workday returns cost centers and LOBs with a generic Organization_Reference_ID next to the
-// specific ID (Cost_Center_Reference_ID, Custom_Organization_Reference_ID), so prefer the specific one.
+// Workday returns cost centers with a generic Organization_Reference_ID next to Cost_Center_Reference_ID,
+// so prefer any ID type outside ORG_WORKTAG_ID_TYPES. LOBs, venues and events only carry organization
+// ID types and keep resolving as organization worktags.
 function primaryWorktagId(tag: any): any | undefined {
   const typed = ([] as any[])
     .concat(tag?.ID ?? [])
@@ -563,7 +564,7 @@ function roundTo(value: number, decimals: number): number {
 
 /**
  * Share an invoice line quantity across PO splits in the PO's quantity ratio. Whole numbers are
- * preferred (largest remainder) when the quantity is whole and every split can get at least one.
+ * preferred (largest remainder) when the quantity is whole and no split would end up with zero units.
  */
 export function allocateSplitQuantities(splits: PurchaseOrderLineSplit[], invoiceQuantity: number): number[] {
   const weights = splits.map(split => split.quantity ?? 0);
@@ -583,7 +584,7 @@ export function allocateSplitQuantities(splits: PurchaseOrderLineSplit[], invoic
       floors[index] += 1;
       remaining -= 1;
     }
-    return floors;
+    if (floors.every(value => value > 0)) return floors;
   }
 
   const rounded = raw.map(value => roundTo(value, SPLIT_QUANTITY_DECIMALS));
@@ -612,8 +613,15 @@ export function mapPoSplitsToSupplierInvoiceSplitLineData(
 
   if (splitQuantity && splitQuantity.quantity > 0 && isQuantityDistributedSplits(splits)) {
     const quantities = allocateSplitQuantities(splits, splitQuantity.quantity);
-    const unitCost = splitQuantity.unitCost
-      ?? (invoiceLineExtendedAmount != null ? invoiceLineExtendedAmount / splitQuantity.quantity : null);
+    // Workday checks each split as quantity x unit cost, so when the line total disagrees with its own
+    // quantity x unit cost, price the splits from the total and let the line-level fault handling decide.
+    const impliedUnitCost = invoiceLineExtendedAmount != null ? invoiceLineExtendedAmount / splitQuantity.quantity : null;
+    const lineTotalMatches = splitQuantity.unitCost != null
+      && invoiceLineExtendedAmount != null
+      && Math.abs(splitQuantity.unitCost * splitQuantity.quantity - invoiceLineExtendedAmount) < 0.01;
+    const unitCost = splitQuantity.unitCost != null && (invoiceLineExtendedAmount == null || lineTotalMatches)
+      ? splitQuantity.unitCost
+      : impliedUnitCost;
     const amounts = unitCost == null ? undefined : quantities.map(quantity => roundMoney(quantity * unitCost));
     if (amounts && invoiceLineExtendedAmount != null) {
       const drift = roundMoney(invoiceLineExtendedAmount - amounts.reduce((sum, amount) => sum + amount, 0));

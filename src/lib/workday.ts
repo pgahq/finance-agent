@@ -564,7 +564,7 @@ type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'as
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
-export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice quantity does not fit the PO line quantity split)';
+export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
 export const OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL = 'omitted PO pass-through worktags (kept PO split rows)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
@@ -3046,7 +3046,7 @@ export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): st
 
 export function quantityPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
   const po = purchaseOrderNumber || 'the PO';
-  return `Invoice lines whose quantity does not fit a quantity-split line on ${po} were coded from the PO splits by amount but not linked to the PO line.`;
+  return `Invoice lines that could not be matched to a quantity-split line on ${po} (no quantity shown, or more than the PO line quantity) were coded from the PO splits by amount but not linked to the PO line.`;
 }
 
 export function purchaseOrderLineFallbackNote(label: string, purchaseOrderNumber?: string): string | undefined {
