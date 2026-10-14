@@ -204,6 +204,7 @@ describe('overlayPoWorktagsFromPurchaseOrder', () => {
         fundId: null,
         spendCategoryId: null,
         worktagsReference: [program],
+        lineLevelWorktagsReference: [program],
         description: null,
         memo: null,
         shipToAddressId: null,

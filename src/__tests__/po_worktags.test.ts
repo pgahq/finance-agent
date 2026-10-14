@@ -1,9 +1,12 @@
 import {
+  allocateSplitQuantities,
   collapseWorktagsToOnePerType,
   dedupeWorktagReferences,
   enrichSplitWorktagsWithLineLevel,
   firstNonEmptyPoLineArray,
   isLobWorktag,
+  isQuantityDistributedSplits,
+  lineOrdersExceedingQuantityPoLine,
   mapPoSplitsToSupplierInvoiceSplitLineData,
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
@@ -404,6 +407,193 @@ describe('po_worktags', () => {
       const { worktags, dropped } = collapseWorktagsToOnePerType([venueA, venueB, venueA]);
       expect(worktags).toEqual([venueA, venueB]);
       expect(dropped).toEqual([venueA]);
+    });
+  });
+
+  describe('Workday cost center and LOB refs (Organization_Reference_ID alongside the specific ID)', () => {
+    const makeCostCenter = (value: string) => ({
+      ID: [
+        { $attributes: { type: 'WID' }, $value: `wid-${value}` },
+        { $attributes: { type: 'Organization_Reference_ID' }, $value: value },
+        { $attributes: { type: 'Cost_Center_Reference_ID' }, $value: value },
+      ],
+    });
+    const fund = makeWorktag('Fund_ID', 'FUND-General_Fund_Unrestricted');
+    const lobExec = makeOrgWorktag('LOB-Executive');
+    const lobPd = makeOrgWorktag('LOB-Partnership_Development');
+    const ccExec = makeCostCenter('CC-Executive_Dept');
+    const ccPd = makeCostCenter('CC-Partnership_Development');
+    const poLine = {
+      Goods_Purchase_Order_Line_Split_Data: [
+        { Quantity: 1, Extended_Amount: 251.5, Worktag_Reference: [lobExec, fund, ccExec] },
+        { Quantity: 1, Extended_Amount: 251.5, Worktag_Reference: [lobPd, fund, ccPd] },
+      ],
+    };
+    const ids = (tags: any[] = []) => tags.map(tag => tag.ID.find((id: any) => id.$attributes.type !== 'WID').$value);
+
+    it('keeps each split with its own cost center and LOB (PO-414594)', () => {
+      const merged = mergePurchaseOrderLineWorktags(poLine, 'Goods_Purchase_Order_Line_Split_Data');
+      const passthrough = passthroughWorktagsForSplitInvoiceLine(merged.worktagsReference, merged.splitLineData, {});
+      const splits = mapPoSplitsToSupplierInvoiceSplitLineData(merged.splitLineData, 408, passthrough, {});
+
+      expect(ids(passthrough)).toEqual([]);
+      expect(splits!.map(split => ids(collapseWorktagsToOnePerType(split.Worktag_Reference).worktags))).toEqual([
+        ['LOB-Executive', 'FUND-General_Fund_Unrestricted', 'CC-Executive_Dept'],
+        ['LOB-Partnership_Development', 'FUND-General_Fund_Unrestricted', 'CC-Partnership_Development'],
+      ]);
+    });
+
+    it('does not copy a sibling split cost center onto a split from line-level worktags', () => {
+      const enriched = enrichSplitWorktagsWithLineLevel([lobExec, fund, ccExec], [ccExec, ccPd]);
+      expect(ids(enriched)).toEqual(['LOB-Executive', 'FUND-General_Fund_Unrestricted', 'CC-Executive_Dept']);
+    });
+
+    it('collapses duplicate real cost centers to one per line', () => {
+      const { worktags, dropped } = collapseWorktagsToOnePerType([ccExec, ccPd]);
+      expect(ids(worktags)).toEqual(['CC-Executive_Dept']);
+      expect(ids(dropped)).toEqual(['CC-Partnership_Development']);
+    });
+
+    it('replaceCostCenterWorktagsWithFallback recognizes real cost centers on splits', () => {
+      const fallback = makeWorktag('Cost_Center_Reference_ID', 'CC0000');
+      const result = replaceCostCenterWorktagsWithFallback(
+        [],
+        [{ Worktag_Reference: [lobExec, ccExec] }, { Worktag_Reference: [lobPd, ccPd] }],
+        fallback
+      );
+      expect(result.supplierInvoiceSplitLineData!.map(split => ids(split.Worktag_Reference))).toEqual([
+        ['LOB-Executive', 'CC0000'],
+        ['LOB-Partnership_Development', 'CC0000'],
+      ]);
+    });
+  });
+
+  describe('quantity-distributed PO line splits', () => {
+    const cc = (value: string) => makeWorktag('Cost_Center_Reference_ID', value);
+    const split = (quantity: number | undefined, extendedAmount: number, value: string) => ({
+      ...(quantity !== undefined && { quantity }),
+      extendedAmount,
+      worktagReference: [cc(value)],
+    });
+    const poSplits = [split(1, 251.5, 'CC-A'), split(1, 251.5, 'CC-B')];
+
+    it('detects quantity distribution only when every split carries a positive quantity', () => {
+      expect(isQuantityDistributedSplits(poSplits)).toBe(true);
+      expect(isQuantityDistributedSplits([split(1, 10, 'CC-A'), split(undefined, 10, 'CC-B')])).toBe(false);
+      expect(isQuantityDistributedSplits([split(0, 10, 'CC-A'), split(0, 10, 'CC-B')])).toBe(false);
+      expect(isQuantityDistributedSplits([])).toBe(false);
+      expect(isQuantityDistributedSplits(undefined)).toBe(false);
+    });
+
+    it('emits whole split quantities that sum to the invoice line quantity and amounts of quantity x unit cost', () => {
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(poSplits, 408, [], undefined, { quantity: 2, unitCost: 204 });
+      expect(result!.map(({ Quantity, Extended_Amount }) => ({ Quantity, Extended_Amount }))).toEqual([
+        { Quantity: 1, Extended_Amount: 204 },
+        { Quantity: 1, Extended_Amount: 204 },
+      ]);
+    });
+
+    it('follows the PO split ratio for uneven splits', () => {
+      const uneven = [split(3, 300, 'CC-A'), split(1, 100, 'CC-B')];
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(uneven, 800, [], undefined, { quantity: 8, unitCost: 100 });
+      expect(result!.map(row => row.Quantity)).toEqual([6, 2]);
+      expect(result!.map(row => row.Extended_Amount)).toEqual([600, 200]);
+    });
+
+    it('uses largest-remainder whole quantities when the ratio does not divide evenly', () => {
+      expect(allocateSplitQuantities(poSplits, 3)).toEqual([2, 1]);
+      expect(allocateSplitQuantities([split(1, 1, 'A'), split(1, 1, 'B'), split(1, 1, 'C')], 10)).toEqual([4, 3, 3]);
+      const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+      expect(sum(allocateSplitQuantities([split(2, 1, 'A'), split(3, 1, 'B'), split(5, 1, 'C')], 7))).toBe(7);
+    });
+
+    it('falls back to fractional quantities when the line quantity cannot give every split a whole unit', () => {
+      expect(allocateSplitQuantities(poSplits, 1)).toEqual([0.5, 0.5]);
+      expect(allocateSplitQuantities(poSplits, 2.5)).toEqual([1.25, 1.25]);
+    });
+
+    it('puts rounding drift in the last split amount so the splits sum to the line amount', () => {
+      const three = [split(1, 1, 'A'), split(1, 1, 'B'), split(1, 1, 'C')];
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(three, 100, [], undefined, { quantity: 3, unitCost: 33.33 });
+      expect(result!.map(row => row.Quantity)).toEqual([1, 1, 1]);
+      expect(result!.reduce((sum, row) => sum + row.Extended_Amount, 0)).toBeCloseTo(100, 2);
+    });
+
+    it('derives unit cost from the extended amount when none is given', () => {
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(poSplits, 100, [], undefined, { quantity: 2 });
+      expect(result!.map(row => row.Extended_Amount)).toEqual([50, 50]);
+    });
+
+    it('keeps amount-only splits (no Quantity) for PO lines split by amount', () => {
+      const byAmount = [split(undefined, 100, 'CC-A'), split(undefined, 300, 'CC-B')];
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(byAmount, 400, [], undefined, { quantity: 4, unitCost: 100 });
+      expect(result!.every(row => row.Quantity === undefined)).toBe(true);
+      expect(result!.map(row => row.Extended_Amount)).toEqual([100, 300]);
+    });
+
+    it('omits Quantity when no quantity context is supplied, scaling PO split amounts to the line', () => {
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData(poSplits, 95);
+      expect(result!.every(row => row.Quantity === undefined)).toBe(true);
+      expect(result!.map(row => row.Extended_Amount)).toEqual([47.5, 47.5]);
+    });
+
+    it('emits a single split carrying the whole line quantity', () => {
+      const result = mapPoSplitsToSupplierInvoiceSplitLineData([split(5, 500, 'CC-A')], 300, [], undefined, { quantity: 3, unitCost: 100 });
+      expect(result).toEqual([expect.objectContaining({ Quantity: 3, Extended_Amount: 300 })]);
+    });
+  });
+
+  describe('lineOrdersExceedingQuantityPoLine', () => {
+    const splits = [
+      { quantity: 1, extendedAmount: 251.5, worktagReference: [] },
+      { quantity: 1, extendedAmount: 251.5, worktagReference: [] },
+    ];
+
+    it('lets the larger-quantity line keep the PO line and unlinks the extra charge (St. Andrews)', () => {
+      const result = lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 2, extendedAmount: 408, splits },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-1', quantity: 1, extendedAmount: 95, splits },
+      ]);
+      expect([...result]).toEqual([2]);
+    });
+
+    it('does not depend on line order', () => {
+      const result = lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 1, extendedAmount: 95, splits },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-1', quantity: 2, extendedAmount: 408, splits },
+      ]);
+      expect([...result]).toEqual([1]);
+    });
+
+    it('keeps every line that fits within the ordered quantity', () => {
+      const result = lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 1, extendedAmount: 100, splits },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-1', quantity: 1, extendedAmount: 100, splits },
+      ]);
+      expect(result.size).toBe(0);
+    });
+
+    it('ignores a single line, amount-distributed PO lines, and lines on different PO lines', () => {
+      const byAmount = [{ extendedAmount: 100, worktagReference: [] }, { extendedAmount: 100, worktagReference: [] }];
+      expect(lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 5, splits },
+      ]).size).toBe(0);
+      expect(lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 2, splits: byAmount },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-1', quantity: 2, splits: byAmount },
+      ]).size).toBe(0);
+      expect(lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 2, splits },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-2', quantity: 2, splits },
+      ]).size).toBe(0);
+    });
+
+    it('unlinks a zero-quantity line sharing a quantity PO line', () => {
+      const result = lineOrdersExceedingQuantityPoLine([
+        { lineOrder: 1, purchaseOrderLineId: 'POL-1', quantity: 2, extendedAmount: 408, splits },
+        { lineOrder: 2, purchaseOrderLineId: 'POL-1', quantity: 0, extendedAmount: 95, splits },
+      ]);
+      expect([...result]).toEqual([2]);
     });
   });
 });

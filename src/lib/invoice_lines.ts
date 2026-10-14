@@ -1130,7 +1130,16 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
   });
 }
 
+// worktagsReference also holds every split's worktags, so a split line's pass-through comes only
+// from its own line-level worktags; otherwise each split would inherit its siblings' coding.
 function passthroughForPoLine(poLine: ParsedPoLineWorktags): any[] {
+  if (poLine.splitLineData.length > 0) return poLine.lineLevelWorktagsReference ?? [];
+  return poLine.lineLevelWorktagsReference?.length
+    ? poLine.lineLevelWorktagsReference
+    : poLine.worktagsReference;
+}
+
+function allWorktagsForPoLine(poLine: ParsedPoLineWorktags): any[] {
   return poLine.lineLevelWorktagsReference?.length
     ? poLine.lineLevelWorktagsReference
     : poLine.worktagsReference;
@@ -1141,12 +1150,12 @@ function sharedPassthroughWorktags(poLines: ParsedPoLineWorktags[]): any[] {
   const perLineIdentities = poLines.map(
     line =>
       new Set(
-        passthroughForPoLine(line)
+        allWorktagsForPoLine(line)
           .map(tag => worktagIdentity(tag))
           .filter((identity): identity is string => identity != null)
       )
   );
-  return passthroughForPoLine(poLines[0]).filter(tag => {
+  return allWorktagsForPoLine(poLines[0]).filter(tag => {
     const identity = worktagIdentity(tag);
     return identity != null && perLineIdentities.every(set => set.has(identity));
   });
@@ -1897,7 +1906,7 @@ function worktagIdentityKey(worktags: any[]): string {
 }
 
 function poLineCodingKey(line: ParsedPoLineWorktags): string {
-  const passthrough = worktagIdentityKey(passthroughForPoLine(line));
+  const passthrough = worktagIdentityKey(allWorktagsForPoLine(line));
   if (!passthrough) return '';
   const splits = line.splitLineData.map(split => worktagIdentityKey(split.worktagReference ?? [])).sort();
   return JSON.stringify([
