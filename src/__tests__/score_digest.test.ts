@@ -44,6 +44,14 @@ const scores: InvoiceScore[] = [
   score({ outcome: 'stuck_draft' }),
 ];
 
+const realSetTimeout = globalThis.setTimeout;
+let postGapSpy: jest.SpyInstance;
+beforeEach(() => {
+  postGapSpy = jest.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) =>
+    realSetTimeout(fn, ms !== undefined && ms >= SLACK_POST_GAP_MS ? 0 : ms)) as unknown as typeof setTimeout);
+});
+afterEach(() => postGapSpy.mockRestore());
+
 describe('summarizeScores', () => {
   const summary = summarizeScores(scores, window, [
     score({ workdayInvoiceWid: 'u1', cancelBasis: 'no_signal' }),
@@ -368,6 +376,35 @@ describe('postSlackChannelMessage', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('waits for the Retry-After Slack sends with a rejected image, within the request timeout', async () => {
+    const rejectedImage = (retryAfter: string) => ({
+      ...slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] downloading image failed [json-pointer:/blocks/0/image_url]'] } }),
+      headers: { get: (name: string) => (name === 'retry-after' ? retryAfter : null) },
+    });
+    jest.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValueOnce(rejectedImage('3')).mockResolvedValueOnce(slackAnswer({ ok: true, ts: '2.0' }));
+      const posting = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+      await jest.advanceTimersByTimeAsync(2999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await posting).toEqual({ ok: true, ts: '2.0' });
+
+      fetchMock.mockResolvedValueOnce(rejectedImage('3600')).mockResolvedValueOnce(slackAnswer({ ok: true, ts: '3.0' }));
+      const capped = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+      await jest.advanceTimersByTimeAsync(SLACK_API_TIMEOUT_MS);
+      expect(await capped).toEqual({ ok: true, ts: '3.0' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not resend for an image mention that is not a failed image download', async () => {
+    fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] image caption must be shorter [json-pointer:/blocks/1/alt_text]'] } }));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'invalid_blocks' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('sends trimmed credentials', async () => {

@@ -464,6 +464,8 @@ export const SLACK_POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage';
 // request must give up well before that.
 export const SLACK_API_TIMEOUT_MS = 5000;
 const SLACK_TS_PATTERN = /^\d+\.\d+$/;
+// Slack names the failed image block as "downloading image failed [json-pointer:/blocks/N/image_url]".
+const SLACK_IMAGE_REJECTION_PATTERN = /downloading image|json-pointer:\/blocks\/\d+\/image_url/i;
 const SLACK_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,64}$/;
 /** chat.postMessage allows about one message per second per channel. */
 export const SLACK_POST_GAP_MS = 1100;
@@ -491,7 +493,7 @@ export interface SlackChannelPostResult {
 async function sendChatMessage(
   blocks: SlackBlock[],
   target: { token: string; channel: string; threadTs?: string }
-): Promise<SlackSendResult & { ts?: string; imageRejected?: boolean }> {
+): Promise<SlackSendResult & { ts?: string; imageRejected?: boolean; retryAfterMs?: number }> {
   const signal = AbortSignal.timeout(SLACK_API_TIMEOUT_MS);
   try {
     debug('Posting Slack message', { channel: target.channel, thread: Boolean(target.threadTs), blocks: blocks.length });
@@ -523,9 +525,11 @@ async function sendChatMessage(
       // Slack's detail text can echo message content, so it only decides the image resend and is never returned or logged.
       const details = [body?.errors, body?.response_metadata?.messages]
         .flatMap((list) => (Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : []));
-      const imageRejected = code === 'invalid_blocks' && details.some((detail) => /image/i.test(detail));
+      const imageRejected = code === 'invalid_blocks' && details.some((detail) => SLACK_IMAGE_REJECTION_PATTERN.test(detail));
+      const retryAfter = Number(response.headers?.get?.('retry-after'));
+      const retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, SLACK_API_TIMEOUT_MS) : undefined;
       debug('Slack chat.postMessage was rejected', { status: response.status, code });
-      return { ok: false, status: response.status, code, imageRejected };
+      return { ok: false, status: response.status, code, imageRejected, retryAfterMs };
     }
     // ok: true means Slack posted the message; a ts that is not a Slack timestamp is left out so no reply threads under it.
     const ts = typeof body.ts === 'string' && SLACK_TS_PATTERN.test(body.ts) ? body.ts : undefined;
@@ -560,7 +564,7 @@ export async function postSlackChannelMessage(blocks: SlackBlock[], target: Slac
   const withoutImages = blocks.filter((block) => block.type !== 'image');
   if (!first.imageRejected || withoutImages.length === blocks.length) return { ok: false, error: failureReason(first) };
   debug('Slack rejected a message with an image; resending without it', { code: first.code });
-  await new Promise((resolve) => setTimeout(resolve, SLACK_POST_GAP_MS));
+  await new Promise((resolve) => setTimeout(resolve, Math.max(SLACK_POST_GAP_MS, first.retryAfterMs ?? 0)));
   const retry = await sendChatMessage(withoutImages, { token, channel, threadTs });
   return retry.ok ? { ok: true, ts: retry.ts } : { ok: false, error: failureReason(retry) };
 }
