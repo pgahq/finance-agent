@@ -282,7 +282,9 @@ the rest). Every Monday it posts a summary of the previous week by field as
 one message. Both lead with the share of invoices that needed zero AP
 touches and its daily or weekly trend, which is also stored in Postgres
 (`agent_invoice_touch_daily`) for reports. Details, settings, and how AP labels
-a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.
+a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`. Workday text
+shown in a post, including the invoice's final status, has Slack markup
+neutralized so it cannot mention or link.
 
 ## 🔒 Security
 

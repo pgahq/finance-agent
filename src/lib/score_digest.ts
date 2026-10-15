@@ -263,6 +263,11 @@ function quote(value: unknown): string {
   return `\`${escapeSlackText(text).replace(/`/g, "'")}\``;
 }
 
+/** A Workday status is plain words; markup characters in one are dropped so it cannot format or mention. */
+function inertStatus(status: string): string {
+  return escapeSlackText(status).replace(/[*_~]/g, '').replace(/`/g, "'");
+}
+
 function escapeSlackText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -446,7 +451,7 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
         ocrOnlyChanges = (score.entryDiff ?? []).filter((change) => change.agentOwned === false).length;
       }
       if (closed) {
-        parts.push(score.outcome === 'denied' ? 'denied' : escapeSlackText((score.finalStatus ?? 'closed').toLowerCase()).replace(/`/g, "'"));
+        parts.push(score.outcome === 'denied' ? 'denied' : inertStatus((score.finalStatus ?? 'closed').toLowerCase()));
         lateChanges = againstAgent(score.lateDiff);
       }
     }

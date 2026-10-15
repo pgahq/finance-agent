@@ -213,7 +213,7 @@ describe('buildDailyInvoiceMessages', () => {
 
   it('keeps a Workday final status inert in Slack mrkdwn', () => {
     const messages = buildDailyInvoiceMessages(summarizeDay([
-      score({ workdayInvoiceWid: 'w3', workdayInvoiceNumber: 'SUPIN-3', terminal: true, entryReadAt: lastWeek, finalReadAt: today, finalStatus: '<!channel> `Approved`', outcome: 'submitted_clean' }),
+      score({ workdayInvoiceWid: 'w3', workdayInvoiceNumber: 'SUPIN-3', terminal: true, entryReadAt: lastWeek, finalReadAt: today, finalStatus: '<!channel> *`Approved`*_~', outcome: 'submitted_clean' }),
     ], since, until));
     expect(textOf(messages[0])).toContain("&lt;!channel&gt; 'approved'");
     expect(textOf(messages[0])).not.toContain('<!channel>');
