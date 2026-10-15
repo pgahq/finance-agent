@@ -87,6 +87,7 @@ references:
             GmailAddonServiceAccountEmail="${GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL}"
             ReleaseSha=$CIRCLE_SHA1
             TenantRefreshWeekday=$TENANT_REFRESH_WEEKDAY
+            AuditSlackChannelId=$AUDIT_SLACK_CHANNEL_ID
       - run:
           name: Publish Gmail Workspace add-on
           command: |
@@ -168,6 +169,8 @@ jobs:
       ADDON_ENVIRONMENT: sandbox
       # The implementation tenant is refreshed from production every Saturday.
       TENANT_REFRESH_WEEKDAY: "6"
+      # #notify-finance-agent-audit-dev
+      AUDIT_SLACK_CHANNEL_ID: C0C6VS0BDPA
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -185,6 +188,8 @@ jobs:
       INTERCOM_APP_ID: jyi16dpc
       ADDON_ENVIRONMENT: production
       TENANT_REFRESH_WEEKDAY: none
+      # #notify-finance-agent-audit
+      AUDIT_SLACK_CHANNEL_ID: C0C5W6B0G4V
 
 workflows:
   version: 2

@@ -8,8 +8,8 @@ description: >-
   POST /create-invoice/gmail, POST /gmail-addon, Intercom Data Connectors,
   Gmail labels, bearer auth tokens, attachment upload contracts, Workday
   invoice memos, line item descriptions, supplier invoice numbers (check-print
-  order and pay-file-safe characters), Slack Workday object deep links, or
-  supplier matching hints from the email context (subject, source email, and
+  order and pay-file-safe characters), Slack Workday object deep links,
+  AUDIT_SLACK_BOT_TOKEN or AUDIT_SLACK_CHANNEL_ID, or supplier matching hints from the email context (subject, source email, and
   conversation parts; Supplier IDs and Supplier:/Vendor: lines).
 ---
 
@@ -207,6 +207,8 @@ The terse 1-sentence summary is line `Memo`, generated **after** that concatenat
 | Name | Source | Used by |
 | --- | --- | --- |
 | `AI_GATEWAY_API_KEY` | SSM `/finance-agent/ai-gateway-api-key` (SecureString, created by hand per account; template Global) | Every model and embedding call, through the Vercel AI Gateway (see Model traffic). A missing parameter fails every cold start. |
+| `AUDIT_SLACK_BOT_TOKEN` | SSM `/finance-agent/audit-slack-bot-token` (SecureString, created by hand per account; `ScoreDigestFunction` only) | Slack app Bot User OAuth Token (`xoxb-`, `chat:write`) for `chat.postMessage` audit posts. The bot must be invited to the audit channel, or posts fail with `not_in_channel`. |
+| `AUDIT_SLACK_CHANNEL_ID` | CFT `AuditSlackChannelId`, no default (`C0C6VS0BDPA` #notify-finance-agent-audit-dev on `deploy-to-dev`, `C0C5W6B0G4V` #notify-finance-agent-audit on `deploy-to-prod`) | Channel for `ScoreDigest` audit posts. |
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Intercom and Gmail HTTP triggers (inbound auth). Not the add-on. |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |

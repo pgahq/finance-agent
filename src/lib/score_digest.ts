@@ -409,7 +409,7 @@ export interface DailySummary {
   lostToRefresh: number;
 }
 
-/** Webhook posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
+/** Slack posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
 export const MAX_DAILY_INVOICE_MESSAGES = 40;
 
 /** What was scored between `since` and `until`: AP submits, final reads, cancels, and newly stuck Drafts. */

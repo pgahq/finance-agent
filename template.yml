@@ -74,6 +74,11 @@ Parameters:
     Type: String
     Default: ""
     Description: Workspace add-on system service account email used to verify the Authorization header ID token
+  AuditSlackChannelId:
+    Type: String
+    Description: Slack channel ID the ScoreDigest audit posts go to (#notify-finance-agent-audit, or -dev)
+    AllowedPattern: "^[CG][A-Z0-9]{8,}$"
+    ConstraintDescription: must be a Slack channel ID such as C0C5W6B0G4V
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -895,7 +900,7 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Score Digest - weekly audit summary posted to the audit Slack channel, not the per-invoice channel
+  # Score Digest - daily and weekly audit posts to the audit Slack channel (chat.postMessage), not the per-invoice channel
   ScoreDigestFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -906,7 +911,8 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          AUDIT_SLACK_WEBHOOK_URL: ssm:/finance-agent/audit-slack-webhook-url
+          AUDIT_SLACK_CHANNEL_ID: !Ref AuditSlackChannelId
+          AUDIT_SLACK_BOT_TOKEN: ssm:/finance-agent/audit-slack-bot-token
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
