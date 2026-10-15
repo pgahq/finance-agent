@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { findDocumentsContainingWords, type DatabaseConnection } from './database.js';
-import { nameTokens, supplierNamesMatch } from './po_supplier.js';
+import { nameTokens, namesShareToken, supplierNamesMatch } from './po_supplier.js';
 
 export interface SupplierRecord {
   supplierId?: string;
@@ -69,8 +69,11 @@ export function printedSupplierNameCandidates(printedName: string | null | undef
   const whole = cleanName(printedName ?? '');
   if (!whole) return [];
   const segments = (printedName ?? '').split(/\s+[-–—]\s+|\s*\|\s*/).map(cleanName).filter(Boolean);
-  const named = segments.length > 1 ? segments.filter((segment) => !LOCATION_LABEL.test(segment)) : segments;
-  return [...new Set([...named, whole])];
+  const named = segments.filter((segment) => !LOCATION_LABEL.test(segment));
+  // Only a dropped location label shows the printed name is "branch - company"; any other " - " part, such as
+  // "Pinehurst Resort - Pro Shop", is just part of the name and must not stand alone.
+  const hasBranchLabel = segments.length > 1 && named.length < segments.length;
+  return [...new Set([...(hasBranchLabel ? named : []), whole])];
 }
 
 /** The company name that leads a remit-to block ("SiteOne Landscape Supply, LLC, 24110 Network Place, ..."), before any street or PO Box. */
@@ -78,7 +81,11 @@ export function remitToCompanyName(remitToAddress: string | null | undefined): s
   const parts = (remitToAddress ?? '').split(/[,\n]/).map((part) => part.trim()).filter(Boolean);
   const nameParts: string[] = [];
   for (const part of parts) {
-    if (/\d/.test(part) || /^p\.?\s*o\.?\s*box\b/i.test(part)) break;
+    if (/\d/.test(part) || /^p\.?\s*o\.?\s*box\b/i.test(part)) {
+      // "New York, NY 10001" has no payee name: the part before a state and ZIP is the city.
+      if (/^[A-Z]{2}(\s*\d{5}\b|$)/.test(part)) nameParts.pop();
+      break;
+    }
     nameParts.push(part);
   }
   return nameParts.length ? nameParts.join(', ') : undefined;
@@ -94,6 +101,8 @@ export interface SupplierNameMatch {
   supplierName: string;
   supplierId?: string;
   evidence: string[];
+  sources: Array<SupplierNameEvidence['source']>;
+  recordNames: string[];
 }
 
 /** Which cached suppliers each piece of name evidence equals, by primary name or any alternate name. */
@@ -114,18 +123,24 @@ export function matchSuppliersByName(
       const existing = matches.get(document.workday_id);
       if (existing) {
         existing.evidence.push(line);
+        if (!existing.sources.includes(item.source)) existing.sources.push(item.source);
       } else {
         matches.set(document.workday_id, {
           workdayId: document.workday_id,
           supplierName: record.supplierName,
           ...(record.supplierId ? { supplierId: record.supplierId } : {}),
           evidence: [line],
+          sources: [item.source],
+          recordNames: [record.supplierName, ...record.alternateNames],
         });
       }
     }
   }
   return matches;
 }
+
+/** Candidate rows read per name. A full page may hide another supplier with the same name, so it is never treated as unique. */
+export const SUPPLIER_CANDIDATE_LIMIT = 200;
 
 export interface SupplierNameLookupInput {
   printedName?: string | null;
@@ -151,16 +166,28 @@ export async function findUniqueSupplierByNameEvidence(
 
   const excluded = new Set((input.excludeWorkdayIds ?? []).filter((id): id is string => Boolean(id)));
   const candidates = new Map<string, SupplierDocumentRow>();
+  let truncated = false;
   for (const item of evidence) {
-    const rows = await findDocumentsContainingWords(db, 'supplier', [...nameTokens(item.name)]);
+    const rows = await findDocumentsContainingWords(db, 'supplier', [...nameTokens(item.name)], SUPPLIER_CANDIDATE_LIMIT);
+    if (rows.length >= SUPPLIER_CANDIDATE_LIMIT) truncated = true;
     for (const row of rows) candidates.set(row.workday_id, row);
   }
 
+  // A remit-to payee is often a factoring company or bank lockbox, so a remit-to-only match must also share a
+  // distinctive word with the printed supplier name.
+  const printedName = cleanName(input.printedName ?? '');
   const matches = [...matchSuppliersByName(evidence, [...candidates.values()]).values()]
     .filter((match) => !excluded.has(match.workdayId));
+  const [only] = matches;
+  const confirmed = !truncated && matches.length === 1 && only
+    && (only.sources.includes('printed') || (printedName !== '' && namesShareToken([printedName], only.recordNames)))
+    ? only
+    : undefined;
   debug('Supplier name evidence lookup', {
     evidence,
+    truncated,
     matched: matches.map((match) => ({ workdayId: match.workdayId, supplierId: match.supplierId, supplierName: match.supplierName })),
+    accepted: confirmed?.workdayId,
   });
-  return matches.length === 1 ? matches[0] : undefined;
+  return confirmed;
 }

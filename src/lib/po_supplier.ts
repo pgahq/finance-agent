@@ -76,7 +76,7 @@ export function supplierNamesMatch(left: string, right: string): boolean {
   return a.size >= MIN_NAME_MATCH_TOKENS && a.size === b.size && [...a].every((token) => b.has(token));
 }
 
-function namesShareToken(left: string[], right: string[]): boolean {
+export function namesShareToken(left: string[], right: string[]): boolean {
   const rightTokens = new Set(right.flatMap((name) => [...nameTokens(name)]));
   return left.some((name) => [...nameTokens(name)].some((token) => rightTokens.has(token)));
 }

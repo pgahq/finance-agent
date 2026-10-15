@@ -5,6 +5,7 @@ jest.mock('../lib/database.js', () => ({
 
 import { findDocumentsContainingWords } from '../lib/database.js';
 import {
+  SUPPLIER_CANDIDATE_LIMIT,
   findUniqueSupplierByNameEvidence,
   matchSuppliersByName,
   printedSupplierNameCandidates,
@@ -80,6 +81,11 @@ describe('printedSupplierNameCandidates', () => {
     expect(printedSupplierNameCandidates('Smith Landscape IT')).toEqual(['Smith Landscape IT']);
   });
 
+  it('does not split a name on a dash when no part is a location label', () => {
+    expect(printedSupplierNameCandidates('Pinehurst Resort - Pro Shop')).toEqual(['Pinehurst Resort - Pro Shop']);
+    expect(printedSupplierNameCandidates('Golf Course Maintenance | Turf Care')).toEqual(['Golf Course Maintenance | Turf Care']);
+  });
+
   it('returns nothing for an empty name', () => {
     expect(printedSupplierNameCandidates(null)).toEqual([]);
     expect(printedSupplierNameCandidates('  ')).toEqual([]);
@@ -89,6 +95,11 @@ describe('printedSupplierNameCandidates', () => {
 describe('remitToCompanyName', () => {
   it('takes the company name that leads the remit-to block', () => {
     expect(remitToCompanyName(REMIT_TO)).toBe('SiteOne Landscape Supply, LLC');
+  });
+
+  it('does not mistake a bare city for the payee name', () => {
+    expect(remitToCompanyName('New York, NY 10001')).toBeUndefined();
+    expect(remitToCompanyName('Riviera Finance of Texas, PO Box 202485, Dallas TX')).toBe('Riviera Finance of Texas');
   });
 
   it.each([
@@ -138,8 +149,8 @@ describe('findUniqueSupplierByNameEvidence', () => {
 
     expect(match).toMatchObject({ workdayId: 'wid-siteone', supplierId: 'S-021845', supplierName: 'SITEONE LANDSCAPE SUPPLY LLC' });
     expect(match?.evidence).toHaveLength(2);
-    expect(findDocuments).toHaveBeenCalledWith(db, 'supplier', expect.arrayContaining(['siteone', 'landscape', 'supply']));
-    expect(findDocuments).toHaveBeenCalledWith(db, 'supplier', expect.arrayContaining(['all', 'pro', 'horticulture']));
+    expect(findDocuments).toHaveBeenCalledWith(db, 'supplier', expect.arrayContaining(['siteone', 'landscape', 'supply']), SUPPLIER_CANDIDATE_LIMIT);
+    expect(findDocuments).toHaveBeenCalledWith(db, 'supplier', expect.arrayContaining(['all', 'pro', 'horticulture']), SUPPLIER_CANDIDATE_LIMIT);
   });
 
   it('matches on the alternate name alone when the remit-to names no company', async () => {
@@ -150,12 +161,60 @@ describe('findUniqueSupplierByNameEvidence', () => {
     expect(match?.workdayId).toBe('wid-siteone');
   });
 
-  it('matches on the remit-to company alone when the printed name matches nothing', async () => {
+  it('matches on the remit-to company alone when the printed name shares a word with the record', async () => {
     findDocuments.mockResolvedValue([siteOne]);
 
-    const match = await findUniqueSupplierByNameEvidence(db, { printedName: 'Bethpage Field Depot #12', remitToAddress: REMIT_TO });
+    const match = await findUniqueSupplierByNameEvidence(db, { printedName: 'SiteOne Field Depot #12', remitToAddress: REMIT_TO });
 
     expect(match?.workdayId).toBe('wid-siteone');
+    expect(match?.sources).toEqual(['remit_to']);
+  });
+
+  it('does not let a factoring company payee claim an unrelated vendor invoice', async () => {
+    const factor = {
+      workday_id: 'wid-factor',
+      content: 'Company Name: RIVIERA FINANCE OF TEXAS',
+      metadata: { supplierName: 'RIVIERA FINANCE OF TEXAS' },
+    };
+    findDocuments.mockResolvedValue([factor]);
+
+    const match = await findUniqueSupplierByNameEvidence(db, {
+      printedName: 'Bethpage Field Depot #12',
+      remitToAddress: 'Riviera Finance of Texas, PO Box 202485, Dallas TX',
+    });
+
+    expect(match).toBeUndefined();
+  });
+
+  it('counts a second remit-to match before the shared-word check', async () => {
+    const twin = { workday_id: 'wid-twin', content: 'Company Name: SITEONE LANDSCAPE SUPPLY INC', metadata: { supplierName: 'SITEONE LANDSCAPE SUPPLY INC' } };
+    findDocuments.mockResolvedValue([siteOne, twin]);
+
+    expect(await findUniqueSupplierByNameEvidence(db, { printedName: 'SiteOne Field Depot #12', remitToAddress: REMIT_TO })).toBeUndefined();
+  });
+
+  it('does not match a remit-to only match when no supplier name is printed', async () => {
+    findDocuments.mockResolvedValue([siteOne]);
+
+    expect(await findUniqueSupplierByNameEvidence(db, { printedName: null, remitToAddress: REMIT_TO })).toBeUndefined();
+  });
+
+  it('does not match a generic part of a non-branch name on its own', async () => {
+    const proShop = { workday_id: 'wid-proshop', content: 'Company Name: THE PRO SHOP LLC', metadata: { supplierName: 'THE PRO SHOP LLC' } };
+    findDocuments.mockResolvedValue([proShop]);
+
+    const match = await findUniqueSupplierByNameEvidence(db, { printedName: 'Pinehurst Resort - Pro Shop', remitToAddress: null });
+
+    expect(match).toBeUndefined();
+  });
+
+  it('treats a full candidate page as ambiguous', async () => {
+    findDocuments.mockResolvedValue(Array.from({ length: SUPPLIER_CANDIDATE_LIMIT }, (_, index) => (
+      index === 0 ? siteOne : { workday_id: `wid-${index}`, content: 'Company Name: UNRELATED', metadata: { supplierName: 'UNRELATED' } }
+    )));
+
+    expect(await findUniqueSupplierByNameEvidence(db, { printedName: PRINTED, remitToAddress: REMIT_TO })).toBeUndefined();
+    expect(findDocuments).toHaveBeenCalledWith(db, 'supplier', expect.any(Array), SUPPLIER_CANDIDATE_LIMIT);
   });
 
   it('stays unmatched when the remit-to and the printed name point at different suppliers', async () => {

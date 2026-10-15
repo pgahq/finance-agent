@@ -458,6 +458,8 @@ Primary Address: 100 PGA Tour Blvd`);
         phones: [],
         emails: [],
       });
+      expect(results[0]).not.toHaveProperty('metadata');
+      expect(results[0]).not.toHaveProperty('content');
       expect(mockDebug).toHaveBeenCalledWith('Find Suppliers Tool top results:', [
         expect.objectContaining({ supplierId: 'S-021845', alternateNames }),
       ]);
