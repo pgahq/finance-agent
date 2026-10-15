@@ -386,24 +386,35 @@ describe('postSlackChannelMessage', () => {
     }
   });
 
-  it('waits for the Retry-After Slack sends with a rejected image, within the request timeout', async () => {
-    const rejectedImage = (retryAfter: string) => ({
-      ...slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] downloading image failed [json-pointer:/blocks/0/image_url]'] } }),
-      headers: { get: (name: string) => (name === 'retry-after' ? retryAfter : null) },
+  it('resends once after the Retry-After of a 429, and reports ratelimited when it stays limited or asks for too long', async () => {
+    const limited = (retryAfter?: string) => ({
+      ok: false,
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: { get: (name: string) => (name === 'retry-after' && retryAfter ? retryAfter : null) },
+      text: async () => '',
     });
     jest.useFakeTimers();
     try {
-      fetchMock.mockResolvedValueOnce(rejectedImage('3')).mockResolvedValueOnce(slackAnswer({ ok: true, ts: '2.0' }));
-      const posting = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+      fetchMock.mockResolvedValueOnce(limited('3')).mockResolvedValueOnce(slackAnswer({ ok: true, ts: '2.0' }));
+      const posting = postSlackChannelMessage(leadWithChart, { ...AUDIT_TARGET, threadTs: '1.0' });
       await jest.advanceTimersByTimeAsync(2999);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(1);
       expect(await posting).toEqual({ ok: true, ts: '2.0' });
+      expect(bodyOf(1)).toEqual(bodyOf(0));
 
-      fetchMock.mockResolvedValueOnce(rejectedImage('3600')).mockResolvedValueOnce(slackAnswer({ ok: true, ts: '3.0' }));
-      const capped = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
-      await jest.advanceTimersByTimeAsync(SLACK_API_TIMEOUT_MS);
-      expect(await capped).toEqual({ ok: true, ts: '3.0' });
+      fetchMock.mockResolvedValueOnce(limited('2')).mockResolvedValueOnce(limited('2'));
+      const stillLimited = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(await stillLimited).toEqual({ ok: false, error: 'ratelimited' });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      fetchMock.mockResolvedValueOnce(limited('60'));
+      expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'ratelimited' });
+      fetchMock.mockResolvedValueOnce(limited());
+      expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'ratelimited' });
+      expect(fetchMock).toHaveBeenCalledTimes(6);
     } finally {
       jest.useRealTimers();
     }
