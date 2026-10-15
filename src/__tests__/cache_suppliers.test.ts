@@ -222,13 +222,17 @@ describe('cache_suppliers', () => {
       lastUpdatedDateTime: '2024-01-01T00:00:00Z',
       supplierStatus: { descriptor: 'Active', id: 'status-1' },
     });
-    const storedRow = (metadata: Record<string, string> = {}) => ({
+    const storedRow = (metadata: Record<string, unknown> = {}) => ({
       workday_id: 'supplier-with-id',
       content: 'Supplier content',
       metadata: {
         workdayId: 'supplier-with-id',
         supplierId: 'S-001234',
         lastUpdatedDateTime: '2024-01-01T00:00:00Z',
+        alternateNames: [],
+        addresses: [],
+        phones: [],
+        emails: [],
         ...metadata,
       },
     });
@@ -285,6 +289,37 @@ describe('cache_suppliers', () => {
           metadata: expect.objectContaining({ supplierId: 'S-001234', lastUpdatedDateTime: '2024-01-01T00:00:00Z' }),
         })]
       );
+    });
+
+    it('rewrites a cached supplier that has no list fields yet, without a new embedding', async () => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      const { createEmbedding } = require('../lib/rag.js');
+      const { alternateNames, addresses, phones, emails, ...legacy } = storedRow().metadata;
+      void alternateNames; void addresses; void phones; void emails;
+      getDocumentsByType.mockResolvedValue([{ workday_id: 'supplier-with-id', content: 'Supplier content', metadata: legacy }]);
+
+      await processor({ data: [{ ...activeSupplier('S-001234'), payeeAlternateNames: [{ descriptor: 'ALL PRO HORTICULTURE' }] }] });
+
+      expect(bulkUpdateDocuments).toHaveBeenCalledWith(
+        expect.anything(),
+        [expect.not.objectContaining({ embedding: expect.anything() })]
+      );
+      expect(bulkUpdateDocuments).toHaveBeenCalledWith(
+        expect.anything(),
+        [expect.objectContaining({
+          metadata: expect.objectContaining({ alternateNames: ['ALL PRO HORTICULTURE'], addresses: [], phones: [], emails: [] }),
+        })]
+      );
+      expect(createEmbedding).not.toHaveBeenCalled();
+    });
+
+    it('rewrites a cached supplier when an alternate name is added', async () => {
+      const { getDocumentsByType, bulkUpdateDocuments } = require('../lib/database.js');
+      getDocumentsByType.mockResolvedValue([storedRow()]);
+
+      await processor({ data: [{ ...activeSupplier('S-001234'), payeeAlternateNames: [{ descriptor: 'ALL PRO HORTICULTURE' }] }] });
+
+      expect(bulkUpdateDocuments).toHaveBeenCalledTimes(1);
     });
 
     it('never stores a Workday WID as the supplier ID', async () => {

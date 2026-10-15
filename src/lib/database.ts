@@ -693,6 +693,30 @@ export async function getDocumentsByWorkdayIds(
   return rows;
 }
 
+/** Cached documents of a type whose content contains every given lowercase word (a candidate pre-filter, not a match). */
+export async function findDocumentsContainingWords(
+  db: DatabaseConnection,
+  type: DocumentType,
+  words: string[],
+  limit: number = 200
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: unknown }>> {
+  const patterns = [...new Set(words.map((word) => word.replace(/[^a-z0-9]/gi, '').toLowerCase()).filter(Boolean))]
+    .map((word) => `%${word}%`);
+  if (patterns.length === 0) return [];
+
+  const results: unknown = await db.query(`
+    SELECT workday_id, content, metadata
+    FROM documents
+    WHERE type = $1 AND content ILIKE ALL($2::text[])
+    ORDER BY workday_id
+    LIMIT $3
+  `, [type, patterns, limit]);
+
+  const rows = (Array.isArray(results) ? results : []) as Array<{ workday_id: string; content?: string | null; metadata: unknown }>;
+  debug(`Found ${rows.length} cached ${type} document(s) containing ${patterns.length} word(s)`);
+  return rows;
+}
+
 // Bulk operations for better performance
 export async function bulkInsertDocuments(
   db: DatabaseConnection,

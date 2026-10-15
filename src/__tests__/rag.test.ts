@@ -437,6 +437,34 @@ Primary Address: 100 PGA Tour Blvd`);
       await expect(ragTool.execute({ query: 'Acme Corp' })).rejects.toThrow('Database connection failed');
     });
 
+    it('returns the full supplier record with every alternate name', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      const alternateNames = ['ALL PRO HORTICULTURE', 'SiteOne Landscape Supply, LLC', 'LESCO'];
+      mockSearchDocuments.mockResolvedValue([{
+        workday_id: 'wid-siteone',
+        type: 'supplier',
+        content: 'Company Name: SITEONE LANDSCAPE SUPPLY LLC\nSupplier ID: S-021845\nAlternate Names: ALL PRO HORTICULTURE, SiteOne Landscape Supply, LLC, LESCO',
+        metadata: { supplierName: 'SITEONE LANDSCAPE SUPPLY LLC', supplierId: 'S-021845', alternateNames, addresses: ['24110 Network Place, Chicago, IL'], phones: [], emails: [] },
+        similarity: '0.622',
+      }]);
+
+      const { results } = await findSuppliersTool.execute({ query: 'All Pro Horticulture' });
+
+      expect(results[0].supplier).toEqual({
+        supplierId: 'S-021845',
+        supplierName: 'SITEONE LANDSCAPE SUPPLY LLC',
+        alternateNames,
+        addresses: ['24110 Network Place, Chicago, IL'],
+        phones: [],
+        emails: [],
+      });
+      expect(results[0]).not.toHaveProperty('metadata');
+      expect(results[0]).not.toHaveProperty('content');
+      expect(mockDebug).toHaveBeenCalledWith('Find Suppliers Tool top results:', [
+        expect.objectContaining({ supplierId: 'S-021845', alternateNames }),
+      ]);
+    });
+
     it('omits a concatenated bill-to address from the company embedding query', async () => {
       mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
       mockSearchDocuments.mockResolvedValue([]);

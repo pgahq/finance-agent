@@ -184,7 +184,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
 
 **Identification Status Guidelines:**
-- **status: "found"** — Exactly one high-confidence match (confidence > 0.8)
+- **status: "found"** — Exactly one high-confidence match (confidence > 0.8). A branch, store, or location invoice often prints its own street address and phone, which the parent supplier record does not carry. When exactly one supplier is the remit-to company (\`printedSupplier.remitToAddress\` leads with that company name) or has an alternate name that equals the printed company name (ignoring the branch label, city, and store number), that is a match even if the printed address and phone are not on the record. Do not downgrade it to not_found for that reason.
 - **status: "ambiguous"** — Multiple potential matches that are reasonably close in confidence (e.g., two suppliers both scoring 0.75+)
 - **status: "not_found"** — No suppliers match the invoice information
 - **status: "error"** — Error in processing
@@ -192,10 +192,13 @@ Your supplier task depends on whether an existing supplier is already assigned t
 **Identification Confidence Score Guidelines:**
 - **0.95-1.0**: Exact match on company name + exact match on 2+ contact fields (address, phone, email)
 - **0.85-0.94**: Exact match on company name + exact match on 1 contact field
+- **0.85-0.90**: Exact match on the remit-to company name or on an alternate name, with only the branch address and phone missing from the record
 - **0.75-0.84**: Very similar company name (minor variations) + at least 1 matching contact field
 - **0.65-0.74**: Similar company name + partial address/location match
 - **0.50-0.64**: Company name similarity only, no other matching fields
 - **Below 0.50**: Weak or speculative match
+
+**Never guess**: Use \`found\` only for exactly one unambiguous candidate. If the remit-to company and the printed name point at different suppliers, or two suppliers share the matching name or alternate name, use \`ambiguous\` or \`not_found\`. A shared remit-to street (a lockbox address) alone is never a match.
 
 **Key principle**: Multiple matching data points should yield HIGH confidence. If you match on company name + phone + address, confidence should be 0.9+, not 0.7.
 
