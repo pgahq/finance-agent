@@ -14,7 +14,7 @@ jest.mock('../lib/workday.js', () => ({
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
 import { addCentralDays, centralDayStart, centralWeekStart } from '../lib/score_touches.js';
-import { postSlackChannelMessage, SLACK_POST_GAP_MS, SLACK_POST_MESSAGE_URL, type SlackBlock } from '../lib/slack.js';
+import { postSlackChannelMessage, SLACK_API_TIMEOUT_MS, SLACK_POST_GAP_MS, SLACK_POST_MESSAGE_URL, type SlackBlock } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
 
@@ -287,8 +287,13 @@ describe('postSlackChannelMessage', () => {
   it('bounds each request with a timeout', async () => {
     await postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
     expect((requestOf(0)[1] as { signal?: unknown }).signal).toBeInstanceOf(AbortSignal);
-    fetchMock.mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    const expired = new AbortController();
+    expired.abort();
+    const timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(expired.signal);
+    fetchMock.mockRejectedValueOnce(new Error('aborted with a reason that is not named TimeoutError'));
     expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'timeout' });
+    expect(timeoutSpy).toHaveBeenCalledWith(SLACK_API_TIMEOUT_MS);
+    timeoutSpy.mockRestore();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -548,6 +553,28 @@ describe('score digest handler', () => {
     (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
     fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: 'not_in_channel' }));
     await expect(handler({})).rejects.toThrow('Could not post the weekly audit digest (not_in_channel)');
+  });
+
+  it('keeps Slack response details out of the daily and weekly failure messages', async () => {
+    const rejected = () => slackAnswer({
+      ok: false,
+      error: 'invalid_blocks',
+      errors: ['SUPIN-1 memo text'],
+      response_metadata: { messages: ['[ERROR] SUPIN-1 memo text [json-pointer:/blocks/0/text/text]'] },
+    });
+    routeQueries({});
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
+    fetchMock.mockResolvedValueOnce(rejected());
+    const weekly = await handler({}).catch((error: Error) => error);
+    expect((weekly as Error).message).toBe('Could not post the weekly audit digest (invalid_blocks)');
+
+    const today = [
+      { workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_clean', entry_diff: [], terminal: false },
+    ];
+    routeQueries({ digest: today, entered: today });
+    fetchMock.mockResolvedValueOnce(rejected());
+    const daily = await handler({ mode: 'daily' }).catch((error: Error) => error);
+    expect((daily as Error).message).toBe('Daily audit post stopped at message 1 of 2 (invalid_blocks); the rest were not sent');
   });
 
   it('applies an AP label added after the cancel was scored', async () => {
