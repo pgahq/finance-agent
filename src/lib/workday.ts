@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
@@ -20,6 +20,8 @@ import {
   collapseWorktagsToOnePerType,
   firstNonEmptyPoLineArray,
   mapPoSplitsToSupplierInvoiceSplitLineData,
+  isQuantityDistributedSplits,
+  lineOrdersExceedingQuantityPoLine,
   mergePassthroughWorktagReferences,
   mergePurchaseOrderLineWorktags,
   passthroughWorktagsForSplitInvoiceLine,
@@ -551,15 +553,18 @@ interface buildSubmitInvoiceDataOptions {
   assigneeWID?: string;
   omitAssigneeReference?: boolean;
   omitPurchaseOrderLineReference?: boolean;
+  /** Workday rejected PO split quantities: drop the PO line link from every split line and code it by amount. */
+  unlinkQuantitySplitPoLines?: boolean;
   conversationUrl?: string;
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
+export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
 export const OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL = 'omitted PO pass-through worktags (kept PO split rows)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
@@ -704,6 +709,40 @@ function finalLinesDropConsumedPurchaseOrderLineReference(options: buildSubmitIn
     finalLines: finalLines.map((line: any) => ({ ...line, omitPurchaseOrderLineReference: false })),
   };
   return countSubmittedPurchaseOrderLineReferences(unflagged) > countSubmittedPurchaseOrderLineReferences(options);
+}
+
+// Lines whose PO line is split by quantity can keep the link only when they carry a quantity that
+// fits the PO line. The rest are coded from the PO's splits by amount and submitted unlinked.
+function quantityPurchaseOrderLineUnlinkedLineOrders(
+  options: buildSubmitInvoiceDataOptions,
+  lines: FinalInvoiceLine[]
+): Set<number> {
+  const unlinked = new Set<number>();
+  if (options.omitPurchaseOrderLineReference) return unlinked;
+  const quantityOf = (line: FinalInvoiceLine): number =>
+    options.invoiceLineQuantityDisplayed === false ? 0 : (line.quantity ?? 1);
+  const eligible = lines.filter(line =>
+    !isDiscountLine(line)
+    && Boolean(line.purchaseOrderLineId)
+    && !line.omitPurchaseOrderLineReference
+    && Boolean(line.supplierInvoiceSplitLineData?.length)
+  );
+  for (const line of eligible) {
+    if (options.unlinkQuantitySplitPoLines
+      || (isQuantityDistributedSplits(line.supplierInvoiceSplitLineData) && !(quantityOf(line) > 0))) {
+      unlinked.add(line.lineOrder);
+    }
+  }
+  for (const lineOrder of lineOrdersExceedingQuantityPoLine(eligible.map(line => ({
+    lineOrder: line.lineOrder,
+    purchaseOrderLineId: line.purchaseOrderLineId,
+    quantity: quantityOf(line),
+    extendedAmount: line.extendedAmount,
+    splits: line.supplierInvoiceSplitLineData,
+  })))) {
+    unlinked.add(lineOrder);
+  }
+  return unlinked;
 }
 
 function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
@@ -871,6 +910,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
     fallbacks.push({ field: 'consumedPurchaseOrderLine', label: CONSUMED_PO_LINE_REFERENCE_LABEL });
   }
 
+  if (quantityPurchaseOrderLineUnlinkedLineOrders(options, (submittedCharges ?? resolveSubmittedCharges(options)).merchandiseFinalLines).size > 0) {
+    fallbacks.push({ field: 'quantityPurchaseOrderLine', label: QUANTITY_PO_LINE_REFERENCE_LABEL });
+  }
+
   if (options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
     fallbacks.push({ field: 'poPassthroughWorktags', label: OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL });
   }
@@ -1036,6 +1079,15 @@ function getAmountOnlyLineRetryBuildOptions(
   };
 }
 
+function getQuantitySplitUnlinkRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  if (options.unlinkQuantitySplitPoLines || options.omitPurchaseOrderLineReference) return undefined;
+  const retry = { ...options, unlinkQuantitySplitPoLines: true };
+  const unlinked = quantityPurchaseOrderLineUnlinkedLineOrders(retry, resolveSubmittedCharges(retry).merchandiseFinalLines);
+  return unlinked.size > 0 ? { buildOptions: retry, fallbackLabel: QUANTITY_PO_LINE_REFERENCE_LABEL } : undefined;
+}
+
 async function getValidationFallbackField(
   error: unknown,
   validationError: string,
@@ -1065,6 +1117,11 @@ async function getValidationFallbackField(
   if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {
     debug('Validation references a Closed or Pending Close PO line; retrying without Purchase_Order_Line_Reference');
     return 'purchaseOrderLine';
+  }
+
+  if (isQuantityDistributionSplitError(validationText) && getQuantitySplitUnlinkRetryBuildOptions(options)) {
+    debug('Validation rejects PO line split quantities; retrying without Purchase_Order_Line_Reference on split lines');
+    return 'quantityPurchaseOrderLine';
   }
 
   // The fault names no worktag type, so the classifier cannot map it and a fallback
@@ -1269,6 +1326,10 @@ function getFallbackRetryBuildOptions(
     };
   }
 
+  if (field === 'quantityPurchaseOrderLine') {
+    return getQuantitySplitUnlinkRetryBuildOptions(options);
+  }
+
   if (field === 'poPassthroughWorktags' && !options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
     return {
       buildOptions: { ...options, omitPoPassthroughWorktags: true },
@@ -1440,6 +1501,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     debug('Dropping invoice lines already counted in header freight or tax', reconciliations.map(chargeReconciliationLogSummary));
   }
   const selfReferenceBudget = currentInvoicePurchaseOrderLineReferenceCounts(currentInvoice);
+  const quantityUnlinkedLineOrders = quantityPurchaseOrderLineUnlinkedLineOrders(options, merchandiseFinalLines);
   const hasHeaderTaxForLines = linesCarryTaxApplicability(options);
 
   const fallbackFundId = process.env.FALLBACK_FUND_ID;
@@ -1563,11 +1625,19 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
       orgPassthroughContext
     );
     const mergedWorktags = mergePassthroughWorktagReferences(scalarWorktags, passthrough, orgPassthroughContext);
+    const linksPoLine = !isDiscountOverride
+      && !omitPurchaseOrderLineReference
+      && Boolean(line.purchaseOrderLineId)
+      && !quantityUnlinkedLineOrders.has(line.lineOrder)
+      && lineKeepsPurchaseOrderLineReference(line, selfReferenceBudget);
     const mappedSplits = mapPoSplitsToSupplierInvoiceSplitLineData(
       poSplits,
       extendedAmountForSoap ?? line.extendedAmount,
       passthrough,
-      orgPassthroughContext
+      orgPassthroughContext,
+      linksPoLine && !isExtendedAmountOnly
+        ? { quantity: line.quantity ?? 1, unitCost: line.unitCost }
+        : undefined
     );
     const withCostCenterFallback = applyCostCenterFallback && fallbackCostCenterRef
       ? replaceCostCenterWorktagsWithFallback(mergedWorktags, mappedSplits, fallbackCostCenterRef)
@@ -1612,7 +1682,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
         Tax_Applicability_Reference: createReference('Tax_Applicability_ID', USA_TAXABLE_APPLICABILITY_ID),
       }),
       ...(line.shipToAddressId && { 'Ship_To_Address_Reference': createReference('Address_ID', line.shipToAddressId) }),
-      ...(!isDiscountOverride && !omitPurchaseOrderLineReference && line.purchaseOrderLineId && lineKeepsPurchaseOrderLineReference(line, selfReferenceBudget) && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId) }),
+      ...(linksPoLine && { Purchase_Order_Line_Reference: createReference('Purchase_Order_Line_ID', line.purchaseOrderLineId as string) }),
       ...(line.memo && { Memo: line.memo }),
     };
   });
@@ -2974,14 +3044,20 @@ export function consumedPurchaseOrderLinesNote(purchaseOrderNumber?: string): st
   return `Invoice lines that matched lines on ${po} already fully invoiced or closed were coded from the PO but not linked to PO lines.`;
 }
 
+export function quantityPurchaseOrderLineNote(purchaseOrderNumber?: string): string {
+  const po = purchaseOrderNumber || 'the PO';
+  return `Invoice lines that could not be matched to a quantity-split line on ${po} (no quantity shown, or more than the PO line quantity) were coded from the PO splits by amount but not linked to the PO line.`;
+}
+
 export function purchaseOrderLineFallbackNote(label: string, purchaseOrderNumber?: string): string | undefined {
+  if (label === QUANTITY_PO_LINE_REFERENCE_LABEL) return quantityPurchaseOrderLineNote(purchaseOrderNumber);
   if (label === OMITTED_PO_LINE_REFERENCE_LABEL) return closedPurchaseOrderLineNote(purchaseOrderNumber);
   if (label === CONSUMED_PO_LINE_REFERENCE_LABEL) return consumedPurchaseOrderLinesNote(purchaseOrderNumber);
   return undefined;
 }
 
 export function isPurchaseOrderLineFallback(fallback: Pick<AppliedFallback, 'field'>): boolean {
-  return fallback.field === 'purchaseOrderLine' || fallback.field === 'consumedPurchaseOrderLine';
+  return fallback.field === 'purchaseOrderLine' || fallback.field === 'consumedPurchaseOrderLine' || fallback.field === 'quantityPurchaseOrderLine';
 }
 
 export function formatPurchaseOrderLineFallbackNotes(fallbacks: AppliedFallback[], purchaseOrderNumber?: string): string {
@@ -3001,8 +3077,14 @@ function summarizePurchaseOrderLineWorktags(lines: PurchaseOrderLine[]): unknown
   return lines.map(line => ({
     line: line.purchaseOrderLineId,
     worktags: ([] as any[]).concat(line.lineLevelWorktagsReference ?? line.worktagsReference ?? []).map(formatWorktagForLog),
+    ...(line.quantity !== undefined && { quantity: line.quantity }),
+    ...(line.unitCost !== undefined && { unitCost: line.unitCost }),
     ...(line.splitLineData?.length
-      ? { splits: line.splitLineData.map(split => split.worktagReference.map(formatWorktagForLog)) }
+      ? {
+          splits: line.splitLineData.map(split => split.worktagReference.map(formatWorktagForLog)),
+          splitQuantities: line.splitLineData.map(split => split.quantity ?? null),
+          splitAmounts: line.splitLineData.map(split => split.extendedAmount ?? null),
+        }
       : {}),
   }));
 }
