@@ -272,12 +272,14 @@ changed when AP submits an invoice, then late corrections when it is approved,
 paid, or denied, or cancel attribution when it is canceled or deleted. A Draft
 is left alone until it has sat for two weeks, then flagged as stuck.
 `ScoreDigest` posts to `#notify-finance-agent-audit`
-(`#notify-finance-agent-audit-dev` in dev) through the
-`/finance-agent/audit-slack-webhook-url` SSM parameter: every day with
-something scored, a touch summary followed by one message per invoice scored
-since the last daily post with AP's before → after values (up to 40, then a
-count of the rest), and every
-Monday a summary of the previous week by field. Both lead with the share of invoices that needed zero AP
+(`#notify-finance-agent-audit-dev` in dev) with `chat.postMessage`, using the
+Slack bot token in the `/finance-agent/audit-slack-bot-token` SSM parameter and
+the channel ID set per environment in `.circleci/config.yml`
+(`AUDIT_SLACK_CHANNEL_ID`). Every day with something scored, it posts a touch
+summary, then, in that message's thread, one message per invoice scored since
+the last daily post with AP's before → after values (up to 40, then a count of
+the rest). Every Monday it posts a summary of the previous week by field as
+one message. Both lead with the share of invoices that needed zero AP
 touches and its daily or weekly trend, which is also stored in Postgres
 (`agent_invoice_touch_daily`) for reports. Details, settings, and how AP labels
 a cancel are in `.agents/skills/agent-invoice-scoring/SKILL.md`.

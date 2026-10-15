@@ -4,6 +4,7 @@ description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
   create-invoice, enrich-invoice, Workday, Vercel AI Gateway, SSM secrets).
   Use when changing model or embedding calls, AI_GATEWAY_API_KEY,
+  AUDIT_SLACK_BOT_TOKEN or AUDIT_SLACK_CHANNEL_ID,
   POST /create-invoice or /enrich-invoice, Intercom Data Connectors, bearer
   auth tokens, attachment upload contracts, Workday invoice memos, line item
   descriptions, supplier invoice numbers (check-print order and pay-file-safe
@@ -119,6 +120,8 @@ The terse 1-sentence summary is line `Memo`, generated **after** that concatenat
 | Name | Source | Used by |
 | --- | --- | --- |
 | `AI_GATEWAY_API_KEY` | SSM `/finance-agent/ai-gateway-api-key` (SecureString, created by hand per account; template Global) | Every model and embedding call, through the Vercel AI Gateway (see Model traffic). A missing parameter fails every cold start. |
+| `AUDIT_SLACK_BOT_TOKEN` | SSM `/finance-agent/audit-slack-bot-token` (SecureString, created by hand per account; `ScoreDigestFunction` only) | Slack app Bot User OAuth Token (`xoxb-`, `chat:write`) for `chat.postMessage` audit posts. The bot must be invited to the audit channel, or posts fail with `not_in_channel`. |
+| `AUDIT_SLACK_CHANNEL_ID` | CFT `AuditSlackChannelId`, no default (`C0C6VS0BDPA` #notify-finance-agent-audit-dev on `deploy-to-dev`, `C0C5W6B0G4V` #notify-finance-agent-audit on `deploy-to-prod`) | Channel for `ScoreDigest` audit posts. |
 | `ENRICH_INVOICE_API_TOKEN` | SSM `/finance-agent/enrich-invoice-api-token` | Both HTTP triggers (inbound auth) |
 | `INTERCOM_ACCESS_TOKEN` | SSM `/finance-agent/intercom-access-token` | Create-invoice Intercom client |
 | `INTERCOM_API_BASE_URL` | Lambda env (default `https://api.intercom.io`) | Create-invoice; override for EU/AU |

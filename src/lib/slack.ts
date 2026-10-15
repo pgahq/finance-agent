@@ -404,9 +404,6 @@ function buildCloudWatchLogUrl(): string | undefined {
   return `https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#logsV2:log-groups/log-group/${encode(logGroup)}/log-events/${encode(logStream)}`;
 }
 
-/**
- * Send a message to Slack using blocks. Defaults to the per-invoice channel webhook.
- */
 interface SlackSendResult {
   ok: boolean;
   /** HTTP status when Slack answered; unset for network errors. */
@@ -415,31 +412,29 @@ interface SlackSendResult {
   error?: string;
 }
 
-async function sendSlackMessage(
-  blocks: SlackBlock[],
-  webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
-  webhookEnvName = 'SLACK_WEBHOOK_URL'
-): Promise<SlackSendResult> {
+/** Notification text from the first section or header block. */
+function fallbackText(blocks: SlackBlock[]): string {
+  const first = blocks[0];
+  return first?.type === 'section'
+    ? first.text.text.replace(/\*([^*]+)\*/g, '$1')
+    : first?.type === 'header' ? first.text.text : 'Slack notification';
+}
+
+/** Posts to the per-invoice channel webhook. */
+async function sendSlackMessage(blocks: SlackBlock[]): Promise<SlackSendResult> {
   try {
+    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
     if (!webhookUrl) {
-      debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
+      debug('SLACK_WEBHOOK_URL environment variable not set - skipping Slack notification');
       return { ok: false };
     }
 
-    // Create fallback text from the first section block for notifications
-    const first = blocks[0];
-    const fallbackText = first?.type === 'section'
-      ? first.text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
-      : first?.type === 'header' ? first.text.text : 'Slack notification';
-
     const payload = {
-      text: fallbackText, // Fallback for notifications
+      text: fallbackText(blocks),
       blocks
     };
 
-    // Audit posts carry invoice values, so only the per-invoice channel's payloads are logged in full.
-    if (webhookEnvName === 'SLACK_WEBHOOK_URL') debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
-    else debug('Posting Slack message', { webhook: webhookEnvName, blocks: blocks.length });
+    debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
@@ -464,25 +459,83 @@ async function sendSlackMessage(
   }
 }
 
-/**
- * Posts blocks to a specific incoming webhook (for example the audit channel). Never throws, and never
- * falls back to the per-invoice channel when the webhook is not configured.
- */
-export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<boolean> {
-  // An undefined argument would pick up sendSlackMessage's per-invoice default, so stop here instead.
-  if (!webhookUrl) {
-    debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
-    return false;
+export const SLACK_POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage';
+
+export interface SlackChannelTarget {
+  token: string | undefined;
+  channel: string | undefined;
+  /** Posts as a reply in this message's thread. */
+  threadTs?: string;
+}
+
+export interface SlackChannelPostResult {
+  ok: boolean;
+  /** The posted message's timestamp, which replies use as `thread_ts`. */
+  ts?: string;
+}
+
+/** Audit posts carry invoice values, so their payloads are not logged. */
+async function sendChatMessage(
+  blocks: SlackBlock[],
+  target: { token: string; channel: string; threadTs?: string }
+): Promise<SlackSendResult & { ts?: string }> {
+  try {
+    debug('Posting Slack message', { channel: target.channel, thread: Boolean(target.threadTs), blocks: blocks.length });
+    const response = await fetch(SLACK_POST_MESSAGE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: `Bearer ${target.token}`,
+      },
+      body: JSON.stringify({
+        channel: target.channel,
+        text: fallbackText(blocks),
+        blocks,
+        ...(target.threadTs ? { thread_ts: target.threadTs } : {}),
+        unfurl_links: false,
+        unfurl_media: false,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.text().catch(() => '');
+      debug('Slack chat.postMessage request failed', { status: response.status, statusText: response.statusText, error });
+      return { ok: false, status: response.status, error };
+    }
+    const body = await response.json().catch(() => undefined) as
+      | { ok?: boolean; ts?: string; error?: string; response_metadata?: { messages?: string[] } }
+      | undefined;
+    if (!body?.ok) {
+      const error = [body?.error ?? 'unreadable response', ...(body?.response_metadata?.messages ?? [])].join(' ');
+      debug('Slack chat.postMessage was rejected', { status: response.status, error });
+      return { ok: false, status: response.status, error };
+    }
+    return { ok: true, status: response.status, ts: body.ts };
+  } catch (error) {
+    debug('Error sending Slack message:', error);
+    return { ok: false };
   }
-  const first = await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
-  if (first.ok) return true;
-  // Slack answers 400 and posts nothing when it cannot download an image block; any other failure may have
-  // been delivered, so it is not resent.
+}
+
+/**
+ * Posts blocks to one channel with a bot token (for example the audit channel). Never throws, and never
+ * falls back to the per-invoice webhook when the token or channel is not configured.
+ */
+export async function postSlackChannelMessage(blocks: SlackBlock[], target: SlackChannelTarget): Promise<SlackChannelPostResult> {
+  const { token, channel, threadTs } = target;
+  if (!token || !channel) {
+    debug('Slack bot token or channel not set - skipping Slack message', { token: Boolean(token), channel: Boolean(channel) });
+    return { ok: false };
+  }
+  const first = await sendChatMessage(blocks, { token, channel, threadTs });
+  if (first.ok) return { ok: true, ts: first.ts };
+  // Slack answers ok: false and posts nothing when it cannot download an image block; any other failure may have
+  // been delivered (a timeout or server error), so it is not resent.
   const withoutImages = blocks.filter((block) => block.type !== 'image');
-  const imageRejected = first.status === 400 && /image|invalid_blocks/i.test(first.error ?? '');
-  if (!imageRejected || withoutImages.length === blocks.length) return false;
+  const imageRejected = first.status === 200 && /image|invalid_blocks/i.test(first.error ?? '');
+  if (!imageRejected || withoutImages.length === blocks.length) return { ok: false };
   debug('Slack rejected a message with an image; resending without it', { error: first.error });
-  return (await sendSlackMessage(withoutImages, webhookUrl, webhookEnvName)).ok;
+  const retry = await sendChatMessage(withoutImages, { token, channel, threadTs });
+  return retry.ok ? { ok: true, ts: retry.ts } : { ok: false };
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {

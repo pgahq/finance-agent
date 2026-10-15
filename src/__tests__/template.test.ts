@@ -88,13 +88,26 @@ describe('SAM template', () => {
       expect(Number(processor.match(/Timeout:\s*(\d+)/)?.[1])).toBeLessThanOrEqual(900);
     });
 
-    it('posts the weekly digest only through the audit webhook', () => {
+    it('posts the audit only through the Slack API with the audit bot token', () => {
       const digest = resourceBlock('ScoreDigestFunction');
       expect(digest).toContain('Handler: dist/score_digest.handler');
       expect(digest).toMatch(/Schedule:\s*cron\(30 14 \? \* MON \*\)\s*\n\s*Input: '\{"mode":"weekly"\}'/);
       expect(digest).toMatch(/Schedule:\s*cron\(20 14 \* \* \? \*\)\s*\n\s*Input: '\{"mode":"daily"\}'/);
-      expect(digest).toMatch(/AUDIT_SLACK_WEBHOOK_URL:\s*ssm:\/finance-agent\/audit-slack-webhook-url/);
-      expect(template.match(/AUDIT_SLACK_WEBHOOK_URL:/g)).toHaveLength(1);
+      expect(digest).toMatch(/AUDIT_SLACK_BOT_TOKEN:\s*ssm:\/finance-agent\/audit-slack-bot-token/);
+      expect(template.match(/AUDIT_SLACK_BOT_TOKEN:/g)).toHaveLength(1);
+      expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);
+    });
+
+    it('takes the audit channel from CircleCI per environment', () => {
+      expect(globals).toMatch(/AuditSlackChannelId:/);
+      expect(globals).not.toMatch(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}Default:/);
+      expect(resourceBlock('ScoreDigestFunction')).toMatch(/AUDIT_SLACK_CHANNEL_ID:\s*!Ref AuditSlackChannelId/);
+      expect(template.match(/AUDIT_SLACK_CHANNEL_ID:/g)).toHaveLength(1);
+      expect(circleci).toMatch(/AuditSlackChannelId=\$AUDIT_SLACK_CHANNEL_ID/);
+      const devJob = circleci.split('deploy-to-dev:')[1]?.split('deploy-to-prod:')[0] ?? '';
+      const prodJob = circleci.split('deploy-to-prod:')[1]?.split('workflows:')[0] ?? '';
+      expect(devJob).toMatch(/AUDIT_SLACK_CHANNEL_ID:\s*C0C6VS0BDPA/);
+      expect(prodJob).toMatch(/AUDIT_SLACK_CHANNEL_ID:\s*C0C5W6B0G4V/);
     });
 
     it('keeps every function within the per-function SSM reference budget', () => {

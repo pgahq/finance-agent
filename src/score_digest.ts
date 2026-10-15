@@ -13,7 +13,7 @@ import {
   weeklyTouchTrend,
 } from './lib/score_touches.js';
 import { refreshTouchDaily } from './lib/touch_reporting.js';
-import { notifyResult, postSlackBlocks, type SlackBlock } from './lib/slack.js';
+import { notifyResult, postSlackChannelMessage, type SlackBlock, type SlackChannelPostResult } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
 const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -112,8 +112,12 @@ export async function loadEnteredScores(db: DatabaseConnection, since: Date): Pr
 export const DAILY_TREND_DAYS = 14;
 export const WEEKLY_TREND_WEEKS = 8;
 
-async function postAudit(blocks: SlackBlock[]): Promise<boolean> {
-  return postSlackBlocks(blocks, process.env.AUDIT_SLACK_WEBHOOK_URL, 'AUDIT_SLACK_WEBHOOK_URL');
+async function postAudit(blocks: SlackBlock[], threadTs?: string): Promise<SlackChannelPostResult> {
+  return postSlackChannelMessage(blocks, {
+    token: process.env.AUDIT_SLACK_BOT_TOKEN,
+    channel: process.env.AUDIT_SLACK_CHANNEL_ID,
+    threadTs,
+  });
 }
 
 /** When each audit post last went out in full; created here so the invoice Lambdas' cold start stays out of it. */
@@ -164,20 +168,25 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
     previous: touchPeriod(trendScores, 'yesterday', addCentralDays(today, -1), today),
     trend: dailyTouchTrend(trendScores, now, DAILY_TREND_DAYS),
   });
-  const messages = [callout, ...buildDailyInvoiceMessages(summary)];
-  for (const [index, blocks] of messages.entries()) {
-    // Incoming webhooks allow about one message per second.
-    if (index > 0) await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
-    if (!(await postAudit(blocks))) {
-      throw new Error(`Daily audit post stopped at message ${index + 1} of ${messages.length}; the rest were not sent`);
+  const replies = buildDailyInvoiceMessages(summary);
+  const total = replies.length + 1;
+  const lead = await postAudit(callout);
+  if (!lead.ok || !lead.ts) {
+    throw new Error(`Daily audit post stopped at message 1 of ${total}; the rest were not sent`);
+  }
+  for (const [index, blocks] of replies.entries()) {
+    // chat.postMessage allows about one message per second per channel.
+    await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
+    if (!(await postAudit(blocks, lead.ts)).ok) {
+      throw new Error(`Daily audit post stopped at message ${index + 2} of ${total}; the rest were not sent`);
     }
   }
   await recordPostedThrough(db, 'daily', now);
-  debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: messages.length });
+  debug('Posted daily agent invoice audit messages', { scored: summary.lines.length, messages: total });
 }
 
-// Audit posts to the audit channel only (AUDIT_SLACK_WEBHOOK_URL): `{ "mode": "daily" }` after each scoring
-// run, and the weekly digest otherwise.
+// Audit posts to the audit channel only (AUDIT_SLACK_CHANNEL_ID with AUDIT_SLACK_BOT_TOKEN): `{ "mode": "daily" }`
+// after each scoring run, with the invoice messages threaded under the touch lead, and the weekly digest otherwise.
 /**
  * Keeps the stored daily touch rollup current. A failure never blocks the post (Slack reads scores directly);
  * the handler fails the run afterwards so the error alert says the stored report is stale.
@@ -234,6 +243,6 @@ async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
     }
   }
 
-  if (!(await postAudit(buildDigestBlocks(summary)))) throw new Error('Could not post the weekly audit digest');
+  if (!(await postAudit(buildDigestBlocks(summary))).ok) throw new Error('Could not post the weekly audit digest');
   debug('Posted agent invoice audit digest', { entered: summary.entered, canceled: summary.cancels });
 }
