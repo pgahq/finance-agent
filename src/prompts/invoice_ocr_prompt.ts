@@ -118,7 +118,7 @@ For any text field that is not printed on the document, return an empty string; 
 
 Populate \`printedSupplier\` with the supplier (vendor) details printed on the invoice:
 - supplierName, street address, phone, email, tax ID or EIN, website, and contact person
-- remitToAddress when a separate remit-to or payment address is printed
+- remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
 - memo: a terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.
 

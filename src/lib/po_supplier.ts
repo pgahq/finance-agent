@@ -58,7 +58,7 @@ const SHARED_EMAIL_DOMAINS = new Set([
 /** A name-only match needs this many distinctive words, so generic one-word names like "Golf" never tie suppliers. */
 const MIN_NAME_MATCH_TOKENS = 2;
 
-function nameTokens(name: string): Set<string> {
+export function nameTokens(name: string): Set<string> {
   const tokens = name
     .toLowerCase()
     .replace(/\./g, '')
