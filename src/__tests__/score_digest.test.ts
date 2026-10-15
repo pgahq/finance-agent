@@ -211,6 +211,14 @@ describe('buildDailyInvoiceMessages', () => {
     expect(textOf(messages[1])).toContain('*AP replacement differs*\n• Supplier: `S-1` → `S-2`');
   });
 
+  it('keeps a Workday final status inert in Slack mrkdwn', () => {
+    const messages = buildDailyInvoiceMessages(summarizeDay([
+      score({ workdayInvoiceWid: 'w3', workdayInvoiceNumber: 'SUPIN-3', terminal: true, entryReadAt: lastWeek, finalReadAt: today, finalStatus: '<!channel> Approved', outcome: 'submitted_clean' }),
+    ], since, until));
+    expect(textOf(messages[0])).toContain('&lt;!channel&gt; approved');
+    expect(textOf(messages[0])).not.toContain('<!channel>');
+  });
+
   it('caps the messages on a busy day and notes the sandbox refresh', () => {
     const many = Array.from({ length: MAX_DAILY_INVOICE_MESSAGES + 3 }, (_, index) =>
       score({ workdayInvoiceWid: `w${index}`, entryReadAt: today, outcome: 'submitted_clean', entryDiff: [] }));

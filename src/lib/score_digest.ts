@@ -446,7 +446,7 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
         ocrOnlyChanges = (score.entryDiff ?? []).filter((change) => change.agentOwned === false).length;
       }
       if (closed) {
-        parts.push(score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase());
+        parts.push(score.outcome === 'denied' ? 'denied' : escapeSlackText((score.finalStatus ?? 'closed').toLowerCase()));
         lateChanges = againstAgent(score.lateDiff);
       }
     }
