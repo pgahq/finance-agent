@@ -410,9 +410,10 @@ interface SlackSendResult {
   status?: number;
   /** Slack's error body, such as `invalid_blocks`. */
   error?: string;
+  /** Slack's error code alone (`not_in_channel`), or `timeout`; safe to put in an operator alert. */
+  code?: string;
 }
 
-/** Notification text from the first section or header block. */
 function fallbackText(blocks: SlackBlock[]): string {
   const first = blocks[0];
   return first?.type === 'section'
@@ -420,7 +421,6 @@ function fallbackText(blocks: SlackBlock[]): string {
     : first?.type === 'header' ? first.text.text : 'Slack notification';
 }
 
-/** Posts to the per-invoice channel webhook. */
 async function sendSlackMessage(blocks: SlackBlock[]): Promise<SlackSendResult> {
   try {
     const webhookUrl = process.env.SLACK_WEBHOOK_URL;
@@ -460,6 +460,13 @@ async function sendSlackMessage(blocks: SlackBlock[]): Promise<SlackSendResult> 
 }
 
 export const SLACK_POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage';
+// A daily run sends up to 42 messages about a second apart inside ScoreDigest's 300 s timeout, so one stalled
+// request must give up well before that.
+export const SLACK_API_TIMEOUT_MS = 5000;
+const SLACK_TS_PATTERN = /^\d+\.\d+$/;
+const SLACK_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,64}$/;
+/** chat.postMessage allows about one message per second per channel. */
+export const SLACK_POST_GAP_MS = 1100;
 
 export interface SlackChannelTarget {
   token: string | undefined;
@@ -469,9 +476,15 @@ export interface SlackChannelTarget {
 }
 
 export interface SlackChannelPostResult {
+  /** Slack posted the message. */
   ok: boolean;
-  /** The posted message's timestamp, which replies use as `thread_ts`. */
+  /**
+   * The posted message's timestamp, which replies use as `thread_ts`. Unset when Slack posted without a usable
+   * timestamp, so a caller that needs a thread must treat the post as failed rather than reply unthreaded.
+   */
   ts?: string;
+  /** Why the message was not posted, such as Slack's `not_in_channel`; never includes the token. */
+  error?: string;
 }
 
 /** Audit posts carry invoice values, so their payloads are not logged. */
@@ -495,24 +508,30 @@ async function sendChatMessage(
         unfurl_links: false,
         unfurl_media: false,
       }),
+      signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
     });
     if (!response.ok) {
-      const error = await response.text().catch(() => '');
-      debug('Slack chat.postMessage request failed', { status: response.status, statusText: response.statusText, error });
-      return { ok: false, status: response.status, error };
+      debug('Slack chat.postMessage request failed', { status: response.status, statusText: response.statusText });
+      return { ok: false, status: response.status };
     }
     const body = await response.json().catch(() => undefined) as
-      | { ok?: boolean; ts?: string; error?: string; response_metadata?: { messages?: string[] } }
+      | { ok?: unknown; ts?: unknown; error?: unknown; errors?: unknown; response_metadata?: { messages?: unknown } }
       | undefined;
-    if (!body?.ok) {
-      const error = [body?.error ?? 'unreadable response', ...(body?.response_metadata?.messages ?? [])].join(' ');
-      debug('Slack chat.postMessage was rejected', { status: response.status, error });
-      return { ok: false, status: response.status, error };
+    if (body?.ok !== true) {
+      const code = typeof body?.error === 'string' && SLACK_ERROR_CODE_PATTERN.test(body.error) ? body.error : 'unreadable_response';
+      const details = [body?.errors, body?.response_metadata?.messages]
+        .flatMap((list) => (Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : []));
+      debug('Slack chat.postMessage was rejected', { status: response.status, code });
+      return { ok: false, status: response.status, code, error: [code, ...details].join(' ') };
     }
-    return { ok: true, status: response.status, ts: body.ts };
+    // ok: true means Slack posted the message; a ts that is not a Slack timestamp is left out so no reply threads under it.
+    const ts = typeof body.ts === 'string' && SLACK_TS_PATTERN.test(body.ts) ? body.ts : undefined;
+    if (!ts) debug('Slack chat.postMessage answered ok without a usable message ts', { status: response.status });
+    return { ok: true, status: response.status, ...(ts ? { ts } : {}) };
   } catch (error) {
     debug('Error sending Slack message:', error);
-    return { ok: false };
+    const name = (error as { name?: unknown })?.name;
+    return { ok: false, ...(name === 'TimeoutError' || name === 'AbortError' ? { code: 'timeout' } : {}) };
   }
 }
 
@@ -521,21 +540,33 @@ async function sendChatMessage(
  * falls back to the per-invoice webhook when the token or channel is not configured.
  */
 export async function postSlackChannelMessage(blocks: SlackBlock[], target: SlackChannelTarget): Promise<SlackChannelPostResult> {
-  const { token, channel, threadTs } = target;
+  const token = target.token?.trim();
+  const channel = target.channel?.trim();
+  const { threadTs } = target;
   if (!token || !channel) {
     debug('Slack bot token or channel not set - skipping Slack message', { token: Boolean(token), channel: Boolean(channel) });
-    return { ok: false };
+    return { ok: false, error: 'bot token or channel not set' };
+  }
+  if (threadTs !== undefined && !SLACK_TS_PATTERN.test(threadTs)) {
+    debug('Slack thread ts is not a Slack timestamp - skipping Slack message');
+    return { ok: false, error: 'thread ts is not a Slack timestamp' };
   }
   const first = await sendChatMessage(blocks, { token, channel, threadTs });
   if (first.ok) return { ok: true, ts: first.ts };
-  // Slack answers ok: false and posts nothing when it cannot download an image block; any other failure may have
-  // been delivered (a timeout or server error), so it is not resent.
+  // Slack answers ok: false and posts nothing when it cannot download an image block, and names the image in the
+  // error details; any other failure may have been delivered (a timeout or server error), so it is not resent.
   const withoutImages = blocks.filter((block) => block.type !== 'image');
-  const imageRejected = first.status === 200 && /image|invalid_blocks/i.test(first.error ?? '');
-  if (!imageRejected || withoutImages.length === blocks.length) return { ok: false };
-  debug('Slack rejected a message with an image; resending without it', { error: first.error });
+  const imageRejected = first.status === 200 && /image/i.test(first.error ?? '');
+  if (!imageRejected || withoutImages.length === blocks.length) return { ok: false, error: failureReason(first) };
+  debug('Slack rejected a message with an image; resending without it', { code: first.code });
+  await new Promise((resolve) => setTimeout(resolve, SLACK_POST_GAP_MS));
   const retry = await sendChatMessage(withoutImages, { token, channel, threadTs });
-  return retry.ok ? { ok: true, ts: retry.ts } : { ok: false };
+  return retry.ok ? { ok: true, ts: retry.ts } : { ok: false, error: failureReason(retry) };
+}
+
+function failureReason(result: SlackSendResult): string {
+  if (result.code) return result.code;
+  return result.status ? `HTTP ${result.status}` : 'request failed';
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {

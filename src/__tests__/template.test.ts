@@ -101,6 +101,9 @@ describe('SAM template', () => {
     it('takes the audit channel from CircleCI per environment', () => {
       expect(globals).toMatch(/AuditSlackChannelId:/);
       expect(globals).not.toMatch(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}Default:/);
+      const pattern = new RegExp(globals.match(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}AllowedPattern: "([^"]+)"/)?.[1] ?? '^$');
+      expect(['C0C6VS0BDPA', 'C0C5W6B0G4V'].every((id) => pattern.test(id))).toBe(true);
+      expect(['', ' ', 'notify-finance-agent-audit', '#C0C5W6B0G4V'].some((id) => pattern.test(id))).toBe(false);
       expect(resourceBlock('ScoreDigestFunction')).toMatch(/AUDIT_SLACK_CHANNEL_ID:\s*!Ref AuditSlackChannelId/);
       expect(template.match(/AUDIT_SLACK_CHANNEL_ID:/g)).toHaveLength(1);
       expect(circleci).toMatch(/AuditSlackChannelId=\$AUDIT_SLACK_CHANNEL_ID/);

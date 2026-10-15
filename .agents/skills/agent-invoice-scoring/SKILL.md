@@ -158,7 +158,7 @@ memo text cannot mention the channel or add links.
   and any sandbox-refresh removals. If the lead fails or comes back without a
   `ts`, no replies are sent. Nothing is posted when nothing was scored or
   removed.
-- Weekly (Mondays 14:30 UTC): one top-level message with the touch lead, then the last complete
+- Weekly (Mondays 14:30 UTC): a single top-level message (no thread) holding the touch lead, then the last complete
   Monday-to-Sunday Central week against the week before (`digestWindow`), so
   Monday morning's scoring run is reported the following week: outcomes,
   per-field change rates, edit rate by release, late corrections, cancels,

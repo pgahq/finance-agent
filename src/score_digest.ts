@@ -13,12 +13,12 @@ import {
   weeklyTouchTrend,
 } from './lib/score_touches.js';
 import { refreshTouchDaily } from './lib/touch_reporting.js';
-import { notifyResult, postSlackChannelMessage, type SlackBlock, type SlackChannelPostResult } from './lib/slack.js';
+import { notifyResult, postSlackChannelMessage, SLACK_POST_GAP_MS, type SlackBlock, type SlackChannelPostResult } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
 const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const UNATTRIBUTED_CANCEL_LIMIT = 10;
-export const DAILY_MESSAGE_GAP_MS = 1100;
+export const DAILY_MESSAGE_GAP_MS = SLACK_POST_GAP_MS;
 
 const BACKLOG_STATE_LABELS: Record<StatusClass, string> = {
   draft: 'in Draft',
@@ -172,13 +172,14 @@ async function postDailySummary(context: ProcessingContext, now: Date): Promise<
   const total = replies.length + 1;
   const lead = await postAudit(callout);
   if (!lead.ok || !lead.ts) {
-    throw new Error(`Daily audit post stopped at message 1 of ${total}; the rest were not sent`);
+    const reason = lead.ok ? 'posted without a message ts' : lead.error ?? 'request failed';
+    throw new Error(`Daily audit post stopped at message 1 of ${total} (${reason}); the rest were not sent`);
   }
   for (const [index, blocks] of replies.entries()) {
-    // chat.postMessage allows about one message per second per channel.
     await new Promise((resolve) => setTimeout(resolve, DAILY_MESSAGE_GAP_MS));
-    if (!(await postAudit(blocks, lead.ts)).ok) {
-      throw new Error(`Daily audit post stopped at message ${index + 2} of ${total}; the rest were not sent`);
+    const reply = await postAudit(blocks, lead.ts);
+    if (!reply.ok) {
+      throw new Error(`Daily audit post stopped at message ${index + 2} of ${total} (${reply.error ?? 'request failed'}); the rest were not sent`);
     }
   }
   await recordPostedThrough(db, 'daily', now);
@@ -243,6 +244,7 @@ async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
     }
   }
 
-  if (!(await postAudit(buildDigestBlocks(summary))).ok) throw new Error('Could not post the weekly audit digest');
+  const posted = await postAudit(buildDigestBlocks(summary));
+  if (!posted.ok) throw new Error(`Could not post the weekly audit digest (${posted.error ?? 'request failed'})`);
   debug('Posted agent invoice audit digest', { entered: summary.entered, canceled: summary.cancels });
 }

@@ -223,7 +223,7 @@ npm test
 
 ### Configuration
 
-Set up parameters in AWS Systems Manager Parameter Store for Workday credentials, the Vercel AI Gateway API key (SecureString `/finance-agent/ai-gateway-api-key`), and Slack webhook URL.
+Set up parameters in AWS Systems Manager Parameter Store for Workday credentials, the Vercel AI Gateway API key (SecureString `/finance-agent/ai-gateway-api-key`), the Slack webhook URL for processing notifications (`/finance-agent/slack-webhook-url`), and the audit Slack bot token (SecureString `/finance-agent/audit-slack-bot-token`, a Bot User OAuth Token with `chat:write`, invited to the audit channel). The audit channel ID is not in Parameter Store: it is `AUDIT_SLACK_CHANNEL_ID` in each CircleCI deploy job.
 
 ## 🧪 Testing
 
@@ -260,7 +260,7 @@ Deployment is automated via CircleCI:
 ## 📈 Monitoring
 
 - **CloudWatch**: Function logs and metrics
-- **Slack**: Real-time notifications to #notify-finance-agent-dev
+- **Slack**: Real-time processing notifications to #notify-finance-agent-dev; daily and weekly scoring audit posts to #notify-finance-agent-audit (#notify-finance-agent-audit-dev in dev)
 - **Error Tracking**: Detailed error context and processing statistics
 
 ### Agent invoice scoring

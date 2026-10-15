@@ -62,6 +62,8 @@ Parameters:
   AuditSlackChannelId:
     Type: String
     Description: Slack channel ID the ScoreDigest audit posts go to (#notify-finance-agent-audit, or -dev)
+    AllowedPattern: "^[CG][A-Z0-9]{8,}$"
+    ConstraintDescription: must be a Slack channel ID such as C0C5W6B0G4V
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -824,7 +826,7 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Score Digest - weekly audit summary posted to the audit Slack channel, not the per-invoice channel
+  # Score Digest - daily and weekly audit posts to the audit Slack channel (chat.postMessage), not the per-invoice channel
   ScoreDigestFunction:
     Type: AWS::Serverless::Function
     Properties:

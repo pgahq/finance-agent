@@ -14,7 +14,7 @@ jest.mock('../lib/workday.js', () => ({
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
 import { addCentralDays, centralDayStart, centralWeekStart } from '../lib/score_touches.js';
-import { postSlackChannelMessage, SLACK_POST_MESSAGE_URL, type SlackBlock } from '../lib/slack.js';
+import { postSlackChannelMessage, SLACK_POST_GAP_MS, SLACK_POST_MESSAGE_URL, type SlackBlock } from '../lib/slack.js';
 import * as workday from '../lib/workday.js';
 import { handler } from '../score_digest.js';
 
@@ -270,21 +270,97 @@ describe('postSlackChannelMessage', () => {
 
   it('does not resend after a server error, network failure, or other Slack error', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error', text: async () => '' });
-    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false });
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'HTTP 500' });
     fetchMock.mockRejectedValueOnce(new Error('socket hang up'));
-    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false });
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'request failed' });
     fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: 'not_in_channel' }));
-    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false });
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'not_in_channel' });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('never falls back to the per-invoice webhook when the token or channel is unset', async () => {
+  it('does not drop the chart for a block error that does not name the image', async () => {
+    fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] must be more than 0 characters [json-pointer:/blocks/0/text/text]'] } }));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toMatchObject({ ok: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds each request with a timeout', async () => {
+    await postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+    expect((requestOf(0)[1] as { signal?: unknown }).signal).toBeInstanceOf(AbortSignal);
+    fetchMock.mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'timeout' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('never falls back to the per-invoice webhook when the token or channel is unset or blank', async () => {
     process.env.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/per-invoice';
     const blocks: SlackBlock[] = [{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }];
-    expect(await postSlackChannelMessage(blocks, { token: undefined, channel: 'C0AUDIT' })).toEqual({ ok: false });
-    expect(await postSlackChannelMessage(blocks, { token: 'xoxb-test', channel: '' })).toEqual({ ok: false });
+    expect(await postSlackChannelMessage(blocks, { token: undefined, channel: 'C0AUDIT' })).toEqual({ ok: false, error: 'bot token or channel not set' });
+    expect(await postSlackChannelMessage(blocks, { token: 'xoxb-test', channel: '' })).toMatchObject({ ok: false });
+    expect(await postSlackChannelMessage(blocks, { token: '  ', channel: 'C0AUDIT' })).toMatchObject({ ok: false });
+    expect(await postSlackChannelMessage(blocks, { token: 'xoxb-test', channel: ' \n' })).toMatchObject({ ok: false });
     expect(fetchMock).not.toHaveBeenCalled();
     delete process.env.SLACK_WEBHOOK_URL;
+  });
+
+  it.each([
+    ['a non-boolean ok', { ok: 'false', ts: '1.0' }],
+    ['malformed error details', { ok: false, error: 'invalid_blocks', errors: 'image', response_metadata: { messages: [42] } }],
+  ])('treats a Slack answer with %s as not posted, without resending', async (_name, answer) => {
+    fetchMock.mockResolvedValueOnce(slackAnswer(answer));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toMatchObject({ ok: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a missing ts', { ok: true }],
+    ['a numeric ts', { ok: true, ts: 123 }],
+    ['a blank ts', { ok: true, ts: ' ' }],
+    ['a ts that is not a Slack timestamp', { ok: true, ts: 'not-a-ts' }],
+  ])('reports a posted message with %s as delivered but with no ts to thread under', async (_name, answer) => {
+    fetchMock.mockResolvedValueOnce(slackAnswer(answer));
+    const sent = await postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+    expect(sent.ok).toBe(true);
+    expect(sent.ts).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports only Slack error codes, never response bodies', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502, statusText: 'Bad Gateway', text: async () => '<html>SUPIN-1 memo text</html>' });
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'HTTP 502' });
+    fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: '<!channel> SUPIN-1 memo text' }));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'unreadable_response' });
+    fetchMock.mockResolvedValueOnce(slackAnswer({
+      ok: false,
+      error: 'invalid_blocks',
+      errors: ['SUPIN-1 memo text'],
+      response_metadata: { messages: ['[ERROR] SUPIN-1 memo text [json-pointer:/blocks/0/text/text]'] },
+    }));
+    expect(await postSlackChannelMessage(leadWithChart, AUDIT_TARGET)).toEqual({ ok: false, error: 'invalid_blocks' });
+    const { debug } = jest.requireMock('@pga/logger') as { debug: jest.Mock };
+    expect(JSON.stringify(debug.mock.calls)).not.toContain('SUPIN-1 memo text');
+  });
+
+  it('refuses a thread ts that is not a Slack timestamp', async () => {
+    const blocks: SlackBlock[] = [{ type: 'section', text: { type: 'mrkdwn', text: 'reply' } }];
+    expect(await postSlackChannelMessage(blocks, { ...AUDIT_TARGET, threadTs: '' })).toMatchObject({ ok: false });
+    expect(await postSlackChannelMessage(blocks, { ...AUDIT_TARGET, threadTs: 'C0AUDIT' })).toMatchObject({ ok: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('waits the post gap before resending without the image', async () => {
+    fetchMock
+      .mockResolvedValueOnce(slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] downloading image failed'] } }))
+      .mockResolvedValueOnce(slackAnswer({ ok: true, ts: '2.0' }));
+    const started = Date.now();
+    await postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SLACK_POST_GAP_MS - 50);
+  });
+
+  it('sends trimmed credentials', async () => {
+    await postSlackChannelMessage([{ type: 'section', text: { type: 'mrkdwn', text: 'hello' } }], { token: ' xoxb-test\n', channel: ' C0AUDIT ' });
+    expect(requestOf(0)[1].headers.Authorization).toBe('Bearer xoxb-test');
+    expect(bodyOf(0).channel).toBe('C0AUDIT');
   });
 });
 
@@ -417,7 +493,7 @@ describe('score digest handler', () => {
     ];
     routeQueries({ digest: today, entered: today });
     fetchMock.mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS })).mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error', text: async () => '' });
-    await expect(handler({ mode: 'daily' })).rejects.toThrow('Daily audit post stopped at message 2 of 3');
+    await expect(handler({ mode: 'daily' })).rejects.toThrow('Daily audit post stopped at message 2 of 3 (HTTP 500)');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(recordedPost()).toBeUndefined();
   });
@@ -428,7 +504,7 @@ describe('score digest handler', () => {
     ];
     routeQueries({ digest: today, entered: today });
     fetchMock.mockResolvedValueOnce(slackAnswer({ ok: true }));
-    await expect(handler({ mode: 'daily' })).rejects.toThrow('Daily audit post stopped at message 1 of 2');
+    await expect(handler({ mode: 'daily' })).rejects.toThrow('Daily audit post stopped at message 1 of 2 (posted without a message ts)');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(recordedPost()).toBeUndefined();
   });
@@ -451,11 +527,19 @@ describe('score digest handler', () => {
     expect(context).toBe('Before snapshots (outcome only): unavailable this week; Workday query failed.');
   });
 
+  it('treats a weekly digest Slack posted without a usable ts as posted', async () => {
+    routeQueries({});
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
+    fetchMock.mockResolvedValueOnce(slackAnswer({ ok: true }));
+    await expect(handler({})).resolves.not.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('fails the run when the audit post does not go through', async () => {
     routeQueries({});
     (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue([]);
     fetchMock.mockResolvedValueOnce(slackAnswer({ ok: false, error: 'not_in_channel' }));
-    await expect(handler({})).rejects.toThrow('Could not post the weekly audit digest');
+    await expect(handler({})).rejects.toThrow('Could not post the weekly audit digest (not_in_channel)');
   });
 
   it('applies an AP label added after the cancel was scored', async () => {
