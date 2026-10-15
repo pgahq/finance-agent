@@ -352,9 +352,17 @@ describe('postSlackChannelMessage', () => {
     fetchMock
       .mockResolvedValueOnce(slackAnswer({ ok: false, error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] downloading image failed'] } }))
       .mockResolvedValueOnce(slackAnswer({ ok: true, ts: '2.0' }));
-    const started = Date.now();
-    await postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(SLACK_POST_GAP_MS - 50);
+    jest.useFakeTimers();
+    try {
+      const posting = postSlackChannelMessage(leadWithChart, AUDIT_TARGET);
+      await jest.advanceTimersByTimeAsync(SLACK_POST_GAP_MS - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await posting).toEqual({ ok: true, ts: '2.0' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('sends trimmed credentials', async () => {
