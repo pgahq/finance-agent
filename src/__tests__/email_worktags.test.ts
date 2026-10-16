@@ -1,4 +1,5 @@
 import { budgetSplitOptions, buildEmailWorktags } from '../lib/email_worktags.js';
+import { invoiceMatchingPrompt } from '../prompts/enrich_invoice_prompt.js';
 import { describeEmailBudgetSplit, formatEmailBudgetSplitNotes, formatEmailWorktagNotes } from '../lib/invoice_enrichment.js';
 
 jest.mock('@pga/logger', () => ({
@@ -153,5 +154,15 @@ describe('email budget split notes', () => {
     } as any);
 
     expect(notes).toContain('Spend Category: Advertising & Promotion (resolved: Advertising and Promotion)');
+  });
+});
+
+describe('budget split prompt rule', () => {
+  it('treats a stated share per budget as the instruction to divide, and naming budgets alone as no split', () => {
+    expect(invoiceMatchingPrompt).toContain(
+      'A dollar amount or percentage stated for each budget is itself an instruction to divide the cost, even without those words.'
+    );
+    expect(invoiceMatchingPrompt).toContain('Merely naming more than one budget is not a split');
+    expect(invoiceMatchingPrompt).toContain('"$15,000 to Recruitment and $20,000 to Brand and Marketing"');
   });
 });
