@@ -2,6 +2,7 @@ import {
   alignSupplierInvoiceLineAmounts,
   applyAmountOnlyLineRetry,
   applyDefaultCompanyLineWorktags,
+  applyEmailBudgetSplits,
   applyMissingQuantityColumnLines,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
@@ -29,6 +30,8 @@ import {
   restoreClearedFreightFromRows,
   splitFreightLines,
   statesServicePeriod,
+  type EmailBudgetSplit,
+  type EmailWorktags,
   type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
@@ -1014,6 +1017,329 @@ describe('buildFinalInvoiceLines', () => {
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
     expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
+  });
+});
+
+describe('applyEmailBudgetSplits', () => {
+  const recruitment: EmailBudgetSplit = {
+    label: "Chris Kulinski's Budget",
+    amount: '$15,000',
+    costCenterId: 'CC-Recruitment',
+    lobReferenceId: 'LOB-Recruitment',
+    spendCategoryReferenceId: 'SC-Sponsorships',
+  };
+  const brand: EmailBudgetSplit = {
+    label: 'Brand and Marketing Budget',
+    amount: '$20,000',
+    costCenterId: 'CC-Brand_&_Digital_Marketing',
+    lobReferenceId: 'LOB-Production_&_Advertising',
+    spendCategoryReferenceId: 'SC-Advertising_and_Promotion',
+  };
+  const sponsorshipLine: FinalInvoiceLine = {
+    lineOrder: 1,
+    description: 'PGA of America Sponsorship Package',
+    memo: 'Sponsorship package for the 2027 MIT Sloan Sports Analytics Conference.',
+    quantity: null,
+    unitCost: null,
+    extendedAmount: 35000,
+    costCenterId: 'FALLBACK-CC',
+    fundId: 'FUND-General_Fund_Unrestricted',
+    spendCategoryId: 'Default_OCR_Spend_Category',
+    lineOfBusinessId: null,
+  };
+  const withSplits = (budgetSplits: EmailBudgetSplit[], extra: Partial<EmailWorktags> = {}): EmailWorktags => ({
+    budgetSplits,
+    budgetSplitBaseCents: 3500000,
+    ...extra,
+  });
+
+  it('returns the lines untouched when the email has no budget splits', () => {
+    expect(applyEmailBudgetSplits([sponsorshipLine], undefined, false)).toEqual({ lines: [sponsorshipLine] });
+    expect(applyEmailBudgetSplits([sponsorshipLine], { costCenterId: 'CC-1' }, false)).toEqual({ lines: [sponsorshipLine] });
+  });
+
+  it('splits one line into one amount-only line per budget with that budget\'s own coding', () => {
+    const { lines, outcome } = applyEmailBudgetSplits([sponsorshipLine], withSplits([recruitment, brand]), false);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toEqual(expect.objectContaining({
+      lineOrder: 1,
+      description: 'PGA of America Sponsorship Package',
+      memo: 'Sponsorship package for the 2027 MIT Sloan Sports Analytics Conference.',
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 15000,
+      costCenterId: 'CC-Recruitment',
+      lineOfBusinessId: 'LOB-Recruitment',
+      spendCategoryId: 'SC-Sponsorships',
+      fundId: 'FUND-General_Fund_Unrestricted',
+    }));
+    expect(lines[1]).toEqual(expect.objectContaining({
+      lineOrder: 2,
+      extendedAmount: 20000,
+      costCenterId: 'CC-Brand_&_Digital_Marketing',
+      lineOfBusinessId: 'LOB-Production_&_Advertising',
+      spendCategoryId: 'SC-Advertising_and_Promotion',
+    }));
+    expect(outcome).toEqual({
+      applied: true,
+      budgets: [
+        { label: "Chris Kulinski's Budget", amountCents: 1500000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+        { label: 'Brand and Marketing Budget', amountCents: 2000000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+      ],
+    });
+  });
+
+  it('lets a shared email fund or spend category fill a budget that has none of its own', () => {
+    const sharedLine = { ...sponsorshipLine, fundId: 'FUND-Shared', spendCategoryId: 'SC-Shared' };
+    const { lines } = applyEmailBudgetSplits(
+      [sharedLine],
+      withSplits([{ ...recruitment, spendCategoryReferenceId: null }, brand]),
+      false
+    );
+
+    expect(lines[0].spendCategoryId).toBe('SC-Shared');
+    expect(lines[0].fundId).toBe('FUND-Shared');
+    expect(lines[1].spendCategoryId).toBe('SC-Advertising_and_Promotion');
+  });
+
+  it('does not carry the shared LOB onto a budget whose cost center resolves its own', () => {
+    const { lines } = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([{ ...recruitment, lobReferenceId: null }, brand], { lobReferenceId: 'LOB-Shared' }),
+      false
+    );
+
+    expect(lines[0].lineOfBusinessId).toBeNull();
+    expect(lines[1].lineOfBusinessId).toBe('LOB-Production_&_Advertising');
+  });
+
+  it('splits several invoice lines into one line per budget with a combined description', () => {
+    const lines = [
+      { ...sponsorshipLine, description: 'Booth', extendedAmount: 10000 },
+      { ...sponsorshipLine, lineOrder: 2, description: 'Logo placement', extendedAmount: 25000 },
+    ];
+    const result = applyEmailBudgetSplits(lines, withSplits([recruitment, brand]), false);
+
+    expect(result.lines).toHaveLength(2);
+    expect(result.lines.map(line => line.description)).toEqual(['Booth; Logo placement', 'Booth; Logo placement']);
+    expect(result.lines.map(line => line.extendedAmount)).toEqual([15000, 20000]);
+    expect(result.lines[0].memo).toBeNull();
+  });
+
+  it('splits by percentage and puts the leftover cent on the last budget', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100.01 };
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10001, budgetSplits: [
+        { ...recruitment, amount: null, percent: 33.3 },
+        { ...brand, amount: null, percent: 66.7 },
+      ] },
+      false
+    );
+
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.3, 66.71]);
+    expect(outcome?.applied).toBe(true);
+  });
+
+  it('accepts three budgets at 33.33% each despite float rounding in the percent total', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100 };
+    const budget = (label: string): EmailBudgetSplit => ({ label, percent: 33.33, costCenterId: `CC-${label}` });
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10000, budgetSplits: [budget('A'), budget('B'), budget('C')] },
+      false
+    );
+
+    expect(outcome?.applied).toBe(true);
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.33, 33.33, 33.34]);
+  });
+
+  it('splits an even-split email into equal shares with the remainder on the last budget', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100 };
+    const third: EmailBudgetSplit = { label: 'C', costCenterId: 'CC-C', equalShare: true };
+    const { lines } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10000, budgetSplits: [
+        { ...recruitment, amount: null, equalShare: true },
+        { ...brand, amount: null, equalShare: true },
+        third,
+      ] },
+      false
+    );
+
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.33, 33.33, 33.34]);
+  });
+
+  it.each([
+    ['percentages that do not total 100', [{ ...recruitment, amount: null, percent: 60 }, { ...brand, amount: null, percent: 30 }], 'percentages total 90%'],
+    ['amounts that do not total the invoice', [recruitment, { ...brand, amount: '$10,000' }], 'amounts total $25,000.00, not $35,000.00'],
+    ['a mix of amounts and percentages', [recruitment, { ...brand, amount: null, percent: 50 }], 'same kind of share'],
+    ['no basis at all', [{ ...recruitment, amount: null }, { ...brand, amount: null }], 'no dollar amounts, percentages, or even split'],
+    ['an unreadable amount', [recruitment, { ...brand, amount: '$20k' }], 'could not be read'],
+  ])('does not split for %s', (_name, budgets, reason) => {
+    const { lines, outcome } = applyEmailBudgetSplits([sponsorshipLine], withSplits(budgets as EmailBudgetSplit[]), false);
+
+    expect(lines).toEqual([sponsorshipLine]);
+    expect(outcome?.applied).toBe(false);
+    expect(outcome?.review).toContain(reason);
+    expect(outcome?.review).toContain("Chris Kulinski's Budget; Brand and Marketing Budget");
+  });
+
+  it('does not split when the invoice lines do not total the amount due less freight and tax', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [{ ...sponsorshipLine, extendedAmount: 30000 }],
+      withSplits([recruitment, brand]),
+      false
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(outcome?.review).toContain('lines total $30,000.00, not $35,000.00');
+  });
+
+  it('does not split an invoice coded from a purchase order', () => {
+    const poLinked = applyEmailBudgetSplits([sponsorshipLine], withSplits([recruitment, brand]), true);
+    expect(poLinked.outcome?.review).toContain('purchase order');
+
+    const lineLinked = applyEmailBudgetSplits(
+      [{ ...sponsorshipLine, purchaseOrderLineId: 'POL-1' }],
+      withSplits([recruitment, brand]),
+      false
+    );
+    expect(lineLinked.lines[0].purchaseOrderLineId).toBe('POL-1');
+    expect(lineLinked.outcome?.applied).toBe(false);
+  });
+
+  it('does not split when the caller blocks it or the invoice has credit lines', () => {
+    const blocked = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([recruitment, brand], { budgetSplitBlockedReason: 'the invoice is an all-freight bill' }),
+      false
+    );
+    expect(blocked.outcome?.review).toContain('all-freight');
+
+    const credit = applyEmailBudgetSplits(
+      [sponsorshipLine, { ...sponsorshipLine, lineOrder: 2, extendedAmount: -100 }],
+      withSplits([recruitment, brand]),
+      false
+    );
+    expect(credit.outcome?.review).toContain('credit or discount');
+  });
+
+  it('does not split when a budget has no cost center or spend category', () => {
+    const { outcome } = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([recruitment, { ...brand, costCenterId: null, spendCategoryReferenceId: null }]),
+      false
+    );
+
+    expect(outcome?.review).toContain('no cost center or spend category was found for Brand and Marketing Budget');
+  });
+});
+
+describe('buildFinalInvoiceLines with email budget splits', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.FALLBACK_COST_CENTER_ID;
+  });
+
+  const mergedLine = {
+    lineOrder: 1,
+    description: 'PGA of America Sponsorship Package',
+    memo: 'Sponsorship package',
+    quantity: null,
+    unitCost: null,
+    extendedAmount: 35000,
+    costCenterId: null,
+    fundId: null,
+    spendCategoryId: null,
+    lineOfBusinessId: null,
+    eventId: null,
+    shipToAddressId: null,
+    purchaseOrderLineId: null,
+    hasDiscount: null,
+  };
+
+  it('codes each budget line with its cost center, spend category, and a related LOB when none was resolved', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine] } as any);
+    const relatedLobLookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Recruitment', { defaultReferenceId: 'LOB-Recruitment', allowedReferenceIds: ['LOB-Recruitment'] }],
+      ['CC-Brand_&_Digital_Marketing', { defaultReferenceId: 'LOB-Production_&_Advertising', allowedReferenceIds: ['LOB-Production_&_Advertising'] }],
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'PGA of America Sponsorship Package', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: null }],
+      undefined,
+      undefined,
+      { fundId: 'FUND-General_Fund_Unrestricted', spendCategoryId: 'Default_OCR_Spend_Category' },
+      {
+        budgetSplitBaseCents: 3500000,
+        budgetSplits: [
+          { label: 'Recruitment', amount: '$15,000', costCenterId: 'CC-Recruitment', spendCategoryReferenceId: 'SC-Sponsorships' },
+          { label: 'Brand', amount: '$20,000', costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryReferenceId: 'SC-Advertising_and_Promotion' },
+        ],
+      },
+      relatedLobLookup
+    );
+
+    expect(result.lines.map(line => ({
+      amount: line.extendedAmount,
+      cc: line.costCenterId,
+      lob: line.lineOfBusinessId,
+      sc: line.spendCategoryId,
+      fund: line.fundId,
+    }))).toEqual([
+      { amount: 15000, cc: 'CC-Recruitment', lob: 'LOB-Recruitment', sc: 'SC-Sponsorships', fund: 'FUND-General_Fund_Unrestricted' },
+      { amount: 20000, cc: 'CC-Brand_&_Digital_Marketing', lob: 'LOB-Production_&_Advertising', sc: 'SC-Advertising_and_Promotion', fund: 'FUND-General_Fund_Unrestricted' },
+    ]);
+    expect(result.emailBudgetSplit?.applied).toBe(true);
+  });
+
+  it('keeps a budget\'s email LOB only when its own cost center allows it', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine] } as any);
+    const relatedLobLookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Recruitment', { defaultReferenceId: 'LOB-Recruitment', allowedReferenceIds: ['LOB-Recruitment'] }],
+      ['CC-Brand', { defaultReferenceId: 'LOB-Brand', allowedReferenceIds: ['LOB-Brand'] }],
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Sponsorship', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: null }],
+      undefined,
+      undefined,
+      {},
+      {
+        budgetSplitBaseCents: 3500000,
+        budgetSplits: [
+          { label: 'Recruitment', amount: '$15,000', costCenterId: 'CC-Recruitment', lobReferenceId: 'LOB-Brand' },
+          { label: 'Brand', amount: '$20,000', costCenterId: 'CC-Brand', lobReferenceId: 'LOB-Brand' },
+        ],
+      },
+      relatedLobLookup
+    );
+
+    expect(result.lines.map(line => line.lineOfBusinessId)).toEqual(['LOB-Recruitment', 'LOB-Brand']);
+  });
+
+  it('does not split an invoice that has PO lines and reports why', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine, purchaseOrderLineId: 'POL-001', extendedAmount: 100 }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Janitorial', quantity: 1, unitCost: '100', totalPrice: '100', hasDiscount: null }],
+      [poLine()],
+      undefined,
+      {},
+      {
+        budgetSplitBaseCents: 10000,
+        budgetSplits: [
+          { label: 'A', amount: '$40', costCenterId: 'CC-A' },
+          { label: 'B', amount: '$60', costCenterId: 'CC-B' },
+        ],
+      }
+    );
+
+    expect(result.lines).toHaveLength(1);
+    expect(result.emailBudgetSplit?.applied).toBe(false);
+    expect(result.emailBudgetSplit?.review).toContain('purchase order');
   });
 });
 

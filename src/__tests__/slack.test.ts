@@ -336,6 +336,23 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"lineReview"');
   });
 
+  it('lists each budget the invoice was split into on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-468509',
+      lineCount: 2,
+      budgetSplit: [
+        "$15,000.00 Chris Kulinski's Budget (Cost Center CC-Recruitment, Spend Category SC-Sponsorships)",
+        '$20,000.00 Brand & Marketing (Cost Center CC-Brand, Spend Category SC-Advertising)',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain("*Coding split*\n• $15,000.00 Chris Kulinski's Budget (Cost Center CC-Recruitment, Spend Category SC-Sponsorships)");
+    expect(texts).toContain('\n• $20,000.00 Brand &amp; Marketing (Cost Center CC-Brand, Spend Category SC-Advertising)');
+    expect(texts).not.toContain('"budgetSplit"');
+  });
+
   it('escapes invoice text in line review notes and keeps a long note from hiding the next one', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -762,6 +779,35 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Prior submit failures*');
     expect(texts.join('\n')).toContain('Attempt 1: The invoice date must be the first day of the month.');
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
+  });
+
+  it('shows the budget split, or why it was not applied, on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-468509',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      budgetSplit: ['$15,000.00 Recruitment (Cost Center CC-Recruitment)', '$20,000.00 Brand & Marketing (Cost Center CC-Brand)'],
+    });
+    let texts = postedSlackBody(global.fetch as jest.Mock).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(texts).toContain('*Coding split*\n• $15,000.00 Recruitment (Cost Center CC-Recruitment)');
+    expect(texts).toContain('• $20,000.00 Brand &amp; Marketing (Cost Center CC-Brand)');
+
+    (global.fetch as jest.Mock).mockClear();
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-468509',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      budgetSplitReview: 'The email splits the cost across 2 budgets (A; B), but the budget percentages total 90%.',
+    });
+    texts = postedSlackBody(global.fetch as jest.Mock).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(texts).toContain('*Budget split review*\n• The email splits the cost across 2 budgets (A; B), but the budget percentages total 90%.');
+    expect(texts).not.toContain('*Coding split*');
   });
 
   it('shows the PO supplier and the email PO that replaced the invoice PO on enrich success', async () => {
