@@ -14,6 +14,7 @@ import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachment
 import { withComposedLineDescriptions } from './invoice_lines.js';
 import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
+import { findUniqueSupplierByNameEvidence, type SupplierNameMatch } from './supplier_match.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
 async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
@@ -146,12 +147,61 @@ export async function enrichInvoiceFromAttachments(
       ]
     }) as InvoiceMatchingResult;
 
-    return mergeInvoiceEnrichment(matching, ocr);
+    const merged = mergeInvoiceEnrichment(matching, ocr);
+    return existingSupplier ? merged : await resolveSupplierByNameEvidence(merged, ocr?.printedSupplier.remitToAddress);
 
   } catch (error) {
     debug('Error in invoice enrichment:', error);
     throw error;
   }
+}
+
+const NAME_EVIDENCE_CONFIDENCE = 0.85;
+
+/**
+ * A branch prints its own address and phone, which the parent supplier record does not carry, so the model
+ * scores such a match low and reports not_found. When the remit-to company or the printed name equals exactly one
+ * cached supplier's name or alternate name, that supplier is found. Anything else stays as the model decided.
+ */
+export async function resolveSupplierByNameEvidence(
+  result: InvoiceEnrichmentResult,
+  remitToAddress: string | null | undefined
+): Promise<InvoiceEnrichmentResult> {
+  if (result.supplier.status !== 'not_found') return result;
+
+  let match: SupplierNameMatch | undefined;
+  try {
+    const db = await getDatabaseConnection(process.env);
+    match = await findUniqueSupplierByNameEvidence(db, {
+      printedName: result.supplier.extractedInformation.supplierName,
+      remitToAddress,
+      excludeWorkdayIds: [process.env.WORKDAY_DEFAULT_SUPPLIER_WID],
+    });
+  } catch (error) {
+    debug('Supplier name evidence lookup failed; keeping the not_found result:', error);
+    return result;
+  }
+  if (!match) return result;
+
+  const label = `${match.supplierId ? `${match.supplierId} ` : ''}${match.supplierName}`;
+  const note = `${match.evidence.join('; ')}. The printed branch address and phone are not required to match the supplier record; confirm ${label}.`;
+  return {
+    ...result,
+    supplier: {
+      ...result.supplier,
+      status: 'found',
+      confidence: NAME_EVIDENCE_CONFIDENCE,
+      resolvedSupplier: {
+        workdayId: match.workdayId,
+        supplierName: match.supplierName,
+        confidence: NAME_EVIDENCE_CONFIDENCE,
+        reason: note,
+      },
+      potentialDuplicateSuppliers: null,
+      recommendation: { action: 'update_invoice', reason: note },
+      reason: `${note} Model result before the name check: ${result.supplier.reason}`,
+    },
+  };
 }
 
 export function formatSupplierNotes(result: InvoiceEnrichmentResult): string {

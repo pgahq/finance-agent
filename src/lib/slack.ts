@@ -463,6 +463,8 @@ export const SLACK_POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage';
 // request must give up well before that.
 export const SLACK_API_TIMEOUT_MS = 5000;
 const SLACK_TS_PATTERN = /^\d+\.\d+$/;
+// Slack names the failed image block as "downloading image failed [json-pointer:/blocks/N/image_url]".
+const SLACK_IMAGE_REJECTION_PATTERN = /downloading image|json-pointer:\/blocks\/\d+\/image_url/i;
 const SLACK_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,64}$/;
 /** chat.postMessage allows about one message per second per channel. */
 export const SLACK_POST_GAP_MS = 1100;
@@ -490,7 +492,8 @@ export interface SlackChannelPostResult {
 async function sendChatMessage(
   blocks: SlackBlock[],
   target: { token: string; channel: string; threadTs?: string }
-): Promise<SlackSendResult & { ts?: string }> {
+): Promise<SlackSendResult & { ts?: string; imageRejected?: boolean; retryAfterMs?: number }> {
+  const signal = AbortSignal.timeout(SLACK_API_TIMEOUT_MS);
   try {
     debug('Posting Slack message', { channel: target.channel, thread: Boolean(target.threadTs), blocks: blocks.length });
     const response = await fetch(SLACK_POST_MESSAGE_URL, {
@@ -507,10 +510,14 @@ async function sendChatMessage(
         unfurl_links: false,
         unfurl_media: false,
       }),
-      signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
+      signal,
     });
     if (!response.ok) {
       debug('Slack chat.postMessage request failed', { status: response.status, statusText: response.statusText });
+      if (response.status === 429) {
+        const seconds = Number(response.headers?.get?.('retry-after'));
+        return { ok: false, status: 429, code: 'ratelimited', ...(Number.isFinite(seconds) && seconds > 0 ? { retryAfterMs: seconds * 1000 } : {}) };
+      }
       return { ok: false, status: response.status };
     }
     const body = await response.json().catch(() => undefined) as
@@ -518,10 +525,12 @@ async function sendChatMessage(
       | undefined;
     if (body?.ok !== true) {
       const code = typeof body?.error === 'string' && SLACK_ERROR_CODE_PATTERN.test(body.error) ? body.error : 'unreadable_response';
+      // Slack's detail text can echo message content, so it only decides the image resend and is never returned or logged.
       const details = [body?.errors, body?.response_metadata?.messages]
         .flatMap((list) => (Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : []));
+      const imageRejected = code === 'invalid_blocks' && details.some((detail) => SLACK_IMAGE_REJECTION_PATTERN.test(detail));
       debug('Slack chat.postMessage was rejected', { status: response.status, code });
-      return { ok: false, status: response.status, code, error: [code, ...details].join(' ') };
+      return { ok: false, status: response.status, code, imageRejected };
     }
     // ok: true means Slack posted the message; a ts that is not a Slack timestamp is left out so no reply threads under it.
     const ts = typeof body.ts === 'string' && SLACK_TS_PATTERN.test(body.ts) ? body.ts : undefined;
@@ -529,8 +538,7 @@ async function sendChatMessage(
     return { ok: true, status: response.status, ...(ts ? { ts } : {}) };
   } catch (error) {
     debug('Error sending Slack message:', error);
-    const name = (error as { name?: unknown })?.name;
-    return { ok: false, ...(name === 'TimeoutError' || name === 'AbortError' ? { code: 'timeout' } : {}) };
+    return { ok: false, ...(signal.aborted ? { code: 'timeout' } : {}) };
   }
 }
 
@@ -550,13 +558,17 @@ export async function postSlackChannelMessage(blocks: SlackBlock[], target: Slac
     debug('Slack thread ts is not a Slack timestamp - skipping Slack message');
     return { ok: false, error: 'thread ts is not a Slack timestamp' };
   }
-  const first = await sendChatMessage(blocks, { token, channel, threadTs });
+  let first = await sendChatMessage(blocks, { token, channel, threadTs });
+  // A 429 means Slack did not post the message, so one resend after its Retry-After cannot duplicate it.
+  if (first.status === 429 && first.retryAfterMs !== undefined && first.retryAfterMs <= SLACK_API_TIMEOUT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, Math.max(SLACK_POST_GAP_MS, first.retryAfterMs ?? 0)));
+    first = await sendChatMessage(blocks, { token, channel, threadTs });
+  }
   if (first.ok) return { ok: true, ts: first.ts };
   // Slack answers ok: false and posts nothing when it cannot download an image block, and names the image in the
   // error details; any other failure may have been delivered (a timeout or server error), so it is not resent.
   const withoutImages = blocks.filter((block) => block.type !== 'image');
-  const imageRejected = first.status === 200 && /image/i.test(first.error ?? '');
-  if (!imageRejected || withoutImages.length === blocks.length) return { ok: false, error: failureReason(first) };
+  if (!first.imageRejected || withoutImages.length === blocks.length) return { ok: false, error: failureReason(first) };
   debug('Slack rejected a message with an image; resending without it', { code: first.code });
   await new Promise((resolve) => setTimeout(resolve, SLACK_POST_GAP_MS));
   const retry = await sendChatMessage(withoutImages, { token, channel, threadTs });

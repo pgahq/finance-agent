@@ -128,7 +128,8 @@ period, a bar per bucket, sparklines, and a QuickChart line chart
 calendar days; weekly periods are complete Monday-to-Sunday Central weeks, so
 the Monday digest leads with last week. If Slack answers `ok: false` because it
 cannot load the chart, `postSlackChannelMessage` resends once without image
-blocks; other failures are not resent.
+blocks. An HTTP 429 (Slack did not post) is resent once after its `Retry-After`
+when that is within 5 seconds; other failures are not resent.
 
 `ensureTouchReporting` (`src/lib/touch_reporting.ts`) creates the
 `agent_invoice_touch_daily` table and, only when missing, the

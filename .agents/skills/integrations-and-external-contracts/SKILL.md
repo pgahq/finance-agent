@@ -9,8 +9,9 @@ description: >-
   Gmail labels, bearer auth tokens, attachment upload contracts, Workday
   invoice memos, line item descriptions, supplier invoice numbers (check-print
   order and pay-file-safe characters), Slack Workday object deep links,
-  AUDIT_SLACK_BOT_TOKEN or AUDIT_SLACK_CHANNEL_ID, or supplier matching hints from the email context (subject, source email, and
-  conversation parts; Supplier IDs and Supplier:/Vendor: lines).
+  AUDIT_SLACK_BOT_TOKEN or AUDIT_SLACK_CHANNEL_ID, or supplier matching hints
+  from the email context (subject, source email, and conversation parts;
+  Supplier IDs and Supplier:/Vendor: lines).
 ---
 
 # Integrations and external contracts

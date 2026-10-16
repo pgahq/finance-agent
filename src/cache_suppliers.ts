@@ -29,6 +29,11 @@ function supplierIdFromWql(value: unknown): string | undefined {
   return text && !isWorkdayWid(text) ? text : undefined;
 }
 
+// A row cached before the list fields shipped has no list at all, which is not the same as an empty one.
+function sameList(stored: string[] | undefined, incoming: string[] | undefined): boolean {
+  return Array.isArray(stored) && JSON.stringify(stored) === JSON.stringify(incoming ?? []);
+}
+
 // Processor function - invoked by query function or refresh
 export const processor = withProcessorHandler(async (context, suppliers, _event) => {
   if (!suppliers || suppliers.length === 0) {
@@ -83,13 +88,28 @@ export const processor = withProcessorHandler(async (context, suppliers, _event)
       supplierName: supplier.supplierName,
       ...(supplier.supplierId ? { supplierId: supplier.supplierId } : {}),
       lastUpdatedDateTime: supplier.lastUpdatedDateTime,
+      alternateNames: supplier.allAlternateNames ?? [],
+      addresses: supplier.allAddresses ?? [],
+      phones: supplier.allPhoneNumbers ?? [],
+      emails: supplier.allEmailAddresses ?? [],
     }),
     isUpdated: (
-      existingMetadata: { lastUpdatedDateTime?: string; supplierId?: string } | undefined,
+      existingMetadata: {
+        lastUpdatedDateTime?: string;
+        supplierId?: string;
+        alternateNames?: string[];
+        addresses?: string[];
+        phones?: string[];
+        emails?: string[];
+      } | undefined,
       supplier
     ) =>
       existingMetadata?.lastUpdatedDateTime !== supplier.lastUpdatedDateTime
-      || existingMetadata?.supplierId !== supplier.supplierId,
+      || existingMetadata?.supplierId !== supplier.supplierId
+      || !sameList(existingMetadata?.alternateNames, supplier.allAlternateNames)
+      || !sameList(existingMetadata?.addresses, supplier.allAddresses)
+      || !sameList(existingMetadata?.phones, supplier.allPhoneNumbers)
+      || !sameList(existingMetadata?.emails, supplier.allEmailAddresses),
     notifyLabel: 'cache_suppliers',
     itemLabel: 'suppliers',
   });
