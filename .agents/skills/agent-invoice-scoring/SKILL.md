@@ -9,7 +9,8 @@ description: >-
   agent_invoice_touch_daily, snapshotAgentWrite or snapshotEnrichBaseline,
   the scored-field whitelist, material vs convention fields, invoice status
   classification, CANCEL_REASON_ATTRIBUTION, SCORE_* settings, ScoreInvoices,
-  ScoreDigest, AUDIT_SLACK_WEBHOOK_URL, or export-eval-cases.
+  ScoreDigest, AUDIT_SLACK_BOT_TOKEN, AUDIT_SLACK_CHANNEL_ID, or
+  export-eval-cases.
 ---
 
 # Agent invoice scoring
@@ -125,9 +126,10 @@ Every audit post leads with the zero-touch share, the change from the previous
 period, a bar per bucket, sparklines, and a QuickChart line chart
 (`SCORE_CHART_BASE_URL`, `none` turns it off). Daily periods are Central
 calendar days; weekly periods are complete Monday-to-Sunday Central weeks, so
-the Monday digest leads with last week. If Slack answers 400 because it cannot
-load the chart, `postSlackBlocks` resends once without image blocks; other
-failures are not resent.
+the Monday digest leads with last week. If Slack answers `ok: false` because it
+cannot load the chart, `postSlackChannelMessage` resends once without image
+blocks. An HTTP 429 (Slack did not post) is resent once after its `Retry-After`
+when that is within 5 seconds; other failures are not resent.
 
 `ensureTouchReporting` (`src/lib/touch_reporting.ts`) creates the
 `agent_invoice_touch_daily` table and, only when missing, the
@@ -139,21 +141,25 @@ cluster.
 
 ## Audit posts
 
-`ScoreDigest` posts only to `AUDIT_SLACK_WEBHOOK_URL`
-(`/finance-agent/audit-slack-webhook-url`); its own error alerts go to the
-operator channel like every other Lambda. A post that does not go through stops
-the run with an error, and so does a failed rollup refresh (after posting).
-Invoice values are escaped, so memo text cannot mention the channel or add links.
+`ScoreDigest` posts only to `AUDIT_SLACK_CHANNEL_ID` through `chat.postMessage`
+with the `AUDIT_SLACK_BOT_TOKEN` bot token (`/finance-agent/audit-slack-bot-token`).
+The channel comes from CircleCI (`AuditSlackChannelId`: `C0C6VS0BDPA` dev,
+`C0C5W6B0G4V` prod). Its own error alerts go to the operator channel like every
+other Lambda. A post that does not go through stops the run with an error, and
+so does a failed rollup refresh (after posting). Invoice values are escaped, so
+memo text cannot mention the channel or add links.
 
-- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead (the Central day), then
-  one message per invoice scored since the last full daily post
+- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead (the Central day) as a
+  top-level message, then, as replies in its thread, one message per invoice
+  scored since the last full daily post
   (`agent_invoice_audit_posts`, created by `ScoreDigest`; at most a week back,
   today on the first run), so scores from processors that finish after the post
   go in the next one. Before → after values, about a second apart. Up to
-  `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing line counts the rest
-  and any sandbox-refresh removals. Nothing is posted when nothing was scored or
+  `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing reply counts the rest
+  and any sandbox-refresh removals. If the lead fails or comes back without a
+  `ts`, no replies are sent. Nothing is posted when nothing was scored or
   removed.
-- Weekly (Mondays 14:30 UTC): the touch lead, then the last complete
+- Weekly (Mondays 14:30 UTC): a single top-level message (no thread) holding the touch lead, then the last complete
   Monday-to-Sunday Central week against the week before (`digestWindow`), so
   Monday morning's scoring run is reported the following week: outcomes,
   per-field change rates, edit rate by release, late corrections, cancels,
