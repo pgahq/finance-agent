@@ -1142,6 +1142,19 @@ describe('applyEmailBudgetSplits', () => {
     expect(outcome?.applied).toBe(true);
   });
 
+  it('accepts three budgets at 33.33% each despite float rounding in the percent total', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100 };
+    const budget = (label: string): EmailBudgetSplit => ({ label, percent: 33.33, costCenterId: `CC-${label}` });
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10000, budgetSplits: [budget('A'), budget('B'), budget('C')] },
+      false
+    );
+
+    expect(outcome?.applied).toBe(true);
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.33, 33.33, 33.34]);
+  });
+
   it('splits an even-split email into equal shares with the remainder on the last budget', () => {
     const line = { ...sponsorshipLine, extendedAmount: 100 };
     const third: EmailBudgetSplit = { label: 'C', costCenterId: 'CC-C', equalShare: true };

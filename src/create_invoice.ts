@@ -64,6 +64,7 @@ import {
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  unappliedEmailBudgetSplit,
   parseExtractedAmount,
   prepareInvoiceCharges,
   removeRepeatedLineTables,
@@ -1222,7 +1223,10 @@ async function processInvoiceCluster(
     if (usedDefaultCompany && finalLines.length > 0) {
       finalLines = applyDefaultCompanyLineWorktags(finalLines, fallbackIds);
       relatedLobByCostCenter = new Map();
-      emailBudgetSplit = undefined;
+      const emailBudgets = result.emailBudgetSplits ?? [];
+      emailBudgetSplit = emailBudgets.length > 1
+        ? unappliedEmailBudgetSplit(emailBudgets, 'Default OCR fallback coding was applied to the lines')
+        : undefined;
     }
 
     if (finalLines.length > 0) {
@@ -1260,7 +1264,7 @@ async function processInvoiceCluster(
     // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
     const emailWorktagNotes = formatEmailWorktagNotes(result);
     const emailOrDefaultWorktagNotes = usedDefaultCompany
-      ? (emailWorktagNotes
+      ? (emailWorktagNotes || emailBudgetSplit
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;

@@ -10,6 +10,8 @@ import {
   describeEmailCompanyReview,
   formatEmailWorktagNotes,
   formatEmailBudgetSplitNotes,
+  describeEmailBudgetSplit,
+  suggestedBudgetCostCenters,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
   formatInvoiceLinesNotes,
@@ -601,7 +603,9 @@ async function processInvoice(
         : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
-        : undefined,
+        : suggestedBudgetCostCenters(result.emailBudgetSplits),
+      ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
+      ...(emailBudgetSplit?.review ? { budgetSplitReview: emailBudgetSplit.review } : {}),
       fallbacks: {
         defaultSupplier: fallbacks.defaultSupplier,
         fallbackFund: fallbacks.fund ? process.env.FALLBACK_FUND_ID : undefined,

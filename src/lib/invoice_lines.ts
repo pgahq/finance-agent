@@ -1290,7 +1290,7 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
-function budgetSplitName(split: EmailBudgetSplit, index: number): string {
+function budgetSplitName(split: Pick<EmailBudgetSplit, 'label'>, index: number): string {
   return split.label?.trim() || `Budget ${index + 1}`;
 }
 
@@ -1327,7 +1327,7 @@ function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number): { cent
       return { problem: 'a budget percentage in the email is not between 0 and 100' };
     }
     const percentTotal = percents.reduce((sum, value) => sum + value, 0);
-    if (Math.abs(percentTotal - 100) > 0.01) {
+    if (Math.abs(Math.round(percentTotal * 100) - 10000) > 1) {
       return { problem: `the budget percentages total ${Math.round(percentTotal * 100) / 100}%, not 100%` };
     }
     const cents = percents.map(percent => Math.round((baseCents * percent) / 100));
@@ -1341,6 +1341,18 @@ function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number): { cent
   return each > 0 ? { cents } : { problem: 'a budget share rounds to zero' };
 }
 
+export function unappliedEmailBudgetSplit(
+  splits: Array<Pick<EmailBudgetSplit, 'label'>>,
+  reason: string
+): EmailBudgetSplitOutcome {
+  const names = splits.map(budgetSplitName).join('; ');
+  return {
+    applied: false,
+    review: `The email splits the cost across ${splits.length} budgets (${names}), but ${reason}. The invoice was not split by budget; check the coding before approving.`,
+    budgets: [],
+  };
+}
+
 // An email that divides the cost across budgets gets one invoice line per budget. Spend category is a
 // line-level field, so budgets that differ in spend category cannot share a line with split rows.
 // Anything that does not reconcile exactly leaves the lines alone and says why.
@@ -1352,17 +1364,9 @@ export function applyEmailBudgetSplits(
   const splits = emailWorktags?.budgetSplits;
   if (!emailWorktags || !splits || splits.length < 2) return { lines };
 
-  const names = splits.map(budgetSplitName).join('; ');
   const reject = (reason: string): { lines: FinalInvoiceLine[]; outcome: EmailBudgetSplitOutcome } => {
     debug(`Email budget split not applied: ${reason}`);
-    return {
-      lines,
-      outcome: {
-        applied: false,
-        review: `The email splits the cost across ${splits.length} budgets (${names}), but ${reason}. The invoice was not split by budget; check the coding before approving.`,
-        budgets: [],
-      },
-    };
+    return { lines, outcome: unappliedEmailBudgetSplit(splits, reason) };
   };
 
   if (emailWorktags.budgetSplitBlockedReason) return reject(emailWorktags.budgetSplitBlockedReason);

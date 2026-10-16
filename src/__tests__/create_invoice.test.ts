@@ -3292,6 +3292,28 @@ describe('create_invoice', () => {
       expect(slackDetails).not.toHaveProperty('budgetSplit');
     });
 
+    it('tells AP the email budgets were not used when Default OCR Company coding applies', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...budgetEnrichment(),
+        emailWorktags: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-budget-split-default-company/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toBeUndefined();
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Line worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.');
+      expect(notes).toContain("Budget split review: The email splits the cost across 2 budgets (Chris Kulinski's Budget; Brand and Marketing Budget), but Default OCR fallback coding was applied to the lines.");
+      expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual(expect.arrayContaining([
+        expect.stringContaining('Budget split review: The email splits the cost across 2 budgets'),
+      ]));
+    });
+
     it('blocks the split when the invoice header freight or tax could not be read', async () => {
       const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
       mockCompany310();

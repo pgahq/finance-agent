@@ -665,6 +665,10 @@ export interface EnrichmentNotification {
   /** Duplicate charge lines removed, or lines + freight + tax that do not match the amount due. */
   chargeCheck?: string[];
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
+  /** One line per budget the invoice was split into from the email's coding. */
+  budgetSplit?: string[];
+  /** Why the email's budget split was not applied. */
+  budgetSplitReview?: string;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
   /** The scoring snapshot for this write could not be saved; the invoice itself was processed. */
@@ -681,7 +685,7 @@ export interface EnrichmentNotification {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, budgetSplit, budgetSplitReview, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -815,6 +819,19 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
 
   appendChargeCheckBlock(blocks, chargeCheck ?? []);
+
+  if (canModify && budgetSplit?.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Coding split*\n${budgetSplit.map((line) => `• ${escapeSlackText(line)}`).join('\n')}`) }
+    });
+  }
+  if (budgetSplitReview) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Budget split review*\n• ${escapeSlackText(budgetSplitReview)}`) }
+    });
+  }
 
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {

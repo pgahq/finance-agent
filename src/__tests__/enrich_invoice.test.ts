@@ -1368,6 +1368,17 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines).toHaveLength(2);
     expect(params.buildNotes([])).toContain('Email budget split (one invoice line per budget): $15,000.00 Recruitment');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      budgetSplit: [
+        '$15,000.00 Recruitment (Cost Center CC-Recruitment, Spend Category SC-Sponsorships)',
+        '$20,000.00 Brand (Cost Center CC-Brand, Spend Category SC-Advertising)',
+      ],
+      suggestedCostCenters: [
+        { name: 'CC-Recruitment', code: 'CC-Recruitment' },
+        { name: 'CC-Brand', code: 'CC-Brand' },
+      ],
+    }));
   });
 
   it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {

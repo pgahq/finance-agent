@@ -427,6 +427,17 @@ export function describeEmailBudgetSplit(outcome: EmailBudgetSplitOutcome | unde
   });
 }
 
+// The cost centers the email's budgets name, for the enrich Slack suggestion when no invoice-wide cost center exists.
+export function suggestedBudgetCostCenters(
+  splits: InvoiceEnrichmentResult['emailBudgetSplits'] | undefined
+): Array<{ code?: string | null; name: string }> | undefined {
+  const centers = (splits ?? [])
+    .map(split => split?.costCenter)
+    .filter((costCenter): costCenter is NonNullable<typeof costCenter> => Boolean(costCenter))
+    .map(costCenter => ({ name: costCenter.name ?? costCenter.extracted ?? '', code: costCenter.code }));
+  return centers.length ? centers : undefined;
+}
+
 export function formatEmailBudgetSplitNotes(outcome: EmailBudgetSplitOutcome | undefined): string {
   if (!outcome) return '';
   if (!outcome.applied) return outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';

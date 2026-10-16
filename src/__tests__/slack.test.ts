@@ -781,6 +781,35 @@ describe('notifyEnrichmentResult', () => {
     expect(texts.join('\n')).toContain('*Workday Invoice* → `INV-1`');
   });
 
+  it('shows the budget split, or why it was not applied, on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-468509',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      budgetSplit: ['$15,000.00 Recruitment (Cost Center CC-Recruitment)', '$20,000.00 Brand & Marketing (Cost Center CC-Brand)'],
+    });
+    let texts = postedSlackBody(global.fetch as jest.Mock).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(texts).toContain('*Coding split*\n• $15,000.00 Recruitment (Cost Center CC-Recruitment)');
+    expect(texts).toContain('• $20,000.00 Brand &amp; Marketing (Cost Center CC-Brand)');
+
+    (global.fetch as jest.Mock).mockClear();
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-468509',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'Acme', isDefault: false },
+      extracted: {},
+      fallbacks: { defaultSupplier: false },
+      budgetSplitReview: 'The email splits the cost across 2 budgets (A; B), but the budget percentages total 90%.',
+    });
+    texts = postedSlackBody(global.fetch as jest.Mock).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(texts).toContain('*Budget split review*\n• The email splits the cost across 2 budgets (A; B), but the budget percentages total 90%.');
+    expect(texts).not.toContain('*Coding split*');
+  });
+
   it('shows the PO supplier and the email PO that replaced the invoice PO on enrich success', async () => {
     await notifyEnrichmentResult({
       processingTime: 1500,
