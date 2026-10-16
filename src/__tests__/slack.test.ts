@@ -336,6 +336,23 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"lineReview"');
   });
 
+  it('lists each budget the invoice was split into on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-468509',
+      lineCount: 2,
+      budgetSplit: [
+        "$15,000.00 Chris Kulinski's Budget (Cost Center CC-Recruitment, Spend Category SC-Sponsorships)",
+        '$20,000.00 Brand & Marketing (Cost Center CC-Brand, Spend Category SC-Advertising)',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain("*Coding split*\n• $15,000.00 Chris Kulinski's Budget (Cost Center CC-Recruitment, Spend Category SC-Sponsorships)");
+    expect(texts).toContain('\n• $20,000.00 Brand &amp; Marketing (Cost Center CC-Brand, Spend Category SC-Advertising)');
+    expect(texts).not.toContain('"budgetSplit"');
+  });
+
   it('escapes invoice text in line review notes and keeps a long note from hiding the next one', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

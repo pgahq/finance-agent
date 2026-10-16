@@ -147,6 +147,13 @@ export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'ext
   return amount == null || amount <= 0;
 }
 
+export interface BuiltInvoiceLines {
+  lines: FinalInvoiceLine[];
+  appliedFallbacks: LineFallbacks;
+  relatedLobByCostCenter: Map<string, RelatedLob>;
+  emailBudgetSplit?: EmailBudgetSplitOutcome;
+}
+
 export interface LineFallbacks {
   fund: boolean;
   costCenter: boolean;
@@ -1283,13 +1290,153 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+function budgetSplitName(split: EmailBudgetSplit, index: number): string {
+  return split.label?.trim() || `Budget ${index + 1}`;
+}
+
+function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number): { cents?: number[]; problem?: string } {
+  const kinds = splits.map(split => (
+    split.amount?.trim() ? 'amount'
+      : split.percent != null ? 'percent'
+        : split.equalShare === true ? 'equal'
+          : 'none'
+  ));
+  if (kinds.every(kind => kind === 'none')) {
+    return { problem: 'the email gives no dollar amounts, percentages, or even split' };
+  }
+  if (new Set(kinds).size !== 1) {
+    return { problem: 'the email does not give the same kind of share (dollar amount, percentage, or even split) for every budget' };
+  }
+
+  if (kinds[0] === 'amount') {
+    const amounts = splits.map(split => parseCanonicalChargeAmount(split.amount));
+    if (amounts.some(amount => amount == null || amount <= 0)) {
+      return { problem: 'a budget amount in the email could not be read as a positive dollar amount' };
+    }
+    const cents = amounts.map(amount => toCents(amount as number));
+    const total = cents.reduce((sum, value) => sum + value, 0);
+    if (total !== baseCents) {
+      return { problem: `the budget amounts total ${formatCents(total)}, not ${formatCents(baseCents)}` };
+    }
+    return { cents };
+  }
+
+  if (kinds[0] === 'percent') {
+    const percents = splits.map(split => split.percent as number);
+    if (percents.some(percent => !Number.isFinite(percent) || percent <= 0 || percent > 100)) {
+      return { problem: 'a budget percentage in the email is not between 0 and 100' };
+    }
+    const percentTotal = percents.reduce((sum, value) => sum + value, 0);
+    if (Math.abs(percentTotal - 100) > 0.01) {
+      return { problem: `the budget percentages total ${Math.round(percentTotal * 100) / 100}%, not 100%` };
+    }
+    const cents = percents.map(percent => Math.round((baseCents * percent) / 100));
+    cents[cents.length - 1] = baseCents - cents.slice(0, -1).reduce((sum, value) => sum + value, 0);
+    return cents.every(value => value > 0) ? { cents } : { problem: 'a budget share rounds to zero' };
+  }
+
+  const each = Math.floor(baseCents / splits.length);
+  const cents = splits.map(() => each);
+  cents[cents.length - 1] = baseCents - each * (splits.length - 1);
+  return each > 0 ? { cents } : { problem: 'a budget share rounds to zero' };
+}
+
+// An email that divides the cost across budgets gets one invoice line per budget. Spend category is a
+// line-level field, so budgets that differ in spend category cannot share a line with split rows.
+// Anything that does not reconcile exactly leaves the lines alone and says why.
+export function applyEmailBudgetSplits(
+  lines: FinalInvoiceLine[],
+  emailWorktags: EmailWorktags | undefined,
+  purchaseOrderLinked: boolean
+): { lines: FinalInvoiceLine[]; outcome?: EmailBudgetSplitOutcome } {
+  const splits = emailWorktags?.budgetSplits;
+  if (!emailWorktags || !splits || splits.length < 2) return { lines };
+
+  const names = splits.map(budgetSplitName).join('; ');
+  const reject = (reason: string): { lines: FinalInvoiceLine[]; outcome: EmailBudgetSplitOutcome } => {
+    debug(`Email budget split not applied: ${reason}`);
+    return {
+      lines,
+      outcome: {
+        applied: false,
+        review: `The email splits the cost across ${splits.length} budgets (${names}), but ${reason}. The invoice was not split by budget; check the coding before approving.`,
+        budgets: [],
+      },
+    };
+  };
+
+  if (emailWorktags.budgetSplitBlockedReason) return reject(emailWorktags.budgetSplitBlockedReason);
+  if (purchaseOrderLinked || lines.some(line => line.purchaseOrderLineId || line.poPassthroughWorktagsReference?.length || line.supplierInvoiceSplitLineData?.length)) {
+    return reject('the invoice is coded from a purchase order, which keeps its own coding');
+  }
+  if (lines.length === 0) return reject('the invoice has no lines to split');
+  if (lines.some(line => isDiscountLine(line))) return reject('the invoice has credit or discount lines');
+
+  const lineAmounts = lines.map(submittedLineAmount);
+  if (lineAmounts.some(amount => amount == null)) return reject('an invoice line has no readable amount');
+  const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount as number), 0);
+  const baseCents = emailWorktags.budgetSplitBaseCents ?? lineCents;
+  if (lineCents !== baseCents) {
+    return reject(`the invoice lines total ${formatCents(lineCents)}, not ${formatCents(baseCents)}`);
+  }
+  if (baseCents <= 0) return reject('the invoice total is not positive');
+
+  const missingCoding = splits.findIndex(split => !split.costCenterId && !split.spendCategoryReferenceId);
+  if (missingCoding >= 0) {
+    return reject(`no cost center or spend category was found for ${budgetSplitName(splits[missingCoding], missingCoding)}`);
+  }
+
+  const { cents, problem } = budgetSplitCents(splits, baseCents);
+  if (!cents) return reject(problem as string);
+
+  const first = lines[0];
+  const description = lines.length === 1
+    ? first.description
+    : [...new Set(lines.map(line => line.description))].join('; ');
+  const splitLines: FinalInvoiceLine[] = splits.map((split, index) => ({
+    lineOrder: index + 1,
+    description,
+    memo: lines.length === 1 ? first.memo ?? null : null,
+    quantity: 0,
+    unitCost: 0,
+    extendedAmount: cents[index] / 100,
+    hasDiscount: null,
+    costCenterId: split.costCenterId ?? first.costCenterId ?? null,
+    fundId: split.fundReferenceId ?? first.fundId ?? null,
+    spendCategoryId: split.spendCategoryReferenceId ?? first.spendCategoryId ?? null,
+    lineOfBusinessId: split.lobReferenceId ?? (split.costCenterId ? null : emailWorktags.lobReferenceId ?? null),
+    eventId: null,
+    eventWid: split.eventWid ?? first.eventWid ?? null,
+    shipToAddressId: first.shipToAddressId ?? null,
+    purchaseOrderLineId: null,
+  }));
+
+  return {
+    lines: splitLines,
+    outcome: {
+      applied: true,
+      budgets: splits.map((split, index) => ({
+        label: budgetSplitName(split, index),
+        amountCents: cents[index],
+        costCenterId: splitLines[index].costCenterId ?? null,
+        spendCategoryId: splitLines[index].spendCategoryId ?? null,
+      })),
+    },
+  };
+}
+
+export function expectedMerchandiseCents(charges: LineTotalCharges): number | undefined {
+  return expectedLineTotal(charges, [charges.currentFreightAmount])?.expectedCents;
+}
+
 export function constrainEmailLobToRelatedWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   emailWorktags?: EmailWorktags,
   fallbackCostCenterId?: string | null
 ): FinalInvoiceLine[] {
-  if (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId) return lines;
+  const hasBudgetSplits = (emailWorktags?.budgetSplits?.length ?? 0) > 1;
+  if (!hasBudgetSplits && (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId)) return lines;
 
   return lines.map(line => {
     const costCenterId = line.costCenterId;
@@ -1365,12 +1512,43 @@ export function applyRelatedLobWorktags(
   });
 }
 
+export interface EmailBudgetSplit {
+  label?: string | null;
+  amount?: string | null;
+  percent?: number | null;
+  equalShare?: boolean | null;
+  costCenterId?: string | null;
+  eventWid?: string | null;
+  lobReferenceId?: string | null;
+  fundReferenceId?: string | null;
+  spendCategoryReferenceId?: string | null;
+}
+
 export interface EmailWorktags {
   costCenterId?: string | null;
   eventWid?: string | null;
   lobReferenceId?: string | null;
   fundReferenceId?: string | null;
   spendCategoryReferenceId?: string | null;
+  /** The budgets the email divides the invoice across; two or more means one invoice line per budget. */
+  budgetSplits?: EmailBudgetSplit[];
+  /** Merchandise total (amount due less header freight and tax) the budgets must cover, when it can be read. */
+  budgetSplitBaseCents?: number | null;
+  /** Set by the caller when a split must not apply (all-freight invoice, unreadable header charge). */
+  budgetSplitBlockedReason?: string | null;
+}
+
+export interface EmailBudgetSplitOutcome {
+  applied: boolean;
+  /** Why the budgets were not split, for the Workday note and Slack. */
+  review?: string;
+  /** The line created for each budget, when applied. */
+  budgets: Array<{
+    label: string;
+    amountCents: number;
+    costCenterId: string | null;
+    spendCategoryId: string | null;
+  }>;
 }
 
 export function applyDefaultCompanyLineWorktags(
@@ -1991,7 +2169,7 @@ export async function buildFinalInvoiceLines(
   invoiceLineQuantityDisplayed?: boolean,
   invoiceContext?: InvoiceDateContext,
   abortSignal?: AbortSignal
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
+): Promise<BuiltInvoiceLines> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
   // Invoices without PO lines also keep it; selection rules only apply to PO line matching.
@@ -2079,11 +2257,12 @@ async function finalizeInvoiceLines(
   emailWorktags: EmailWorktags | undefined,
   relatedLobLookup: RelatedLobLookup | undefined,
   fallbackIds: InvoiceLineFallbackIds
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
+): Promise<BuiltInvoiceLines> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
   const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
-  const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
+  const budgetSplit = applyEmailBudgetSplits(withEmail, emailWorktags, parsedPoLines.length > 0);
+  const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(budgetSplit.lines, relatedLobLookup);
   const withConstrainedEmailLob = constrainEmailLobToRelatedWorktags(
     withRelated,
     relatedByCostCenterId,
@@ -2098,6 +2277,7 @@ async function finalizeInvoiceLines(
       lineOfBusiness: appliedFallbacks.lineOfBusiness || fallbackLob.applied,
     },
     relatedLobByCostCenter: relatedByCostCenterId,
+    emailBudgetSplit: budgetSplit.outcome,
   };
 }
 

@@ -302,6 +302,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const budgetSplit = Array.isArray(details.budgetSplit)
+    ? details.budgetSplit.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : [];
+  if (budgetSplit.length && details.skipped !== true) {
+    const lines = budgetSplit.map((line) => `• ${escapeSlackText(line)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Coding split*\n${lines.join('\n')}`) }
+    });
+  }
+
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
       type: 'section',

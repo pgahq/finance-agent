@@ -127,6 +127,7 @@ describe('enrichInvoiceFromAttachments supplier name check', () => {
     emailSummary: null,
     extractedPaymentTerms: null,
     emailWorktags: null,
+    emailBudgetSplits: null,
   };
 
   beforeEach(() => {

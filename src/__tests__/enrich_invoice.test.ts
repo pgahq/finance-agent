@@ -1294,6 +1294,82 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('hands the email budget splits and the merchandise total to the line builder and notes the split on update', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const coding = (cc: string, sc: string) => ({
+      event: null,
+      fund: null,
+      lineOfBusiness: null,
+      costCenter: { extracted: cc, name: cc, code: cc },
+      spendCategory: { extracted: sc, name: sc, referenceId: sc },
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Sponsorship' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$35,000',
+      extractedInvoiceLines: [
+        { description: 'Sponsorship Package', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: false }
+      ],
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'Recruitment', amount: '$15,000', percent: null, equalShare: null, ...coding('CC-Recruitment', 'SC-Sponsorships') },
+        { label: 'Brand', amount: '$20,000', percent: null, equalShare: null, ...coding('CC-Brand', 'SC-Advertising') },
+      ],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Sponsorship Package', quantity: 0, unitCost: 0, extendedAmount: 15000 },
+        { lineOrder: 2, description: 'Sponsorship Package', quantity: 0, unitCost: 0, extendedAmount: 20000 },
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      emailBudgetSplit: {
+        applied: true,
+        budgets: [
+          { label: 'Recruitment', amountCents: 1500000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+          { label: 'Brand', amountCents: 2000000, costCenterId: 'CC-Brand', spendCategoryId: 'SC-Advertising' },
+        ],
+      },
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+      budgetSplitBaseCents: 3500000,
+      budgetSplits: [
+        expect.objectContaining({ amount: '$15,000', costCenterId: 'CC-Recruitment', spendCategoryReferenceId: 'SC-Sponsorships' }),
+        expect.objectContaining({ amount: '$20,000', costCenterId: 'CC-Brand', spendCategoryReferenceId: 'SC-Advertising' }),
+      ],
+    }));
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.finalLines).toHaveLength(2);
+    expect(params.buildNotes([])).toContain('Email budget split (one invoice line per budget): $15,000.00 Recruitment');
+  });
+
   it('keeps an all-freight carrier line as the coded invoice line on update with no header freight', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
