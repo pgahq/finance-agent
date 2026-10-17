@@ -5787,6 +5787,7 @@ describe('Workday utilities', () => {
             extendedAmount: 300,
             costCenterId: 'CC-Operations',
             fundId: 'FUND-Championships',
+            spendCategoryId: 'SC-Sponsorships',
             lineOfBusinessId: 'LOB-Championships',
             poPassthroughWorktagsReference: [unknownOrg],
             supplierInvoiceSplitLineData: [
@@ -5824,6 +5825,7 @@ describe('Workday utilities', () => {
           expect(message).toMatch(/"quantity":2,"unitCost":150,"extendedAmount":300\b/);
           expect(message).toContain('"splits":[[');
           expect(message).toContain('Cost_Center_Reference_ID=CC-Hospitality');
+          expect(message).toContain('"spendCategory":"Spend_Category_ID=SC-Sponsorships"');
         }
       });
 

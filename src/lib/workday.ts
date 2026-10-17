@@ -803,6 +803,10 @@ function formatWorktagForLog(tag: any): string {
     .join('|');
 }
 
+function spendCategoryForLog(line: { Spend_Category_Reference?: unknown }): { spendCategory?: string } {
+  return line.Spend_Category_Reference ? { spendCategory: formatWorktagForLog(line.Spend_Category_Reference) } : {};
+}
+
 // Workday's read-back after a submit can show different line amounts than were sent, so log what was sent.
 function summarizeSubmittedLines(invoiceData: Record<string, unknown>): unknown[] {
   return ([] as any[]).concat(invoiceData.Invoice_Line_Replacement_Data ?? []).map((line: any) => ({
@@ -815,6 +819,7 @@ function summarizeSubmittedLines(invoiceData: Record<string, unknown>): unknown[
           ),
         }
       : {}),
+    ...spendCategoryForLog(line as { Spend_Category_Reference?: unknown }),
     quantity: line.Quantity,
     unitCost: line.Unit_Cost,
     extendedAmount: line.Extended_Amount,
