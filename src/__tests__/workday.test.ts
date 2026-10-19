@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -5512,6 +5512,47 @@ describe('Workday utilities', () => {
         retryLines.forEach((line: any) => expect(line.Purchase_Order_Line_Reference).toBeDefined());
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
           expect.objectContaining({ field: 'positiveQuantityPurchaseOrderLine', label: POSITIVE_PO_QUANTITY_LABEL }),
+        ]));
+      });
+
+      it.each([
+        ['a quantity-based PO line', 28000, 1, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL],
+        ['no PO quantity', undefined, 0, AMOUNT_ONLY_RETRY_LABEL],
+      ])('labels the amount-only retry for %s with what it sent', async (_name, purchaseOrderLineQuantity, expectedQuantity, expectedLabel) => {
+        const mockClient = mockSoapClient();
+        const captured: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost. Currently 37 * 29.88 does not equal 1105.49. Expected Amount: 1105.56.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Extended_Amount',
+                },
+              },
+            }, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback(null, newInvoiceResponse);
+          });
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [{
+            lineOrder: 1,
+            description: 'Sintra Signs',
+            quantity: 37,
+            unitCost: 29.88,
+            extendedAmount: 1105.49,
+            purchaseOrderLineId: PO_LINE,
+            purchaseOrderLineQuantity,
+          }] as any,
+        });
+
+        expect(linesOf(captured[1])[0]).toMatchObject({ Quantity: expectedQuantity, Extended_Amount: 1105.49 });
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'invoiceLineAmounts', label: expectedLabel }),
         ]));
       });
 

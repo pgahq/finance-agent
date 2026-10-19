@@ -1636,26 +1636,11 @@ function toCents(value: number): number {
   return Math.round(roundToDecimals(value, AMOUNT_DECIMALS) * 100);
 }
 
-// A PO-linked line keeps its printed quantity when the unit cost it implies reproduces the total
-// exactly; otherwise it submits one unit at the line amount, which always equals the total.
-function positiveQuantityLine(line: FinalInvoiceLine, extendedAmount: number, keepPrintedQuantity: boolean): FinalInvoiceLine {
-  const quantity = line.quantity;
-  if (keepPrintedQuantity && quantity != null && quantity > 0) {
-    const impliedUnitCost = roundToDecimals(extendedAmount / quantity, UNIT_COST_DECIMALS);
-    if (roundToDecimals(quantity * impliedUnitCost, EXTENDED_AMOUNT_DECIMALS) === extendedAmount) {
-      return { ...line, quantity, unitCost: impliedUnitCost, extendedAmount };
-    }
-  }
-  return { ...line, quantity: 1, unitCost: extendedAmount, extendedAmount };
-}
-
-function asAmountOnlyLine(
-  line: FinalInvoiceLine,
-  extendedAmount: number | null,
-  keepPrintedQuantity = false
-): FinalInvoiceLine {
+// A PO-linked line with no usable quantity submits one unit at the line amount, which always equals
+// the total. A printed quantity is not kept: a misread one would count against the PO line.
+function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
   if (extendedAmount != null && extendedAmount > 0 && requiresPositivePoQuantity(line)) {
-    return positiveQuantityLine(line, extendedAmount, keepPrintedQuantity);
+    return { ...line, quantity: 1, unitCost: extendedAmount, extendedAmount };
   }
   return {
     ...line,
@@ -1735,7 +1720,7 @@ export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): Fina
     if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
       const netUnitCost = netUnitCostForDiscountedPurchaseOrderLine(line, extendedAmount);
       if (netUnitCost != null) return { ...line, unitCost: netUnitCost };
-      return asAmountOnlyLine(line, extendedAmount, true);
+      return asAmountOnlyLine(line, extendedAmount);
     }
 
     return line;
@@ -2073,6 +2058,28 @@ export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoic
     if (!lineHasQuantityOrUnitAndExtended(line)) return line;
     return asAmountOnlyLine(line, line.extendedAmount ?? null);
   });
+}
+
+const POSITIVE_QUANTITY_NOTE_LINES_LISTED = 5;
+
+// Lists the lines that now submit one unit because their PO line is ordered by quantity, so AP sees
+// the quantity and unit cost that differ from the printed row.
+export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalInvoiceLine[]): string | undefined {
+  const changed = after.filter((line, index) =>
+    requiresPositivePoQuantity(line)
+    && line.quantity === 1
+    && before[index] != null
+    && before[index].quantity !== 1
+  );
+  if (changed.length === 0) return undefined;
+  const listed = changed
+    .slice(0, POSITIVE_QUANTITY_NOTE_LINES_LISTED)
+    .map(line => `"${line.description}" (${formatCents(toCents(line.extendedAmount ?? 0))})`);
+  const unlisted = changed.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'has' : 'have'} no usable printed quantity and`
+    + ` ${changed.length === 1 ? 'is' : 'are'} linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
+    + ` Submitted as quantity 1 at the line amount; the line total is unchanged.`;
 }
 
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.

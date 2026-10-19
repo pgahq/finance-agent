@@ -284,6 +284,10 @@ export function formatLineTotalReviewNotes(reviewNote: string | undefined): stri
   return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
 }
 
+export function formatPositivePoQuantityNotes(note: string | undefined): string {
+  return note ? `\n\nPO line quantity: ${note}` : '';
+}
+
 export function formatRepeatedLineNotes(note: string | undefined): string {
   return note ? `\n\nRepeated line review: ${note}` : '';
 }

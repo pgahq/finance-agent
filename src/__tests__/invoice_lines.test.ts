@@ -25,6 +25,7 @@ import {
   reconcileSubmittedCharges,
   requiresPositivePoQuantity,
   normalizeSupplierInvoiceLineAmounts,
+  positivePoQuantityNote,
   parseExtractedAmount,
   parseExtractedLineAmount,
   parseExtractedUnitCost,
@@ -3387,6 +3388,8 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
     poLinked(4, 'Printer Supplies Surcharge', null, null, 6422.95),
   ];
 
+  const SEPTEMBER_FREIGHT_CENTS = 292308;
+  const SEPTEMBER_AMOUNT_DUE_CENTS = 1859204;
   const sumCents = (lines: FinalInvoiceLine[]) =>
     lines.reduce((sum, line) => sum + Math.round((line.extendedAmount ?? 0) * 100), 0);
 
@@ -3400,7 +3403,7 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
       expect(line).toEqual(source);
     });
     expect(result.every(line => (line.quantity ?? 0) > 0)).toBe(true);
-    expect(sumCents(result) + 292308).toBe(1859204);
+    expect(sumCents(result) + SEPTEMBER_FREIGHT_CENTS).toBe(SEPTEMBER_AMOUNT_DUE_CENTS);
   });
 
   it('submits the August 7998 surcharge as one unit at its amount', () => {
@@ -3421,20 +3424,11 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
     expect(result[1]).toMatchObject({ quantity: 1, unitCost: 75, extendedAmount: 75 });
   });
 
-  it('keeps a printed quantity when the implied unit cost reproduces the total', () => {
-    const lines = [poLinked(1, 'Signs', 37, 29.88, 1110)];
-    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 37, extendedAmount: 1110 });
-    expect(alignSupplierInvoiceLineAmounts(lines)[0].unitCost).toBeCloseTo(30, 5);
-  });
-
-  it('prices a printed quantity at the implied unit cost to six decimals', () => {
-    const lines = [poLinked(1, 'Signs', 3, 1, 10)];
-    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 3, unitCost: 3.333333, extendedAmount: 10 });
-  });
-
-  it('falls back to one unit when no printed quantity is available for the mismatching line', () => {
-    const lines = [poLinked(1, 'Service', null, 50, 250)];
-    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
+  it('sends one unit, not the printed quantity, when a PO-linked line mismatches its total', () => {
+    const lines = [poLinked(1, 'Signs', 37, 29.88, 1110), poLinked(2, 'Service', null, 50, 250)];
+    const [signs, service] = alignSupplierInvoiceLineAmounts(lines);
+    expect(signs).toMatchObject({ quantity: 1, unitCost: 1110, extendedAmount: 1110 });
+    expect(service).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
   });
 
   it.each([
@@ -3500,5 +3494,33 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
     const [line] = overlaySharedPoWorktagsOnUnmatchedLines([poLinked(1, 'Fee', null, null, 10)], undefined);
     expect(line.purchaseOrderLineId).toBeNull();
     expect(line.purchaseOrderLineQuantity).toBeUndefined();
+  });
+});
+
+describe('positivePoQuantityNote', () => {
+  const poLine = (lineOrder: number, quantity: number | null, extendedAmount: number): FinalInvoiceLine => ({
+    lineOrder,
+    description: `Line ${lineOrder}`,
+    quantity,
+    unitCost: quantity == null ? null : extendedAmount / quantity,
+    extendedAmount,
+    purchaseOrderLineId: 'POL-1',
+    purchaseOrderLineQuantity: 100,
+  });
+
+  it('names only the lines that changed to one unit', () => {
+    const before = [poLine(1, 1, 10), poLine(2, null, 2222.53), poLine(3, 5, 25)];
+    const note = positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true));
+    expect(note).toContain('"Line 2" ($2,222.53)');
+    expect(note).toContain('quantity 1 at the line amount');
+    expect(note).not.toContain('Line 1');
+    expect(note).not.toContain('Line 3');
+  });
+
+  it('returns nothing when no line needed the change', () => {
+    const before = [poLine(1, 2, 10)];
+    expect(positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true))).toBeUndefined();
+    const plain: FinalInvoiceLine[] = [{ lineOrder: 1, description: 'Fee', quantity: null, unitCost: null, extendedAmount: 5 }];
+    expect(positivePoQuantityNote(plain, normalizeSupplierInvoiceLineAmounts(plain, true))).toBeUndefined();
   });
 });

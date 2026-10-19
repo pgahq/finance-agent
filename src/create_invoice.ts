@@ -17,6 +17,7 @@ import {
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
+  formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
@@ -63,6 +64,7 @@ import {
   mergeAmountCheckMessages,
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
+  positivePoQuantityNote,
   overlaySharedPoWorktagsOnUnmatchedLines,
   unappliedEmailBudgetSplit,
   parseExtractedAmount,
@@ -1229,9 +1231,13 @@ async function processInvoiceCluster(
         : undefined;
     }
 
+    let poQuantityNote: string | undefined;
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+      const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
+      poQuantityNote = positivePoQuantityNote(printedLines, finalLines);
+      if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
@@ -1246,6 +1252,7 @@ async function processInvoiceCluster(
     const lineReview = [
       repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
       lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
+      poQuantityNote && `PO line quantity: ${poQuantityNote}`,
       emailBudgetSplit?.review && `Budget split review: ${emailBudgetSplit.review}`,
     ].filter((note): note is string => Boolean(note));
 
@@ -1277,7 +1284,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
