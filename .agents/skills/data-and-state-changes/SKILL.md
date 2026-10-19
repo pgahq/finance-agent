@@ -52,7 +52,10 @@ and `cancel_labels` (DDL and indexes in `src/lib/database.ts`), created after
 the cluster plans table, and the `agent_invoice_touches` view plus
 `agent_invoice_touch_daily` table (`src/lib/touch_reporting.ts`), created by
 `ensureTouchReporting` after the documents migration on the same client; a
-failure there is logged and does not fail cold start. `agent_invoice_status_checks`
+failure there is logged and does not fail cold start. `agent_invoice_coverage_daily`
+(one row per Central invoice creation day, rewritten by `ScoreDigest` from a
+Workday query; `ensureCoverageReporting` in the same file) is created the same
+way. `agent_invoice_status_checks`
 (`src/lib/invoice_scores.ts`) and `agent_invoice_audit_posts`
 (`src/score_digest.ts`) are created by the scoring jobs themselves, not at cold
 start.
