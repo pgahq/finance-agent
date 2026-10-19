@@ -6,7 +6,8 @@ description: >-
   cancel attribution, touch buckets, and the daily and weekly ScoreDigest posts
   to #notify-finance-agent-audit. Use when changing agent_invoice_snapshots,
   agent_invoice_scores, cancel_labels, agent_invoice_touches,
-  agent_invoice_touch_daily, snapshotAgentWrite or snapshotEnrichBaseline,
+  agent_invoice_touch_daily, agent_invoice_coverage_daily, agent coverage,
+  COVERAGE_COMPANY_WIDS, snapshotAgentWrite or snapshotEnrichBaseline,
   the scored-field whitelist, material vs convention fields, invoice status
   classification, CANCEL_REASON_ATTRIBUTION, SCORE_* settings, ScoreInvoices,
   ScoreDigest, AUDIT_SLACK_BOT_TOKEN, AUDIT_SLACK_CHANNEL_ID, or
@@ -165,6 +166,46 @@ memo text cannot mention the channel or add links.
   per-field change rates, edit rate by release, late corrections, cancels,
   convention examples, worst invoices, unlabeled cancels, and a count of
   agent-tagged invoices with no snapshot (or a note when that query fails).
+  The agent coverage section follows the title (see Coverage).
+
+## Coverage
+
+The KPI is the share of PGA Corp supplier invoices created in a period that the
+agent created or enriched (`src/lib/invoice_coverage.ts`). Sections create their
+own invoices and are out of scope, so the WQL filters `company1` to
+`COVERAGE_COMPANY_WIDS` (comma-separated company WIDs; defaults to the six PGA
+Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
+
+- Source: one WQL query over `supplierInvoices` for `createdOn` padded by a day
+  on each side, run with `requireCompleteTotal` so a short page fails the
+  refresh instead of shrinking the denominator. Each invoice is placed on its
+  Central day from `createdDateTime` (UTC), falling back to `createdOn`.
+- Agent supported: the invoice has a row in `agent_invoice_snapshots` or carries
+  the `FINAGENT-invoice-modified` tag (AP can replace the tag; older invoices
+  predate snapshots). `agent_created` is a `create` or `resend_update` snapshot,
+  `agent_enriched` only `enrich` snapshots, `agent_notes_only` the tag alone.
+- `invoiceCreatedBy` does not identify agent invoices: on them it is the AP
+  teammate who started the Intercom action, and it is sometimes blank. It only
+  splits the rest: `uncovered_ocr` (Workday OCR never enriched),
+  `uncovered_manual` (a worker keyed it), `uncovered_integration` (no creator,
+  such as Amazon and ODP batches).
+- Canceled invoices are checked first and stay out of the share
+  (`canceled`); companies outside the scope are `out_of_scope`. The headline
+  share counts everything else; a second share leaves the integration invoices
+  out of the denominator.
+- Supplier Invoice Requests had no invoices in any company since 2025-01-01, so
+  there is no category for them.
+- `agent_invoice_coverage_daily` (`ensureCoverageReporting`, created at cold
+  start) holds one row per Central creation day. Each `ScoreDigest` run, daily
+  and weekly, recomputes the last 15 days; the first run backfills 90. A
+  failed refresh is reported after posting and fails the run, like the touch
+  rollup.
+- The weekly digest shows the share against the week before, the counts per
+  category, the invoices created for other companies, the top suppliers the
+  agent missed, who keyed by hand with their agent counts, and up to ten
+  uncovered invoice links, one per person in turn. It is skipped on the sandbox
+  refresh weekday, and says coverage is unavailable when the Workday query
+  fails.
 
 ## Sandbox refresh (dev only)
 

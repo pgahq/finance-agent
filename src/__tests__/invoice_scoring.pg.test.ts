@@ -7,6 +7,7 @@ jest.mock('../lib/workday.js', () => ({
   getSupplierInvoice: jest.fn(),
   getSupplierInvoiceEditability: jest.fn(),
   executeWorkdayQuery: jest.fn(),
+  getWorkQueueTagWIDs: jest.fn(),
 }));
 
 import { Pool } from 'pg';
@@ -20,7 +21,8 @@ import {
 } from '../lib/database.js';
 import type { ProcessingContext } from '../lib/handlers.js';
 import { findOtherAgentInvoicesWithSameNumber, getInvoiceScore, listPendingScoreInvoices, recordStatusChecks, upsertInvoiceScore } from '../lib/invoice_scores.js';
-import { ensureTouchReporting, refreshTouchDaily } from '../lib/touch_reporting.js';
+import { centralDayKey, refreshCoverageDaily } from '../lib/invoice_coverage.js';
+import { ensureCoverageReporting, ensureTouchReporting, refreshTouchDaily } from '../lib/touch_reporting.js';
 import { getAgentInvoiceSnapshots, snapshotAgentWrite, snapshotEnrichBaseline } from '../lib/invoice_snapshots.js';
 import { buildDigestBlocks, digestWindow, summarizeScores } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
@@ -58,7 +60,7 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
 
   beforeAll(async () => {
     await pool.query('DROP VIEW IF EXISTS agent_invoice_touches');
-    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily, agent_invoice_status_checks, agent_invoice_audit_posts');
+    await pool.query('DROP TABLE IF EXISTS agent_invoice_snapshots, agent_invoice_scores, cancel_labels, agent_invoice_touch_daily, agent_invoice_coverage_daily, agent_invoice_status_checks, agent_invoice_audit_posts');
     await pool.query(CREATE_AGENT_INVOICE_SNAPSHOTS_TABLE);
     for (const sql of CREATE_AGENT_INVOICE_SNAPSHOTS_INDEXES) await pool.query(sql);
     await pool.query(CREATE_AGENT_INVOICE_SCORES_TABLE);
@@ -206,6 +208,39 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     await ensureTouchReporting(run);
     const { rows } = await pool.query("SELECT to_regclass('agent_invoice_touches') IS NOT NULL AS present");
     expect(rows[0].present).toBe(true);
+  });
+
+  it('rolls agent coverage up per creation day from Workday and the snapshots, rewriting a day on each refresh', async () => {
+    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
+    await ensureCoverageReporting(run);
+    await ensureCoverageReporting(run);
+
+    const today = centralDayKey(new Date());
+    const pga = 'cab0b1d2505a01338fcd651982277bec';
+    const record = (id: string, extra: Record<string, unknown> = {}) => ({ workdayID: id, createdOn: today, company1: { id: pga }, ...extra });
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue(['tag-wid']);
+    const records = [
+      record(created),
+      record(enriched),
+      record('t'.repeat(32), { workQueueTags: [{ id: 'tag-wid' }] }),
+      record('h'.repeat(32), { invoiceCreatedBy: { descriptor: 'Someone' } }),
+      record('i'.repeat(32)),
+      record('x'.repeat(32), { isCanceled: true }),
+      { ...record('s'.repeat(32)), company1: { id: 'section' } },
+    ];
+    (workday.executeWorkdayQuery as jest.Mock).mockResolvedValue({ data: records });
+
+    expect(await refreshCoverageDaily(context)).toBe(90);
+    expect(await refreshCoverageDaily(context)).toBe(15);
+
+    const { rows } = await pool.query('SELECT * FROM agent_invoice_coverage_daily ORDER BY created_day');
+    expect(rows).toHaveLength(90);
+    const day = rows[rows.length - 1];
+    expect(day).toMatchObject({
+      invoices: 5, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 0,
+      uncovered_manual: 1, uncovered_integration: 1, canceled: 1, coverage_share: '0.6000', coverage_share_without_integrations: '0.7500',
+    });
+    expect(rows[0]).toMatchObject({ invoices: 0, coverage_share: null });
   });
 
   it('stores when the daily audit post last went out', async () => {

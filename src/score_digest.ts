@@ -13,10 +13,10 @@ import {
   weeklyTouchTrend,
 } from './lib/score_touches.js';
 import { refreshTouchDaily } from './lib/touch_reporting.js';
+import { AGENT_MODIFIED_TAG_REF_ID, loadWeeklyCoverage, refreshCoverageDaily } from './lib/invoice_coverage.js';
 import { notifyResult, postSlackChannelMessage, SLACK_POST_GAP_MS, type SlackBlock, type SlackChannelPostResult } from './lib/slack.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './lib/workday.js';
 
-const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
 const UNATTRIBUTED_CANCEL_LIMIT = 10;
 export const DAILY_MESSAGE_GAP_MS = SLACK_POST_GAP_MS;
 
@@ -203,16 +203,29 @@ async function refreshTouchRollup(context: ProcessingContext): Promise<Error | u
   }
 }
 
+/** Same contract as `refreshTouchRollup`, for the agent coverage rollup. */
+async function refreshCoverageRollup(context: ProcessingContext): Promise<Error | undefined> {
+  try {
+    const days = await refreshCoverageDaily(context);
+    debug('Refreshed agent_invoice_coverage_daily', { days });
+    return undefined;
+  } catch (error) {
+    debug('Could not refresh agent_invoice_coverage_daily; posting without it', error);
+    return new Error(`Posted the audit, but agent_invoice_coverage_daily could not be refreshed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export const handler = withHandler(async (context, event?: { mode?: string }) => {
   const startTime = Date.now();
   try {
-    const rollupError = await refreshTouchRollup(context);
+    const rollupErrors = [await refreshTouchRollup(context), await refreshCoverageRollup(context)]
+      .filter((error): error is Error => Boolean(error));
     if (event?.mode === 'daily') {
       await postDailySummary(context, new Date());
     } else {
       await postWeeklyDigest(context);
     }
-    if (rollupError) throw rollupError;
+    if (rollupErrors.length) throw new Error(rollupErrors.map((error) => error.message).join('; '));
   } catch (error) {
     await notifyResult('score_digest', 'error', Date.now() - startTime, undefined, error);
     throw error;
@@ -241,6 +254,12 @@ async function postWeeklyDigest(context: ProcessingContext): Promise<void> {
     } catch (error) {
       debug('Could not count pre-snapshot agent invoices; posting the digest without them', error);
       summary.backlogUnavailable = true;
+    }
+    try {
+      summary.coverage = await loadWeeklyCoverage(context, window);
+    } catch (error) {
+      debug('Could not compute agent coverage; posting the digest without it', error);
+      summary.coverageUnavailable = true;
     }
   }
 

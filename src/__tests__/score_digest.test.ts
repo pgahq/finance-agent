@@ -11,6 +11,7 @@ jest.mock('../lib/workday.js', () => ({
   executeWorkdayQuery: jest.fn(),
 }));
 
+import { classifyCoverage, summarizeCoverage, type CoverageRow } from '../lib/invoice_coverage.js';
 import type { InvoiceScore } from '../lib/invoice_scores.js';
 import { buildDailyInvoiceMessages, buildDigestBlocks, digestWindow, MAX_DAILY_INVOICE_MESSAGES, summarizeDay, summarizeScores } from '../lib/score_digest.js';
 import { addCentralDays, centralDayStart, centralWeekStart } from '../lib/score_touches.js';
@@ -443,6 +444,7 @@ describe('score digest handler', () => {
   function routeQueries(rows: { digest?: unknown[]; unlabeled?: unknown[]; entered?: unknown[]; snapshots?: unknown[]; posted?: unknown[] }) {
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('AS stored FROM agent_invoice_touch_daily')) return Promise.resolve([{ stored: 15 }]);
+      if (sql.includes('AS stored FROM agent_invoice_coverage_daily')) return Promise.resolve([{ stored: 15 }]);
       if (sql.includes('SELECT posted_through FROM agent_invoice_audit_posts')) return Promise.resolve(rows.posted ?? []);
       if (sql.includes('label_attribution')) return Promise.resolve(rows.digest ?? []);
       if (sql.includes("cancel_attribution = 'unattributed'")) return Promise.resolve(rows.unlabeled ?? []);
@@ -458,6 +460,18 @@ describe('score digest handler', () => {
     text: string;
     blocks: Array<{ type: string; text?: { text: string }; elements?: Array<{ text: string }>; image_url?: string }>;
   };
+  /** Answer each Workday query by what it asks for: the pre-snapshot backlog, PGA Corp coverage, or every company. */
+  function routeWorkday(rows: { backlog?: unknown[] | Error; coverage?: unknown[]; allCompanies?: unknown[] } = {}) {
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue(['tag-wid']);
+    (workday.executeWorkdayQuery as jest.Mock).mockImplementation(async (_config: unknown, wql: string) => {
+      if (wql.includes('workQueueTags in (')) {
+        if (rows.backlog instanceof Error) throw rows.backlog;
+        return { data: rows.backlog ?? [] };
+      }
+      return { data: (wql.includes('company1 in (') ? rows.coverage : rows.allCompanies) ?? [] };
+    });
+  }
+  const workdayQueries = () => (workday.executeWorkdayQuery as jest.Mock).mock.calls.map(([, wql]) => String(wql));
   const recordedPost = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO agent_invoice_audit_posts'));
 
   beforeEach(() => {
@@ -469,6 +483,7 @@ describe('score digest handler', () => {
     process.env.S3_BUCKET_NAME = 'finance-agent-test';
     process.env.AUDIT_SLACK_BOT_TOKEN = 'xoxb-test';
     process.env.AUDIT_SLACK_CHANNEL_ID = 'C0AUDIT';
+    routeWorkday();
   });
 
   afterEach(() => {
@@ -482,7 +497,7 @@ describe('score digest handler', () => {
       { workday_invoice_wid: 'w2', entry_read_at: lastSunday, outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
     ];
     routeQueries({ digest: entered, entered });
-    (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('No work queue tags found'));
+    routeWorkday({ backlog: new Error('No work queue tags found') });
 
     await handler({});
 
@@ -515,7 +530,7 @@ describe('score digest handler', () => {
     expect(lead.blocks.some((block) => block.type === 'image' && block.image_url?.startsWith('https://quickchart.io/chart?'))).toBe(true);
     expect(payloadOf(1).text).toContain('Finance agent audit · `SUPIN-1` · submitted with AP edits · 1 touch');
     expect(payloadOf(2).text).toContain('`SUPIN-2` · submitted with no material change · 0 touches');
-    expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
+    expect(workdayQueries().some((wql) => wql.includes('workQueueTags in ('))).toBe(false);
   });
 
   it('in daily mode includes invoices scored after the previous daily post, then records the new post', async () => {
@@ -590,7 +605,7 @@ describe('score digest handler', () => {
 
   it('says the pre-snapshot count is missing when the Workday query fails', async () => {
     routeQueries({});
-    (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('Workday down'));
+    routeWorkday({ backlog: new Error('Workday down') });
     await handler({});
     const context = payloadOf(0).blocks.find((block) => block.elements)?.elements?.[0].text;
     expect(context).toBe('Before snapshots (outcome only): unavailable this week; Workday query failed.');
@@ -662,7 +677,7 @@ describe('score digest handler', () => {
 
     await handler({});
 
-    expect(workday.getWorkQueueTagWIDs).not.toHaveBeenCalled();
+    expect(workdayQueries().some((wql) => wql.includes('workQueueTags in ('))).toBe(false);
     const text = payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n');
     expect(text).toContain('• 2 removed by the weekly sandbox refresh (not scored)');
     expect(text).toContain('on 0 of 0 invoices closed last week');
@@ -672,9 +687,8 @@ describe('score digest handler', () => {
 
   it('counts pre-snapshot agent invoices by state and skips ones that have a snapshot', async () => {
     routeQueries({ snapshots: [{ workday_invoice_wid: 'has-snapshot' }] });
-    (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue(['tag-wid']);
-    (workday.executeWorkdayQuery as jest.Mock).mockResolvedValue({
-      data: [
+    routeWorkday({
+      backlog: [
         { workdayID: 'has-snapshot', invoiceStatusAsText: 'Draft' },
         { workdayID: 'old-1', invoiceStatusAsText: 'Approved' },
         { workdayID: 'old-2', invoiceStatusAsText: 'Draft', isCanceled: true },
@@ -683,8 +697,113 @@ describe('score digest handler', () => {
 
     await handler({});
 
-    expect((workday.executeWorkdayQuery as jest.Mock).mock.calls[0][1]).toContain("workQueueTags in ('tag-wid')");
+    expect(workdayQueries().some((wql) => wql.includes("workQueueTags in ('tag-wid')"))).toBe(true);
     const context = payloadOf(0).blocks.find((block) => block.elements)?.elements?.[0].text;
     expect(context).toBe('Before snapshots (outcome only): 1 approved, 1 canceled');
+  });
+
+  const PGA_WID = 'cab0b1d2505a01338fcd651982277bec';
+  const coverageRecord = (id: string, createdOn: string, extra: Record<string, unknown> = {}) => ({
+    workdayID: id, invoiceNumber: `SUPIN-${id}`, createdOn, company1: { id: PGA_WID }, ...extra,
+  });
+  const thisWeekDay = (offset: number) => new Date(centralWeekStart(new Date()).getTime() - (7 - offset) * 86_400_000 + 12 * 3_600_000).toISOString().slice(0, 10);
+
+  it('adds the agent coverage section to the weekly digest, and refreshes the stored rollup in both modes', async () => {
+    routeQueries({});
+    routeWorkday({
+      coverage: [
+        coverageRecord('1', thisWeekDay(1), { workQueueTags: [{ id: 'tag-wid' }], invoiceCreatedBy: { descriptor: 'McKyra Jones' } }),
+        coverageRecord('2', thisWeekDay(2), { invoiceCreatedBy: { descriptor: 'Tiffany Mead [C]' }, supplier: { descriptor: 'Payee' } }),
+      ],
+      allCompanies: [{ workdayID: 'sec', company1: { id: 'section' }, createdOn: thisWeekDay(3) }],
+    });
+
+    await handler({});
+
+    const text = payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(text).toContain('*Agent coverage* · *50%* of PGA Corp supplier invoices went through the agent last week (1 of 2)');
+    expect(text).toContain('• 1 tagged by the agent (notes only)');
+    expect(text).toContain('• 1 keyed by hand');
+    expect(text).toContain('1 invoice for other companies left out');
+    expect(text).toContain("• `Tiffany Mead [C]`: 1 by hand, 0 through the agent");
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO agent_invoice_coverage_daily'))).toBe(true);
+
+    mockQuery.mockClear();
+    routeQueries({});
+    await handler({ mode: 'daily' });
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO agent_invoice_coverage_daily'))).toBe(true);
+  });
+
+  it('says coverage is unavailable, and still posts, when Workday cannot be queried for it', async () => {
+    routeQueries({});
+    (workday.getWorkQueueTagWIDs as jest.Mock).mockRejectedValue(new Error('No work queue tags found'));
+    await expect(handler({})).rejects.toThrow('agent_invoice_coverage_daily could not be refreshed: No work queue tags found');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const text = payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n');
+    expect(text).toContain('*Agent coverage* · unavailable this week; Workday query failed.');
+  });
+
+  it('posts, then fails the run, when the stored coverage rollup cannot be written', async () => {
+    routeQueries({});
+    const routed = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((sql: string) =>
+      (sql.includes('INSERT INTO agent_invoice_coverage_daily') ? Promise.reject(new Error('lock timeout')) : routed(sql)));
+    await expect(handler({})).rejects.toThrow('agent_invoice_coverage_daily could not be refreshed: lock timeout');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('in a refreshed sandbox, leaves coverage out of the digest', async () => {
+    process.env.SCORE_TENANT_REFRESH_WEEKDAY = '6';
+    routeQueries({});
+    await handler({});
+    expect(payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n')).not.toContain('Agent coverage');
+    delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
+  });
+});
+
+describe('agent coverage in the weekly digest', () => {
+  const base = summarizeScores([], window);
+  const rows: CoverageRow[] = [
+    { workdayInvoiceWid: 'a1', hasAgentTag: true, isOcr: false, isCanceled: false, day: '2026-10-06', companyWid: 'c', creator: 'McKyra Jones' },
+    { workdayInvoiceWid: 'a2', hasAgentTag: true, isOcr: false, isCanceled: false, day: '2026-10-06', companyWid: 'c', creator: 'McKyra Jones' },
+    { workdayInvoiceWid: 'h1', workdayInvoiceNumber: 'SUPIN-H1', supplier: 'UPS <ups@x> & *Co*', creator: 'Tiffany Mead [C]', hasAgentTag: false, isOcr: false, isCanceled: false, day: '2026-10-06', companyWid: 'c' },
+    { workdayInvoiceWid: 'i1', supplier: 'Amazon', hasAgentTag: false, isOcr: false, isCanceled: false, day: '2026-10-06', companyWid: 'c' },
+    { workdayInvoiceWid: 'x1', hasAgentTag: false, isOcr: false, isCanceled: true, day: '2026-10-06', companyWid: 'c' },
+  ];
+  const classified = classifyCoverage(rows, new Map(), ['c']);
+  const textOf = (blocks: SlackBlock[]) => blocks.map((block) => (block as { text?: { text: string } }).text?.text ?? '').join('\n');
+
+  it('shows the share, how it moved, the category counts, and where the agent was missed', () => {
+    const previous = classifyCoverage([rows[0], rows[2], rows[3], rows[3]].map((row, index) => ({ ...row, workdayInvoiceWid: `p${index}` })), new Map(), ['c']);
+    const coverage = { ...summarizeCoverage(classified, previous), outOfScope: 1612 };
+    const text = textOf(buildDigestBlocks({ ...base, coverage }));
+    expect(text).toContain('*Agent coverage* · *50%* of PGA Corp supplier invoices went through the agent last week (2 of 4) (was 25% the week before)');
+    expect(text).toContain('• 2 tagged by the agent (notes only)');
+    expect(text).toContain('• 1 keyed by hand');
+    expect(text).toContain('• 1 created with no creator (integrations)');
+    expect(text).toContain('Without integration invoices: 67%');
+    expect(text).toContain('_1 canceled invoice not counted · 1612 invoices for other companies left out_');
+    expect(text).toContain('*Where the agent was not used*');
+    expect(text).toContain('• `Tiffany Mead [C]`: 1 by hand, 0 through the agent');
+    expect(text).toContain('SUPIN-H1');
+  });
+
+  it('keeps invoice text from formatting or mentioning in Slack', () => {
+    const text = textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage(classified) }));
+    expect(text).toContain('`UPS &lt;ups@x&gt; &amp; *Co*`');
+    expect(text).not.toContain('<ups@x>');
+  });
+
+  it('omits categories with no invoices and the without-integrations line when there are none', () => {
+    const text = textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage(classified.filter((invoice) => invoice.category !== 'uncovered_integration')) }));
+    expect(text).not.toContain('integrations');
+    expect(text).not.toContain('Without integration invoices');
+    expect(text).not.toContain('created by the agent');
+  });
+
+  it('says so when no invoice was created, or when coverage could not be computed', () => {
+    expect(textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage([]) }))).toContain('no PGA Corp supplier invoices were created last week');
+    expect(textOf(buildDigestBlocks({ ...base, coverageUnavailable: true }))).toContain('*Agent coverage* · unavailable this week; Workday query failed.');
+    expect(textOf(buildDigestBlocks(base))).not.toContain('Agent coverage');
   });
 });
