@@ -524,6 +524,11 @@ export function isQuantityDistributionSplitError(text: unknown): boolean {
   );
 }
 
+// Workday faults when a line tied to a quantity-based PO line is submitted with quantity 0.
+export function isPositiveQuantityRequiredForPoLineError(text: unknown): boolean {
+  return /Enter a quantity that is greater than zero for supplier invoice lines related to purchase order/i.test(asValidationText(text));
+}
+
 export function isSupplierNotAllowedForPurchaseOrderError(value: unknown): boolean {
   return /can['’]?t select this supplier to invoice this purchase order/i.test(validationHaystack(value));
 }

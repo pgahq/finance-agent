@@ -4,6 +4,7 @@ import {
   applyDefaultCompanyLineWorktags,
   applyEmailBudgetSplits,
   applyMissingQuantityColumnLines,
+  applyPositivePoQuantityRetry,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
   chargeReconciliationMessages,
@@ -22,6 +23,8 @@ import {
   overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   reconcileSubmittedCharges,
+  requiresPositivePoQuantity,
+  normalizeSupplierInvoiceLineAmounts,
   parseExtractedAmount,
   parseExtractedLineAmount,
   parseExtractedUnitCost,
@@ -3342,3 +3345,160 @@ describe('resolveHeaderChargeAmounts', () => {
   });
 });
 
+
+describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () => {
+  const PO_LINE = 'ITEM_ORDER_LINE-3-28584';
+  const poLinked = (
+    lineOrder: number,
+    description: string,
+    quantity: number | null,
+    unitCost: number | null,
+    extendedAmount: number
+  ): FinalInvoiceLine => ({
+    lineOrder,
+    description,
+    quantity,
+    unitCost,
+    extendedAmount,
+    hasDiscount: false,
+    purchaseOrderLineId: PO_LINE,
+    purchaseOrderLineQuantity: 28000,
+  });
+
+  const septemberLines = (): FinalInvoiceLine[] => [
+    poLinked(1, 'Orders', 1, 4.57, 4.57),
+    poLinked(2, 'Units', 500, 0.1183, 59.15),
+    poLinked(3, 'Storage', 5, 16, 80),
+    poLinked(4, 'Receiving', 0.25, 37.31, 9.33),
+    poLinked(5, 'Special Warehouse Labor', 90.96, 37.32, 3394.63),
+    poLinked(6, 'Account Management Fee', 1, 799.59, 799.59),
+    poLinked(7, 'Apprentice Kits', 195, 4.53, 883.35),
+    poLinked(8, 'Member Kits', 50, 4.53, 226.5),
+    poLinked(9, 'Membership Cards Printed', 6332, 1.17, 7408.44),
+    poLinked(10, 'Printer Supplies Surcharge', null, null, 2222.53),
+    poLinked(11, 'Member Letters/Certificates/Labels Printed', 345, 0.37, 127.65),
+    poLinked(12, 'Data Transmissions', 17, 26.66, 453.22),
+  ];
+
+  const augustLines = (): FinalInvoiceLine[] => [
+    poLinked(1, 'Units', 1200, 0.1183, 141.96),
+    poLinked(2, 'Account Management Fee', 1, 799.59, 799.59),
+    poLinked(3, 'Membership Cards Printed', 6000, 1.17, 7020),
+    poLinked(4, 'Printer Supplies Surcharge', null, null, 6422.95),
+  ];
+
+  const sumCents = (lines: FinalInvoiceLine[]) =>
+    lines.reduce((sum, line) => sum + Math.round((line.extendedAmount ?? 0) * 100), 0);
+
+  it('submits the September 8107 surcharge as one unit at its amount and leaves quantity lines alone', () => {
+    const original = septemberLines();
+    const result = normalizeSupplierInvoiceLineAmounts(original, true);
+
+    expect(result[9]).toMatchObject({ quantity: 1, unitCost: 2222.53, extendedAmount: 2222.53, purchaseOrderLineId: PO_LINE });
+    result.filter((_, index) => index !== 9).forEach((line, index) => {
+      const source = original.filter((_, i) => i !== 9)[index];
+      expect(line).toEqual(source);
+    });
+    expect(result.every(line => (line.quantity ?? 0) > 0)).toBe(true);
+    expect(sumCents(result) + 292308).toBe(1859204);
+  });
+
+  it('submits the August 7998 surcharge as one unit at its amount', () => {
+    const result = normalizeSupplierInvoiceLineAmounts(augustLines(), true);
+    expect(result[3]).toMatchObject({ quantity: 1, unitCost: 6422.95, extendedAmount: 6422.95, purchaseOrderLineId: PO_LINE });
+    expect(result.every(line => (line.quantity ?? 0) > 0)).toBe(true);
+  });
+
+  it('turns an already-zeroed PO-linked line into one unit', () => {
+    const lines = [{ ...poLinked(1, 'Surcharge', 0, 0, 100) }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 1, unitCost: 100, extendedAmount: 100 });
+  });
+
+  it('sends one unit for every PO-linked line when the invoice prints no quantity column', () => {
+    const lines = [poLinked(1, 'Service', null, 50, 250), poLinked(2, 'Fee', null, null, 75)];
+    const result = normalizeSupplierInvoiceLineAmounts(lines, false);
+    expect(result[0]).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
+    expect(result[1]).toMatchObject({ quantity: 1, unitCost: 75, extendedAmount: 75 });
+  });
+
+  it('keeps a printed quantity when the implied unit cost reproduces the total', () => {
+    const lines = [poLinked(1, 'Signs', 37, 29.88, 1110)];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 37, extendedAmount: 1110 });
+    expect(alignSupplierInvoiceLineAmounts(lines)[0].unitCost).toBeCloseTo(30, 5);
+  });
+
+  it('prices a printed quantity at the implied unit cost to six decimals', () => {
+    const lines = [poLinked(1, 'Signs', 3, 1, 10)];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 3, unitCost: 3.333333, extendedAmount: 10 });
+  });
+
+  it('falls back to one unit when no printed quantity is available for the mismatching line', () => {
+    const lines = [poLinked(1, 'Service', null, 50, 250)];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
+  });
+
+  it.each([
+    ['a non-PO line', { purchaseOrderLineId: null, purchaseOrderLineQuantity: undefined }],
+    ['an amount-based PO line', { purchaseOrderLineQuantity: undefined }],
+    ['a PO line ordered with quantity 0', { purchaseOrderLineQuantity: 0 }],
+    ['a line whose PO reference is omitted', { omitPurchaseOrderLineReference: true }],
+  ])('still submits an amount-only line on %s as quantity 0', (_name, overrides) => {
+    const line = { ...poLinked(1, 'Surcharge', null, null, 100), ...overrides } as FinalInvoiceLine;
+    expect(requiresPositivePoQuantity(line)).toBe(false);
+    expect(normalizeSupplierInvoiceLineAmounts([line], true)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
+  });
+
+  it('leaves a credit on a quantity-based PO line untouched', () => {
+    const credit = { ...poLinked(1, 'Credit', null, null, -50), hasDiscount: true };
+    expect(requiresPositivePoQuantity(credit)).toBe(false);
+    expect(alignSupplierInvoiceLineAmounts([credit])).toEqual([credit]);
+  });
+
+  it('leaves lines on a quantity-split PO line to the split-quantity rules', () => {
+    const split = { quantity: 5, worktagReference: [] } as any;
+    const line = { ...poLinked(1, 'Surcharge', null, null, 100), supplierInvoiceSplitLineData: [split, split] };
+    expect(requiresPositivePoQuantity(line)).toBe(false);
+    expect(alignSupplierInvoiceLineAmounts([line])[0]).toMatchObject({ quantity: 0, unitCost: 0 });
+  });
+
+  it('amount-only retry keeps a positive quantity on quantity-based PO lines and zeroes the rest', () => {
+    const poLine = poLinked(1, 'Widgets', 10, 5, 50);
+    const plain: FinalInvoiceLine = { lineOrder: 2, description: 'Widgets', quantity: 10, unitCost: 5, extendedAmount: 50 };
+    const [first, second] = applyAmountOnlyLineRetry([poLine, plain]);
+    expect(first).toMatchObject({ quantity: 1, unitCost: 50, extendedAmount: 50 });
+    expect(second).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 50 });
+  });
+
+  it('positive-quantity retry rewrites only the named zero-quantity lines', () => {
+    const zeroed = { ...poLinked(1, 'Surcharge', 0, 0, 100) };
+    const untouched = poLinked(2, 'Units', 5, 2, 10);
+    const [first, second] = applyPositivePoQuantityRetry([zeroed, untouched], new Set([1]));
+    expect(first).toMatchObject({ quantity: 1, unitCost: 100, extendedAmount: 100, forcePositivePoQuantity: true });
+    expect(second).toBe(untouched);
+  });
+
+  it('copies the PO line quantity onto matched invoice lines but not service lines', () => {
+    const base = {
+      lineOfBusinessId: null, costCenterId: null, fundId: null, spendCategoryId: null,
+      worktagsReference: [], description: null, memo: null, shipToAddressId: null, splitLineData: [],
+    };
+    const result = overlayPoWorktagsFromPurchaseOrder(
+      [
+        { lineOrder: 1, description: 'Goods', purchaseOrderLineId: 'GOODS-1' },
+        { lineOrder: 2, description: 'Service', purchaseOrderLineId: 'SERVICE-1' },
+      ],
+      [
+        { ...base, lineOrder: 1, purchaseOrderLineId: 'GOODS-1', quantity: 28000 },
+        { ...base, lineOrder: 2, purchaseOrderLineId: 'SERVICE-1', quantity: null },
+      ]
+    );
+    expect(result[0].purchaseOrderLineQuantity).toBe(28000);
+    expect(result[1].purchaseOrderLineQuantity).toBeNull();
+  });
+
+  it('drops the PO line quantity when the line is detached from the PO', () => {
+    const [line] = overlaySharedPoWorktagsOnUnmatchedLines([poLinked(1, 'Fee', null, null, 10)], undefined);
+    expect(line.purchaseOrderLineId).toBeNull();
+    expect(line.purchaseOrderLineQuantity).toBeUndefined();
+  });
+});

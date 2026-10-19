@@ -1,9 +1,9 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
-import { applyAmountOnlyLineRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, splitFreightLines } from './invoice_lines.js';
+import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
 import {
   DEFAULT_LINE_OF_BUSINESS_ID,
   asArray,
@@ -548,6 +548,8 @@ interface buildSubmitInvoiceDataOptions {
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
   applyAmountOnlyLineRetry?: boolean;
+  /** Workday rejected quantity 0 on PO-linked lines: those lines were resent as one unit at the line amount. */
+  applyPositivePoQuantityRetry?: boolean;
   currencyWID?: string;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
@@ -559,12 +561,13 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
 export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
+export const POSITIVE_PO_QUANTITY_LABEL = 'quantity 1 at the line amount for PO-linked lines that had no quantity';
 export const OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL = 'omitted PO pass-through worktags (kept PO split rows)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
@@ -901,6 +904,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
     fallbacks.push({ field: 'invoiceLineAmounts', label: 'quantity and unit cost set to zero' });
   }
 
+  if (options.applyPositivePoQuantityRetry) {
+    fallbacks.push({ field: 'positiveQuantityPurchaseOrderLine', label: POSITIVE_PO_QUANTITY_LABEL });
+  }
+
   if (options.omitAssigneeReference) {
     fallbacks.push({ field: 'assignee', label: 'omitted assignee' });
   }
@@ -1084,6 +1091,27 @@ function getAmountOnlyLineRetryBuildOptions(
   };
 }
 
+// Lines that would go out with a PO line reference and quantity 0, read from the payload itself so the
+// retry covers every such line, not only the one Workday names.
+function getPositivePoQuantityRetryBuildOptions(
+  options: buildSubmitInvoiceDataOptions
+): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
+  if (options.applyPositivePoQuantityRetry || !options.finalLines?.length) return undefined;
+  const zeroQuantityLineOrders = new Set(
+    ([] as any[])
+      .concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? [])
+      .filter((line: any) => line.Purchase_Order_Line_Reference && Number(line.Quantity) === 0)
+      .map((line: any) => line.Line_Order as number)
+  );
+  if (zeroQuantityLineOrders.size === 0) return undefined;
+  const finalLines = applyPositivePoQuantityRetry(options.finalLines, zeroQuantityLineOrders);
+  if (finalLines.every((line, index) => line === options.finalLines![index])) return undefined;
+  return {
+    buildOptions: { ...options, finalLines, applyPositivePoQuantityRetry: true },
+    fallbackLabel: POSITIVE_PO_QUANTITY_LABEL,
+  };
+}
+
 function getQuantitySplitUnlinkRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
@@ -1148,6 +1176,15 @@ async function getValidationFallbackField(
   if (submittedConversationUrlField(options) && isConfigurableAttributeValidationError(validationText)) {
     debug('Validation references configurable attributes; retrying without Additional_Fields_Data_Reference');
     return 'conversationUrl';
+  }
+
+  if (isPositiveQuantityRequiredForPoLineError(validationText)) {
+    if (getPositivePoQuantityRetryBuildOptions(options)) {
+      debug('Validation requires a positive quantity on PO-linked lines; retrying with quantity 1 at the line amount');
+      return 'positiveQuantityPurchaseOrderLine';
+    }
+    debug('Validation requires a positive quantity on PO-linked lines but no line was sent with quantity 0; skipping retry');
+    return undefined;
   }
 
   // Both faults use the document-wide amount-only retry: every eligible merchandise line drops its quantity,
@@ -1308,6 +1345,10 @@ function getFallbackRetryBuildOptions(
 
   if (field === 'invoiceLineAmounts') {
     return getAmountOnlyLineRetryBuildOptions(options);
+  }
+
+  if (field === 'positiveQuantityPurchaseOrderLine') {
+    return getPositivePoQuantityRetryBuildOptions(options);
   }
 
   if (field === 'assignee' && options.assigneeWID) {
@@ -1616,7 +1657,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
       ? eventWorktags
       : withFallbackWorktags([...allocationWorktags, ...eventWorktags], line.costCenterId, line.lineOfBusinessId);
     const isDiscountOverride = isDiscountLine(line);
-    const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false;
+    const isExtendedAmountOnly = !isDiscountOverride && invoiceLineQuantityDisplayed === false && !requiresPositivePoQuantity(line);
     const extendedAmountForSoap = line.extendedAmount ?? line.unitCost;
     const orgPassthroughContext = {
       relatedLob: relatedLobByCostCenter?.get(line.costCenterId ?? ''),
