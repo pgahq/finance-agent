@@ -48,7 +48,7 @@ attachments, and Workday-computed tax are left out on purpose.
 
 ## Daily scoring
 
-`ScoreInvoices` (01:00 UTC, the evening before in US time) reads status for non-terminal agent invoices in WQL
+`ScoreInvoices` (01:00 UTC: 8pm Central in daylight time, 7pm in standard time) reads status for non-terminal agent invoices in WQL
 batches and Event-invokes `ScoreInvoicesProcessor` for invoices that reached a
 stage they were not scored for, at most `SCORE_MAX_INVOICES_PER_RUN` (default
 500) per run; the rest are selected again the next day. Status is read for at
