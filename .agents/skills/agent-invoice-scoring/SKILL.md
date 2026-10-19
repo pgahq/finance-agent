@@ -48,7 +48,7 @@ attachments, and Workday-computed tax are left out on purpose.
 
 ## Daily scoring
 
-`ScoreInvoices` (14:00 UTC) reads status for non-terminal agent invoices in WQL
+`ScoreInvoices` (01:00 UTC, the evening before in US time) reads status for non-terminal agent invoices in WQL
 batches and Event-invokes `ScoreInvoicesProcessor` for invoices that reached a
 stage they were not scored for, at most `SCORE_MAX_INVOICES_PER_RUN` (default
 500) per run; the rest are selected again the next day. Status is read for at
@@ -149,7 +149,7 @@ other Lambda. A post that does not go through stops the run with an error, and
 so does a failed rollup refresh (after posting). Invoice values are escaped, so
 memo text cannot mention the channel or add links.
 
-- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead (the Central day) as a
+- Daily (01:20 UTC, 9:20pm Eastern in daylight time, `{"mode":"daily"}`): the touch lead (the Central day) as a
   top-level message, then, as replies in its thread, one message per invoice
   scored since the last full daily post
   (`agent_invoice_audit_posts`, created by `ScoreDigest`; at most a week back,
@@ -161,7 +161,7 @@ memo text cannot mention the channel or add links.
   removed.
 - Weekly (Mondays 14:30 UTC): a single top-level message (no thread) holding the touch lead, then the last complete
   Monday-to-Sunday Central week against the week before (`digestWindow`), so
-  Monday morning's scoring run is reported the following week: outcomes,
+  Sunday evening's scoring run (01:00 UTC Monday) is reported in that Monday's digest: outcomes,
   per-field change rates, edit rate by release, late corrections, cancels,
   convention examples, worst invoices, unlabeled cancels, and a count of
   agent-tagged invoices with no snapshot (or a note when that query fails).
