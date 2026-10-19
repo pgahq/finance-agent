@@ -708,7 +708,9 @@ describe('score digest handler', () => {
   });
   const thisWeekDay = (offset: number) => new Date(centralWeekStart(new Date()).getTime() - (7 - offset) * 86_400_000 + 12 * 3_600_000).toISOString().slice(0, 10);
 
-  it('adds the agent coverage section to the weekly digest, and refreshes the stored rollup in both modes', async () => {
+  const coverageWrites = () => mockQuery.mock.calls.filter(([sql]) => String(sql).includes('INSERT INTO agent_invoice_coverage_daily'));
+
+  it('adds the agent coverage section to the weekly digest and refreshes the stored rollup', async () => {
     routeQueries({});
     routeWorkday({
       coverage: [
@@ -726,12 +728,30 @@ describe('score digest handler', () => {
     expect(text).toContain('• 1 keyed by hand');
     expect(text).toContain('1 invoice for other companies left out');
     expect(text).toContain("• `Tiffany Mead [C]`: 1 by hand, 0 through the agent");
-    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO agent_invoice_coverage_daily'))).toBe(true);
+    expect(coverageWrites()).toHaveLength(1);
+  });
+
+  it('keeps the nightly run off Workday for coverage, unless a backfill is asked for', async () => {
+    routeQueries({});
+    await handler({ mode: 'daily' });
+    expect(coverageWrites()).toHaveLength(0);
+    expect(workdayQueries()).toEqual([]);
+
+    routeQueries({});
+    await handler({ mode: 'daily', coverageBackfill: true });
+    expect(coverageWrites()).toHaveLength(1);
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 11);
+  });
+
+  it('rebuilds the long span of the rollup on a weekly run with coverageBackfill', async () => {
+    routeQueries({});
+    await handler({});
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(15 * 11);
 
     mockQuery.mockClear();
     routeQueries({});
-    await handler({ mode: 'daily' });
-    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO agent_invoice_coverage_daily'))).toBe(true);
+    await handler({ coverageBackfill: true });
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 11);
   });
 
   it('says coverage is unavailable, and still posts, when Workday cannot be queried for it', async () => {

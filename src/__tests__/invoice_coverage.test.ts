@@ -18,12 +18,14 @@ import {
   DEFAULT_COVERAGE_COMPANY_WIDS,
   dailyCoverage,
   loadCoverageRows,
+  loadSnapshotSources,
   loadWeeklyCoverage,
   refreshCoverageDaily,
   shiftDayKey,
   summarizeCoverage,
   type CoverageRow,
 } from '../lib/invoice_coverage.js';
+import { AGENT_WRITE_SOURCES } from '../lib/invoice_snapshots.js';
 import { digestWindow } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
 
@@ -119,7 +121,7 @@ describe('classifyCoverage', () => {
     const sources = new Map([
       ['created', ['create']],
       ['resent', ['resend_update']],
-      ['enriched', ['enrich_baseline', 'enrich']],
+      ['enriched', ['enrich']],
       ['both', ['create', 'enrich']],
       ['unknown-source', [] as string[]],
     ]);
@@ -130,6 +132,25 @@ describe('classifyCoverage', () => {
 
   it('does not treat an empty creator as agent support', () => {
     expect(classifyCoverage([row({ workdayInvoiceWid: 'a' })], none)[0].category).toBe('uncovered_integration');
+  });
+});
+
+describe('loadSnapshotSources', () => {
+  it('reads only the agent write sources, so a baseline left by a failed enrich update is not agent support', async () => {
+    const query = jest.fn().mockResolvedValue([{ workday_invoice_wid: 'w1', sources: ['enrich'] }, { workday_invoice_wid: 'w2', sources: null }]);
+    const sources = await loadSnapshotSources({ query } as unknown as DatabaseConnection, ['w1', 'w2', 'baseline-only']);
+    expect(String((query.mock.calls[0] as unknown[])[0])).toContain('source = ANY($2::text[])');
+    expect((query.mock.calls[0] as unknown[])[1]).toEqual([['w1', 'w2', 'baseline-only'], [...AGENT_WRITE_SOURCES]]);
+    expect(AGENT_WRITE_SOURCES).not.toContain('enrich_baseline');
+    expect([...sources.entries()]).toEqual([['w1', ['enrich']], ['w2', []]]);
+    const baselineOnly = classifyCoverage([row({ workdayInvoiceWid: 'baseline-only', isOcr: true })], sources);
+    expect(baselineOnly[0].category).toBe('uncovered_ocr');
+  });
+
+  it('does not query without invoices', async () => {
+    const query = jest.fn();
+    await expect(loadSnapshotSources({ query } as unknown as DatabaseConnection, [])).resolves.toEqual(new Map());
+    expect(query).not.toHaveBeenCalled();
   });
 });
 
@@ -359,6 +380,12 @@ describe('refreshCoverageDaily', () => {
     expect(params[params.length - 11]).toBe('2026-10-19');
     expect(params.slice(-11)).toEqual(['2026-10-19', 1, 0, 0, 1, 0, 0, 0, 0, 1, 1]);
     expect(String((query.mock.calls[0] as unknown[])[1])).toContain("createdOn >= '2026-10-04'");
+  });
+
+  it('backfills the long span on request even when days are stored', async () => {
+    const { context, dbQuery } = setup(20);
+    await expect(refreshCoverageDaily(context, now, { backfill: true })).resolves.toBe(COVERAGE_BACKFILL_DAYS);
+    expect(dbQuery.mock.calls.some(([sql]) => sql.includes('INSERT INTO agent_invoice_coverage_daily'))).toBe(true);
   });
 
   it('backfills on the first run', async () => {

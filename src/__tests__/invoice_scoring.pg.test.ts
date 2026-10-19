@@ -219,7 +219,9 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     const pga = 'cab0b1d2505a01338fcd651982277bec';
     const record = (id: string, extra: Record<string, unknown> = {}) => ({ workdayID: id, createdOn: today, company1: { id: pga }, ...extra });
     (workday.getWorkQueueTagWIDs as jest.Mock).mockResolvedValue(['tag-wid']);
+    await pool.query("INSERT INTO agent_invoice_snapshots (workday_invoice_wid, write_seq, source, fields) VALUES ($1, 1, 'enrich_baseline', '{}')", ['o'.repeat(32)]);
     const records = [
+      record('o'.repeat(32), { OCRSupplierInvoice: { id: 'ocr' } }),
       record(created),
       record(enriched),
       record('t'.repeat(32), { workQueueTags: [{ id: 'tag-wid' }] }),
@@ -237,8 +239,8 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(rows).toHaveLength(90);
     const day = rows[rows.length - 1];
     expect(day).toMatchObject({
-      invoices: 5, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 0,
-      uncovered_manual: 1, uncovered_integration: 1, canceled: 1, coverage_share: '0.6000', coverage_share_without_integrations: '0.7500',
+      invoices: 6, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 1,
+      uncovered_manual: 1, uncovered_integration: 1, canceled: 1, coverage_share: '0.5000', coverage_share_without_integrations: '0.6000',
     });
     expect(rows[0]).toMatchObject({ invoices: 0, coverage_share: null });
   });

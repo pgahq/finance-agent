@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import type { DatabaseConnection } from './database.js';
 import type { ProcessingContext } from './handlers.js';
 import { escapeWqlLiteral } from './invoice_scores.js';
+import { AGENT_WRITE_SOURCES } from './invoice_snapshots.js';
 import { executeWorkdayQuery, getWorkQueueTagWIDs } from './workday.js';
 
 /**
@@ -199,7 +200,10 @@ export async function countOutOfScopeInvoices(
   return wids.size;
 }
 
-/** Snapshot sources (`create`, `resend_update`, `enrich_baseline`, `enrich`) per agent-written invoice WID. */
+/**
+ * Snapshot sources per invoice WID, for the agent's own writes only. An `enrich_baseline` row is saved before the
+ * update and stays behind when the update fails, so it does not mean the agent wrote anything.
+ */
 export async function loadSnapshotSources(db: DatabaseConnection, wids: string[]): Promise<Map<string, string[]>> {
   const sources = new Map<string, string[]>();
   if (!wids.length) return sources;
@@ -207,14 +211,15 @@ export async function loadSnapshotSources(db: DatabaseConnection, wids: string[]
     `SELECT workday_invoice_wid, array_agg(DISTINCT source) AS sources
        FROM agent_invoice_snapshots
       WHERE workday_invoice_wid = ANY($1::text[])
+        AND source = ANY($2::text[])
       GROUP BY workday_invoice_wid`,
-    [wids]
+    [wids, [...AGENT_WRITE_SOURCES]]
   ) as Array<{ workday_invoice_wid: string; sources?: string[] | null }>;
   for (const row of rows) sources.set(row.workday_invoice_wid, row.sources ?? []);
   return sources;
 }
 
-const ENRICH_SOURCES = new Set(['enrich', 'enrich_baseline']);
+const ENRICH_SOURCES = new Set(['enrich']);
 
 /**
  * Labels each invoice, checking in this order: outside the scoped companies, canceled (kept out of the share), agent
@@ -458,18 +463,19 @@ export function coverageDayParams(days: CoverageDay[]): unknown[] {
 }
 
 /**
- * Recomputes recent days of `agent_invoice_coverage_daily` from Workday. The first run (empty table) backfills
- * `COVERAGE_BACKFILL_DAYS`. Returns the number of days written.
+ * Recomputes recent days of `agent_invoice_coverage_daily` from Workday. The first run (empty table), or a run with
+ * `backfill` set, covers `COVERAGE_BACKFILL_DAYS`; use that to rebuild old days after the company scope changes.
+ * Returns the number of days written.
  */
 export async function refreshCoverageDaily(
   context: Pick<ProcessingContext, 'workdayConfig' | 'dbConnection'>,
   now: Date = new Date(),
-  recentDays = COVERAGE_ROLLUP_DAYS,
-  backfillDays = COVERAGE_BACKFILL_DAYS
+  options: { backfill?: boolean; recentDays?: number; backfillDays?: number } = {}
 ): Promise<number> {
+  const { backfill = false, recentDays = COVERAGE_ROLLUP_DAYS, backfillDays = COVERAGE_BACKFILL_DAYS } = options;
   const db = context.dbConnection;
   const [{ stored }] = await db.query('SELECT count(*)::int AS stored FROM agent_invoice_coverage_daily') as Array<{ stored: number }>;
-  const span = Number(stored) ? recentDays : backfillDays;
+  const span = backfill || !Number(stored) ? backfillDays : recentDays;
   const endDay = centralDayKey(now);
   const startDay = shiftDayKey(endDay, -(span - 1));
   const days = dailyCoverage(await loadCoverage(context, startDay, endDay), startDay, endDay);

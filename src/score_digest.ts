@@ -204,9 +204,9 @@ async function refreshTouchRollup(context: ProcessingContext): Promise<Error | u
 }
 
 /** Same contract as `refreshTouchRollup`, for the agent coverage rollup. */
-async function refreshCoverageRollup(context: ProcessingContext): Promise<Error | undefined> {
+async function refreshCoverageRollup(context: ProcessingContext, backfill: boolean): Promise<Error | undefined> {
   try {
-    const days = await refreshCoverageDaily(context);
+    const days = await refreshCoverageDaily(context, new Date(), { backfill });
     debug('Refreshed agent_invoice_coverage_daily', { days });
     return undefined;
   } catch (error) {
@@ -215,11 +215,19 @@ async function refreshCoverageRollup(context: ProcessingContext): Promise<Error 
   }
 }
 
-export const handler = withHandler(async (context, event?: { mode?: string }) => {
+/**
+ * The coverage rollup reads Workday, so it refreshes on the weekly run (every 7 days against a 15-day window) and
+ * keeps Workday errors out of the nightly alert. `coverageBackfill: true` forces the long span on any run, to rebuild
+ * old days after `COVERAGE_COMPANY_WIDS` changes.
+ */
+export const handler = withHandler(async (context, event?: { mode?: string; coverageBackfill?: boolean }) => {
   const startTime = Date.now();
   try {
-    const rollupErrors = [await refreshTouchRollup(context), await refreshCoverageRollup(context)]
-      .filter((error): error is Error => Boolean(error));
+    const backfill = event?.coverageBackfill === true;
+    const rollupErrors = [
+      await refreshTouchRollup(context),
+      ...(event?.mode !== 'daily' || backfill ? [await refreshCoverageRollup(context, backfill)] : []),
+    ].filter((error): error is Error => Boolean(error));
     if (event?.mode === 'daily') {
       await postDailySummary(context, new Date());
     } else {

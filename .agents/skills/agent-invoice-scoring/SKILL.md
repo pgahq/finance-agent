@@ -182,8 +182,11 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   Central day from `createdDateTime` (UTC), falling back to `createdOn`.
 - Agent supported: the invoice has a row in `agent_invoice_snapshots` or carries
   the `FINAGENT-invoice-modified` tag (AP can replace the tag; older invoices
-  predate snapshots). `agent_created` is a `create` or `resend_update` snapshot,
-  `agent_enriched` only `enrich` snapshots, `agent_notes_only` the tag alone.
+  predate snapshots). Only `AGENT_WRITE_SOURCES` snapshots count: an
+  `enrich_baseline` row is saved before the update and stays behind when it
+  fails, so a baseline-only invoice is not agent supported. `agent_created` is a
+  `create` or `resend_update` snapshot, `agent_enriched` only `enrich`
+  snapshots, `agent_notes_only` the tag alone.
 - `invoiceCreatedBy` does not identify agent invoices: on them it is the AP
   teammate who started the Intercom action, and it is sometimes blank. It only
   splits the rest: `uncovered_ocr` (Workday OCR never enriched),
@@ -196,10 +199,18 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
 - Supplier Invoice Requests had no invoices in any company since 2025-01-01, so
   there is no category for them.
 - `agent_invoice_coverage_daily` (`ensureCoverageReporting`, created at cold
-  start) holds one row per Central creation day. Each `ScoreDigest` run, daily
-  and weekly, recomputes the last 15 days; the first run backfills 90. A
-  failed refresh is reported after posting and fails the run, like the touch
-  rollup.
+  start) holds one row per Central creation day. The weekly `ScoreDigest` run
+  recomputes the last 15 days (every 7 days, so no gap); the first run
+  backfills 90. The nightly daily run does not touch it, so a Workday error
+  never alerts on the daily run. A failed refresh is reported after posting
+  and fails the run, like the touch rollup: on the weekly run that is a
+  Workday or token problem, and the post itself went out.
+- Rows older than 15 days keep the scope they were computed with. After
+  changing `COVERAGE_COMPANY_WIDS`, invoke `ScoreDigest` with
+  `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate
+  needed). The run posts the weekly digest as usual; adding
+  `"mode":"daily"` posts the daily summary instead, which posts nothing when
+  no invoice was scored since the last daily post.
 - The weekly digest shows the share against the week before, the counts per
   category, the invoices created for other companies, the top suppliers the
   agent missed, who keyed by hand with their agent counts, and up to ten
