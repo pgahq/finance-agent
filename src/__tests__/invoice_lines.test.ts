@@ -3512,9 +3512,16 @@ describe('positivePoQuantityNote', () => {
     const before = [poLine(1, 1, 10), poLine(2, null, 2222.53), poLine(3, 5, 25)];
     const note = positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true));
     expect(note).toContain('"Line 2" ($2,222.53)');
-    expect(note).toContain('quantity 1 at the line amount');
+    expect(note).toContain('Submitted as quantity 1 at the line amount');
     expect(note).not.toContain('Line 1');
     expect(note).not.toContain('Line 3');
+  });
+
+  it('names a line printed as quantity 1 whose unit cost did not match its total', () => {
+    const before = [{ ...poLine(1, 1, 75), unitCost: 50 }, poLine(2, 1, 10)];
+    const note = positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true));
+    expect(note).toContain('"Line 1" ($75.00)');
+    expect(note).not.toContain('Line 2');
   });
 
   it('returns nothing when no line needed the change', () => {

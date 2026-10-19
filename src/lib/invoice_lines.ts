@@ -2069,7 +2069,7 @@ export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalI
     requiresPositivePoQuantity(line)
     && line.quantity === 1
     && before[index] != null
-    && before[index].quantity !== 1
+    && (before[index].quantity !== 1 || before[index].unitCost !== line.unitCost)
   );
   if (changed.length === 0) return undefined;
   const listed = changed
@@ -2077,9 +2077,9 @@ export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalI
     .map(line => `"${line.description}" (${formatCents(toCents(line.extendedAmount ?? 0))})`);
   const unlisted = changed.length - listed.length;
   if (unlisted > 0) listed.push(`${unlisted} more`);
-  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'has' : 'have'} no usable printed quantity and`
-    + ` ${changed.length === 1 ? 'is' : 'are'} linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
-    + ` Submitted as quantity 1 at the line amount; the line total is unchanged.`;
+  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'is' : 'are'}`
+    + ` linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
+    + ` Submitted as quantity 1 at the line amount, which can differ from the printed quantity or unit cost; the line total is unchanged.`;
 }
 
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
