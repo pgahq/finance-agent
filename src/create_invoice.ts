@@ -94,7 +94,7 @@ import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
 import { emailCodingText, sourceEmailBody } from './lib/email_coding_text.js';
-import { budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
+import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
@@ -1109,19 +1109,32 @@ async function processInvoiceCluster(
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
       lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
+    const budgetCompanies = usedDefaultCompany ? {} : await budgetCompanyOptions({
+      db: context.dbConnection,
+      result,
+      emailBody: emailContext?.plainTextBody,
+      codingText: emailCodingText(emailContext),
+      apNotes: emailContext?.adminConversationParts,
+      emailCompany,
+      headerCompanyId: companyWID,
+      companyReferenceType,
+    });
     const emailWorktags = usedDefaultCompany
       ? undefined
-      : buildEmailWorktags(result, emailCompany, budgetSplitOptions({
-        charges: {
-          amountDue: extractedAmountDue,
-          freightAmount: extractedFreightAmount,
-          taxAmount: extractedTaxAmount,
-          freightCleared,
-          taxCleared,
-        },
-        freightAsLines,
-        chargeWithheld,
-      }));
+      : buildEmailWorktags(result, emailCompany, {
+        ...budgetSplitOptions({
+          charges: {
+            amountDue: extractedAmountDue,
+            freightAmount: extractedFreightAmount,
+            taxAmount: extractedTaxAmount,
+            freightCleared,
+            taxCleared,
+          },
+          freightAsLines,
+          chargeWithheld,
+        }),
+        ...budgetCompanies,
+      });
 
     const relatedLobLookup = (costCenterIds: string[]) =>
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);

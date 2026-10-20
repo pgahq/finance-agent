@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, INTERCOMPANY_OMITTED_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -4319,8 +4319,36 @@ describe('Workday utilities', () => {
           expect(firstLines[1].Intercompany_Affiliate_Reference).toBeDefined();
           expect(retryLines[1].Intercompany_Affiliate_Reference).toBeUndefined();
           expect(result.appliedFallbacks).toEqual(
-            expect.arrayContaining([expect.objectContaining({ field: 'intercompany', label: INTERCOMPANY_OMITTED_LABEL })])
+            expect.arrayContaining([expect.objectContaining({ field: 'intercompany', label: expect.stringContaining('line 2 $1,857.51 (company 410) is booked under the invoice company') })])
           );
+        });
+
+        it('should not move a line off its company for a fault that only mentions intercompany in passing', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is not available for use with the company; see the intercompany policy.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            taxCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          })).rejects.toThrow('intercompany policy');
+
+          const sentLines = capturedRequests.map(request => request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data);
+          expect(sentLines.every(lines => lines[1].Intercompany_Affiliate_Reference !== undefined)).toBe(true);
         });
 
         it('should retry without Tax_Applicability_Reference when Workday rejects the applicability ID', async () => {

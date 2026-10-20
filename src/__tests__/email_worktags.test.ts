@@ -66,7 +66,7 @@ describe('buildEmailWorktags', () => {
     ]);
   });
 
-  it('carries each budget\'s own company and the invoice company', () => {
+  it('carries each budget\'s verified company and the submitted header company', () => {
     const result = buildEmailWorktags({
       emailWorktags: { ...brandCoding, company },
       emailBudgetSplits: [
@@ -76,12 +76,42 @@ describe('buildEmailWorktags', () => {
           company: { extracted: '410', name: 'PGA Corporation', workdayId: 'wid-410', referenceId: '410' },
         },
       ],
-    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetSplitBaseCents: 300, budgetSplitGrossCents: 330 });
+    }, { referenceId: '310', workdayId: 'wid-310' }, {
+      budgetSplitBaseCents: 300,
+      budgetSplitGrossCents: 330,
+      budgetCompanies: [undefined, { referenceId: '410', name: 'PGA Corporation' }],
+      headerCompanyReferenceId: '412',
+    });
 
-    expect(result?.companyReferenceId).toBe('310');
+    expect(result?.companyReferenceId).toBe('412');
     expect(result?.budgetSplitGrossCents).toBe(330);
     expect(result?.budgetSplits?.map(split => split.companyReferenceId)).toEqual([null, '410']);
     expect(result?.budgetSplits?.[1].companyName).toBe('PGA Corporation');
+  });
+
+  it('ignores the model\'s own budget company until it is verified, and records an unverified one', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        { label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding, company: { extracted: '410', name: null, workdayId: null, referenceId: '410' } },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetCompanies: [undefined, { unverified: '410' }], headerCompanyReferenceId: null });
+
+    expect(result?.companyReferenceId).toBeNull();
+    expect(result?.budgetSplits?.[1]).toEqual(expect.objectContaining({ companyReferenceId: null, companyUnverified: '410' }));
+  });
+
+  it('drops a budget cost center that is really that budget\'s own company code', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        { label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding, costCenter: { extracted: '410', name: null, code: '410' } },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetCompanies: [undefined, { referenceId: '410', name: 'PGA Corporation' }] });
+
+    expect(result?.budgetSplits?.[1].costCenterId).toBeNull();
   });
 
   it('works when the model returns budgets but no invoice-wide coding', () => {

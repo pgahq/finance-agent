@@ -566,7 +566,17 @@ interface buildSubmitInvoiceDataOptions {
 type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
 type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
-export const INTERCOMPANY_OMITTED_LABEL = 'omitted line company (lines booked under the invoice company; Workday would not accept the intercompany pairing)';
+export function intercompanyOmittedLabel(lines: FinalInvoiceLine[] | undefined): string {
+  const moved = (lines ?? [])
+    .filter(line => line.intercompanyAffiliateId)
+    .map(line => {
+      const amount = line.extendedAmount != null
+        ? ` ${line.extendedAmount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`
+        : '';
+      return `line ${line.lineOrder}${amount} (company ${line.intercompanyAffiliateId})`;
+    });
+  return `omitted line company: Workday would not accept the intercompany pairing, so ${moved.join(', ') || 'the line'} is booked under the invoice company; check the company before approving`;
+}
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
 export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
@@ -932,7 +942,7 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
   }
 
   if (options.omitIntercompanyAffiliate && options.finalLines?.some(line => line.intercompanyAffiliateId)) {
-    fallbacks.push({ field: 'intercompany', label: INTERCOMPANY_OMITTED_LABEL });
+    fallbacks.push({ field: 'intercompany', label: intercompanyOmittedLabel(options.finalLines) });
   }
 
   if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
@@ -1397,7 +1407,7 @@ function getFallbackRetryBuildOptions(
   if (field === 'intercompany' && submittedLinesCarryIntercompany(options)) {
     return {
       buildOptions: { ...options, omitIntercompanyAffiliate: true },
-      fallbackLabel: INTERCOMPANY_OMITTED_LABEL,
+      fallbackLabel: intercompanyOmittedLabel(options.finalLines),
     };
   }
 

@@ -510,7 +510,7 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
 
 export function isIntercompanyValidationError(text: unknown): boolean {
   const validationText = asValidationText(text);
-  return /intercompany/i.test(validationText) || /Intercompany_Affiliate_Reference/i.test(validationText);
+  return /not configured to allow intercompany transactions/i.test(validationText) || /Intercompany_Affiliate_Reference/i.test(validationText);
 }
 
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {

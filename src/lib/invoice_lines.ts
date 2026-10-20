@@ -1462,7 +1462,7 @@ export function applyEmailBudgetSplits(
 
   const first = lines[0];
   const description = lines.length === 1 ? first.description : combinedBudgetLineDescription(lines);
-  const invoiceCompany = invoiceCompanyReferenceId(splits, emailWorktags);
+  const invoiceCompany = invoiceCompanyReferenceId(emailWorktags);
   const splitLines: FinalInvoiceLine[] = splits.map((split, index) => ({
     lineOrder: index + 1,
     description,
@@ -1502,8 +1502,9 @@ export function applyEmailBudgetSplits(
   };
 }
 
-function invoiceCompanyReferenceId(splits: EmailBudgetSplit[], emailWorktags: EmailWorktags): string | undefined {
-  return emailWorktags.companyReferenceId ?? splits.find(split => split.companyReferenceId)?.companyReferenceId ?? undefined;
+// The company the header is submitted under. When it is not known, no budget can be compared against it.
+function invoiceCompanyReferenceId(emailWorktags: EmailWorktags): string | undefined {
+  return emailWorktags.companyReferenceId ?? undefined;
 }
 
 // A budget that names a company other than the invoice's gets that company on its own line (an intercompany line).
@@ -1516,11 +1517,18 @@ function intercompanyCompanyId(split: EmailBudgetSplit, invoiceCompany: string |
 // An applied split can still need AP's eyes: a budget the email gave no spend category for.
 function budgetSplitReviewNotes(splits: EmailBudgetSplit[], emailWorktags: EmailWorktags): string[] {
   const notes: string[] = [];
+  const invoiceCompany = invoiceCompanyReferenceId(emailWorktags);
   splits.forEach((split, index) => {
+    const name = budgetSplitName(split, index);
+    if (split.companyUnverified) {
+      notes.push(`${name} names company ${split.companyUnverified}, but the email and the company list do not confirm it, so its line stays on the invoice company; check the company before approving.`);
+    } else if (split.companyReferenceId && !invoiceCompany) {
+      notes.push(`${name} names company ${split.companyName ?? split.companyReferenceId} (${split.companyReferenceId}), but the invoice company could not be identified, so no company was set on its line; check the company before approving.`);
+    }
     if (!split.spendCategoryReferenceId && !emailWorktags.spendCategoryReferenceId) {
       const fallback = process.env.FALLBACK_SPEND_CATEGORY_ID;
       notes.push(
-        `${budgetSplitName(split, index)} has no spend category in the email${fallback ? `, so it is on ${fallback}` : ''}; set its spend category before approving.`
+        `${name} has no spend category in the email${fallback ? `, so it is on ${fallback}` : ''}; set its spend category before approving.`
       );
     }
   });
@@ -1631,6 +1639,8 @@ export interface EmailBudgetSplit {
   /** Company the email names for this budget, when it names one. */
   companyReferenceId?: string | null;
   companyName?: string | null;
+  /** The company the model read for this budget when the email and company cache do not confirm it. */
+  companyUnverified?: string | null;
 }
 
 export interface EmailWorktags {

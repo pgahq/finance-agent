@@ -65,7 +65,7 @@ import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { resolveCompanyFromEmail } from './lib/reference_ids.js';
-import { budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
+import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
@@ -394,19 +394,32 @@ async function processInvoice(
         lineOfBusinessId: process.env.FALLBACK_LOB_ID,
       };
       const relatedLobLookup = (costCenterIds: string[]) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
-      const emailWorktags = buildEmailWorktags(result, emailCompany, budgetSplitOptions({
-        charges: {
-          amountDue: extractedAmountDue,
-          freightAmount: extractedFreightAmount,
-          taxAmount: extractedTaxAmount,
-          freightCleared,
-          taxCleared,
-          currentFreightAmount: detailedInvoice.Freight_Amount,
-          currentTaxAmount: detailedInvoice.Tax_Amount,
-        },
-        freightAsLines,
-        chargeWithheld,
-      }));
+      const budgetCompanies = await budgetCompanyOptions({
+        db: context.dbConnection,
+        result,
+        emailBody: invoiceData.emailContext?.plainTextBody,
+        codingText: emailCodingText(invoiceData.emailContext),
+        apNotes: invoiceData.emailContext?.adminConversationParts,
+        emailCompany,
+        headerCompanyId: companyWID ?? existingCompany?.id,
+        companyReferenceType: 'WID',
+      });
+      const emailWorktags = buildEmailWorktags(result, emailCompany, {
+        ...budgetSplitOptions({
+          charges: {
+            amountDue: extractedAmountDue,
+            freightAmount: extractedFreightAmount,
+            taxAmount: extractedTaxAmount,
+            freightCleared,
+            taxCleared,
+            currentFreightAmount: detailedInvoice.Freight_Amount,
+            currentTaxAmount: detailedInvoice.Tax_Amount,
+          },
+          freightAsLines,
+          chargeWithheld,
+        }),
+        ...budgetCompanies,
+      });
       let built = await buildFinalInvoiceLines(
         candidateLines,
         poLines,

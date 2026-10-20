@@ -1300,6 +1300,39 @@ describe('applyEmailBudgetSplits with amounts that include tax', () => {
     expect(outcome?.budgets.map(budget => budget.companyId)).toEqual([undefined, '410']);
   });
 
+  it('compares each budget with the submitted header company, not with another budget', () => {
+    const { lines } = applyEmailBudgetSplits(
+      guestLines(),
+      { ...carson([broadcasting, globalMedia]), companyReferenceId: '410' },
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual(['310', null]);
+  });
+
+  it('sets no company and says so when the header company is not known', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      { ...carson([broadcasting, globalMedia]), companyReferenceId: null },
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, null]);
+    expect(outcome?.review).toContain('SPLIT #1 names company 310');
+    expect(outcome?.review).toContain('the invoice company could not be identified, so no company was set on its line');
+  });
+
+  it('keeps an unverified budget company off the line and flags it', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([broadcasting, { ...globalMedia, companyReferenceId: null, companyName: null, companyUnverified: '410 PGA Corporation' }]),
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, null]);
+    expect(outcome?.review).toContain('SPLIT #2 - Code like an Expense Report for Donnelly Wolf & Mallory Crosland please! names company 410 PGA Corporation, but the email and the company list do not confirm it');
+  });
+
   it('does not roll header charges in when the amounts match the line total', () => {
     const { lines, outcome } = applyEmailBudgetSplits(
       guestLines(),
