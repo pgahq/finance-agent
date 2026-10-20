@@ -6,10 +6,12 @@ description: >-
   cancel attribution, touch buckets, and the daily and weekly ScoreDigest posts
   to #notify-finance-agent-audit. Use when changing agent_invoice_snapshots,
   agent_invoice_scores, cancel_labels, agent_invoice_touches,
-  agent_invoice_touch_daily, snapshotAgentWrite or snapshotEnrichBaseline,
+  agent_invoice_touch_daily, agent_invoice_coverage_daily, agent coverage,
+  COVERAGE_COMPANY_WIDS, snapshotAgentWrite or snapshotEnrichBaseline,
   the scored-field whitelist, material vs convention fields, invoice status
   classification, CANCEL_REASON_ATTRIBUTION, SCORE_* settings, ScoreInvoices,
-  ScoreDigest, AUDIT_SLACK_WEBHOOK_URL, or export-eval-cases.
+  ScoreDigest, AUDIT_SLACK_BOT_TOKEN, AUDIT_SLACK_CHANNEL_ID, or
+  export-eval-cases.
 ---
 
 # Agent invoice scoring
@@ -51,7 +53,7 @@ override on those invoices also counts as a change.
 
 ## Daily scoring
 
-`ScoreInvoices` (14:00 UTC) reads status for non-terminal agent invoices in WQL
+`ScoreInvoices` (01:00 UTC: 8pm Central in daylight time, 7pm in standard time) reads status for non-terminal agent invoices in WQL
 batches and Event-invokes `ScoreInvoicesProcessor` for invoices that reached a
 stage they were not scored for, at most `SCORE_MAX_INVOICES_PER_RUN` (default
 500) per run; the rest are selected again the next day. Status is read for at
@@ -129,9 +131,10 @@ Every audit post leads with the zero-touch share, the change from the previous
 period, a bar per bucket, sparklines, and a QuickChart line chart
 (`SCORE_CHART_BASE_URL`, `none` turns it off). Daily periods are Central
 calendar days; weekly periods are complete Monday-to-Sunday Central weeks, so
-the Monday digest leads with last week. If Slack answers 400 because it cannot
-load the chart, `postSlackBlocks` resends once without image blocks; other
-failures are not resent.
+the Monday digest leads with last week. If Slack answers `ok: false` because it
+cannot load the chart, `postSlackChannelMessage` resends once without image
+blocks. An HTTP 429 (Slack did not post) is resent once after its `Retry-After`
+when that is within 5 seconds; other failures are not resent.
 
 `ensureTouchReporting` (`src/lib/touch_reporting.ts`) creates the
 `agent_invoice_touch_daily` table and, only when missing, the
@@ -143,26 +146,81 @@ cluster.
 
 ## Audit posts
 
-`ScoreDigest` posts only to `AUDIT_SLACK_WEBHOOK_URL`
-(`/finance-agent/audit-slack-webhook-url`); its own error alerts go to the
-operator channel like every other Lambda. A post that does not go through stops
-the run with an error, and so does a failed rollup refresh (after posting).
-Invoice values are escaped, so memo text cannot mention the channel or add links.
+`ScoreDigest` posts only to `AUDIT_SLACK_CHANNEL_ID` through `chat.postMessage`
+with the `AUDIT_SLACK_BOT_TOKEN` bot token (`/finance-agent/audit-slack-bot-token`).
+The channel comes from CircleCI (`AuditSlackChannelId`: `C0C6VS0BDPA` dev,
+`C0C5W6B0G4V` prod). Its own error alerts go to the operator channel like every
+other Lambda. A post that does not go through stops the run with an error, and
+so does a failed rollup refresh (after posting). Invoice values are escaped, so
+memo text cannot mention the channel or add links.
 
-- Daily (14:20 UTC, `{"mode":"daily"}`): the touch lead (the Central day), then
-  one message per invoice scored since the last full daily post
+- Daily (01:20 UTC, 9:20pm Eastern in daylight time, `{"mode":"daily"}`): the touch lead (the Central day) as a
+  top-level message, then, as replies in its thread, one message per invoice
+  scored since the last full daily post
   (`agent_invoice_audit_posts`, created by `ScoreDigest`; at most a week back,
   today on the first run), so scores from processors that finish after the post
   go in the next one. Before → after values, about a second apart. Up to
-  `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing line counts the rest
-  and any sandbox-refresh removals. Nothing is posted when nothing was scored or
+  `MAX_DAILY_INVOICE_MESSAGES` invoice messages; a closing reply counts the rest
+  and any sandbox-refresh removals. If the lead fails or comes back without a
+  `ts`, no replies are sent. Nothing is posted when nothing was scored or
   removed.
-- Weekly (Mondays 14:30 UTC): the touch lead, then the last complete
+- Weekly (Mondays 14:30 UTC): a single top-level message (no thread) holding the touch lead, then the last complete
   Monday-to-Sunday Central week against the week before (`digestWindow`), so
-  Monday morning's scoring run is reported the following week: outcomes,
+  Sunday evening's scoring run (01:00 UTC Monday) is reported in that Monday's digest: outcomes,
   per-field change rates, edit rate by release, late corrections, cancels,
   convention examples, worst invoices, unlabeled cancels, and a count of
   agent-tagged invoices with no snapshot (or a note when that query fails).
+  The agent coverage section follows the title (see Coverage).
+
+## Coverage
+
+The KPI is the share of PGA Corp supplier invoices created in a period that the
+agent created or enriched (`src/lib/invoice_coverage.ts`). Sections create their
+own invoices and are out of scope, so the WQL filters `company1` to
+`COVERAGE_COMPANY_WIDS` (comma-separated company WIDs; defaults to the six PGA
+Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
+
+- Source: one WQL query over `supplierInvoices` for `createdOn` padded by a day
+  on each side, run with `requireCompleteTotal` so a short page fails the
+  refresh instead of shrinking the denominator. Each invoice is placed on its
+  Central day from `createdDateTime` (UTC), falling back to `createdOn`.
+- Agent supported: the invoice has a row in `agent_invoice_snapshots` or carries
+  the `FINAGENT-invoice-modified` tag (AP can replace the tag; older invoices
+  predate snapshots). Only `AGENT_WRITE_SOURCES` snapshots count: an
+  `enrich_baseline` row is saved before the update and stays behind when it
+  fails, so a baseline-only invoice is not agent supported. `agent_created` is a
+  `create` or `resend_update` snapshot, `agent_enriched` only `enrich`
+  snapshots, `agent_notes_only` the tag alone.
+- `invoiceCreatedBy` does not identify agent invoices: on them it is the AP
+  teammate who started the Intercom action, and it is sometimes blank. It only
+  splits the rest: `uncovered_ocr` (Workday OCR never enriched),
+  `uncovered_manual` (a worker keyed it), `uncovered_integration` (no creator,
+  such as Amazon and ODP batches).
+- Canceled invoices are checked first and stay out of the share
+  (`canceled`); companies outside the scope are `out_of_scope`. The headline
+  share counts everything else; a second share leaves the integration invoices
+  out of the denominator.
+- Supplier Invoice Requests had no invoices in any company since 2025-01-01, so
+  there is no category for them.
+- `agent_invoice_coverage_daily` (`ensureCoverageReporting`, created at cold
+  start) holds one row per Central creation day. The weekly `ScoreDigest` run
+  recomputes the last 15 days (every 7 days, so no gap); the first run
+  backfills 90. The nightly daily run does not touch it, so a Workday error
+  never alerts on the daily run. A failed refresh is reported after posting
+  and fails the run, like the touch rollup: on the weekly run that is a
+  Workday or token problem, and the post itself went out.
+- Rows older than 15 days keep the scope they were computed with. After
+  changing `COVERAGE_COMPANY_WIDS`, invoke `ScoreDigest` with
+  `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate
+  needed). The run posts the weekly digest as usual; adding
+  `"mode":"daily"` posts the daily summary instead, which posts nothing when
+  no invoice was scored since the last daily post.
+- The weekly digest shows the share against the week before, the counts per
+  category, the invoices created for other companies, the top suppliers the
+  agent missed, who keyed by hand with their agent counts, and up to ten
+  uncovered invoice links, one per person in turn. It is skipped on the sandbox
+  refresh weekday, and says coverage is unavailable when the Workday query
+  fails.
 
 ## Sandbox refresh (dev only)
 

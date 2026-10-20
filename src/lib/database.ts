@@ -1,6 +1,6 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { debug } from '@pga/logger';
-import { ensureTouchReporting } from './touch_reporting.js';
+import { ensureCoverageReporting, ensureTouchReporting } from './touch_reporting.js';
 import { Pool } from 'pg';
 import { parseRelatedLob, type RelatedLob } from './related_worktags.js';
 
@@ -325,6 +325,11 @@ export async function getDatabaseConnection(env: NodeJS.ProcessEnv): Promise<Dat
           await ensureTouchReporting((sql, params) => migrationClient.query(sql, params));
         } catch (reportingError) {
           debug('Could not create touch reporting objects; continuing without them', reportingError);
+        }
+        try {
+          await ensureCoverageReporting((sql, params) => migrationClient.query(sql, params));
+        } catch (reportingError) {
+          debug('Could not create the agent coverage table; continuing without it', reportingError);
         }
       } finally {
         migrationClient.release();
@@ -690,6 +695,30 @@ export async function getDocumentsByWorkdayIds(
 
   const rows = (Array.isArray(results) ? results : []) as Array<{ workday_id: string; content?: string | null; metadata: unknown }>;
   debug(`Found ${rows.length} cached ${type} document(s) for ${unique.length} Workday ID(s)`);
+  return rows;
+}
+
+/** Cached documents of a type whose content contains every given lowercase word (a candidate pre-filter, not a match). */
+export async function findDocumentsContainingWords(
+  db: DatabaseConnection,
+  type: DocumentType,
+  words: string[],
+  limit: number = 200
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: unknown }>> {
+  const patterns = [...new Set(words.map((word) => word.replace(/[^a-z0-9]/gi, '').toLowerCase()).filter(Boolean))]
+    .map((word) => `%${word}%`);
+  if (patterns.length === 0) return [];
+
+  const results: unknown = await db.query(`
+    SELECT workday_id, content, metadata
+    FROM documents
+    WHERE type = $1 AND content ILIKE ALL($2::text[])
+    ORDER BY workday_id
+    LIMIT $3
+  `, [type, patterns, limit]);
+
+  const rows = (Array.isArray(results) ? results : []) as Array<{ workday_id: string; content?: string | null; metadata: unknown }>;
+  debug(`Found ${rows.length} cached ${type} document(s) containing ${patterns.length} word(s)`);
   return rows;
 }
 

@@ -172,6 +172,7 @@ const matchingResult: InvoiceMatchingResult = {
   emailSummary: 'AP forwarded the invoice.',
   extractedPaymentTerms: { name: 'Due on receipt', workdayId: 'Immediate' },
   emailWorktags: null,
+  emailBudgetSplits: null,
 };
 
 describe('invoice OCR pass', () => {
@@ -286,6 +287,24 @@ describe('invoice OCR pass', () => {
   });
 
   describe('mergeInvoiceEnrichment', () => {
+    it('carries the email budget splits from the matching pass through the merge', () => {
+      const emailBudgetSplits = [{
+        label: 'Recruitment',
+        amount: '$15,000',
+        percent: null,
+        equalShare: null,
+        event: null,
+        lineOfBusiness: null,
+        fund: null,
+        costCenter: { extracted: 'Recruitment', name: 'CC-Recruitment', code: 'CC-Recruitment' },
+        spendCategory: null,
+      }];
+
+      const merged = mergeInvoiceEnrichment({ ...matchingResult, emailBudgetSplits }, ocrResult);
+
+      expect(merged.emailBudgetSplits).toEqual(emailBudgetSplits);
+    });
+
     it('keeps every document field from OCR and matching, coding, and the payment terms ID from gpt-5.4', () => {
       const merged = mergeInvoiceEnrichment(matchingResult, ocrResult);
 
@@ -306,6 +325,7 @@ describe('invoice OCR pass', () => {
       expect(merged.companyVerification).toEqual({ ...matchingResult.companyVerification, extractedInformation: ocrResult.printedBillTo });
       expect(merged.emailSummary).toBe('AP forwarded the invoice.');
       expect(merged.emailWorktags).toBeNull();
+      expect(merged.emailBudgetSplits).toBeNull();
       expect(merged.extractedPaymentTerms).toEqual({ name: 'Due on receipt', workdayId: 'Immediate' });
       expect(merged).toMatchObject({
         extractedInvoiceDate: '2026-10-02',

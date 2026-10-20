@@ -34,10 +34,18 @@ export function worktagIdentity(tag: any): string | null {
   return wid?.$value != null ? `WID:${wid.$value}` : null;
 }
 
+// Workday returns cost centers with a generic Organization_Reference_ID next to Cost_Center_Reference_ID,
+// so prefer any ID type outside ORG_WORKTAG_ID_TYPES. LOBs, venues and events only carry organization
+// ID types and keep resolving as organization worktags.
+function primaryWorktagId(tag: any): any | undefined {
+  const typed = ([] as any[])
+    .concat(tag?.ID ?? [])
+    .filter((id: any) => id?.$attributes?.type && id.$attributes.type !== 'WID');
+  return typed.find((id: any) => !ORG_WORKTAG_ID_TYPES.has(id.$attributes.type)) ?? typed[0];
+}
+
 function primaryWorktagType(tag: any): string | null {
-  const ids = ([] as any[]).concat(tag?.ID ?? []);
-  const primary = ids.find((id: any) => id.$attributes?.type && id.$attributes.type !== 'WID');
-  return primary?.$attributes?.type ?? null;
+  return primaryWorktagId(tag)?.$attributes?.type ?? null;
 }
 
 function worktagIdValues(tag: any): string[] {
@@ -107,7 +115,7 @@ function baseHasLobWorktag(
 
 function primaryWorktagValue(tag: any): string | null {
   const ids = ([] as any[]).concat(tag?.ID ?? []);
-  const primary = ids.find((id: any) => id.$attributes?.type && id.$attributes.type !== 'WID');
+  const primary = primaryWorktagId(tag);
   if (typeof primary?.$value === 'string' && primary.$value) return primary.$value;
   const wid = ids.find((id: any) => id.$attributes?.type === 'WID');
   return typeof wid?.$value === 'string' && wid.$value ? wid.$value : null;
@@ -538,17 +546,95 @@ export function enrichSplitWorktagsWithLineLevel(
   return enriched;
 }
 
+/** A PO line distributed by quantity carries a positive quantity on every split row. */
+export function isQuantityDistributedSplits(splits: PurchaseOrderLineSplit[] | undefined): boolean {
+  return splits != null && splits.length > 0 && splits.every(split => (split.quantity ?? 0) > 0);
+}
+
+export function poLineSplitQuantityCapacity(splits: PurchaseOrderLineSplit[] | undefined): number {
+  return (splits ?? []).reduce((sum, split) => sum + (split.quantity ?? 0), 0);
+}
+
+const SPLIT_QUANTITY_DECIMALS = 2;
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+/**
+ * Share an invoice line quantity across PO splits in the PO's quantity ratio. Whole numbers are
+ * preferred (largest remainder) when the quantity is whole and no split would end up with zero units.
+ */
+export function allocateSplitQuantities(splits: PurchaseOrderLineSplit[], invoiceQuantity: number): number[] {
+  const weights = splits.map(split => split.quantity ?? 0);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const raw = weights.map(weight => (invoiceQuantity * weight) / total);
+
+  if (raw.every(value => Math.abs(value - Math.round(value)) < 1e-9)) return raw.map(Math.round);
+
+  if (Number.isInteger(invoiceQuantity) && invoiceQuantity >= splits.length) {
+    const floors = raw.map(Math.floor);
+    let remaining = invoiceQuantity - floors.reduce((sum, value) => sum + value, 0);
+    const byRemainder = raw
+      .map((value, index) => ({ index, remainder: value - floors[index] }))
+      .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+    for (const { index } of byRemainder) {
+      if (remaining <= 0) break;
+      floors[index] += 1;
+      remaining -= 1;
+    }
+    if (floors.every(value => value > 0)) return floors;
+  }
+
+  const rounded = raw.map(value => roundTo(value, SPLIT_QUANTITY_DECIMALS));
+  const drift = roundTo(invoiceQuantity - rounded.reduce((sum, value) => sum + value, 0), SPLIT_QUANTITY_DECIMALS);
+  rounded[rounded.length - 1] = roundTo(rounded[rounded.length - 1] + drift, SPLIT_QUANTITY_DECIMALS);
+  return rounded;
+}
+
+export interface SplitQuantityContext {
+  quantity: number;
+  unitCost?: number | null;
+}
+
 export function mapPoSplitsToSupplierInvoiceSplitLineData(
   splits: PurchaseOrderLineSplit[] | undefined,
   invoiceLineExtendedAmount?: number | null,
   lineLevelWorktags?: any[],
-  context?: OrgPassthroughContext
+  context?: OrgPassthroughContext,
+  splitQuantity?: SplitQuantityContext
 ): any[] | undefined {
   if (!splits?.length) return undefined;
   const enrichedSplits = splits.map(split => ({
     ...split,
     worktagReference: enrichSplitWorktagsWithLineLevel(split.worktagReference, lineLevelWorktags, context),
   }));
+
+  if (splitQuantity && splitQuantity.quantity > 0 && isQuantityDistributedSplits(splits)) {
+    const quantities = allocateSplitQuantities(splits, splitQuantity.quantity);
+    // Workday checks each split as quantity x unit cost, so when the line total disagrees with its own
+    // quantity x unit cost, price the splits from the total and let the line-level fault handling decide.
+    const impliedUnitCost = invoiceLineExtendedAmount != null ? invoiceLineExtendedAmount / splitQuantity.quantity : null;
+    const lineTotalMatches = splitQuantity.unitCost != null
+      && invoiceLineExtendedAmount != null
+      && Math.abs(splitQuantity.unitCost * splitQuantity.quantity - invoiceLineExtendedAmount) < 0.01;
+    const unitCost = splitQuantity.unitCost != null && (invoiceLineExtendedAmount == null || lineTotalMatches)
+      ? splitQuantity.unitCost
+      : impliedUnitCost;
+    const amounts = unitCost == null ? undefined : quantities.map(quantity => roundMoney(quantity * unitCost));
+    if (amounts && invoiceLineExtendedAmount != null) {
+      const drift = roundMoney(invoiceLineExtendedAmount - amounts.reduce((sum, amount) => sum + amount, 0));
+      if (Math.abs(drift) >= 0.01) amounts[amounts.length - 1] = roundMoney(amounts[amounts.length - 1] + drift);
+    }
+    return enrichedSplits.map((split, index) => ({
+      Quantity: quantities[index],
+      ...(amounts && { Extended_Amount: amounts[index] }),
+      ...(split.memo && { Memo: split.memo }),
+      ...(split.worktagReference.length > 0 && { Worktag_Reference: split.worktagReference }),
+    }));
+  }
+
   const splitAmountSum = enrichedSplits.reduce((sum, split) => sum + (split.extendedAmount ?? 0), 0);
   const targetAmount = invoiceLineExtendedAmount ?? (splitAmountSum > 0 ? splitAmountSum : null);
   if (targetAmount == null) {
@@ -581,6 +667,47 @@ export function mapPoSplitsToSupplierInvoiceSplitLineData(
     ...(split.memo && { Memo: split.memo }),
     ...(split.worktagReference.length > 0 && { Worktag_Reference: split.worktagReference }),
   }));
+}
+
+export interface QuantityPoLineCandidate {
+  lineOrder: number;
+  purchaseOrderLineId?: string | null;
+  quantity?: number | null;
+  extendedAmount?: number | null;
+  splits?: PurchaseOrderLineSplit[];
+}
+
+/**
+ * When several invoice lines link to one quantity-distributed PO line, only as many as fit its
+ * ordered quantity can keep the link. Larger quantities claim it first; the rest must be coded
+ * from the PO without the link so Workday does not count their quantity against the PO line.
+ */
+export function lineOrdersExceedingQuantityPoLine(lines: QuantityPoLineCandidate[]): Set<number> {
+  const unlinked = new Set<number>();
+  const byPoLine = new Map<string, QuantityPoLineCandidate[]>();
+  for (const line of lines) {
+    if (!line.purchaseOrderLineId || !isQuantityDistributedSplits(line.splits)) continue;
+    byPoLine.set(line.purchaseOrderLineId, [...(byPoLine.get(line.purchaseOrderLineId) ?? []), line]);
+  }
+  for (const group of byPoLine.values()) {
+    if (group.length < 2) continue;
+    const capacity = poLineSplitQuantityCapacity(group[0].splits);
+    const ranked = [...group].sort((a, b) =>
+      (b.quantity ?? 0) - (a.quantity ?? 0)
+      || (b.extendedAmount ?? 0) - (a.extendedAmount ?? 0)
+      || a.lineOrder - b.lineOrder
+    );
+    let used = 0;
+    for (const line of ranked) {
+      const quantity = line.quantity ?? 0;
+      if (quantity > 0 && used + quantity <= capacity + 1e-9) {
+        used += quantity;
+      } else {
+        unlinked.add(line.lineOrder);
+      }
+    }
+  }
+  return unlinked;
 }
 
 export function firstNonEmptyPoLineArray(...sources: unknown[]): any[] {

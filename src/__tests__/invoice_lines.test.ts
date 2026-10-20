@@ -2,7 +2,9 @@ import {
   alignSupplierInvoiceLineAmounts,
   applyAmountOnlyLineRetry,
   applyDefaultCompanyLineWorktags,
+  applyEmailBudgetSplits,
   applyMissingQuantityColumnLines,
+  applyPositivePoQuantityRetry,
   applyRelatedLobWorktags,
   buildFinalInvoiceLines,
   chargeReconciliationMessages,
@@ -21,6 +23,9 @@ import {
   overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   reconcileSubmittedCharges,
+  requiresPositivePoQuantity,
+  normalizeSupplierInvoiceLineAmounts,
+  positivePoQuantityNote,
   parseExtractedAmount,
   parseExtractedLineAmount,
   parseExtractedUnitCost,
@@ -29,6 +34,8 @@ import {
   restoreClearedFreightFromRows,
   splitFreightLines,
   statesServicePeriod,
+  type EmailBudgetSplit,
+  type EmailWorktags,
   type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
@@ -204,6 +211,7 @@ describe('overlayPoWorktagsFromPurchaseOrder', () => {
         fundId: null,
         spendCategoryId: null,
         worktagsReference: [program],
+        lineLevelWorktagsReference: [program],
         description: null,
         memo: null,
         shipToAddressId: null,
@@ -1013,6 +1021,329 @@ describe('buildFinalInvoiceLines', () => {
 
     expect(result.lines[0].lineOfBusinessId).toBe('LOB-Facilities');
     expect(result.appliedFallbacks.lineOfBusiness).toBe(false);
+  });
+});
+
+describe('applyEmailBudgetSplits', () => {
+  const recruitment: EmailBudgetSplit = {
+    label: "Chris Kulinski's Budget",
+    amount: '$15,000',
+    costCenterId: 'CC-Recruitment',
+    lobReferenceId: 'LOB-Recruitment',
+    spendCategoryReferenceId: 'SC-Sponsorships',
+  };
+  const brand: EmailBudgetSplit = {
+    label: 'Brand and Marketing Budget',
+    amount: '$20,000',
+    costCenterId: 'CC-Brand_&_Digital_Marketing',
+    lobReferenceId: 'LOB-Production_&_Advertising',
+    spendCategoryReferenceId: 'SC-Advertising_and_Promotion',
+  };
+  const sponsorshipLine: FinalInvoiceLine = {
+    lineOrder: 1,
+    description: 'PGA of America Sponsorship Package',
+    memo: 'Sponsorship package for the 2027 MIT Sloan Sports Analytics Conference.',
+    quantity: null,
+    unitCost: null,
+    extendedAmount: 35000,
+    costCenterId: 'FALLBACK-CC',
+    fundId: 'FUND-General_Fund_Unrestricted',
+    spendCategoryId: 'Default_OCR_Spend_Category',
+    lineOfBusinessId: null,
+  };
+  const withSplits = (budgetSplits: EmailBudgetSplit[], extra: Partial<EmailWorktags> = {}): EmailWorktags => ({
+    budgetSplits,
+    budgetSplitBaseCents: 3500000,
+    ...extra,
+  });
+
+  it('returns the lines untouched when the email has no budget splits', () => {
+    expect(applyEmailBudgetSplits([sponsorshipLine], undefined, false)).toEqual({ lines: [sponsorshipLine] });
+    expect(applyEmailBudgetSplits([sponsorshipLine], { costCenterId: 'CC-1' }, false)).toEqual({ lines: [sponsorshipLine] });
+  });
+
+  it('splits one line into one amount-only line per budget with that budget\'s own coding', () => {
+    const { lines, outcome } = applyEmailBudgetSplits([sponsorshipLine], withSplits([recruitment, brand]), false);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toEqual(expect.objectContaining({
+      lineOrder: 1,
+      description: 'PGA of America Sponsorship Package',
+      memo: 'Sponsorship package for the 2027 MIT Sloan Sports Analytics Conference.',
+      quantity: 0,
+      unitCost: 0,
+      extendedAmount: 15000,
+      costCenterId: 'CC-Recruitment',
+      lineOfBusinessId: 'LOB-Recruitment',
+      spendCategoryId: 'SC-Sponsorships',
+      fundId: 'FUND-General_Fund_Unrestricted',
+    }));
+    expect(lines[1]).toEqual(expect.objectContaining({
+      lineOrder: 2,
+      extendedAmount: 20000,
+      costCenterId: 'CC-Brand_&_Digital_Marketing',
+      lineOfBusinessId: 'LOB-Production_&_Advertising',
+      spendCategoryId: 'SC-Advertising_and_Promotion',
+    }));
+    expect(outcome).toEqual({
+      applied: true,
+      budgets: [
+        { label: "Chris Kulinski's Budget", amountCents: 1500000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+        { label: 'Brand and Marketing Budget', amountCents: 2000000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+      ],
+    });
+  });
+
+  it('lets a shared email fund or spend category fill a budget that has none of its own', () => {
+    const sharedLine = { ...sponsorshipLine, fundId: 'FUND-Shared', spendCategoryId: 'SC-Shared' };
+    const { lines } = applyEmailBudgetSplits(
+      [sharedLine],
+      withSplits([{ ...recruitment, spendCategoryReferenceId: null }, brand]),
+      false
+    );
+
+    expect(lines[0].spendCategoryId).toBe('SC-Shared');
+    expect(lines[0].fundId).toBe('FUND-Shared');
+    expect(lines[1].spendCategoryId).toBe('SC-Advertising_and_Promotion');
+  });
+
+  it('does not carry the shared LOB onto a budget whose cost center resolves its own', () => {
+    const { lines } = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([{ ...recruitment, lobReferenceId: null }, brand], { lobReferenceId: 'LOB-Shared' }),
+      false
+    );
+
+    expect(lines[0].lineOfBusinessId).toBeNull();
+    expect(lines[1].lineOfBusinessId).toBe('LOB-Production_&_Advertising');
+  });
+
+  it('splits several invoice lines into one line per budget with a combined description', () => {
+    const lines = [
+      { ...sponsorshipLine, description: 'Booth', extendedAmount: 10000 },
+      { ...sponsorshipLine, lineOrder: 2, description: 'Logo placement', extendedAmount: 25000 },
+    ];
+    const result = applyEmailBudgetSplits(lines, withSplits([recruitment, brand]), false);
+
+    expect(result.lines).toHaveLength(2);
+    expect(result.lines.map(line => line.description)).toEqual(['Booth; Logo placement', 'Booth; Logo placement']);
+    expect(result.lines.map(line => line.extendedAmount)).toEqual([15000, 20000]);
+    expect(result.lines[0].memo).toBeNull();
+  });
+
+  it('splits by percentage and puts the leftover cent on the last budget', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100.01 };
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10001, budgetSplits: [
+        { ...recruitment, amount: null, percent: 33.3 },
+        { ...brand, amount: null, percent: 66.7 },
+      ] },
+      false
+    );
+
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.3, 66.71]);
+    expect(outcome?.applied).toBe(true);
+  });
+
+  it('accepts three budgets at 33.33% each despite float rounding in the percent total', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100 };
+    const budget = (label: string): EmailBudgetSplit => ({ label, percent: 33.33, costCenterId: `CC-${label}` });
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10000, budgetSplits: [budget('A'), budget('B'), budget('C')] },
+      false
+    );
+
+    expect(outcome?.applied).toBe(true);
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.33, 33.33, 33.34]);
+  });
+
+  it('splits an even-split email into equal shares with the remainder on the last budget', () => {
+    const line = { ...sponsorshipLine, extendedAmount: 100 };
+    const third: EmailBudgetSplit = { label: 'C', costCenterId: 'CC-C', equalShare: true };
+    const { lines } = applyEmailBudgetSplits(
+      [line],
+      { budgetSplitBaseCents: 10000, budgetSplits: [
+        { ...recruitment, amount: null, equalShare: true },
+        { ...brand, amount: null, equalShare: true },
+        third,
+      ] },
+      false
+    );
+
+    expect(lines.map(l => l.extendedAmount)).toEqual([33.33, 33.33, 33.34]);
+  });
+
+  it.each([
+    ['percentages that do not total 100', [{ ...recruitment, amount: null, percent: 60 }, { ...brand, amount: null, percent: 30 }], 'percentages total 90%'],
+    ['amounts that do not total the invoice', [recruitment, { ...brand, amount: '$10,000' }], 'amounts total $25,000.00, not $35,000.00'],
+    ['a mix of amounts and percentages', [recruitment, { ...brand, amount: null, percent: 50 }], 'same kind of share'],
+    ['no basis at all', [{ ...recruitment, amount: null }, { ...brand, amount: null }], 'no dollar amounts, percentages, or even split'],
+    ['an unreadable amount', [recruitment, { ...brand, amount: '$20k' }], 'could not be read'],
+  ])('does not split for %s', (_name, budgets, reason) => {
+    const { lines, outcome } = applyEmailBudgetSplits([sponsorshipLine], withSplits(budgets as EmailBudgetSplit[]), false);
+
+    expect(lines).toEqual([sponsorshipLine]);
+    expect(outcome?.applied).toBe(false);
+    expect(outcome?.review).toContain(reason);
+    expect(outcome?.review).toContain("Chris Kulinski's Budget; Brand and Marketing Budget");
+  });
+
+  it('does not split when the invoice lines do not total the amount due less freight and tax', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      [{ ...sponsorshipLine, extendedAmount: 30000 }],
+      withSplits([recruitment, brand]),
+      false
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(outcome?.review).toContain('lines total $30,000.00, not $35,000.00');
+  });
+
+  it('does not split an invoice coded from a purchase order', () => {
+    const poLinked = applyEmailBudgetSplits([sponsorshipLine], withSplits([recruitment, brand]), true);
+    expect(poLinked.outcome?.review).toContain('purchase order');
+
+    const lineLinked = applyEmailBudgetSplits(
+      [{ ...sponsorshipLine, purchaseOrderLineId: 'POL-1' }],
+      withSplits([recruitment, brand]),
+      false
+    );
+    expect(lineLinked.lines[0].purchaseOrderLineId).toBe('POL-1');
+    expect(lineLinked.outcome?.applied).toBe(false);
+  });
+
+  it('does not split when the caller blocks it or the invoice has credit lines', () => {
+    const blocked = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([recruitment, brand], { budgetSplitBlockedReason: 'the invoice is an all-freight bill' }),
+      false
+    );
+    expect(blocked.outcome?.review).toContain('all-freight');
+
+    const credit = applyEmailBudgetSplits(
+      [sponsorshipLine, { ...sponsorshipLine, lineOrder: 2, extendedAmount: -100 }],
+      withSplits([recruitment, brand]),
+      false
+    );
+    expect(credit.outcome?.review).toContain('credit or discount');
+  });
+
+  it('does not split when a budget has no cost center or spend category', () => {
+    const { outcome } = applyEmailBudgetSplits(
+      [sponsorshipLine],
+      withSplits([recruitment, { ...brand, costCenterId: null, spendCategoryReferenceId: null }]),
+      false
+    );
+
+    expect(outcome?.review).toContain('no cost center or spend category was found for Brand and Marketing Budget');
+  });
+});
+
+describe('buildFinalInvoiceLines with email budget splits', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.FALLBACK_COST_CENTER_ID;
+  });
+
+  const mergedLine = {
+    lineOrder: 1,
+    description: 'PGA of America Sponsorship Package',
+    memo: 'Sponsorship package',
+    quantity: null,
+    unitCost: null,
+    extendedAmount: 35000,
+    costCenterId: null,
+    fundId: null,
+    spendCategoryId: null,
+    lineOfBusinessId: null,
+    eventId: null,
+    shipToAddressId: null,
+    purchaseOrderLineId: null,
+    hasDiscount: null,
+  };
+
+  it('codes each budget line with its cost center, spend category, and a related LOB when none was resolved', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine] } as any);
+    const relatedLobLookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Recruitment', { defaultReferenceId: 'LOB-Recruitment', allowedReferenceIds: ['LOB-Recruitment'] }],
+      ['CC-Brand_&_Digital_Marketing', { defaultReferenceId: 'LOB-Production_&_Advertising', allowedReferenceIds: ['LOB-Production_&_Advertising'] }],
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'PGA of America Sponsorship Package', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: null }],
+      undefined,
+      undefined,
+      { fundId: 'FUND-General_Fund_Unrestricted', spendCategoryId: 'Default_OCR_Spend_Category' },
+      {
+        budgetSplitBaseCents: 3500000,
+        budgetSplits: [
+          { label: 'Recruitment', amount: '$15,000', costCenterId: 'CC-Recruitment', spendCategoryReferenceId: 'SC-Sponsorships' },
+          { label: 'Brand', amount: '$20,000', costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryReferenceId: 'SC-Advertising_and_Promotion' },
+        ],
+      },
+      relatedLobLookup
+    );
+
+    expect(result.lines.map(line => ({
+      amount: line.extendedAmount,
+      cc: line.costCenterId,
+      lob: line.lineOfBusinessId,
+      sc: line.spendCategoryId,
+      fund: line.fundId,
+    }))).toEqual([
+      { amount: 15000, cc: 'CC-Recruitment', lob: 'LOB-Recruitment', sc: 'SC-Sponsorships', fund: 'FUND-General_Fund_Unrestricted' },
+      { amount: 20000, cc: 'CC-Brand_&_Digital_Marketing', lob: 'LOB-Production_&_Advertising', sc: 'SC-Advertising_and_Promotion', fund: 'FUND-General_Fund_Unrestricted' },
+    ]);
+    expect(result.emailBudgetSplit?.applied).toBe(true);
+  });
+
+  it('keeps a budget\'s email LOB only when its own cost center allows it', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [mergedLine] } as any);
+    const relatedLobLookup = jest.fn().mockResolvedValue(new Map([
+      ['CC-Recruitment', { defaultReferenceId: 'LOB-Recruitment', allowedReferenceIds: ['LOB-Recruitment'] }],
+      ['CC-Brand', { defaultReferenceId: 'LOB-Brand', allowedReferenceIds: ['LOB-Brand'] }],
+    ]));
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Sponsorship', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: null }],
+      undefined,
+      undefined,
+      {},
+      {
+        budgetSplitBaseCents: 3500000,
+        budgetSplits: [
+          { label: 'Recruitment', amount: '$15,000', costCenterId: 'CC-Recruitment', lobReferenceId: 'LOB-Brand' },
+          { label: 'Brand', amount: '$20,000', costCenterId: 'CC-Brand', lobReferenceId: 'LOB-Brand' },
+        ],
+      },
+      relatedLobLookup
+    );
+
+    expect(result.lines.map(line => line.lineOfBusinessId)).toEqual(['LOB-Recruitment', 'LOB-Brand']);
+  });
+
+  it('does not split an invoice that has PO lines and reports why', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [{ ...mergedLine, purchaseOrderLineId: 'POL-001', extendedAmount: 100 }] } as any);
+
+    const result = await buildFinalInvoiceLines(
+      [{ description: 'Janitorial', quantity: 1, unitCost: '100', totalPrice: '100', hasDiscount: null }],
+      [poLine()],
+      undefined,
+      {},
+      {
+        budgetSplitBaseCents: 10000,
+        budgetSplits: [
+          { label: 'A', amount: '$40', costCenterId: 'CC-A' },
+          { label: 'B', amount: '$60', costCenterId: 'CC-B' },
+        ],
+      }
+    );
+
+    expect(result.lines).toHaveLength(1);
+    expect(result.emailBudgetSplit?.applied).toBe(false);
+    expect(result.emailBudgetSplit?.review).toContain('purchase order');
   });
 });
 
@@ -3015,3 +3346,188 @@ describe('resolveHeaderChargeAmounts', () => {
   });
 });
 
+
+describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () => {
+  const PO_LINE = 'ITEM_ORDER_LINE-3-28584';
+  const poLinked = (
+    lineOrder: number,
+    description: string,
+    quantity: number | null,
+    unitCost: number | null,
+    extendedAmount: number
+  ): FinalInvoiceLine => ({
+    lineOrder,
+    description,
+    quantity,
+    unitCost,
+    extendedAmount,
+    hasDiscount: false,
+    purchaseOrderLineId: PO_LINE,
+    purchaseOrderLineQuantity: 28000,
+  });
+
+  const septemberLines = (): FinalInvoiceLine[] => [
+    poLinked(1, 'Orders', 1, 4.57, 4.57),
+    poLinked(2, 'Units', 500, 0.1183, 59.15),
+    poLinked(3, 'Storage', 5, 16, 80),
+    poLinked(4, 'Receiving', 0.25, 37.31, 9.33),
+    poLinked(5, 'Special Warehouse Labor', 90.96, 37.32, 3394.63),
+    poLinked(6, 'Account Management Fee', 1, 799.59, 799.59),
+    poLinked(7, 'Apprentice Kits', 195, 4.53, 883.35),
+    poLinked(8, 'Member Kits', 50, 4.53, 226.5),
+    poLinked(9, 'Membership Cards Printed', 6332, 1.17, 7408.44),
+    poLinked(10, 'Printer Supplies Surcharge', null, null, 2222.53),
+    poLinked(11, 'Member Letters/Certificates/Labels Printed', 345, 0.37, 127.65),
+    poLinked(12, 'Data Transmissions', 17, 26.66, 453.22),
+  ];
+
+  const augustLines = (): FinalInvoiceLine[] => [
+    poLinked(1, 'Units', 1200, 0.1183, 141.96),
+    poLinked(2, 'Account Management Fee', 1, 799.59, 799.59),
+    poLinked(3, 'Membership Cards Printed', 6000, 1.17, 7020),
+    poLinked(4, 'Printer Supplies Surcharge', null, null, 6422.95),
+  ];
+
+  const SEPTEMBER_FREIGHT_CENTS = 292308;
+  const SEPTEMBER_AMOUNT_DUE_CENTS = 1859204;
+  const sumCents = (lines: FinalInvoiceLine[]) =>
+    lines.reduce((sum, line) => sum + Math.round((line.extendedAmount ?? 0) * 100), 0);
+
+  it('submits the September 8107 surcharge as one unit at its amount and leaves quantity lines alone', () => {
+    const original = septemberLines();
+    const result = normalizeSupplierInvoiceLineAmounts(original, true);
+
+    expect(result[9]).toMatchObject({ quantity: 1, unitCost: 2222.53, extendedAmount: 2222.53, purchaseOrderLineId: PO_LINE });
+    result.filter((_, index) => index !== 9).forEach((line, index) => {
+      const source = original.filter((_, i) => i !== 9)[index];
+      expect(line).toEqual(source);
+    });
+    expect(result.every(line => (line.quantity ?? 0) > 0)).toBe(true);
+    expect(sumCents(result) + SEPTEMBER_FREIGHT_CENTS).toBe(SEPTEMBER_AMOUNT_DUE_CENTS);
+  });
+
+  it('submits the August 7998 surcharge as one unit at its amount', () => {
+    const result = normalizeSupplierInvoiceLineAmounts(augustLines(), true);
+    expect(result[3]).toMatchObject({ quantity: 1, unitCost: 6422.95, extendedAmount: 6422.95, purchaseOrderLineId: PO_LINE });
+    expect(result.every(line => (line.quantity ?? 0) > 0)).toBe(true);
+  });
+
+  it('turns an already-zeroed PO-linked line into one unit', () => {
+    const lines = [{ ...poLinked(1, 'Surcharge', 0, 0, 100) }];
+    expect(alignSupplierInvoiceLineAmounts(lines)[0]).toMatchObject({ quantity: 1, unitCost: 100, extendedAmount: 100 });
+  });
+
+  it('sends one unit for every PO-linked line when the invoice prints no quantity column', () => {
+    const lines = [poLinked(1, 'Service', null, 50, 250), poLinked(2, 'Fee', null, null, 75)];
+    const result = normalizeSupplierInvoiceLineAmounts(lines, false);
+    expect(result[0]).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
+    expect(result[1]).toMatchObject({ quantity: 1, unitCost: 75, extendedAmount: 75 });
+  });
+
+  it('sends one unit, not the printed quantity, when a PO-linked line mismatches its total', () => {
+    const lines = [poLinked(1, 'Signs', 37, 29.88, 1110), poLinked(2, 'Service', null, 50, 250)];
+    const [signs, service] = alignSupplierInvoiceLineAmounts(lines);
+    expect(signs).toMatchObject({ quantity: 1, unitCost: 1110, extendedAmount: 1110 });
+    expect(service).toMatchObject({ quantity: 1, unitCost: 250, extendedAmount: 250 });
+  });
+
+  it.each([
+    ['a non-PO line', { purchaseOrderLineId: null, purchaseOrderLineQuantity: undefined }],
+    ['an amount-based PO line', { purchaseOrderLineQuantity: undefined }],
+    ['a PO line ordered with quantity 0', { purchaseOrderLineQuantity: 0 }],
+    ['a line whose PO reference is omitted', { omitPurchaseOrderLineReference: true }],
+  ])('still submits an amount-only line on %s as quantity 0', (_name, overrides) => {
+    const line = { ...poLinked(1, 'Surcharge', null, null, 100), ...overrides } as FinalInvoiceLine;
+    expect(requiresPositivePoQuantity(line)).toBe(false);
+    expect(normalizeSupplierInvoiceLineAmounts([line], true)[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 100 });
+  });
+
+  it('leaves a credit on a quantity-based PO line untouched', () => {
+    const credit = { ...poLinked(1, 'Credit', null, null, -50), hasDiscount: true };
+    expect(requiresPositivePoQuantity(credit)).toBe(false);
+    expect(alignSupplierInvoiceLineAmounts([credit])).toEqual([credit]);
+  });
+
+  it('leaves lines on a quantity-split PO line to the split-quantity rules', () => {
+    const split = { quantity: 5, worktagReference: [] } as any;
+    const line = { ...poLinked(1, 'Surcharge', null, null, 100), supplierInvoiceSplitLineData: [split, split] };
+    expect(requiresPositivePoQuantity(line)).toBe(false);
+    expect(alignSupplierInvoiceLineAmounts([line])[0]).toMatchObject({ quantity: 0, unitCost: 0 });
+  });
+
+  it('amount-only retry keeps a positive quantity on quantity-based PO lines and zeroes the rest', () => {
+    const poLine = poLinked(1, 'Widgets', 10, 5, 50);
+    const plain: FinalInvoiceLine = { lineOrder: 2, description: 'Widgets', quantity: 10, unitCost: 5, extendedAmount: 50 };
+    const [first, second] = applyAmountOnlyLineRetry([poLine, plain]);
+    expect(first).toMatchObject({ quantity: 1, unitCost: 50, extendedAmount: 50 });
+    expect(second).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 50 });
+  });
+
+  it('positive-quantity retry rewrites only the named zero-quantity lines', () => {
+    const zeroed = { ...poLinked(1, 'Surcharge', 0, 0, 100) };
+    const untouched = poLinked(2, 'Units', 5, 2, 10);
+    const [first, second] = applyPositivePoQuantityRetry([zeroed, untouched], new Set([1]));
+    expect(first).toMatchObject({ quantity: 1, unitCost: 100, extendedAmount: 100, forcePositivePoQuantity: true });
+    expect(second).toBe(untouched);
+  });
+
+  it('copies the PO line quantity onto matched invoice lines but not service lines', () => {
+    const base = {
+      lineOfBusinessId: null, costCenterId: null, fundId: null, spendCategoryId: null,
+      worktagsReference: [], description: null, memo: null, shipToAddressId: null, splitLineData: [],
+    };
+    const result = overlayPoWorktagsFromPurchaseOrder(
+      [
+        { lineOrder: 1, description: 'Goods', purchaseOrderLineId: 'GOODS-1' },
+        { lineOrder: 2, description: 'Service', purchaseOrderLineId: 'SERVICE-1' },
+      ],
+      [
+        { ...base, lineOrder: 1, purchaseOrderLineId: 'GOODS-1', quantity: 28000 },
+        { ...base, lineOrder: 2, purchaseOrderLineId: 'SERVICE-1', quantity: null },
+      ]
+    );
+    expect(result[0].purchaseOrderLineQuantity).toBe(28000);
+    expect(result[1].purchaseOrderLineQuantity).toBeNull();
+  });
+
+  it('drops the PO line quantity when the line is detached from the PO', () => {
+    const [line] = overlaySharedPoWorktagsOnUnmatchedLines([poLinked(1, 'Fee', null, null, 10)], undefined);
+    expect(line.purchaseOrderLineId).toBeNull();
+    expect(line.purchaseOrderLineQuantity).toBeUndefined();
+  });
+});
+
+describe('positivePoQuantityNote', () => {
+  const poLine = (lineOrder: number, quantity: number | null, extendedAmount: number): FinalInvoiceLine => ({
+    lineOrder,
+    description: `Line ${lineOrder}`,
+    quantity,
+    unitCost: quantity == null ? null : extendedAmount / quantity,
+    extendedAmount,
+    purchaseOrderLineId: 'POL-1',
+    purchaseOrderLineQuantity: 100,
+  });
+
+  it('names only the lines that changed to one unit', () => {
+    const before = [poLine(1, 1, 10), poLine(2, null, 2222.53), poLine(3, 5, 25)];
+    const note = positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true));
+    expect(note).toContain('"Line 2" ($2,222.53)');
+    expect(note).toContain('Submitted as quantity 1 at the line amount');
+    expect(note).not.toContain('Line 1');
+    expect(note).not.toContain('Line 3');
+  });
+
+  it('names a line printed as quantity 1 whose unit cost did not match its total', () => {
+    const before = [{ ...poLine(1, 1, 75), unitCost: 50 }, poLine(2, 1, 10)];
+    const note = positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true));
+    expect(note).toContain('"Line 1" ($75.00)');
+    expect(note).not.toContain('Line 2');
+  });
+
+  it('returns nothing when no line needed the change', () => {
+    const before = [poLine(1, 2, 10)];
+    expect(positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true))).toBeUndefined();
+    const plain: FinalInvoiceLine[] = [{ lineOrder: 1, description: 'Fee', quantity: null, unitCost: null, extendedAmount: 5 }];
+    expect(positivePoQuantityNote(plain, normalizeSupplierInvoiceLineAmounts(plain, true))).toBeUndefined();
+  });
+});

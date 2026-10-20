@@ -11,9 +11,10 @@ import {
 } from './supplier_note_hints.js';
 import { invoiceMatchingPrompt, InvoiceMatchingSchema, type InvoiceEnrichmentResult, type InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachmentRole } from './invoice_ocr.js';
-import { withComposedLineDescriptions } from './invoice_lines.js';
+import { withComposedLineDescriptions, type EmailBudgetSplitOutcome } from './invoice_lines.js';
 import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
+import { findUniqueSupplierByNameEvidence, type SupplierNameMatch } from './supplier_match.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
 async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
@@ -146,12 +147,61 @@ export async function enrichInvoiceFromAttachments(
       ]
     }) as InvoiceMatchingResult;
 
-    return mergeInvoiceEnrichment(matching, ocr);
+    const merged = mergeInvoiceEnrichment(matching, ocr);
+    return existingSupplier ? merged : await resolveSupplierByNameEvidence(merged, ocr?.printedSupplier.remitToAddress);
 
   } catch (error) {
     debug('Error in invoice enrichment:', error);
     throw error;
   }
+}
+
+const NAME_EVIDENCE_CONFIDENCE = 0.85;
+
+/**
+ * A branch prints its own address and phone, which the parent supplier record does not carry, so the model
+ * scores such a match low and reports not_found. When the remit-to company or the printed name equals exactly one
+ * cached supplier's name or alternate name, that supplier is found. Anything else stays as the model decided.
+ */
+export async function resolveSupplierByNameEvidence(
+  result: InvoiceEnrichmentResult,
+  remitToAddress: string | null | undefined
+): Promise<InvoiceEnrichmentResult> {
+  if (result.supplier.status !== 'not_found') return result;
+
+  let match: SupplierNameMatch | undefined;
+  try {
+    const db = await getDatabaseConnection(process.env);
+    match = await findUniqueSupplierByNameEvidence(db, {
+      printedName: result.supplier.extractedInformation.supplierName,
+      remitToAddress,
+      excludeWorkdayIds: [process.env.WORKDAY_DEFAULT_SUPPLIER_WID],
+    });
+  } catch (error) {
+    debug('Supplier name evidence lookup failed; keeping the not_found result:', error);
+    return result;
+  }
+  if (!match) return result;
+
+  const label = `${match.supplierId ? `${match.supplierId} ` : ''}${match.supplierName}`;
+  const note = `${match.evidence.join('; ')}. The printed branch address and phone are not required to match the supplier record; confirm ${label}.`;
+  return {
+    ...result,
+    supplier: {
+      ...result.supplier,
+      status: 'found',
+      confidence: NAME_EVIDENCE_CONFIDENCE,
+      resolvedSupplier: {
+        workdayId: match.workdayId,
+        supplierName: match.supplierName,
+        confidence: NAME_EVIDENCE_CONFIDENCE,
+        reason: note,
+      },
+      potentialDuplicateSuppliers: null,
+      recommendation: { action: 'update_invoice', reason: note },
+      reason: `${note} Model result before the name check: ${result.supplier.reason}`,
+    },
+  };
 }
 
 export function formatSupplierNotes(result: InvoiceEnrichmentResult): string {
@@ -232,6 +282,10 @@ export function formatChargeReviewNotes(reviewNote: string | undefined): string 
 
 export function formatLineTotalReviewNotes(reviewNote: string | undefined): string {
   return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
+}
+
+export function formatPositivePoQuantityNotes(note: string | undefined): string {
+  return note ? `\n\nPO line quantity: ${note}` : '';
 }
 
 export function formatRepeatedLineNotes(note: string | undefined): string {
@@ -347,6 +401,10 @@ export function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string
     const resolved = wt.fund.referenceId ? ` (resolved: ${wt.fund.referenceId})` : ' (no Workday match found)';
     parts.push(`Fund: ${wt.fund.extracted}${resolved}`);
   }
+  if (wt.spendCategory?.extracted) {
+    const resolved = wt.spendCategory.referenceId ? ` (resolved: ${wt.spendCategory.name ?? wt.spendCategory.referenceId})` : ' (no Workday match found)';
+    parts.push(`Spend Category: ${wt.spendCategory.extracted}${resolved}`);
+  }
   if (wt.company?.extracted) {
     const resolved = wt.company.workdayId || wt.company.referenceId
       ? ` (resolved: ${wt.company.name ?? wt.company.referenceId ?? wt.company.workdayId})`
@@ -355,6 +413,39 @@ export function formatEmailWorktagNotes(result: InvoiceEnrichmentResult): string
   }
   if (!parts.length) return '';
   return `\n\nEmail Worktags: ${parts.join('; ')}`;
+}
+
+function formatBudgetAmount(cents: number): string {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+// One line per budget the invoice was split into, for the Workday note and Slack.
+export function describeEmailBudgetSplit(outcome: EmailBudgetSplitOutcome | undefined): string[] {
+  if (!outcome?.applied) return [];
+  return outcome.budgets.map(budget => {
+    const coding = [
+      budget.costCenterId && `Cost Center ${budget.costCenterId}`,
+      budget.spendCategoryId && `Spend Category ${budget.spendCategoryId}`,
+    ].filter(Boolean).join(', ');
+    return `${formatBudgetAmount(budget.amountCents)} ${budget.label}${coding ? ` (${coding})` : ''}`;
+  });
+}
+
+// The cost centers the email's budgets name, for the enrich Slack suggestion when no invoice-wide cost center exists.
+export function suggestedBudgetCostCenters(
+  splits: InvoiceEnrichmentResult['emailBudgetSplits'] | undefined
+): Array<{ code?: string | null; name: string }> | undefined {
+  const centers = (splits ?? [])
+    .map(split => split?.costCenter)
+    .filter((costCenter): costCenter is NonNullable<typeof costCenter> => Boolean(costCenter))
+    .map(costCenter => ({ name: costCenter.name ?? costCenter.extracted ?? '', code: costCenter.code }));
+  return centers.length ? centers : undefined;
+}
+
+export function formatEmailBudgetSplitNotes(outcome: EmailBudgetSplitOutcome | undefined): string {
+  if (!outcome) return '';
+  if (!outcome.applied) return outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';
+  return `\n\nEmail budget split (one invoice line per budget): ${describeEmailBudgetSplit(outcome).join('; ')}`;
 }
 
 export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

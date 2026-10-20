@@ -1,5 +1,31 @@
 import { z } from 'zod';
 
+// Coding fields shared by the invoice-wide email worktags and each email budget split
+const emailCodingFields = {
+  event: z.object({
+    extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
+    workdayId: z.string().nullable().describe('The workdayId from the top result returned by findEvents (a WID used to reference the event in Workday). Populate after calling findEvents.'),
+  }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
+  lineOfBusiness: z.object({
+    extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
+    referenceId: z.string().nullable().describe('When a cost center was also resolved, keep the mentioned LOB if it is in that cost center relatedLob default/allowed set; otherwise the related default or unique allowed id — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
+  }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
+  fund: z.object({
+    extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
+    referenceId: z.string().nullable().describe('The referenceId from the matched fund in Workday (used as Fund_ID). Populate after calling findFunds.'),
+  }).nullable().describe('Fund worktag resolved from email content. Null if no fund was mentioned.'),
+  costCenter: z.object({
+    extracted: z.string().nullable().describe('The cost center code or name as mentioned in the email'),
+    name: z.string().nullable().describe('The matched cost center name from Workday. Populate after calling findCostCenters.'),
+    code: z.string().nullable().describe('The Cost_Center_Reference_ID from the matched cost center in Workday (e.g. "72200"). Populate after calling findCostCenters.'),
+  }).nullable().describe('Cost center worktag resolved from email content. Null if no cost center was mentioned.'),
+  spendCategory: z.object({
+    extracted: z.string().nullable().describe('The spend category name or reference as mentioned in the email'),
+    name: z.string().nullable().describe('The matched spend category name from Workday. Populate after calling findSpendCategories.'),
+    referenceId: z.string().nullable().describe('The referenceId from the matched spend category in Workday. Populate after calling findSpendCategories.'),
+  }).nullable().describe('Spend category worktag resolved from email content. Null if no spend category was mentioned.'),
+};
+
 // Unified schema for invoice enrichment — handles both supplier identification and verification
 export const InvoiceEnrichmentSchema = z.object({
   supplier: z.object({
@@ -112,28 +138,7 @@ export const InvoiceEnrichmentSchema = z.object({
   })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({
-    event: z.object({
-      extracted: z.string().nullable().describe('The event name or description as mentioned in the email'),
-      workdayId: z.string().nullable().describe('The workdayId from the top result returned by findEvents (a WID used to reference the event in Workday). Populate after calling findEvents.'),
-    }).nullable().describe('Event worktag resolved from email content. Null if no event was mentioned.'),
-    lineOfBusiness: z.object({
-      extracted: z.string().nullable().describe('The line of business name or reference as mentioned in the email'),
-      referenceId: z.string().nullable().describe('When a cost center was also resolved, keep the mentioned LOB if it is in that cost center relatedLob default/allowed set; otherwise the related default or unique allowed id — not a findLobs catalog match. Otherwise the referenceId from findLobs. Null if no LOB was mentioned or related worktags were missing.'),
-    }).nullable().describe('Line of business worktag resolved from email content. Null if no LOB was mentioned.'),
-    fund: z.object({
-      extracted: z.string().nullable().describe('The fund name or reference as mentioned in the email'),
-      referenceId: z.string().nullable().describe('The referenceId from the matched fund in Workday (used as Fund_ID). Populate after calling findFunds.'),
-    }).nullable().describe('Fund worktag resolved from email content. Null if no fund was mentioned.'),
-    costCenter: z.object({
-      extracted: z.string().nullable().describe('The cost center code or name as mentioned in the email'),
-      name: z.string().nullable().describe('The matched cost center name from Workday. Populate after calling findCostCenters.'),
-      code: z.string().nullable().describe('The Cost_Center_Reference_ID from the matched cost center in Workday (e.g. "72200"). Populate after calling findCostCenters.'),
-    }).nullable().describe('Cost center worktag resolved from email content. Null if no cost center was mentioned.'),
-    spendCategory: z.object({
-      extracted: z.string().nullable().describe('The spend category name or reference as mentioned in the email'),
-      name: z.string().nullable().describe('The matched spend category name from Workday. Populate after calling findSpendCategories.'),
-      referenceId: z.string().nullable().describe('The referenceId from the matched spend category in Workday. Populate after calling findSpendCategories.'),
-    }).nullable().describe('Spend category worktag resolved from email content. Null if no spend category was mentioned.'),
+    ...emailCodingFields,
     company: z.object({
       extracted: z.string().nullable().describe('The company name or Company_Reference_ID exactly as written in the email text or AP notes (quote it). Never the bill-to company read from the invoice document, and never a number from an address, suite, zip, phone, extension, account, or PO.'),
       name: z.string().nullable().describe('The matched company name from Workday. Populate after resolveReferenceCode or findCompanies.'),
@@ -141,6 +146,14 @@ export const InvoiceEnrichmentSchema = z.object({
       referenceId: z.string().nullable().describe('The Company_Reference_ID of the matched company (e.g. "912"). Populate from resolveReferenceCode or findCompanies metadata.'),
     }).nullable().describe('Company resolved from explicit email coding. Null if the email text itself did not identify a company (the invoice bill-to belongs in companyVerification, not here). This is the invoice header company, not a line worktag.'),
   }).nullable().describe('Worktags extracted from email content and resolved via RAG lookup. Null if no email context was provided or no worktags were found.'),
+
+  emailBudgetSplits: z.array(z.object({
+    label: z.string().nullable().describe('The budget name as the email words it (e.g. "Chris Kulinski\'s Budget"). Null if the email gives none.'),
+    amount: z.string().nullable().describe('The dollar amount the email assigns to this budget, as written (e.g. "$15,000"). Null unless the email states a dollar amount for this budget. Never compute it.'),
+    percent: z.number().nullable().describe('The percentage the email assigns to this budget as a number (60 for 60%). Null unless the email states a percentage for this budget. Never compute it.'),
+    equalShare: z.boolean().nullable().describe('True only when the email says the cost is split evenly or equally (for example "split evenly", "50/50") and states no dollar amount or percentage for this budget. Otherwise null.'),
+    ...emailCodingFields,
+  })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding; the company is never repeated here.'),
 
 });
 
@@ -153,6 +166,7 @@ export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
   emailSummary: true,
   extractedPaymentTerms: true,
   emailWorktags: true,
+  emailBudgetSplits: true,
 });
 
 export type InvoiceMatchingResult = z.infer<typeof InvoiceMatchingSchema>;
@@ -186,7 +200,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
 
 **Identification Status Guidelines:**
-- **status: "found"** — Exactly one high-confidence match (confidence > 0.8)
+- **status: "found"** — Exactly one high-confidence match (confidence > 0.8). A branch, store, or location invoice often prints its own street address and phone, which the parent supplier record does not carry. When exactly one supplier is the remit-to company (\`printedSupplier.remitToAddress\` leads with that company name) or has an alternate name that equals the printed company name (ignoring the branch label, city, and store number), that is a match even if the printed address and phone are not on the record. Do not downgrade it to not_found for that reason.
 - **status: "ambiguous"** — Multiple potential matches that are reasonably close in confidence (e.g., two suppliers both scoring 0.75+)
 - **status: "not_found"** — No suppliers match the invoice information
 - **status: "error"** — Error in processing
@@ -194,10 +208,13 @@ Your supplier task depends on whether an existing supplier is already assigned t
 **Identification Confidence Score Guidelines:**
 - **0.95-1.0**: Exact match on company name + exact match on 2+ contact fields (address, phone, email)
 - **0.85-0.94**: Exact match on company name + exact match on 1 contact field
+- **0.85-0.90**: Exact match on the remit-to company name or on an alternate name, with only the branch address and phone missing from the record
 - **0.75-0.84**: Very similar company name (minor variations) + at least 1 matching contact field
 - **0.65-0.74**: Similar company name + partial address/location match
 - **0.50-0.64**: Company name similarity only, no other matching fields
 - **Below 0.50**: Weak or speculative match
+
+**Never guess**: Use \`found\` only for exactly one unambiguous candidate. If the remit-to company and the printed name point at different suppliers, or two suppliers share the matching name or alternate name, use \`ambiguous\` or \`not_found\`. A shared remit-to street (a lockbox address) alone is never a match.
 
 **Key principle**: Multiple matching data points should yield HIGH confidence. If you match on company name + phone + address, confidence should be 0.9+, not 0.7.
 
@@ -326,7 +343,16 @@ If email context is provided, scan the email body for any contextual mentions of
    - If no match is found, set emailWorktags.company.name, workdayId, and referenceId to null
    - If the resolved company differs from the existing company assignment, also recommend it in companyVerification
 
-7. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
+7. **Budget splits**: When the email explicitly tells AP to divide this invoice's cost across two or more budgets or coding blocks (words such as split, divide, allocate, or share), return one entry per budget in emailBudgetSplits, in the order the email lists them. This covers a dollar amount for each budget (e.g. "$15,000 to Recruitment and $20,000 to Brand and Marketing"), a percentage for each ("60/40"), an even split ("split evenly", "50/50", "equally"), and an instruction to split between named budgets that states no amounts at all. A dollar amount or percentage stated for each budget is itself an instruction to divide the cost, even without those words. Merely naming more than one budget is not a split: an old and a new budget, alternatives, or a budget mentioned as background is one coding block. Put the budget the email says to charge in emailWorktags and return null for emailBudgetSplits.
+   - Resolve each budget's cost center, line of business, fund, event, and spend category with their own tool calls, following the rules in items 1-5 for that budget's coding block. A budget's line of business must be allowed for that budget's own cost center.
+   - Set label to the budget name as the email words it.
+   - Set amount to the dollar amount the email states for that budget, exactly as written, or percent to the percentage it states, or equalShare to true when the email says the cost is split evenly. Set the other two to null. Never calculate an amount or percentage yourself, and when the email states none of the three for a budget, leave all three null.
+   - A worktag the email applies to every budget (for example one fund, event, or spend category for the whole invoice) goes in emailWorktags and is left null in the entries. When splits are returned, leave emailWorktags.costCenter and emailWorktags.lineOfBusiness null unless the email also names a cost center that applies to the whole invoice. Never copy one budget's coding into emailWorktags.
+   - The company belongs only in emailWorktags.company, never in an entry.
+   - When several spend categories match with the same confidence, choose the one whose name matches the email's wording for that budget.
+   - Return null for emailBudgetSplits when the email codes the whole invoice to one budget or does not divide the cost.
+
+8. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
 
 ---
 

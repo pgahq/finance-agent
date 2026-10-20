@@ -1,4 +1,5 @@
 import { LOST_TO_REFRESH_STATUS, scoreChanges, type CancelBasis, type Outcome, type ScoredChange } from './invoice_score.js';
+import type { CoverageSummary } from './invoice_coverage.js';
 import type { InvoiceScore } from './invoice_scores.js';
 import type { ScoredFieldName } from './invoice_snapshots.js';
 import type { SlackBlock } from './slack.js';
@@ -65,6 +66,10 @@ export interface DigestSummary {
   backlogUnavailable?: boolean;
   /** Lead callout: zero-touch share this week, the bucket breakdown, and the trend. */
   touches?: TouchCallout;
+  /** Share of PGA Corp supplier invoices the agent supported, and where it was not used. */
+  coverage?: CoverageSummary;
+  /** Coverage was attempted and failed, so the digest says it is missing. */
+  coverageUnavailable?: boolean;
 }
 
 function within(date: Date | undefined, start: Date, end: Date): boolean {
@@ -264,6 +269,11 @@ function quote(value: unknown): string {
   return `\`${escapeSlackText(text).replace(/`/g, "'")}\``;
 }
 
+/** A Workday status is plain words; markup characters in one are dropped so it cannot format or mention. */
+function inertStatus(status: string): string {
+  return escapeSlackText(status).replace(/[*_~]/g, '').replace(/`/g, "'");
+}
+
 function escapeSlackText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -288,11 +298,57 @@ const OUTCOME_LABELS: Record<Outcome, string> = {
   lost_to_refresh: 'lost to the sandbox refresh',
 };
 
+const COVERAGE_LINES: Array<[keyof CoverageSummary['totals']['counts'], string]> = [
+  ['agent_created', 'created by the agent'],
+  ['agent_enriched', 'enriched by the agent'],
+  ['agent_notes_only', 'tagged by the agent (notes only)'],
+  ['uncovered_manual', 'keyed by hand'],
+  ['uncovered_ocr', 'Workday OCR invoices not enriched'],
+  ['uncovered_integration', 'created with no creator (integrations)'],
+];
+
+function coverageBlocks(coverage: CoverageSummary): SlackBlock[] {
+  const { totals, previous } = coverage;
+  if (!totals.invoices || totals.share === undefined) {
+    return [section('*Agent coverage* · no PGA Corp supplier invoices were created last week.')];
+  }
+  const was = previous?.share !== undefined ? ` (was ${percent(previous.share)} the week before)` : '';
+  const footnotes = [
+    ...(totals.counts.canceled ? [`${plural(totals.counts.canceled, 'canceled invoice')} not counted`] : []),
+    ...(coverage.outOfScope ? [`${plural(coverage.outOfScope, 'invoice')} for other companies left out`] : []),
+  ];
+  const blocks: SlackBlock[] = [section([
+    `*Agent coverage* · *${percent(totals.share)}* of PGA Corp supplier invoices went through the agent last week (${totals.supported} of ${totals.invoices})${was}`,
+    ...COVERAGE_LINES.filter(([category]) => totals.counts[category]).map(([category, label]) => `• ${totals.counts[category]} ${label}`),
+    ...(totals.shareWithoutIntegrations !== undefined && totals.counts.uncovered_integration
+      ? [`Without integration invoices: ${percent(totals.shareWithoutIntegrations)}`]
+      : []),
+    ...(footnotes.length ? [`_${footnotes.join(' · ')}_`] : []),
+  ].join('\n'))];
+
+  const lines = [
+    ...(coverage.topSuppliers.length
+      ? ['_Suppliers the agent missed_', ...coverage.topSuppliers.map((supplier) => `• ${quote(supplier.name)}: ${supplier.count}`)]
+      : []),
+    ...(coverage.creators.length
+      ? ['_Keyed by hand, by person_', ...coverage.creators.map((creator) => `• ${quote(creator.name)}: ${creator.byHand} by hand, ${creator.agent} through the agent`)]
+      : []),
+    ...(coverage.links.length
+      ? ['_Invoices to ask about_', ...coverage.links.map((link) =>
+        `• ${invoiceLink(link)}: ${quote(link.supplier)}${link.creator ? `, keyed by ${quote(link.creator)}` : ', no creator'}`)]
+      : []),
+  ];
+  if (lines.length) blocks.push(section(['*Where the agent was not used*', ...lines].join('\n')));
+  return blocks;
+}
+
 export function buildDigestBlocks(summary: DigestSummary): SlackBlock[] {
   const { window } = summary;
   const blocks: SlackBlock[] = [
     ...(summary.touches ? touchCalloutBlocks(summary.touches) : []),
     section(`*Finance agent audit* · ${shortDate(window.start)} – ${shortDate(new Date(window.end.getTime() - 1))}`),
+    ...(summary.coverage ? coverageBlocks(summary.coverage) : []),
+    ...(summary.coverageUnavailable ? [section('*Agent coverage* · unavailable this week; Workday query failed.')] : []),
   ];
 
   const outcomeLines = (Object.keys(OUTCOME_LABELS) as Outcome[])
@@ -410,7 +466,7 @@ export interface DailySummary {
   lostToRefresh: number;
 }
 
-/** Webhook posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
+/** Slack posts are rate limited, so a busy day caps the per-invoice messages and points to the weekly digest. */
 export const MAX_DAILY_INVOICE_MESSAGES = 40;
 
 /** What was scored between `since` and `until`: AP submits, final reads, cancels, and newly stuck Drafts. */
@@ -447,7 +503,7 @@ export function summarizeDay(scores: InvoiceScore[], since: Date, until: Date): 
         ocrOnlyChanges = (score.entryDiff ?? []).filter((change) => change.agentOwned === false).length;
       }
       if (closed) {
-        parts.push(score.outcome === 'denied' ? 'denied' : (score.finalStatus ?? 'closed').toLowerCase());
+        parts.push(score.outcome === 'denied' ? 'denied' : inertStatus((score.finalStatus ?? 'closed').toLowerCase()));
         lateChanges = againstAgent(score.lateDiff);
       }
     }

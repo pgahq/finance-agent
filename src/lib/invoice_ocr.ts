@@ -146,5 +146,6 @@ export function mergeInvoiceEnrichment(
     invoiceLineQuantityDisplayed: ocr.invoiceLineQuantityDisplayed,
     extractedInvoiceLines: ocr.extractedInvoiceLines,
     emailWorktags: matching.emailWorktags,
+    emailBudgetSplits: matching.emailBudgetSplits ?? null,
   };
 }

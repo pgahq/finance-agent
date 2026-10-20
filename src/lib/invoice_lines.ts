@@ -10,7 +10,7 @@ import {
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
-import { worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
+import { isQuantityDistributedSplits, worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -130,6 +130,10 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  /** Ordered quantity of the matched PO line; set only for goods lines ordered by quantity. */
+  purchaseOrderLineQuantity?: number | null;
+  /** Workday rejected quantity 0 on a PO-linked line, so it must submit a positive quantity. */
+  forcePositivePoQuantity?: boolean;
   /** Matched PO line is fully invoiced or closed: keep its coding, drop its reference. */
   omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
@@ -145,6 +149,24 @@ export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'ext
   if (amount != null && amount < 0) return true;
   if (line.hasDiscount !== true) return false;
   return amount == null || amount <= 0;
+}
+
+// Workday rejects quantity 0 on an invoice line tied to a PO line ordered by quantity. Lines on a
+// quantity-split PO line follow the split-quantity rules instead (unlinked when they carry no quantity).
+export function requiresPositivePoQuantity(
+  line: Pick<FinalInvoiceLine, 'hasDiscount' | 'extendedAmount' | 'unitCost' | 'purchaseOrderLineId' | 'purchaseOrderLineQuantity' | 'forcePositivePoQuantity' | 'omitPurchaseOrderLineReference' | 'supplierInvoiceSplitLineData'>
+): boolean {
+  if (!line.purchaseOrderLineId || isDiscountLine(line)) return false;
+  if (isQuantityDistributedSplits(line.supplierInvoiceSplitLineData)) return false;
+  if (line.forcePositivePoQuantity) return true;
+  return !line.omitPurchaseOrderLineReference && (line.purchaseOrderLineQuantity ?? 0) > 0;
+}
+
+export interface BuiltInvoiceLines {
+  lines: FinalInvoiceLine[];
+  appliedFallbacks: LineFallbacks;
+  relatedLobByCostCenter: Map<string, RelatedLob>;
+  emailBudgetSplit?: EmailBudgetSplitOutcome;
 }
 
 export interface LineFallbacks {
@@ -1098,6 +1120,7 @@ export interface ParsedPoLineWorktags {
   memo: string | null;
   shipToAddressId: string | null;
   splitLineData: PurchaseOrderLineSplit[];
+  quantity?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   availableForInvoicing?: boolean;
@@ -1123,6 +1146,7 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
+      quantity: line.quantity != null && Number.isFinite(line.quantity) && line.quantity > 0 ? line.quantity : null,
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
       availableForInvoicing: line.availableForInvoicing !== false,
@@ -1130,7 +1154,16 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
   });
 }
 
+// worktagsReference also holds every split's worktags, so a split line's pass-through comes only
+// from its own line-level worktags; otherwise each split would inherit its siblings' coding.
 function passthroughForPoLine(poLine: ParsedPoLineWorktags): any[] {
+  if (poLine.splitLineData.length > 0) return poLine.lineLevelWorktagsReference ?? [];
+  return poLine.lineLevelWorktagsReference?.length
+    ? poLine.lineLevelWorktagsReference
+    : poLine.worktagsReference;
+}
+
+function allWorktagsForPoLine(poLine: ParsedPoLineWorktags): any[] {
   return poLine.lineLevelWorktagsReference?.length
     ? poLine.lineLevelWorktagsReference
     : poLine.worktagsReference;
@@ -1141,12 +1174,12 @@ function sharedPassthroughWorktags(poLines: ParsedPoLineWorktags[]): any[] {
   const perLineIdentities = poLines.map(
     line =>
       new Set(
-        passthroughForPoLine(line)
+        allWorktagsForPoLine(line)
           .map(tag => worktagIdentity(tag))
           .filter((identity): identity is string => identity != null)
       )
   );
-  return passthroughForPoLine(poLines[0]).filter(tag => {
+  return allWorktagsForPoLine(poLines[0]).filter(tag => {
     const identity = worktagIdentity(tag);
     return identity != null && perLineIdentities.every(set => set.has(identity));
   });
@@ -1174,6 +1207,7 @@ export function overlayPoWorktagsFromPurchaseOrder(
         ...line,
         poPassthroughWorktagsReference: passthroughForPoLine(poLine),
         ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
+        purchaseOrderLineQuantity: poLine.quantity,
       };
     }
     if (fallbackPassthrough.length === 0 || line.poPassthroughWorktagsReference?.length) return line;
@@ -1188,6 +1222,8 @@ export function overlaySharedPoWorktagsOnUnmatchedLines(
   const unmatched = lines.map(line => ({
     ...line,
     purchaseOrderLineId: null,
+    purchaseOrderLineQuantity: undefined,
+    forcePositivePoQuantity: undefined,
     poPassthroughWorktagsReference: undefined,
     supplierInvoiceSplitLineData: undefined,
   }));
@@ -1274,13 +1310,157 @@ function applyEmailWorktags(lines: FinalInvoiceLine[], emailWorktags?: EmailWork
   }));
 }
 
+function budgetSplitName(split: Pick<EmailBudgetSplit, 'label'>, index: number): string {
+  return split.label?.trim() || `Budget ${index + 1}`;
+}
+
+function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number): { cents?: number[]; problem?: string } {
+  const kinds = splits.map(split => (
+    split.amount?.trim() ? 'amount'
+      : split.percent != null ? 'percent'
+        : split.equalShare === true ? 'equal'
+          : 'none'
+  ));
+  if (kinds.every(kind => kind === 'none')) {
+    return { problem: 'the email gives no dollar amounts, percentages, or even split' };
+  }
+  if (new Set(kinds).size !== 1) {
+    return { problem: 'the email does not give the same kind of share (dollar amount, percentage, or even split) for every budget' };
+  }
+
+  if (kinds[0] === 'amount') {
+    const amounts = splits.map(split => parseCanonicalChargeAmount(split.amount));
+    if (amounts.some(amount => amount == null || amount <= 0)) {
+      return { problem: 'a budget amount in the email could not be read as a positive dollar amount' };
+    }
+    const cents = amounts.map(amount => toCents(amount as number));
+    const total = cents.reduce((sum, value) => sum + value, 0);
+    if (total !== baseCents) {
+      return { problem: `the budget amounts total ${formatCents(total)}, not ${formatCents(baseCents)}` };
+    }
+    return { cents };
+  }
+
+  if (kinds[0] === 'percent') {
+    const percents = splits.map(split => split.percent as number);
+    if (percents.some(percent => !Number.isFinite(percent) || percent <= 0 || percent > 100)) {
+      return { problem: 'a budget percentage in the email is not between 0 and 100' };
+    }
+    const percentTotal = percents.reduce((sum, value) => sum + value, 0);
+    if (Math.abs(Math.round(percentTotal * 100) - 10000) > 1) {
+      return { problem: `the budget percentages total ${Math.round(percentTotal * 100) / 100}%, not 100%` };
+    }
+    const cents = percents.map(percent => Math.round((baseCents * percent) / 100));
+    cents[cents.length - 1] = baseCents - cents.slice(0, -1).reduce((sum, value) => sum + value, 0);
+    return cents.every(value => value > 0) ? { cents } : { problem: 'a budget share rounds to zero' };
+  }
+
+  const each = Math.floor(baseCents / splits.length);
+  const cents = splits.map(() => each);
+  cents[cents.length - 1] = baseCents - each * (splits.length - 1);
+  return each > 0 ? { cents } : { problem: 'a budget share rounds to zero' };
+}
+
+export function unappliedEmailBudgetSplit(
+  splits: Array<Pick<EmailBudgetSplit, 'label'>>,
+  reason: string
+): EmailBudgetSplitOutcome {
+  const names = splits.map(budgetSplitName).join('; ');
+  return {
+    applied: false,
+    review: `The email splits the cost across ${splits.length} budgets (${names}), but ${reason}. The invoice was not split by budget; check the coding before approving.`,
+    budgets: [],
+  };
+}
+
+// An email that divides the cost across budgets gets one invoice line per budget. Spend category is a
+// line-level field, so budgets that differ in spend category cannot share a line with split rows.
+// Anything that does not reconcile exactly leaves the lines alone and says why.
+export function applyEmailBudgetSplits(
+  lines: FinalInvoiceLine[],
+  emailWorktags: EmailWorktags | undefined,
+  purchaseOrderLinked: boolean
+): { lines: FinalInvoiceLine[]; outcome?: EmailBudgetSplitOutcome } {
+  const splits = emailWorktags?.budgetSplits;
+  if (!emailWorktags || !splits || splits.length < 2) return { lines };
+
+  const reject = (reason: string): { lines: FinalInvoiceLine[]; outcome: EmailBudgetSplitOutcome } => {
+    debug(`Email budget split not applied: ${reason}`);
+    return { lines, outcome: unappliedEmailBudgetSplit(splits, reason) };
+  };
+
+  if (emailWorktags.budgetSplitBlockedReason) return reject(emailWorktags.budgetSplitBlockedReason);
+  if (purchaseOrderLinked || lines.some(line => line.purchaseOrderLineId || line.poPassthroughWorktagsReference?.length || line.supplierInvoiceSplitLineData?.length)) {
+    return reject('the invoice is coded from a purchase order, which keeps its own coding');
+  }
+  if (lines.length === 0) return reject('the invoice has no lines to split');
+  if (lines.some(line => isDiscountLine(line))) return reject('the invoice has credit or discount lines');
+
+  const lineAmounts = lines.map(submittedLineAmount);
+  if (lineAmounts.some(amount => amount == null)) return reject('an invoice line has no readable amount');
+  const lineCents = lineAmounts.reduce<number>((sum, amount) => sum + toCents(amount as number), 0);
+  const baseCents = emailWorktags.budgetSplitBaseCents ?? lineCents;
+  if (lineCents !== baseCents) {
+    return reject(`the invoice lines total ${formatCents(lineCents)}, not ${formatCents(baseCents)}`);
+  }
+  if (baseCents <= 0) return reject('the invoice total is not positive');
+
+  const missingCoding = splits.findIndex(split => !split.costCenterId && !split.spendCategoryReferenceId);
+  if (missingCoding >= 0) {
+    return reject(`no cost center or spend category was found for ${budgetSplitName(splits[missingCoding], missingCoding)}`);
+  }
+
+  const { cents, problem } = budgetSplitCents(splits, baseCents);
+  if (!cents) return reject(problem as string);
+
+  const first = lines[0];
+  const description = lines.length === 1
+    ? first.description
+    : [...new Set(lines.map(line => line.description))].join('; ');
+  const splitLines: FinalInvoiceLine[] = splits.map((split, index) => ({
+    lineOrder: index + 1,
+    description,
+    memo: lines.length === 1 ? first.memo ?? null : null,
+    quantity: 0,
+    unitCost: 0,
+    extendedAmount: cents[index] / 100,
+    hasDiscount: null,
+    costCenterId: split.costCenterId ?? first.costCenterId ?? null,
+    fundId: split.fundReferenceId ?? first.fundId ?? null,
+    spendCategoryId: split.spendCategoryReferenceId ?? first.spendCategoryId ?? null,
+    lineOfBusinessId: split.lobReferenceId ?? (split.costCenterId ? null : emailWorktags.lobReferenceId ?? null),
+    eventId: null,
+    eventWid: split.eventWid ?? first.eventWid ?? null,
+    shipToAddressId: first.shipToAddressId ?? null,
+    purchaseOrderLineId: null,
+  }));
+
+  return {
+    lines: splitLines,
+    outcome: {
+      applied: true,
+      budgets: splits.map((split, index) => ({
+        label: budgetSplitName(split, index),
+        amountCents: cents[index],
+        costCenterId: splitLines[index].costCenterId ?? null,
+        spendCategoryId: splitLines[index].spendCategoryId ?? null,
+      })),
+    },
+  };
+}
+
+export function expectedMerchandiseCents(charges: LineTotalCharges): number | undefined {
+  return expectedLineTotal(charges, [charges.currentFreightAmount])?.expectedCents;
+}
+
 export function constrainEmailLobToRelatedWorktags(
   lines: FinalInvoiceLine[],
   relatedByCostCenterId: Map<string, RelatedLob>,
   emailWorktags?: EmailWorktags,
   fallbackCostCenterId?: string | null
 ): FinalInvoiceLine[] {
-  if (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId) return lines;
+  const hasBudgetSplits = (emailWorktags?.budgetSplits?.length ?? 0) > 1;
+  if (!hasBudgetSplits && (!emailWorktags?.costCenterId || !emailWorktags.lobReferenceId)) return lines;
 
   return lines.map(line => {
     const costCenterId = line.costCenterId;
@@ -1356,12 +1536,43 @@ export function applyRelatedLobWorktags(
   });
 }
 
+export interface EmailBudgetSplit {
+  label?: string | null;
+  amount?: string | null;
+  percent?: number | null;
+  equalShare?: boolean | null;
+  costCenterId?: string | null;
+  eventWid?: string | null;
+  lobReferenceId?: string | null;
+  fundReferenceId?: string | null;
+  spendCategoryReferenceId?: string | null;
+}
+
 export interface EmailWorktags {
   costCenterId?: string | null;
   eventWid?: string | null;
   lobReferenceId?: string | null;
   fundReferenceId?: string | null;
   spendCategoryReferenceId?: string | null;
+  /** The budgets the email divides the invoice across; two or more means one invoice line per budget. */
+  budgetSplits?: EmailBudgetSplit[];
+  /** Merchandise total (amount due less header freight and tax) the budgets must cover, when it can be read. */
+  budgetSplitBaseCents?: number | null;
+  /** Set by the caller when a split must not apply (all-freight invoice, unreadable header charge). */
+  budgetSplitBlockedReason?: string | null;
+}
+
+export interface EmailBudgetSplitOutcome {
+  applied: boolean;
+  /** Why the budgets were not split, for the Workday note and Slack. */
+  review?: string;
+  /** The line created for each budget, when applied. */
+  budgets: Array<{
+    label: string;
+    amountCents: number;
+    costCenterId: string | null;
+    spendCategoryId: string | null;
+  }>;
 }
 
 export function applyDefaultCompanyLineWorktags(
@@ -1425,7 +1636,12 @@ function toCents(value: number): number {
   return Math.round(roundToDecimals(value, AMOUNT_DECIMALS) * 100);
 }
 
+// A PO-linked line with no usable quantity submits one unit at the line amount, which always equals
+// the total. A printed quantity is not kept: a misread one would count against the PO line.
 function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
+  if (extendedAmount != null && extendedAmount > 0 && requiresPositivePoQuantity(line)) {
+    return { ...line, quantity: 1, unitCost: extendedAmount, extendedAmount };
+  }
   return {
     ...line,
     quantity: 0,
@@ -1487,7 +1703,11 @@ function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(limitLineAmountPrecision).map(line => {
     if (isDiscountLine(line)) return line;
-    if (line.quantity === 0 && line.unitCost === 0) return line;
+    if (line.quantity === 0 && line.unitCost === 0) {
+      return line.extendedAmount != null && requiresPositivePoQuantity(line)
+        ? asAmountOnlyLine(line, line.extendedAmount)
+        : line;
+    }
 
     const extendedAmount = line.extendedAmount ?? null;
     const unitCost = line.unitCost ?? null;
@@ -1836,11 +2056,40 @@ export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoic
   return lines.map(line => {
     if (isDiscountLine(line)) return line;
     if (!lineHasQuantityOrUnitAndExtended(line)) return line;
-    return {
-      ...line,
-      quantity: 0,
-      unitCost: 0,
-    };
+    return asAmountOnlyLine(line, line.extendedAmount ?? null);
+  });
+}
+
+const POSITIVE_QUANTITY_NOTE_LINES_LISTED = 5;
+
+// Lists the lines that now submit one unit because their PO line is ordered by quantity, so AP sees
+// the quantity and unit cost that differ from the printed row.
+export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalInvoiceLine[]): string | undefined {
+  const changed = after.filter((line, index) =>
+    requiresPositivePoQuantity(line)
+    && line.quantity === 1
+    && before[index] != null
+    && (before[index].quantity !== 1 || before[index].unitCost !== line.unitCost)
+  );
+  if (changed.length === 0) return undefined;
+  const listed = changed
+    .slice(0, POSITIVE_QUANTITY_NOTE_LINES_LISTED)
+    .map(line => `"${line.description}" (${formatCents(toCents(line.extendedAmount ?? 0))})`);
+  const unlisted = changed.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'is' : 'are'}`
+    + ` linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
+    + ` Submitted as quantity 1 at the line amount, which can differ from the printed quantity or unit cost; the line total is unchanged.`;
+}
+
+// Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
+// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead.
+export function applyPositivePoQuantityRetry(lines: FinalInvoiceLine[], zeroQuantityLineOrders: Set<number>): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (!zeroQuantityLineOrders.has(line.lineOrder)) return line;
+    const amount = line.extendedAmount ?? line.unitCost ?? null;
+    if (amount == null || amount <= 0) return line;
+    return { ...line, forcePositivePoQuantity: true, quantity: 1, unitCost: amount, extendedAmount: amount };
   });
 }
 
@@ -1897,7 +2146,7 @@ function worktagIdentityKey(worktags: any[]): string {
 }
 
 function poLineCodingKey(line: ParsedPoLineWorktags): string {
-  const passthrough = worktagIdentityKey(passthroughForPoLine(line));
+  const passthrough = worktagIdentityKey(allWorktagsForPoLine(line));
   if (!passthrough) return '';
   const splits = line.splitLineData.map(split => worktagIdentityKey(split.worktagReference ?? [])).sort();
   return JSON.stringify([
@@ -1982,7 +2231,7 @@ export async function buildFinalInvoiceLines(
   invoiceLineQuantityDisplayed?: boolean,
   invoiceContext?: InvoiceDateContext,
   abortSignal?: AbortSignal
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
+): Promise<BuiltInvoiceLines> {
   const parsedPoLines = parsePoLineWorktags(poLines);
   // Callers omit invoiceContext for Closed or Pending Close POs, which keep the legacy merge.
   // Invoices without PO lines also keep it; selection rules only apply to PO line matching.
@@ -2070,11 +2319,12 @@ async function finalizeInvoiceLines(
   emailWorktags: EmailWorktags | undefined,
   relatedLobLookup: RelatedLobLookup | undefined,
   fallbackIds: InvoiceLineFallbackIds
-): Promise<{ lines: FinalInvoiceLine[]; appliedFallbacks: LineFallbacks; relatedLobByCostCenter: Map<string, RelatedLob> }> {
+): Promise<BuiltInvoiceLines> {
   const withPoLob = overlayPoLineOfBusiness(lines, parsedPoLines);
   const withPoWorktags = overlayPoWorktagsFromPurchaseOrder(withPoLob, parsedPoLines);
   const withEmail = applyEmailWorktags(withPoWorktags, emailWorktags);
-  const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(withEmail, relatedLobLookup);
+  const budgetSplit = applyEmailBudgetSplits(withEmail, emailWorktags, parsedPoLines.length > 0);
+  const { lines: withRelated, relatedByCostCenterId } = await fillRelatedLobs(budgetSplit.lines, relatedLobLookup);
   const withConstrainedEmailLob = constrainEmailLobToRelatedWorktags(
     withRelated,
     relatedByCostCenterId,
@@ -2089,6 +2339,7 @@ async function finalizeInvoiceLines(
       lineOfBusiness: appliedFallbacks.lineOfBusiness || fallbackLob.applied,
     },
     relatedLobByCostCenter: relatedByCostCenterId,
+    emailBudgetSplit: budgetSplit.outcome,
   };
 }
 

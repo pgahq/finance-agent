@@ -175,6 +175,7 @@ const baseEnrichmentResult = {
     { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
   ],
   emailWorktags: null,
+  emailBudgetSplits: null,
   emailSummary: null
 };
 
@@ -3267,6 +3268,166 @@ describe('create_invoice', () => {
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
       costCenterId: null,
     }));
+  });
+
+  describe('email budget splits', () => {
+    const budgetEnrichment = () => ({
+      ...baseEnrichmentResult,
+      extractedAmountDue: '$35,000',
+      extractedSuppliersInvoiceNumber: 'ANAL092426',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'PGA of America Sponsorship Package', quantity: null, unitCost: null, totalPrice: '$35,000', hasDiscount: false },
+      ],
+      emailWorktags: {
+        event: null, lineOfBusiness: null, fund: null, costCenter: null, spendCategory: null,
+        company: { extracted: '310', name: 'PGA Company', workdayId: 'email-company-wid', referenceId: '310' },
+      },
+      emailBudgetSplits: [
+        {
+          label: "Chris Kulinski's Budget", amount: '$15,000', percent: null, equalShare: null,
+          event: null, fund: null,
+          costCenter: { extracted: 'Recruitment', name: 'CC-Recruitment', code: 'CC-Recruitment' },
+          lineOfBusiness: { extracted: 'Recruitment', referenceId: 'LOB-Recruitment' },
+          spendCategory: { extracted: 'Sponsorship', name: 'Sponsorships', referenceId: 'SC-Sponsorships' },
+        },
+        {
+          label: 'Brand and Marketing Budget', amount: '$20,000', percent: null, equalShare: null,
+          event: null, fund: null,
+          costCenter: { extracted: 'Brand & Marketing', name: 'CC-Brand & Digital Marketing', code: 'CC-Brand_&_Digital_Marketing' },
+          lineOfBusiness: { extracted: 'Production & Advertising', referenceId: 'LOB-Production_&_Advertising' },
+          spendCategory: { extracted: 'Advertising & Promotion', name: 'Advertising and Promotion', referenceId: 'SC-Advertising_and_Promotion' },
+        },
+      ],
+    });
+
+    const mockCompany310 = () => {
+      const { findDocumentsByReferenceIds } = require('../lib/database.js');
+      findDocumentsByReferenceIds.mockResolvedValue(new Map([
+        ['310', [{
+          workday_id: 'email-company-wid',
+          type: 'company',
+          content: 'PGA Company',
+          metadata: { companyReferenceId: '310', companyName: 'PGA Company' },
+        }]],
+      ]));
+    };
+
+    it('hands each budget and the merchandise total to the line builder and reports the split', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      mockCompany310();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(budgetEnrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: 'PGA of America Sponsorship Package', quantity: 0, unitCost: 0, extendedAmount: 15000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+          { lineOrder: 2, description: 'PGA of America Sponsorship Package', quantity: 0, unitCost: 0, extendedAmount: 20000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map(),
+        emailBudgetSplit: {
+          applied: true,
+          budgets: [
+            { label: "Chris Kulinski's Budget", amountCents: 1500000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+            { label: 'Brand and Marketing Budget', amountCents: 2000000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+          ],
+        },
+      });
+
+      await processor({
+        data: [{
+          ...attachmentRequest('new-invoices/req-budget-split/invoice.pdf'),
+          emailContext: { emailFrom: 'smorrison@pgahq.com', subject: 'MIT Sloan', plainTextBody: 'Company 310. Split $15,000 / $20,000.' },
+        }]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+        budgetSplitBaseCents: 3500000,
+        budgetSplitBlockedReason: null,
+        budgetSplits: [
+          expect.objectContaining({ amount: '$15,000', costCenterId: 'CC-Recruitment', spendCategoryReferenceId: 'SC-Sponsorships' }),
+          expect.objectContaining({ amount: '$20,000', costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryReferenceId: 'SC-Advertising_and_Promotion' }),
+        ],
+      }));
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([15000, 20000]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain("Email budget split (one invoice line per budget): $15,000.00 Chris Kulinski's Budget");
+      expect(notes).not.toContain('Line total review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineCount).toBe(2);
+      expect(slackDetails.budgetSplit).toHaveLength(2);
+      expect(slackDetails).not.toHaveProperty('lineReview');
+    });
+
+    it('reports why the budgets were not split in the Workday note and Slack line review', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      mockCompany310();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(budgetEnrichment());
+      const review = 'The email splits the cost across 2 budgets (A; B), but the budget amounts total $30,000.00, not $35,000.00. The invoice was not split by budget; check the coding before approving.';
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: 'PGA of America Sponsorship Package', quantity: 0, unitCost: 0, extendedAmount: 35000 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map(),
+        emailBudgetSplit: { applied: false, review, budgets: [] },
+      });
+
+      await processor({
+        data: [{
+          ...attachmentRequest('new-invoices/req-budget-split-rejected/invoice.pdf'),
+          emailContext: { plainTextBody: 'Company 310. Split $15,000 / $15,000.' },
+        }]
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.buildNotes([])).toContain(`Budget split review: ${review}`);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([`Budget split review: ${review}`]);
+      expect(slackDetails).not.toHaveProperty('budgetSplit');
+    });
+
+    it('tells AP the email budgets were not used when Default OCR Company coding applies', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...budgetEnrichment(),
+        emailWorktags: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [attachmentRequest('new-invoices/req-budget-split-default-company/invoice.pdf')]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toBeUndefined();
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Line worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.');
+      expect(notes).toContain("Budget split review: The email splits the cost across 2 budgets (Chris Kulinski's Budget; Brand and Marketing Budget), but Default OCR fallback coding was applied to the lines.");
+      expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual(expect.arrayContaining([
+        expect.stringContaining('Budget split review: The email splits the cost across 2 budgets'),
+      ]));
+    });
+
+    it('blocks the split when the invoice header freight or tax could not be read', async () => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      mockCompany310();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...budgetEnrichment(),
+        extractedAmountDue: null,
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({
+        data: [{
+          ...attachmentRequest('new-invoices/req-budget-split-blocked/invoice.pdf'),
+          emailContext: { plainTextBody: 'Company 310.' },
+        }]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+        budgetSplitBaseCents: null,
+        budgetSplitBlockedReason: 'the invoice amount due could not be read',
+      }));
+    });
   });
 
   it('should put extracted identifiers on the header and line memos', async () => {

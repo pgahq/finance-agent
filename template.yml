@@ -59,6 +59,11 @@ Parameters:
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
+  AuditSlackChannelId:
+    Type: String
+    Description: Slack channel ID the ScoreDigest audit posts go to (#notify-finance-agent-audit, or -dev)
+    AllowedPattern: "^[CG][A-Z0-9]{8,}$"
+    ConstraintDescription: must be a Slack channel ID such as C0C5W6B0G4V
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -796,7 +801,7 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: cron(0 14 * * ? *)
+            Schedule: cron(0 1 * * ? *)
 
   # Score Invoices Processor - entry diff at AP submit, final read at a terminal state, cancel attribution
   ScoreInvoicesProcessor:
@@ -821,7 +826,7 @@ Resources:
           - !ImportValue pgagent-private-subnet-id-1
           - !ImportValue pgagent-private-subnet-id-2
 
-  # Score Digest - weekly audit summary posted to the audit Slack channel, not the per-invoice channel
+  # Score Digest - daily and weekly audit posts to the audit Slack channel (chat.postMessage), not the per-invoice channel
   ScoreDigestFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -832,7 +837,8 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          AUDIT_SLACK_WEBHOOK_URL: ssm:/finance-agent/audit-slack-webhook-url
+          AUDIT_SLACK_CHANNEL_ID: !Ref AuditSlackChannelId
+          AUDIT_SLACK_BOT_TOKEN: ssm:/finance-agent/audit-slack-bot-token
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -848,8 +854,8 @@ Resources:
         DailySchedule:
           Type: Schedule
           Properties:
-            # After the 14:00 UTC scoring run; posts only on days something was scored.
-            Schedule: cron(20 14 * * ? *)
+            # After the 01:00 UTC scoring run; posts only on days something was scored.
+            Schedule: cron(20 1 * * ? *)
             Input: '{"mode":"daily"}'
 
 Outputs:

@@ -9,12 +9,16 @@ import {
   formatEmailCompanyNotes,
   describeEmailCompanyReview,
   formatEmailWorktagNotes,
+  formatEmailBudgetSplitNotes,
+  describeEmailBudgetSplit,
+  suggestedBudgetCostCenters,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
+  formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
@@ -42,6 +46,7 @@ import {
   mergeAmountCheckMessages,
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
+  positivePoQuantityNote,
   overlaySharedPoWorktagsOnUnmatchedLines,
   prepareInvoiceCharges,
   resolveHeaderChargeAmounts,
@@ -49,7 +54,7 @@ import {
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
-  type EmailWorktags,
+  type EmailBudgetSplitOutcome,
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
@@ -60,7 +65,8 @@ import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
 import type { InvoiceData } from './lib/types.js';
 import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from './lib/workday.js';
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
-import { costCenterCodeExcludingCompany, resolveCompanyFromEmail } from './lib/reference_ids.js';
+import { resolveCompanyFromEmail } from './lib/reference_ids.js';
+import { budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
@@ -310,14 +316,6 @@ async function processInvoice(
       usedPurchaseOrderNumber: extractedPurchaseOrderNumber,
     });
 
-    const emailWorktags: EmailWorktags | undefined = result.emailWorktags ? {
-      costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
-      eventWid: result.emailWorktags.event?.workdayId ?? null,
-      lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
-      fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
-      spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
-    } : undefined;
-
     const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
@@ -386,6 +384,7 @@ async function processInvoice(
     );
 
     let finalLines: FinalInvoiceLine[] | undefined;
+    let emailBudgetSplit: EmailBudgetSplitOutcome | undefined;
     let lineFallbacks: LineFallbacks | undefined;
     let relatedLobByCostCenter: Map<string, RelatedLob> | undefined;
     if (candidateLines.length > 0) {
@@ -397,6 +396,19 @@ async function processInvoice(
         lineOfBusinessId: process.env.FALLBACK_LOB_ID,
       };
       const relatedLobLookup = (costCenterIds: string[]) => getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
+      const emailWorktags = buildEmailWorktags(result, emailCompany, budgetSplitOptions({
+        charges: {
+          amountDue: extractedAmountDue,
+          freightAmount: extractedFreightAmount,
+          taxAmount: extractedTaxAmount,
+          freightCleared,
+          taxCleared,
+          currentFreightAmount: detailedInvoice.Freight_Amount,
+          currentTaxAmount: detailedInvoice.Tax_Amount,
+        },
+        freightAsLines,
+        chargeWithheld,
+      }));
       let built = await buildFinalInvoiceLines(
         candidateLines,
         poLines,
@@ -425,6 +437,7 @@ async function processInvoice(
         built = { ...rebuilt, lines: overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines) };
       }
       finalLines = built.lines;
+      emailBudgetSplit = built.emailBudgetSplit;
       lineFallbacks = built.appliedFallbacks;
       relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
@@ -440,9 +453,13 @@ async function processInvoice(
           description: result.supplier.extractedInformation?.memo,
         })
       : undefined;
+    let poQuantityNote: string | undefined;
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+      const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
+      poQuantityNote = positivePoQuantityNote(printedLines, finalLines);
+      if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
@@ -458,7 +475,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
@@ -601,7 +618,9 @@ async function processInvoice(
         : {}),
       suggestedCostCenters: result.emailWorktags?.costCenter
         ? [{ name: result.emailWorktags.costCenter.name ?? result.emailWorktags.costCenter.extracted ?? '', code: result.emailWorktags.costCenter.code }]
-        : undefined,
+        : suggestedBudgetCostCenters(result.emailBudgetSplits),
+      ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
+      ...(emailBudgetSplit?.review ? { budgetSplitReview: emailBudgetSplit.review } : {}),
       fallbacks: {
         defaultSupplier: fallbacks.defaultSupplier,
         fallbackFund: fallbacks.fund ? process.env.FALLBACK_FUND_ID : undefined,

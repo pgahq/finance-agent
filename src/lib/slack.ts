@@ -305,6 +305,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const budgetSplit = Array.isArray(details.budgetSplit)
+    ? details.budgetSplit.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : [];
+  if (budgetSplit.length && details.skipped !== true) {
+    const lines = budgetSplit.map((line) => `• ${escapeSlackText(line)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Coding split*\n${lines.join('\n')}`) }
+    });
+  }
+
   if (details.skipped === true && typeof details.skipReason === 'string' && details.skipReason) {
     blocks.push({
       type: 'section',
@@ -407,42 +418,37 @@ function buildCloudWatchLogUrl(): string | undefined {
   return `https://${region}.console.aws.amazon.com/cloudwatch/home?region=${region}#logsV2:log-groups/log-group/${encode(logGroup)}/log-events/${encode(logStream)}`;
 }
 
-/**
- * Send a message to Slack using blocks. Defaults to the per-invoice channel webhook.
- */
 interface SlackSendResult {
   ok: boolean;
   /** HTTP status when Slack answered; unset for network errors. */
   status?: number;
   /** Slack's error body, such as `invalid_blocks`. */
   error?: string;
+  /** Slack's error code alone (`not_in_channel`), or `timeout`; safe to put in an operator alert. */
+  code?: string;
 }
 
-async function sendSlackMessage(
-  blocks: SlackBlock[],
-  webhookUrl: string | undefined = process.env.SLACK_WEBHOOK_URL,
-  webhookEnvName = 'SLACK_WEBHOOK_URL'
-): Promise<SlackSendResult> {
+function fallbackText(blocks: SlackBlock[]): string {
+  const first = blocks[0];
+  return first?.type === 'section'
+    ? first.text.text.replace(/\*([^*]+)\*/g, '$1')
+    : first?.type === 'header' ? first.text.text : 'Slack notification';
+}
+
+async function sendSlackMessage(blocks: SlackBlock[]): Promise<SlackSendResult> {
   try {
+    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
     if (!webhookUrl) {
-      debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
+      debug('SLACK_WEBHOOK_URL environment variable not set - skipping Slack notification');
       return { ok: false };
     }
 
-    // Create fallback text from the first section block for notifications
-    const first = blocks[0];
-    const fallbackText = first?.type === 'section'
-      ? first.text.text.replace(/\*([^*]+)\*/g, '$1') // Remove markdown formatting
-      : first?.type === 'header' ? first.text.text : 'Slack notification';
-
     const payload = {
-      text: fallbackText, // Fallback for notifications
+      text: fallbackText(blocks),
       blocks
     };
 
-    // Audit posts carry invoice values, so only the per-invoice channel's payloads are logged in full.
-    if (webhookEnvName === 'SLACK_WEBHOOK_URL') debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
-    else debug('Posting Slack message', { webhook: webhookEnvName, blocks: blocks.length });
+    debug('Slack webhook payload:', JSON.stringify(payload, null, 2));
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
@@ -467,25 +473,126 @@ async function sendSlackMessage(
   }
 }
 
-/**
- * Posts blocks to a specific incoming webhook (for example the audit channel). Never throws, and never
- * falls back to the per-invoice channel when the webhook is not configured.
- */
-export async function postSlackBlocks(blocks: SlackBlock[], webhookUrl: string | undefined, webhookEnvName: string): Promise<boolean> {
-  // An undefined argument would pick up sendSlackMessage's per-invoice default, so stop here instead.
-  if (!webhookUrl) {
-    debug(`${webhookEnvName} environment variable not set - skipping Slack notification`);
-    return false;
+export const SLACK_POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage';
+// A daily run sends up to 42 messages about a second apart inside ScoreDigest's 300 s timeout, so one stalled
+// request must give up well before that.
+export const SLACK_API_TIMEOUT_MS = 5000;
+const SLACK_TS_PATTERN = /^\d+\.\d+$/;
+// Slack names the failed image block as "downloading image failed [json-pointer:/blocks/N/image_url]".
+const SLACK_IMAGE_REJECTION_PATTERN = /downloading image|json-pointer:\/blocks\/\d+\/image_url/i;
+const SLACK_ERROR_CODE_PATTERN = /^[a-z0-9_]{1,64}$/;
+/** chat.postMessage allows about one message per second per channel. */
+export const SLACK_POST_GAP_MS = 1100;
+
+export interface SlackChannelTarget {
+  token: string | undefined;
+  channel: string | undefined;
+  /** Posts as a reply in this message's thread. */
+  threadTs?: string;
+}
+
+export interface SlackChannelPostResult {
+  /** Slack posted the message. */
+  ok: boolean;
+  /**
+   * The posted message's timestamp, which replies use as `thread_ts`. Unset when Slack posted without a usable
+   * timestamp, so a caller that needs a thread must treat the post as failed rather than reply unthreaded.
+   */
+  ts?: string;
+  /** Why the message was not posted, such as Slack's `not_in_channel`; never includes the token. */
+  error?: string;
+}
+
+/** Audit posts carry invoice values, so their payloads are not logged. */
+async function sendChatMessage(
+  blocks: SlackBlock[],
+  target: { token: string; channel: string; threadTs?: string }
+): Promise<SlackSendResult & { ts?: string; imageRejected?: boolean; retryAfterMs?: number }> {
+  const signal = AbortSignal.timeout(SLACK_API_TIMEOUT_MS);
+  try {
+    debug('Posting Slack message', { channel: target.channel, thread: Boolean(target.threadTs), blocks: blocks.length });
+    const response = await fetch(SLACK_POST_MESSAGE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: `Bearer ${target.token}`,
+      },
+      body: JSON.stringify({
+        channel: target.channel,
+        text: fallbackText(blocks),
+        blocks,
+        ...(target.threadTs ? { thread_ts: target.threadTs } : {}),
+        unfurl_links: false,
+        unfurl_media: false,
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      debug('Slack chat.postMessage request failed', { status: response.status, statusText: response.statusText });
+      if (response.status === 429) {
+        const seconds = Number(response.headers?.get?.('retry-after'));
+        return { ok: false, status: 429, code: 'ratelimited', ...(Number.isFinite(seconds) && seconds > 0 ? { retryAfterMs: seconds * 1000 } : {}) };
+      }
+      return { ok: false, status: response.status };
+    }
+    const body = await response.json().catch(() => undefined) as
+      | { ok?: unknown; ts?: unknown; error?: unknown; errors?: unknown; response_metadata?: { messages?: unknown } }
+      | undefined;
+    if (body?.ok !== true) {
+      const code = typeof body?.error === 'string' && SLACK_ERROR_CODE_PATTERN.test(body.error) ? body.error : 'unreadable_response';
+      // Slack's detail text can echo message content, so it only decides the image resend and is never returned or logged.
+      const details = [body?.errors, body?.response_metadata?.messages]
+        .flatMap((list) => (Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : []));
+      const imageRejected = code === 'invalid_blocks' && details.some((detail) => SLACK_IMAGE_REJECTION_PATTERN.test(detail));
+      debug('Slack chat.postMessage was rejected', { status: response.status, code });
+      return { ok: false, status: response.status, code, imageRejected };
+    }
+    // ok: true means Slack posted the message; a ts that is not a Slack timestamp is left out so no reply threads under it.
+    const ts = typeof body.ts === 'string' && SLACK_TS_PATTERN.test(body.ts) ? body.ts : undefined;
+    if (!ts) debug('Slack chat.postMessage answered ok without a usable message ts', { status: response.status });
+    return { ok: true, status: response.status, ...(ts ? { ts } : {}) };
+  } catch (error) {
+    debug('Error sending Slack message:', error);
+    return { ok: false, ...(signal.aborted ? { code: 'timeout' } : {}) };
   }
-  const first = await sendSlackMessage(blocks, webhookUrl, webhookEnvName);
-  if (first.ok) return true;
-  // Slack answers 400 and posts nothing when it cannot download an image block; any other failure may have
-  // been delivered, so it is not resent.
+}
+
+/**
+ * Posts blocks to one channel with a bot token (for example the audit channel). Never throws, and never
+ * falls back to the per-invoice webhook when the token or channel is not configured.
+ */
+export async function postSlackChannelMessage(blocks: SlackBlock[], target: SlackChannelTarget): Promise<SlackChannelPostResult> {
+  const token = target.token?.trim();
+  const channel = target.channel?.trim();
+  const { threadTs } = target;
+  if (!token || !channel) {
+    debug('Slack bot token or channel not set - skipping Slack message', { token: Boolean(token), channel: Boolean(channel) });
+    return { ok: false, error: 'bot token or channel not set' };
+  }
+  if (threadTs !== undefined && !SLACK_TS_PATTERN.test(threadTs)) {
+    debug('Slack thread ts is not a Slack timestamp - skipping Slack message');
+    return { ok: false, error: 'thread ts is not a Slack timestamp' };
+  }
+  let first = await sendChatMessage(blocks, { token, channel, threadTs });
+  // A 429 means Slack did not post the message, so one resend after its Retry-After cannot duplicate it.
+  if (first.status === 429 && first.retryAfterMs !== undefined && first.retryAfterMs <= SLACK_API_TIMEOUT_MS) {
+    await new Promise((resolve) => setTimeout(resolve, Math.max(SLACK_POST_GAP_MS, first.retryAfterMs ?? 0)));
+    first = await sendChatMessage(blocks, { token, channel, threadTs });
+  }
+  if (first.ok) return { ok: true, ts: first.ts };
+  // Slack answers ok: false and posts nothing when it cannot download an image block, and names the image in the
+  // error details; any other failure may have been delivered (a timeout or server error), so it is not resent.
   const withoutImages = blocks.filter((block) => block.type !== 'image');
-  const imageRejected = first.status === 400 && /image|invalid_blocks/i.test(first.error ?? '');
-  if (!imageRejected || withoutImages.length === blocks.length) return false;
-  debug('Slack rejected a message with an image; resending without it', { error: first.error });
-  return (await sendSlackMessage(withoutImages, webhookUrl, webhookEnvName)).ok;
+  if (!first.imageRejected || withoutImages.length === blocks.length) return { ok: false, error: failureReason(first) };
+  debug('Slack rejected a message with an image; resending without it', { code: first.code });
+  await new Promise((resolve) => setTimeout(resolve, SLACK_POST_GAP_MS));
+  const retry = await sendChatMessage(withoutImages, { token, channel, threadTs });
+  return retry.ok ? { ok: true, ts: retry.ts } : { ok: false, error: failureReason(retry) };
+}
+
+function failureReason(result: SlackSendResult): string {
+  if (result.code) return result.code;
+  return result.status ? `HTTP ${result.status}` : 'request failed';
 }
 
 function appendShadowClusteringBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
@@ -660,6 +767,10 @@ export interface EnrichmentNotification {
   /** Duplicate charge lines removed, or lines + freight + tax that do not match the amount due. */
   chargeCheck?: string[];
   suggestedCostCenters?: Array<{ code?: string | null; name: string }>;
+  /** One line per budget the invoice was split into from the email's coding. */
+  budgetSplit?: string[];
+  /** Why the email's budget split was not applied. */
+  budgetSplitReview?: string;
   priorFailures?: Array<{ attempt: number; fallback?: string; message: string }>;
   appliedFallbackLabels?: string[];
   /** The scoring snapshot for this write could not be saved; the invoice itself was processed. */
@@ -680,7 +791,7 @@ function dueDateChangeLine(dueDate: string, notApplied?: boolean): string {
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
-  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, priorFailures, fallbacks, appliedFallbackLabels } = notification;
+  const { processingTime, invoiceNumber, invoiceWID, canModify, supplier, company, extracted, poLineCount, chargeCheck, suggestedCostCenters, budgetSplit, budgetSplitReview, priorFailures, fallbacks, appliedFallbackLabels } = notification;
   const workdayUrl = buildWorkdayObjectDeeplink(invoiceWID);
 
   const timeText = `${(processingTime / 1000).toFixed(2)}s`;
@@ -815,6 +926,19 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
 
   appendChargeCheckBlock(blocks, chargeCheck ?? []);
+
+  if (canModify && budgetSplit?.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Coding split*\n${budgetSplit.map((line) => `• ${escapeSlackText(line)}`).join('\n')}`) }
+    });
+  }
+  if (budgetSplitReview) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Budget split review*\n• ${escapeSlackText(budgetSplitReview)}`) }
+    });
+  }
 
   if (priorFailures?.length) {
     const lines = priorFailures.map((failure) => {

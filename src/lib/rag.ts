@@ -8,6 +8,7 @@ import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
 import { gatewayProviderPin } from './models.js';
+import { supplierRecordFromDocument } from './supplier_match.js';
 export type { DocumentType } from './database.js';
 
 // Must stay text-embedding-3-small (1536 dimensions): stored vectors and the pgvector index depend on it.
@@ -234,14 +235,21 @@ export const findSuppliersTool = tool({
     });
 
     debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
+    const records = results.map(result => supplierRecordFromDocument(result));
+    debug('Find Suppliers Tool top results:', records.slice(0, 3).map((record, index) => ({
+      workdayId: results[index].workday_id,
+      supplierId: record.supplierId,
+      supplierName: record.supplierName,
+      alternateNames: record.alternateNames,
+      similarity: results[index].similarity.toFixed(3),
+    })));
 
     return {
       success: true,
-      results: results.map(result => ({
+      results: results.map((result, index) => ({
         workdayId: result.workday_id,
         type: result.type,
-        content: result.content,
-        metadata: result.metadata,
+        supplier: records[index],
         similarity: result.similarity
       }))
     };

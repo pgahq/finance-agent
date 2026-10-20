@@ -520,6 +520,22 @@ export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));
 }
 
+// Workday faults when a PO line is split by quantity and the invoice split rows carry no quantity
+// (sum 0) or a quantity it will not accept.
+export function isQuantityDistributionSplitError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return (
+    /distribution method for the provided purchase order line is .?Quantity/i.test(validationText)
+    || /sum of the line split quantities/i.test(validationText)
+    || /quantity must be a whole number/i.test(validationText)
+  );
+}
+
+// Workday faults when a line tied to a quantity-based PO line is submitted with quantity 0.
+export function isPositiveQuantityRequiredForPoLineError(text: unknown): boolean {
+  return /Enter a quantity that is greater than zero for supplier invoice lines related to purchase order/i.test(asValidationText(text));
+}
+
 export function isSupplierNotAllowedForPurchaseOrderError(value: unknown): boolean {
   return /can['’]?t select this supplier to invoice this purchase order/i.test(validationHaystack(value));
 }

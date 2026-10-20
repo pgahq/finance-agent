@@ -9,6 +9,7 @@ import {
   isDueDateValidationError,
   isLineOfBusinessRelatedWorktagError,
   isLineQuantityOrUnitCostPrecisionError,
+  isPositiveQuantityRequiredForPoLineError,
   isQuantityUnitExtendedMismatchError,
   isRequiredLineOfBusinessWorktagError,
   isSupplierNotAllowedForPurchaseOrderError,
@@ -389,5 +390,18 @@ describe('invoice_validation_failures', () => {
         tableName: 'finance-agent-invoice-validation-failures',
       });
     });
+  });
+});
+
+describe('isPositiveQuantityRequiredForPoLineError', () => {
+  it('matches the Workday fault for quantity 0 on a PO-linked line', () => {
+    expect(isPositiveQuantityRequiredForPoLineError(
+      'Enter a quantity that is greater than zero for supplier invoice lines related to purchase order or supplier contract lines that have a quantity greater than zero.'
+    )).toBe(true);
+  });
+
+  it('ignores other quantity faults', () => {
+    expect(isPositiveQuantityRequiredForPoLineError('Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost.')).toBe(false);
+    expect(isPositiveQuantityRequiredForPoLineError("The distribution method for the provided purchase order line is 'Quantity,' but the sum of the line split quantities is 0.")).toBe(false);
   });
 });

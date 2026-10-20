@@ -10,12 +10,15 @@ import {
   describeEmailCompanyReview,
   formatEmailCompanyNotes,
   formatEmailWorktagNotes,
+  formatEmailBudgetSplitNotes,
+  describeEmailBudgetSplit,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
+  formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
   formatPurchaseOrderNotes,
@@ -62,7 +65,9 @@ import {
   mergeAmountCheckMessages,
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
+  positivePoQuantityNote,
   overlaySharedPoWorktagsOnUnmatchedLines,
+  unappliedEmailBudgetSplit,
   parseExtractedAmount,
   prepareInvoiceCharges,
   removeRepeatedLineTables,
@@ -90,8 +95,8 @@ import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
 import { emailCodingText, sourceEmailBody } from './lib/email_coding_text.js';
+import { budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import {
-  costCenterCodeExcludingCompany,
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
 } from './lib/reference_ids.js';
@@ -1108,13 +1113,17 @@ async function processInvoiceCluster(
     };
     const emailWorktags = usedDefaultCompany
       ? undefined
-      : (result.emailWorktags ? {
-          costCenterId: costCenterCodeExcludingCompany(result.emailWorktags.costCenter?.code, emailCompany),
-          eventWid: result.emailWorktags.event?.workdayId ?? null,
-          lobReferenceId: result.emailWorktags.lineOfBusiness?.referenceId ?? null,
-          fundReferenceId: result.emailWorktags.fund?.referenceId ?? null,
-          spendCategoryReferenceId: result.emailWorktags.spendCategory?.referenceId ?? null,
-        } : undefined);
+      : buildEmailWorktags(result, emailCompany, budgetSplitOptions({
+        charges: {
+          amountDue: extractedAmountDue,
+          freightAmount: extractedFreightAmount,
+          taxAmount: extractedTaxAmount,
+          freightCleared,
+          taxCleared,
+        },
+        freightAsLines,
+        chargeWithheld,
+      }));
 
     const relatedLobLookup = (costCenterIds: string[]) =>
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
@@ -1132,6 +1141,7 @@ async function processInvoiceCluster(
     );
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
+    let emailBudgetSplit = merged.emailBudgetSplit;
 
     // An all-freight invoice must keep its coded freight line; if the PO merge returned none,
     // build it again without the PO, the way the remainder line below is built.
@@ -1148,6 +1158,7 @@ async function processInvoiceCluster(
       );
       finalLines = overlaySharedPoWorktagsOnUnmatchedLines(rebuilt.lines, poLines);
       relatedLobByCostCenter = rebuilt.relatedLobByCostCenter;
+      emailBudgetSplit = rebuilt.emailBudgetSplit;
     }
 
     // Workday requires at least one invoice line to create a Supplier Invoice. If nothing
@@ -1183,6 +1194,7 @@ async function processInvoiceCluster(
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
+        emailBudgetSplit = synthetic.emailBudgetSplit;
       } else if (remainder != null && remainder <= 0) {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
       } else if (!extractedFreightAmount) {
@@ -1206,6 +1218,7 @@ async function processInvoiceCluster(
         );
         finalLines = overlaySharedPoWorktagsOnUnmatchedLines(synthetic.lines, poLines);
         relatedLobByCostCenter = synthetic.relatedLobByCostCenter;
+        emailBudgetSplit = synthetic.emailBudgetSplit;
       } else {
         debug('No merchandise invoice lines remain after excluding freight; submitting Freight_Amount without a merchandise line');
       }
@@ -1214,11 +1227,19 @@ async function processInvoiceCluster(
     if (usedDefaultCompany && finalLines.length > 0) {
       finalLines = applyDefaultCompanyLineWorktags(finalLines, fallbackIds);
       relatedLobByCostCenter = new Map();
+      const emailBudgets = result.emailBudgetSplits ?? [];
+      emailBudgetSplit = emailBudgets.length > 1
+        ? unappliedEmailBudgetSplit(emailBudgets, 'Default OCR fallback coding was applied to the lines')
+        : undefined;
     }
 
+    let poQuantityNote: string | undefined;
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
+      const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
+      poQuantityNote = positivePoQuantityNote(printedLines, finalLines);
+      if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
@@ -1233,6 +1254,8 @@ async function processInvoiceCluster(
     const lineReview = [
       repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
       lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
+      poQuantityNote && `PO line quantity: ${poQuantityNote}`,
+      emailBudgetSplit?.review && `Budget split review: ${emailBudgetSplit.review}`,
     ].filter((note): note is string => Boolean(note));
 
     const appliedRecommended = selectedCompany.source === 'recommended';
@@ -1250,7 +1273,7 @@ async function processInvoiceCluster(
     // real prior state (this is a brand-new invoice) — omit it from the note's "was" wording.
     const emailWorktagNotes = formatEmailWorktagNotes(result);
     const emailOrDefaultWorktagNotes = usedDefaultCompany
-      ? (emailWorktagNotes
+      ? (emailWorktagNotes || emailBudgetSplit
         ? '\n\nLine worktags: Default OCR fallback coding applied; email worktags were not used on this invoice.'
         : '')
       : emailWorktagNotes;
@@ -1263,7 +1286,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes;
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1379,6 +1402,7 @@ async function processInvoiceCluster(
       },
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),
+      ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 
     const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
