@@ -874,6 +874,23 @@ describe('notifyEnrichmentResult', () => {
     expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*Invoice Date* → 2026-10-10\n• *Due Date* → 2026-11-11');
   });
 
+  it('lists the due date under Analysis, not Changes, when enrich only annotates', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-470104',
+      canModify: false,
+      supplier: { status: 'not_found', isDefault: false },
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-11-11' },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('_Invoice modification disabled — notes only_');
+    expect(texts).toContain('*Analysis*');
+    expect(texts).toContain('*Due Date* → 2026-11-11');
+    expect(texts).not.toContain('*Changes*');
+  });
+
   it('marks a due date earlier than the invoice date as not applied on enrich', async () => {
     await notifyEnrichmentResult({
       processingTime: 1500,

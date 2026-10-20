@@ -1492,6 +1492,26 @@ describe('enrich_invoice', () => {
       expect(notification).not.toHaveProperty('appliedFallbackLabels');
     });
 
+    it('only notes the due date when it annotates the invoice without a supplier to submit', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate, annotateSupplierInvoice } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        supplier: { ...ibsEnrichment.supplier, status: 'not_found', resolvedSupplier: null },
+      });
+
+      await expect(processor({
+        data: [{ ...mockEvent.data[0], supplier: undefined }],
+      } as any)).resolves.not.toThrow();
+
+      expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).toContain('Due Date (from document): 2026-11-11');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.canModify).toBe(false);
+      expect(notification.extracted.dueDate).toBe('2026-11-11');
+    });
+
     it('reports a due date removed on retry in the note and Slack', async () => {
       const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -1503,7 +1523,7 @@ describe('enrich_invoice', () => {
       await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
       const notes = submitSupplierInvoiceUpdate.mock.calls[0][1].buildNotes([omitted]);
-      expect(notes).toContain('Due Date (from document): 2026-11-11 (removed on retry after a Workday due date validation error; Workday derives the due date from the payment terms)');
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry did not send it)');
       expect(notes).not.toContain('Fallback values applied');
       const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
       expect(notification.extracted).toEqual(expect.objectContaining({ dueDate: '2026-11-11', dueDateNotApplied: true }));

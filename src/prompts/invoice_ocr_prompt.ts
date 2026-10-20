@@ -87,7 +87,13 @@ function nullableTextFields<T extends Record<string, unknown>>(fields: T): Nulla
   ) as NullableText<T>;
 }
 
-const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+function monthNumber(name: string): number {
+  const word = name.toLowerCase();
+  const index = MONTHS.findIndex((month) => month === word || month.slice(0, 3) === word || (word === 'sept' && month === 'september'));
+  return index + 1;
+}
 
 function isoCalendarDate(year: number, month: number, day: number): string | null {
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -95,32 +101,42 @@ function isoCalendarDate(year: number, month: number, day: number): string | nul
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
+function ordinalMatchesDay(day: string, suffix: string | undefined): boolean {
+  if (!suffix) return true;
+  const n = Number(day);
+  const expected = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th';
+  return suffix.toLowerCase() === expected;
+}
+
 function fullYear(year: string): number {
   return year.length === 2 ? 2000 + Number(year) : Number(year);
 }
 
 /**
- * A printed date as YYYY-MM-DD: ISO, US month/day/year (11/11/26, 11-11-2026), or a month name
- * ("Nov 11, 2026", "11 November 2026"). Two-digit years are 20YY. Anything else is null.
+ * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
+ * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
+ * else is null.
  */
 export function normalizePrintedDate(value: string | null | undefined): string | null {
   const text = value?.trim();
   if (!text) return null;
 
-  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|T)/);
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
 
-  const numeric = text.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})$/);
-  if (numeric) return isoCalendarDate(fullYear(numeric[3]), Number(numeric[1]), Number(numeric[2]));
+  const numeric = text.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
+  if (numeric) return isoCalendarDate(fullYear(numeric[4]), Number(numeric[1]), Number(numeric[3]));
 
-  const monthFirst = text.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4}|\d{2})$/);
-  const dayFirst = text.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?,?\s+(\d{4}|\d{2})$/);
+  const monthFirst = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})$/i);
+  const dayFirst = text.match(/^(\d{1,2})(st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})$/i);
   const named = monthFirst
-    ? { month: monthFirst[1], day: monthFirst[2], year: monthFirst[3] }
-    : dayFirst ? { month: dayFirst[2], day: dayFirst[1], year: dayFirst[3] } : undefined;
+    ? { month: monthFirst[1], day: monthFirst[2], suffix: monthFirst[3], year: monthFirst[4] }
+    : dayFirst ? { month: dayFirst[3], day: dayFirst[1], suffix: dayFirst[2], year: dayFirst[4] } : undefined;
   if (named) {
-    const month = MONTHS.indexOf(named.month.slice(0, 3).toLowerCase()) + 1;
-    return month ? isoCalendarDate(fullYear(named.year), month, Number(named.day)) : null;
+    const month = monthNumber(named.month);
+    return month && ordinalMatchesDay(named.day, named.suffix)
+      ? isoCalendarDate(Number(named.year), month, Number(named.day))
+      : null;
   }
 
   return null;
@@ -189,7 +205,7 @@ Guidelines:
 - Never compute a due date from payment terms such as "Net 30", and never add days to the invoice date.
 - Return an empty string for "Due on receipt", "Due upon receipt", or "Immediate" with no printed date, when no due date is printed, or when it is ambiguous.
 - Expand a two-digit year to 20YY. For example, an invoice that prints Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11".
-- Read numeric dates as month/day/year, the same as the invoice date.
+- Read numeric dates as month/day/year.
 
 ---
 

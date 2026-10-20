@@ -47,9 +47,14 @@ Workday OCR email.
 line pairing (a reorder alone is not a change). Notes, assignee, tags,
 attachments, and Workday-computed tax are left out on purpose. `dueDate` is
 `Due_Date_Override`, set from the printed due date; it is absent when Workday
-derives the due date from payment terms, and it is a material field. Snapshots
-saved before `dueDate` was scored have no value for it, so AP setting an
-override on those invoices also counts as a change.
+derives the due date from payment terms, and it is a material field. On an
+enrich invoice the agent owns it like any other field: when the enrich write
+changed the override from the baseline, a later AP change counts against the
+agent. Snapshots saved before `dueDate` was scored have no value for it, so on
+create and resend invoices written before then, any override on a later read
+(one AP set, or one already on a resent draft) counts as a change, while on enrich
+invoices written before then it is not agent-owned, because neither that
+baseline nor that snapshot recorded it.
 
 ## Daily scoring
 

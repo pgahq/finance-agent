@@ -338,7 +338,7 @@ describe('create_invoice', () => {
       await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
 
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([omitted]);
-      expect(notes).toContain('Due Date (from document): 2026-11-11 (removed on retry after a Workday due date validation error; Workday derives the due date from the payment terms)');
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry did not send it)');
       expect(notes).not.toContain('Fallback values applied: omitted due date');
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
@@ -362,8 +362,22 @@ describe('create_invoice', () => {
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([
         { field: 'dueDate', label: 'due date not applied (2026-10-01 is earlier than invoice date 2026-10-10)' },
       ]);
-      expect(notes).toContain('Due Date (from document): 2026-10-01 (not applied because it is earlier than the invoice date; Workday derives the due date from the payment terms)');
+      expect(notes).toContain('Due Date (from document): 2026-10-01 (not sent because it is earlier than the invoice date)');
       expect(notes).not.toContain('Fallback values applied');
+    });
+
+    it('validates the due date before sending or noting it', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...ibsEnrichmentResult, extractedDueDate: '2026-02-30' });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.dueDate).toBeUndefined();
+      expect(submitArgs.buildNotes([])).toContain('Due Date (from document): unreadable, not sent');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.dueDate).toBeUndefined();
     });
 
     it('sends no due date when none is printed', async () => {

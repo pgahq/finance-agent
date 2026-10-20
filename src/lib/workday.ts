@@ -637,24 +637,54 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 
 export const OMITTED_DUE_DATE_LABEL = 'omitted due date';
 
-// Workday rejects a Due_Date_Override earlier than Invoice_Date, so such a date is never sent. Without an
-// extracted due date the invoice keeps its current override.
-function resolveDueDateOverride(
-  options: Pick<buildSubmitInvoiceDataOptions, 'currentInvoice' | 'invoiceDate' | 'dueDate' | 'omitDueDateOverride'>
-): { value?: unknown; notAppliedLabel?: string } {
-  if (options.omitDueDateOverride) return {};
-  const dueDate = normalizeInvoiceDate(options.dueDate);
-  if (!dueDate) {
-    const current = options.currentInvoice?.Due_Date_Override;
-    return current ? { value: current } : {};
-  }
-  const invoiceDate = resolveInvoiceDate(options.currentInvoice, options.invoiceDate);
-  if (dueDate < invoiceDate) return { notAppliedLabel: `due date not applied (${dueDate} is earlier than invoice date ${invoiceDate})` };
-  return { value: dueDate };
+function calendarDate(year: number, month: number, day: number): string | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-function submitsDueDateOverride(options: buildSubmitInvoiceDataOptions): boolean {
-  return Boolean(resolveDueDateOverride(options).value);
+function extractedDueDate(dueDate?: string): string | undefined {
+  const match = dueDate?.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
+}
+
+// strong-soap parses an xsd:date into a Date at UTC midnight (it drops the offset) and serializes it back with
+// toISOString, so UTC components are the calendar date. A value in no recognized form is undefined.
+function readXsdDate(value: unknown): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const scalarValue = raw && typeof raw === 'object' && !(raw instanceof Date) && '$value' in raw ? (raw as { $value: unknown }).$value : raw;
+  if (scalarValue instanceof Date) {
+    return Number.isNaN(scalarValue.getTime())
+      ? undefined
+      : calendarDate(scalarValue.getUTCFullYear(), scalarValue.getUTCMonth() + 1, scalarValue.getUTCDate());
+  }
+  const match = typeof scalarValue === 'string'
+    ? scalarValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-]\d{2}:\d{2})?$/)
+    : null;
+  return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
+}
+
+// Workday rejects a Due_Date_Override earlier than Invoice_Date, so such a date is never sent. With no usable
+// extracted date the current override is resent as-is, as before this field existed. The retry after Workday
+// rejects the extracted date sends no override at all.
+function resolveDueDateOverride(
+  options: Pick<buildSubmitInvoiceDataOptions, 'currentInvoice' | 'invoiceDate' | 'dueDate' | 'omitDueDateOverride'>
+): { value?: unknown; sendsExtracted?: boolean; notAppliedLabel?: string } {
+  // A current override in an unrecognized form is resent unchanged rather than dropped.
+  const current = options.currentInvoice?.Due_Date_Override;
+  const keepCurrent = current ? { value: readXsdDate(current) ?? current } : {};
+  const dueDate = extractedDueDate(options.dueDate);
+  if (!dueDate) return keepCurrent;
+  if (options.omitDueDateOverride) return {};
+  const invoiceDate = resolveInvoiceDate(options.currentInvoice, options.invoiceDate);
+  if (dueDate < invoiceDate) {
+    return { ...keepCurrent, notAppliedLabel: `due date not applied (${dueDate} is earlier than invoice date ${invoiceDate})` };
+  }
+  return { value: dueDate, sendsExtracted: true };
+}
+
+function submitsExtractedDueDate(options: buildSubmitInvoiceDataOptions): boolean {
+  return Boolean(resolveDueDateOverride(options).sendsExtracted);
 }
 
 function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
@@ -904,7 +934,7 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
   const dueDateOverride = resolveDueDateOverride(options);
   if (dueDateOverride.notAppliedLabel) {
     fallbacks.push({ field: 'dueDate', label: dueDateOverride.notAppliedLabel });
-  } else if (options.omitDueDateOverride) {
+  } else if (options.omitDueDateOverride && submitsExtractedDueDate({ ...options, omitDueDateOverride: false })) {
     fallbacks.push({ field: 'dueDate', label: OMITTED_DUE_DATE_LABEL });
   }
 
@@ -1191,15 +1221,10 @@ async function getValidationFallbackField(
     return 'assignee';
   }
 
-  if (isDueDateValidationError(validationText)) {
-    if (submitsDueDateOverride(options)) {
-      debug('Validation references the due date or payment schedules; retrying without Due_Date_Override');
-      return 'dueDate';
-    }
-    if (options.omitDueDateOverride) {
-      debug('Validation references the due date after Due_Date_Override was removed; failing without another retry');
-      return undefined;
-    }
+  // Only the agent's extracted date is removed; a later fault falls through to the other repairs.
+  if (submitsExtractedDueDate(options) && isDueDateValidationError(validationText)) {
+    debug('Validation rejects the extracted due date; retrying without it as Due_Date_Override');
+    return 'dueDate';
   }
 
   if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {
@@ -1403,7 +1428,7 @@ function getFallbackRetryBuildOptions(
     return getAmountOnlyLineRetryBuildOptions(options);
   }
 
-  if (field === 'dueDate' && submitsDueDateOverride(options)) {
+  if (field === 'dueDate' && submitsExtractedDueDate(options)) {
     return {
       buildOptions: { ...options, omitDueDateOverride: true },
       fallbackLabel: OMITTED_DUE_DATE_LABEL,

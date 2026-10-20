@@ -787,7 +787,8 @@ export interface EnrichmentNotification {
 }
 
 function dueDateChangeLine(dueDate: string, notApplied?: boolean): string {
-  return notApplied ? `*Due Date* → not applied (invoice shows ${dueDate})` : `*Due Date* → ${dueDate}`;
+  const shown = escapeSlackMrkdwn(dueDate);
+  return notApplied ? `*Due Date* → not applied (invoice shows ${shown})` : `*Due Date* → ${shown}`;
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {

@@ -1,6 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
+import { normalizePrintedDate } from './prompts/invoice_ocr_prompt.js';
 import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
@@ -949,7 +950,7 @@ async function processInvoiceCluster(
     }
 
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
-    const extractedDueDate = result.extractedDueDate || undefined;
+    const extractedDueDate = normalizePrintedDate(result.extractedDueDate) ?? undefined;
 
     const targetSupplierWID = result.supplier.resolvedSupplier?.workdayId ?? DEFAULT_SUPPLIER_WID;
     const recommendedCompanyWID = result.companyVerification?.status === 'different'

@@ -508,11 +508,13 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
-// "Due Date must not be earlier than Invoice Date" and "You can't override the invoice due date when you
-// enter payment schedules."
+// "Due Date must not be earlier than Invoice Date", "You can't override the invoice due date when you
+// enter payment schedules.", or a fault whose XPath ends at Due_Date_Override.
 export function isDueDateValidationError(text: unknown): boolean {
   const validationText = asValidationText(text);
-  return /Due[\s_]*Date/i.test(validationText) || /payment schedules?/i.test(validationText);
+  return /\bDue[\s_]+Date\s+must\s+not\s+be\s+earlier\s+than\s+(?:the\s+)?Invoice[\s_]+Date\b/i.test(validationText)
+    || /\boverride\s+the\s+(?:invoice\s+)?due\s+date\b/i.test(validationText)
+    || /\bXpath:\s*\S*\/(?:\w+:)?Due_Date_Override(?:\[\d+\])?(?=\s|$)/i.test(validationText);
 }
 
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {

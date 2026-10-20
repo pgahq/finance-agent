@@ -83,6 +83,13 @@ describe('invoice_validation_failures', () => {
       },
     })).toBe(true);
     expect(isDueDateValidationError('Invoice Date must be in an open period')).toBe(false);
+    expect(isDueDateValidationError('Xpath: /wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:due_date_override[1]')).toBe(true);
+    expect(isDueDateValidationError('Memo is too long. Due_Date_Override was also set.')).toBe(false);
+    expect(isDueDateValidationError('Invalid Xpath: /wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]/wd:Child[1]')).toBe(false);
+    expect(isDueDateValidationError('Due  Date must not be earlier than\n the Invoice Date')).toBe(true);
+    expect(isDueDateValidationError('Overdue Date reminder setting is invalid')).toBe(false);
+    expect(isDueDateValidationError('Payment Terms NET_99 cannot calculate a Due Date for this supplier')).toBe(false);
+    expect(isDueDateValidationError('Prepaid amount scheduled per payment schedule')).toBe(false);
     expect(isDueDateValidationError("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice")).toBe(false);
   });
 

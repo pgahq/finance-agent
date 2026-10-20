@@ -400,9 +400,23 @@ describe('invoice OCR pass', () => {
       ['Nov 11, 2026', '2026-11-11'],
       ['November 11 2026', '2026-11-11'],
       ['11 Nov 2026', '2026-11-11'],
+      ['November 11th, 2026', '2026-11-11'],
+      ['Sept 30, 2026', '2026-09-30'],
+      ['September 3rd, 2026', '2026-09-03'],
+      ['22nd Feb 2026', '2026-02-22'],
+      ['November 11st, 2026', null],
+      ['February 22th, 2026', null],
+      ['1th March 2026', null],
       ['2/30/26', null],
       ['13/01/26', null],
       ['Net 30', null],
+      ['2026-11-11Tgarbage', null],
+      ['2026-11-11-08:00', null],
+      ['11/11-26', null],
+      ['05.11.2026', null],
+      ['Mayday 11 2026', null],
+      ['Novemberish 11, 2026', null],
+      ['Nov 11, 26', null],
     ])('normalizes the printed date %s to %s', (printed, expected) => {
       expect(normalizePrintedDate(printed)).toBe(expected);
     });
@@ -459,7 +473,10 @@ describe('invoice OCR pass', () => {
       const matchingContent = matchingCall.messages[0].content;
       expect(matchingContent).toHaveLength(1);
       expect(matchingContent[0].type).toBe('text');
-      expect(matchingContent[0].text).toContain(JSON.stringify(normalizeInvoiceOcrResult(ocrResponse), null, 2));
+      const { extractedDueDate, ...ocrForMatching } = normalizeInvoiceOcrResult(ocrResponse);
+      expect(extractedDueDate).toBe('2026-11-01');
+      expect(matchingContent[0].text).toContain(JSON.stringify(ocrForMatching, null, 2));
+      expect(matchingContent[0].text).not.toContain('extractedDueDate');
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
