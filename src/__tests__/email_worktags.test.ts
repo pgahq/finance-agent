@@ -64,6 +64,24 @@ describe('buildEmailWorktags', () => {
     ]);
   });
 
+  it('carries each budget\'s own company and the invoice company', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: { ...brandCoding, company },
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        {
+          label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding,
+          company: { extracted: '410', name: 'PGA Corporation', workdayId: 'wid-410', referenceId: '410' },
+        },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetSplitBaseCents: 300, budgetSplitGrossCents: 330 });
+
+    expect(result?.companyReferenceId).toBe('310');
+    expect(result?.budgetSplitGrossCents).toBe(330);
+    expect(result?.budgetSplits?.map(split => split.companyReferenceId)).toEqual([null, '410']);
+    expect(result?.budgetSplits?.[1].companyName).toBe('PGA Corporation');
+  });
+
   it('works when the model returns budgets but no invoice-wide coding', () => {
     const result = buildEmailWorktags({
       emailWorktags: null,
@@ -108,9 +126,9 @@ describe('budgetSplitOptions', () => {
   const charges = { amountDue: '$35,000', freightAmount: undefined, taxAmount: undefined };
 
   it('uses amount due less freight and tax as the base', () => {
-    expect(budgetSplitOptions({ charges })).toEqual({ budgetSplitBaseCents: 3500000 });
+    expect(budgetSplitOptions({ charges })).toEqual({ budgetSplitBaseCents: 3500000, budgetSplitGrossCents: 3500000 });
     expect(budgetSplitOptions({ charges: { amountDue: '$1,000.00', freightAmount: '$50.00', taxAmount: '$25.50' } }))
-      .toEqual({ budgetSplitBaseCents: 92450 });
+      .toEqual({ budgetSplitBaseCents: 92450, budgetSplitGrossCents: 100000 });
   });
 
   it('blocks splits for all-freight invoices, withheld charges, and unreadable amounts due', () => {
@@ -141,6 +159,23 @@ describe('email budget split notes', () => {
     );
   });
 
+  it('shows the email amount and explains the scaling when the email included tax', () => {
+    const scaled = {
+      applied: true,
+      budgets: [
+        { label: 'SPLIT #1', amountCents: 1077300, costCenterId: 'CC-A', spendCategoryId: null, emailAmountCents: 1176423 },
+        { label: 'SPLIT #2', amountCents: 170100, costCenterId: 'CC-B', spendCategoryId: null, emailAmountCents: 185751 },
+      ],
+      scaledFromEmail: { emailTotalCents: 1362174, lineTotalCents: 1247400 },
+      review: 'SPLIT #2 has no spend category in the email; set its spend category before approving.',
+    };
+
+    expect(describeEmailBudgetSplit(scaled)[0]).toBe('$10,773.00 SPLIT #1 (Cost Center CC-A; email $11,764.23 with tax)');
+    const notes = formatEmailBudgetSplitNotes(scaled);
+    expect(notes).toContain("The email's amounts total $13,621.74 including header tax and freight, so each was scaled down to the $12,474.00 line total");
+    expect(notes).toContain('\n\nBudget split review: SPLIT #2 has no spend category');
+  });
+
   it('writes the review note when the split was not applied and nothing otherwise', () => {
     expect(formatEmailBudgetSplitNotes({ applied: false, review: 'The email splits the cost across 2 budgets (A; B), but x.', budgets: [] }))
       .toBe('\n\nBudget split review: The email splits the cost across 2 budgets (A; B), but x.');
@@ -164,5 +199,10 @@ describe('budget split prompt rule', () => {
     );
     expect(invoiceMatchingPrompt).toContain('Merely naming more than one budget is not a split');
     expect(invoiceMatchingPrompt).toContain('"$15,000 to Recruitment and $20,000 to Brand and Marketing"');
+  });
+
+  it('asks for a per-budget company and an expense item as a spend category hint', () => {
+    expect(invoiceMatchingPrompt).toContain("put it in that entry's company");
+    expect(invoiceMatchingPrompt).toContain('"Expense Item: Hotel"');
   });
 });

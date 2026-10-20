@@ -427,7 +427,9 @@ export function describeEmailBudgetSplit(outcome: EmailBudgetSplitOutcome | unde
       budget.costCenterId && `Cost Center ${budget.costCenterId}`,
       budget.spendCategoryId && `Spend Category ${budget.spendCategoryId}`,
     ].filter(Boolean).join(', ');
-    return `${formatBudgetAmount(budget.amountCents)} ${budget.label}${coding ? ` (${coding})` : ''}`;
+    const email = budget.emailAmountCents != null ? `email ${formatBudgetAmount(budget.emailAmountCents)} with tax` : '';
+    const detail = [coding, email].filter(Boolean).join('; ');
+    return `${formatBudgetAmount(budget.amountCents)} ${budget.label}${detail ? ` (${detail})` : ''}`;
   });
 }
 
@@ -445,7 +447,11 @@ export function suggestedBudgetCostCenters(
 export function formatEmailBudgetSplitNotes(outcome: EmailBudgetSplitOutcome | undefined): string {
   if (!outcome) return '';
   if (!outcome.applied) return outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';
-  return `\n\nEmail budget split (one invoice line per budget): ${describeEmailBudgetSplit(outcome).join('; ')}`;
+  const scaled = outcome.scaledFromEmail
+    ? `. The email's amounts total ${formatBudgetAmount(outcome.scaledFromEmail.emailTotalCents)} including header tax and freight, so each was scaled down to the ${formatBudgetAmount(outcome.scaledFromEmail.lineTotalCents)} line total; the header charges stay on the invoice header.`
+    : '';
+  const review = outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';
+  return `\n\nEmail budget split (one invoice line per budget): ${describeEmailBudgetSplit(outcome).join('; ')}${scaled}${review}`;
 }
 
 export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

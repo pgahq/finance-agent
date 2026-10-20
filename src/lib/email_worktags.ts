@@ -1,5 +1,5 @@
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
-import { expectedMerchandiseCents, type EmailBudgetSplit, type EmailWorktags, type LineTotalCharges } from './invoice_lines.js';
+import { expectedAmountDueCents, expectedMerchandiseCents, type EmailBudgetSplit, type EmailWorktags, type LineTotalCharges } from './invoice_lines.js';
 import { costCenterCodeExcludingCompany, type EmailCompanyMatch } from './reference_ids.js';
 
 type EmailCoding = {
@@ -23,6 +23,8 @@ function lineCoding(coding: EmailCoding, emailCompany?: EmailCompanyMatch) {
 export interface EmailWorktagOptions {
   /** Merchandise total the email's budgets must cover (amount due less header freight and tax). */
   budgetSplitBaseCents?: number | null;
+  /** Amount due, which the email's budgets may total instead when they include header freight and tax. */
+  budgetSplitGrossCents?: number | null;
   /** Why a budget split must not apply to this invoice, when the caller already knows. */
   budgetSplitBlockedReason?: string | null;
 }
@@ -44,6 +46,8 @@ export function buildEmailWorktags(
     percent: split.percent,
     equalShare: split.equalShare,
     ...lineCoding(split, emailCompany),
+    companyReferenceId: split.company?.referenceId ?? null,
+    companyName: split.company?.name ?? null,
   }));
 
   // One budget is not a split: its coding is the invoice's coding.
@@ -63,12 +67,14 @@ export function buildEmailWorktags(
     ...(splits.length > 1 ? {
       budgetSplits: splits,
       budgetSplitBaseCents: options.budgetSplitBaseCents ?? null,
+      budgetSplitGrossCents: options.budgetSplitGrossCents ?? null,
+      companyReferenceId: emailCompany?.referenceId ?? null,
       budgetSplitBlockedReason: options.budgetSplitBlockedReason ?? null,
     } : {}),
   };
 }
 
-// A budget split must cover exactly the merchandise total, so it needs readable header charges and goods lines.
+// A budget split must cover exactly the merchandise total (or the amount due, scaled to it), so it needs readable header charges and goods lines.
 export function budgetSplitOptions(args: {
   charges: LineTotalCharges;
   freightAsLines?: boolean;
@@ -78,5 +84,5 @@ export function budgetSplitOptions(args: {
   if (args.chargeWithheld) return { budgetSplitBlockedReason: 'a freight or tax amount on the invoice could not be read' };
   const baseCents = expectedMerchandiseCents(args.charges);
   if (baseCents == null) return { budgetSplitBlockedReason: 'the invoice amount due could not be read' };
-  return { budgetSplitBaseCents: baseCents };
+  return { budgetSplitBaseCents: baseCents, budgetSplitGrossCents: expectedAmountDueCents(args.charges) ?? null };
 }
