@@ -144,6 +144,9 @@ describe('diffScoredFields', () => {
     expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11T00:00:00' }).dueDate).toBeUndefined();
     expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11Z' }).dueDate).toBe('2026-11-11');
     expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+05:30' }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+14:00' }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+99:99' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11-14:30' }).dueDate).toBeUndefined();
   });
 
   it('pairs reordered lines by amount instead of reporting every field as changed', () => {

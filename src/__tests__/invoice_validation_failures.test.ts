@@ -87,6 +87,18 @@ describe('invoice_validation_failures', () => {
     expect(isDueDateValidationError('Memo is too long. Due_Date_Override was also set.')).toBe(false);
     expect(isDueDateValidationError('Invalid Xpath: /wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]/wd:Child[1]')).toBe(false);
     expect(isDueDateValidationError('Due  Date must not be earlier than\n the Invoice Date')).toBe(true);
+    const nestedEnvelope = (validationError: Record<string, string>) => Object.assign(new Error('Validation error occurred.'), {
+      root: { Envelope: { Body: { Fault: { faultstring: 'Validation error occurred.', detail: { Validation_Fault: { Validation_Error: validationError } } } } } },
+    });
+    expect(isDueDateValidationError(nestedEnvelope({
+      Message: 'Invalid value',
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+    }))).toBe(true);
+    expect(isDueDateValidationError(nestedEnvelope({ Message: 'Due Date must not be earlier than Invoice Date.' }))).toBe(true);
+    expect(isDueDateValidationError(nestedEnvelope({
+      Message: 'Memo is too long',
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Memo[1]',
+    }))).toBe(false);
     expect(isDueDateValidationError('Overdue Date reminder setting is invalid')).toBe(false);
     expect(isDueDateValidationError('Payment Terms NET_99 cannot calculate a Due Date for this supplier')).toBe(false);
     expect(isDueDateValidationError('Prepaid amount scheduled per payment schedule')).toBe(false);

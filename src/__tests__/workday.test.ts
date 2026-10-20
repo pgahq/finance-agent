@@ -1957,7 +1957,7 @@ describe('Workday utilities', () => {
 
         expect(mockClient.Submit_Supplier_Invoice.mock.calls[0][0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Due_Date_Override).toBe('2026-12-01');
 
-        for (const [current, expected] of [[new Date('2026-12-01'), '2026-12-01'], ['12/01/2026 odd', '12/01/2026 odd']] as const) {
+        for (const [current, expected] of [[new Date('2026-12-01'), '2026-12-01'], ['12/01/2026 odd', '12/01/2026 odd'], ['2026-12-01+99:99', '2026-12-01+99:99']] as const) {
           mockClient.Get_Supplier_Invoices.mockImplementationOnce((_request: any, callback: any) => callback(null, {
             Response_Data: { Supplier_Invoice: { Supplier_Invoice_Data: {
               Invoice_Number: '12345', Invoice_Date: '2026-10-10', Control_Amount_Total: '100.00', Due_Date_Override: current,
@@ -6049,6 +6049,38 @@ describe('Workday utilities', () => {
           expect.objectContaining({ field: 'dueDate', label: 'omitted due date' }),
           expect.objectContaining({ field: 'paymentTerms', label: 'fallback payment terms' }),
         ]));
+      });
+
+      it('retries without the override when the fault is only in the strong-soap envelope', async () => {
+        const mockClient = mockSoapClient();
+        const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+        const envelopeFault = Object.assign(new Error('Validation error occurred.'), {
+          root: { Envelope: { Body: { Fault: {
+            faultcode: 'SOAP-ENV:Client.validationError',
+            faultstring: 'Validation error occurred.',
+            detail: { Validation_Fault: { Validation_Error: {
+              Message: 'Invalid value',
+              Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+            } } },
+          } } } },
+        });
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(envelopeFault, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, createdResponse);
+          });
+
+        const result = await submitNewSupplierInvoiceForTest(ibs);
+
+        expect(result.success).toBe(true);
+        expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+        expect(capturedRequests.map((request) => invoiceData(request).Due_Date_Override)).toEqual(['2026-11-11', undefined]);
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([expect.objectContaining({ field: 'dueDate', label: 'omitted due date' })]));
       });
 
       it('does not treat unrelated due date wording as an override fault', async () => {

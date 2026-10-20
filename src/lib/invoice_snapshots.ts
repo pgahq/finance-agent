@@ -97,7 +97,7 @@ function isoDate(value: unknown): string | undefined {
   if (raw instanceof Date) {
     return Number.isNaN(raw.getTime()) ? undefined : isoDate(`${raw.getUTCFullYear()}-${String(raw.getUTCMonth() + 1).padStart(2, '0')}-${String(raw.getUTCDate()).padStart(2, '0')}`);
   }
-  const match = text(raw)?.match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-]\d{2}:\d{2})?$/);
+  const match = text(raw)?.match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))?$/);
   if (!match) return undefined;
   const [year, month, day] = match.slice(1).map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));

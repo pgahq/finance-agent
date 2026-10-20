@@ -659,7 +659,7 @@ function readXsdDate(value: unknown): string | undefined {
       : calendarDate(scalarValue.getUTCFullYear(), scalarValue.getUTCMonth() + 1, scalarValue.getUTCDate());
   }
   const match = typeof scalarValue === 'string'
-    ? scalarValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-]\d{2}:\d{2})?$/)
+    ? scalarValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))?$/)
     : null;
   return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
 }
@@ -1222,7 +1222,7 @@ async function getValidationFallbackField(
   }
 
   // Only the agent's extracted date is removed; a later fault falls through to the other repairs.
-  if (submitsExtractedDueDate(options) && isDueDateValidationError(validationText)) {
+  if (submitsExtractedDueDate(options) && (isDueDateValidationError(error) || isDueDateValidationError(validationText))) {
     debug('Validation rejects the extracted due date; retrying without it as Due_Date_Override');
     return 'dueDate';
   }
