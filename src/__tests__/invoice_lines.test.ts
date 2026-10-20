@@ -1284,14 +1284,31 @@ describe('applyEmailBudgetSplits with amounts that include tax', () => {
     delete process.env.FALLBACK_SPEND_CATEGORY_ID;
   });
 
-  it('scales email amounts that total the amount due down to the line total, leaving tax on the header', () => {
+  it('uses the email amounts as the line amounts when they total the amount due, and rolls the header charges in', () => {
     const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
 
-    expect(lines.map(line => line.extendedAmount)).toEqual([10773, 1701]);
+    expect(lines.map(line => line.extendedAmount)).toEqual([11764.23, 1857.51]);
     expect(lines.map(line => line.costCenterId)).toEqual(['CC-Other_Broadcasting', 'CC-Global_Media']);
     expect(outcome?.applied).toBe(true);
-    expect(outcome?.budgets.map(budget => budget.emailAmountCents)).toEqual([1176423, 185751]);
-    expect(outcome?.scaledFromEmail).toEqual({ emailTotalCents: 1362174, lineTotalCents: 1247400 });
+    expect(outcome?.headerChargesRolledIn).toEqual({ amountDueCents: 1362174, lineTotalCents: 1247400 });
+  });
+
+  it('sets the company only on a budget whose company differs from the invoice company', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, '410']);
+    expect(outcome?.budgets.map(budget => budget.companyId)).toEqual([undefined, '410']);
+  });
+
+  it('does not roll header charges in when the amounts match the line total', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([{ ...broadcasting, amount: '$10,773.00' }, { ...globalMedia, amount: '$1,701.00' }]),
+      false
+    );
+
+    expect(lines.map(line => line.extendedAmount)).toEqual([10773, 1701]);
+    expect(outcome?.headerChargesRolledIn).toBeUndefined();
   });
 
   it('caps the combined description instead of listing every folio row on each budget line', () => {
@@ -1314,32 +1331,11 @@ describe('applyEmailBudgetSplits with amounts that include tax', () => {
     expect(lines).toHaveLength(66);
   });
 
-  it('keeps cents exact with largest remainder when the scaled shares do not divide evenly', () => {
-    const line: FinalInvoiceLine = { ...guestLines()[0], extendedAmount: 100 };
-    const { lines } = applyEmailBudgetSplits(
-      [line],
-      {
-        budgetSplits: [
-          { ...broadcasting, amount: '$40.00', companyReferenceId: null },
-          { ...globalMedia, amount: '$30.00', spendCategoryReferenceId: 'SC-Hotel', companyReferenceId: null },
-          { ...globalMedia, label: 'SPLIT #3', amount: '$33.00', spendCategoryReferenceId: 'SC-Hotel', companyReferenceId: null },
-        ],
-        budgetSplitBaseCents: 10000,
-        budgetSplitGrossCents: 10300,
-      },
-      false
-    );
-
-    expect(lines.map(line => line.extendedAmount)).toEqual([38.83, 29.13, 32.04]);
-    expect(lines.reduce((sum, line) => sum + (line.extendedAmount as number) * 100, 0)).toBeCloseTo(10000);
-  });
-
-  it('applies the split but flags a budget that names another company and one with no spend category', () => {
+  it('applies the split but flags a budget with no spend category', () => {
     process.env.FALLBACK_SPEND_CATEGORY_ID = 'Default_OCR_Spend_Category';
     const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
 
     expect(lines[1].spendCategoryId).toBe('Default_OCR_Spend_Category');
-    expect(outcome?.review).toContain('names company PGA Corporation (410), but its line is booked under the invoice company 310');
     expect(outcome?.review).toContain('has no spend category in the email, so it is on Default_OCR_Spend_Category');
     expect(outcome?.review).not.toContain('SPLIT #1 has no spend category');
   });

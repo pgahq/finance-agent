@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isIntercompanyValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
@@ -544,6 +544,8 @@ interface buildSubmitInvoiceDataOptions {
   freightCleared?: boolean;
   taxCleared?: boolean;
   omitTaxApplicability?: boolean;
+  /** Workday rejected a per-line company: submit every line under the invoice company. */
+  omitIntercompanyAffiliate?: boolean;
   filterInvoiceLines?: boolean;
   finalLines?: FinalInvoiceLine[];
   invoiceLineQuantityDisplayed?: boolean;
@@ -561,9 +563,10 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
+export const INTERCOMPANY_OMITTED_LABEL = 'omitted line company (lines booked under the invoice company; Workday would not accept the intercompany pairing)';
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
 export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
@@ -659,6 +662,10 @@ function linesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boo
   if (options.omitTaxApplicability) return false;
   const tax = soapAmount(resolveHeaderTaxAmount(options.currentInvoice, options.extractedTaxAmount, options.taxCleared));
   return tax != null && tax > 0;
+}
+
+function submittedLinesCarryIntercompany(options: buildSubmitInvoiceDataOptions): boolean {
+  return !options.omitIntercompanyAffiliate && Boolean(options.finalLines?.some(line => line.intercompanyAffiliateId));
 }
 
 function submittedLinesCarryTaxApplicability(options: buildSubmitInvoiceDataOptions): boolean {
@@ -924,6 +931,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
     fallbacks.push({ field: 'taxApplicability', label: 'omitted line tax applicability' });
   }
 
+  if (options.omitIntercompanyAffiliate && options.finalLines?.some(line => line.intercompanyAffiliateId)) {
+    fallbacks.push({ field: 'intercompany', label: INTERCOMPANY_OMITTED_LABEL });
+  }
+
   if (options.omitPurchaseOrderLineReference && submittedLinesCarryPurchaseOrderLineReference(options)) {
     fallbacks.push({ field: 'purchaseOrderLine', label: OMITTED_PO_LINE_REFERENCE_LABEL });
   } else if (finalLinesDropConsumedPurchaseOrderLineReference(options)) {
@@ -1185,6 +1196,11 @@ async function getValidationFallbackField(
     return 'taxApplicability';
   }
 
+  if (submittedLinesCarryIntercompany(options) && isIntercompanyValidationError(validationText)) {
+    debug('Validation rejects the intercompany pairing; retrying without line Intercompany_Affiliate_Reference');
+    return 'intercompany';
+  }
+
   if (submittedConversationUrlField(options) && isConfigurableAttributeValidationError(validationText)) {
     debug('Validation references configurable attributes; retrying without Additional_Fields_Data_Reference');
     return 'conversationUrl';
@@ -1375,6 +1391,13 @@ function getFallbackRetryBuildOptions(
     return {
       buildOptions: { ...options, omitTaxApplicability: true },
       fallbackLabel: 'omitted line tax applicability',
+    };
+  }
+
+  if (field === 'intercompany' && submittedLinesCarryIntercompany(options)) {
+    return {
+      buildOptions: { ...options, omitIntercompanyAffiliate: true },
+      fallbackLabel: INTERCOMPANY_OMITTED_LABEL,
     };
   }
 
@@ -1719,6 +1742,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     });
     return {
       Line_Order: line.lineOrder,
+      ...(line.intercompanyAffiliateId && !options.omitIntercompanyAffiliate && {
+        Intercompany_Affiliate_Reference: createReference('Company_Reference_ID', line.intercompanyAffiliateId),
+      }),
       Item_Description: line.description,
       ...(isDiscountOverride || isExtendedAmountOnly
         ? {

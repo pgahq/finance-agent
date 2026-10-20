@@ -129,6 +129,8 @@ export interface FinalInvoiceLine {
   eventId?: string | null;
   eventWid?: string | null;
   shipToAddressId?: string | null;
+  /** Company_Reference_ID of a company other than the invoice's, for an intercompany line. */
+  intercompanyAffiliateId?: string | null;
   purchaseOrderLineId?: string | null;
   /** Ordered quantity of the matched PO line; set only for goods lines ordered by quantity. */
   purchaseOrderLineQuantity?: number | null;
@@ -1333,32 +1335,11 @@ function budgetSplitName(split: Pick<EmailBudgetSplit, 'label'>, index: number):
   return split.label?.trim() || `Budget ${index + 1}`;
 }
 
-// Scales shares that total `fromTotal` down to `toTotal` using largest remainder, so the result sums exactly
-// to `toTotal` and a tie in the leftover cents goes to the earlier budget.
-function scaleCentsToTotal(shares: number[], fromTotal: number, toTotal: number): number[] {
-  const scaled = shares.map(share => (BigInt(share) * BigInt(toTotal)) / BigInt(fromTotal));
-  const remainders = shares.map((share, index) => ({
-    index,
-    remainder: (BigInt(share) * BigInt(toTotal)) % BigInt(fromTotal),
-  }));
-  let leftover = toTotal - scaled.reduce((sum, value) => sum + Number(value), 0);
-  const result = scaled.map(Number);
-  remainders
-    .sort((a, b) => (a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1))
-    .forEach(({ index }) => {
-      if (leftover > 0) {
-        result[index] += 1;
-        leftover -= 1;
-      }
-    });
-  return result;
-}
-
 interface BudgetSplitShares {
   cents?: number[];
   problem?: string;
-  /** Present when the email's amounts included header charges and were scaled down to the line total. */
-  scaledFromCents?: number[];
+  /** True when the email's amounts total the amount due, so header tax and freight are carried by the budget lines. */
+  includesHeaderCharges?: boolean;
 }
 
 function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number, grossCents?: number | null): BudgetSplitShares {
@@ -1383,12 +1364,9 @@ function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number, grossCe
     const cents = amounts.map(amount => toCents(amount as number));
     const total = cents.reduce((sum, value) => sum + value, 0);
     if (total === baseCents) return { cents };
-    // Header freight and tax are not on the lines, so an email that budgets the full amount due is scaled to the lines.
+    // An email that budgets the full amount due has each budget carry its share of header tax and freight.
     if (grossCents != null && grossCents > baseCents && total === grossCents) {
-      const scaled = scaleCentsToTotal(cents, total, baseCents);
-      return scaled.every(value => value > 0)
-        ? { cents: scaled, scaledFromCents: cents }
-        : { problem: 'a budget share rounds to zero once freight and tax are taken out' };
+      return { cents, includesHeaderCharges: true };
     }
     const expected = grossCents != null && grossCents > baseCents
       ? `${formatCents(baseCents)} before freight and tax or ${formatCents(grossCents)} with them`
@@ -1479,11 +1457,12 @@ export function applyEmailBudgetSplits(
     return reject(`no cost center or spend category was found for ${budgetSplitName(splits[missingCoding], missingCoding)}`);
   }
 
-  const { cents, problem, scaledFromCents } = budgetSplitCents(splits, baseCents, emailWorktags.budgetSplitGrossCents);
+  const { cents, problem, includesHeaderCharges } = budgetSplitCents(splits, baseCents, emailWorktags.budgetSplitGrossCents);
   if (!cents) return reject(problem as string);
 
   const first = lines[0];
   const description = lines.length === 1 ? first.description : combinedBudgetLineDescription(lines);
+  const invoiceCompany = invoiceCompanyReferenceId(splits, emailWorktags);
   const splitLines: FinalInvoiceLine[] = splits.map((split, index) => ({
     lineOrder: index + 1,
     description,
@@ -1499,6 +1478,7 @@ export function applyEmailBudgetSplits(
     eventId: null,
     eventWid: split.eventWid ?? first.eventWid ?? null,
     shipToAddressId: first.shipToAddressId ?? null,
+    intercompanyAffiliateId: intercompanyCompanyId(split, invoiceCompany),
     purchaseOrderLineId: null,
   }));
 
@@ -1513,31 +1493,34 @@ export function applyEmailBudgetSplits(
         amountCents: cents[index],
         costCenterId: splitLines[index].costCenterId ?? null,
         spendCategoryId: splitLines[index].spendCategoryId ?? null,
-        ...(scaledFromCents ? { emailAmountCents: scaledFromCents[index] } : {}),
+        ...(splitLines[index].intercompanyAffiliateId ? { companyId: splitLines[index].intercompanyAffiliateId } : {}),
       })),
-      ...(scaledFromCents
-        ? { scaledFromEmail: { emailTotalCents: scaledFromCents.reduce((sum, value) => sum + value, 0), lineTotalCents: baseCents } }
+      ...(includesHeaderCharges
+        ? { headerChargesRolledIn: { amountDueCents: emailWorktags.budgetSplitGrossCents as number, lineTotalCents: baseCents } }
         : {}),
     },
   };
 }
 
-// An applied split can still need AP's eyes: a budget booked under another company than the invoice, or one the
-// email gave no spend category for.
+function invoiceCompanyReferenceId(splits: EmailBudgetSplit[], emailWorktags: EmailWorktags): string | undefined {
+  return emailWorktags.companyReferenceId ?? splits.find(split => split.companyReferenceId)?.companyReferenceId ?? undefined;
+}
+
+// A budget that names a company other than the invoice's gets that company on its own line (an intercompany line).
+function intercompanyCompanyId(split: EmailBudgetSplit, invoiceCompany: string | undefined): string | null {
+  return split.companyReferenceId && invoiceCompany && split.companyReferenceId !== invoiceCompany
+    ? split.companyReferenceId
+    : null;
+}
+
+// An applied split can still need AP's eyes: a budget the email gave no spend category for.
 function budgetSplitReviewNotes(splits: EmailBudgetSplit[], emailWorktags: EmailWorktags): string[] {
   const notes: string[] = [];
-  const invoiceCompany = emailWorktags.companyReferenceId ?? splits.find(split => split.companyReferenceId)?.companyReferenceId;
   splits.forEach((split, index) => {
-    const name = budgetSplitName(split, index);
-    if (split.companyReferenceId && invoiceCompany && split.companyReferenceId !== invoiceCompany) {
-      notes.push(
-        `${name} names company ${split.companyName ?? split.companyReferenceId} (${split.companyReferenceId}), but its line is booked under the invoice company ${invoiceCompany}. If it belongs to the other company, move or recode it (for example as an expense report) before approving.`
-      );
-    }
     if (!split.spendCategoryReferenceId && !emailWorktags.spendCategoryReferenceId) {
       const fallback = process.env.FALLBACK_SPEND_CATEGORY_ID;
       notes.push(
-        `${name} has no spend category in the email${fallback ? `, so it is on ${fallback}` : ''}; set its spend category before approving.`
+        `${budgetSplitName(split, index)} has no spend category in the email${fallback ? `, so it is on ${fallback}` : ''}; set its spend category before approving.`
       );
     }
   });
@@ -1678,11 +1661,14 @@ export interface EmailBudgetSplitOutcome {
     amountCents: number;
     costCenterId: string | null;
     spendCategoryId: string | null;
-    /** The amount the email stated, when it differs from the line amount because it included header charges. */
-    emailAmountCents?: number;
+    /** Company set on this budget's line when it differs from the invoice company. */
+    companyId?: string | null;
   }>;
-  /** Set when the email's amounts included header freight and tax and were scaled down to the line total. */
-  scaledFromEmail?: { emailTotalCents: number; lineTotalCents: number };
+  /**
+   * Set when the email's amounts total the amount due: the budget lines carry the header tax and freight, so the
+   * caller must submit the header with no tax or freight.
+   */
+  headerChargesRolledIn?: { amountDueCents: number; lineTotalCents: number };
 }
 
 export function applyDefaultCompanyLineWorktags(

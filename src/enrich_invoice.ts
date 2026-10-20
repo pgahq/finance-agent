@@ -364,7 +364,7 @@ async function processInvoice(
     const checkedReconciliation = submitsLines
       ? chargeReconciliation
       : extractedChargeReconciliation(extractedLines, extractedCharges);
-    const chargeCheck = [
+    let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...(submitsLines
@@ -451,6 +451,15 @@ async function processInvoice(
           description: result.supplier.extractedInformation?.memo,
         })
       : undefined;
+    // Email budgets that total the amount due carry the header tax and freight in their lines, so the header
+    // submits none; the notes still show what the document printed.
+    const chargesInLines = Boolean(emailBudgetSplit?.headerChargesRolledIn);
+    const submitFreightAmount = chargesInLines ? undefined : extractedFreightAmount;
+    const submitTaxAmount = chargesInLines ? undefined : extractedTaxAmount;
+    const submitFreightCleared = chargesInLines || freightCleared;
+    const submitTaxCleared = chargesInLines || taxCleared;
+    if (chargesInLines) chargeCheck = [];
+
     let poQuantityNote: string | undefined;
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
@@ -463,10 +472,10 @@ async function processInvoice(
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = finalLines && !chargeWithheld && !freightAsLines ? lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
-      freightAmount: extractedFreightAmount,
-      taxAmount: extractedTaxAmount,
-      freightCleared,
-      taxCleared,
+      freightAmount: submitFreightAmount,
+      taxAmount: submitTaxAmount,
+      freightCleared: submitFreightCleared,
+      taxCleared: submitTaxCleared,
       currentFreightAmount: detailedInvoice.Freight_Amount,
       currentTaxAmount: detailedInvoice.Tax_Amount,
     }) : undefined;
@@ -510,11 +519,11 @@ async function processInvoice(
         companyWID,
         extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-        extractedFreightAmount,
+        extractedFreightAmount: submitFreightAmount,
         freightAsLines,
-        extractedTaxAmount,
-        freightCleared,
-        taxCleared,
+        extractedTaxAmount: submitTaxAmount,
+        freightCleared: submitFreightCleared,
+        taxCleared: submitTaxCleared,
         finalLines,
         invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
         relatedLobByCostCenter,

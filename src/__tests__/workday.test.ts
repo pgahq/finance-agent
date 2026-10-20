@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, INTERCOMPANY_OMITTED_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -4257,6 +4257,69 @@ describe('Workday utilities', () => {
           expect(retryData.Tax_Amount).toBe(45);
           expect(result.appliedFallbacks).toEqual(
             expect.arrayContaining([expect.objectContaining({ field: 'taxApplicability', label: 'omitted line tax applicability' })])
+          );
+        });
+
+        it('should send the line company as Intercompany_Affiliate_Reference and clear header tax when charges are in the lines', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            extractedTaxAmount: undefined,
+            taxCleared: true,
+            freightCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          });
+
+          expect(result.success).toBe(true);
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe(0);
+          expect(data.Invoice_Line_Replacement_Data[0].Intercompany_Affiliate_Reference).toBeUndefined();
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+          expect(data.Invoice_Line_Replacement_Data[1].Intercompany_Affiliate_Reference).toEqual({
+            ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: '410' }],
+          });
+        });
+
+        it('should retry with every line under the invoice company when Workday rejects the intercompany pairing', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback({
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: 'PGA Corporation is not configured to allow intercompany transactions with The Professional Golfers Association of America',
+                    Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Intercompany_Affiliate_Reference'
+                  }
+                }
+              }, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            taxCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          const firstLines = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          const retryLines = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(firstLines[1].Intercompany_Affiliate_Reference).toBeDefined();
+          expect(retryLines[1].Intercompany_Affiliate_Reference).toBeUndefined();
+          expect(result.appliedFallbacks).toEqual(
+            expect.arrayContaining([expect.objectContaining({ field: 'intercompany', label: INTERCOMPANY_OMITTED_LABEL })])
           );
         });
 

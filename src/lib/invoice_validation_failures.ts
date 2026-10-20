@@ -508,6 +508,11 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+export function isIntercompanyValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return /intercompany/i.test(validationText) || /Intercompany_Affiliate_Reference/i.test(validationText);
+}
+
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));

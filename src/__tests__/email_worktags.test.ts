@@ -161,20 +161,20 @@ describe('email budget split notes', () => {
     );
   });
 
-  it('shows the email amount and explains the scaling when the email included tax', () => {
-    const scaled = {
+  it('names the company and explains the rolled-in tax when the email budgeted the amount due', () => {
+    const rolledIn = {
       applied: true,
       budgets: [
-        { label: 'SPLIT #1', amountCents: 1077300, costCenterId: 'CC-A', spendCategoryId: null, emailAmountCents: 1176423 },
-        { label: 'SPLIT #2', amountCents: 170100, costCenterId: 'CC-B', spendCategoryId: null, emailAmountCents: 185751 },
+        { label: 'SPLIT #1', amountCents: 1176423, costCenterId: 'CC-A', spendCategoryId: null, companyId: null },
+        { label: 'SPLIT #2', amountCents: 185751, costCenterId: 'CC-B', spendCategoryId: null, companyId: '410' },
       ],
-      scaledFromEmail: { emailTotalCents: 1362174, lineTotalCents: 1247400 },
+      headerChargesRolledIn: { amountDueCents: 1362174, lineTotalCents: 1247400 },
       review: 'SPLIT #2 has no spend category in the email; set its spend category before approving.',
     };
 
-    expect(describeEmailBudgetSplit(scaled)[0]).toBe('$10,773.00 SPLIT #1 (Cost Center CC-A; email $11,764.23 with tax)');
-    const notes = formatEmailBudgetSplitNotes(scaled);
-    expect(notes).toContain("The email's amounts total $13,621.74 including header tax and freight, so each was scaled down to the $12,474.00 line total");
+    expect(describeEmailBudgetSplit(rolledIn)[1]).toBe('$1,857.51 SPLIT #2 (Company 410, Cost Center CC-B)');
+    const notes = formatEmailBudgetSplitNotes(rolledIn);
+    expect(notes).toContain("The email's amounts total $13,621.74, the full amount due, so each budget line carries its share of the $1,147.74 of tax and freight and the invoice header tax and freight were cleared");
     expect(notes).toContain('\n\nBudget split review: SPLIT #2 has no spend category');
   });
 
@@ -206,5 +206,6 @@ describe('budget split prompt rule', () => {
   it('asks for a per-budget company and an expense item as a spend category hint', () => {
     expect(invoiceMatchingPrompt).toContain("put it in that entry's company");
     expect(invoiceMatchingPrompt).toContain('"Expense Item: Hotel"');
+    expect(invoiceMatchingPrompt).toContain('"Lodging" spend category');
   });
 });

@@ -1075,7 +1075,7 @@ async function processInvoiceCluster(
       { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
-    const chargeCheck = [
+    let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...chargeReconciliationMessages(chargeReconciliation),
@@ -1231,6 +1231,15 @@ async function processInvoiceCluster(
         : undefined;
     }
 
+    // Email budgets that total the amount due carry the header tax and freight in their lines, so the header
+    // submits none; the notes above still show what the document printed.
+    const chargesInLines = Boolean(emailBudgetSplit?.headerChargesRolledIn);
+    const submitFreightAmount = chargesInLines ? undefined : extractedFreightAmount;
+    const submitTaxAmount = chargesInLines ? undefined : extractedTaxAmount;
+    const submitFreightCleared = chargesInLines || freightCleared;
+    const submitTaxCleared = chargesInLines || taxCleared;
+    if (chargesInLines) chargeCheck = [];
+
     let poQuantityNote: string | undefined;
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
@@ -1243,10 +1252,10 @@ async function processInvoiceCluster(
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = chargeWithheld || freightAsLines ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
-      freightAmount: extractedFreightAmount,
-      taxAmount: extractedTaxAmount,
-      freightCleared,
-      taxCleared,
+      freightAmount: submitFreightAmount,
+      taxAmount: submitTaxAmount,
+      freightCleared: submitFreightCleared,
+      taxCleared: submitTaxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
     const lineReview = [
@@ -1556,11 +1565,11 @@ async function processInvoiceCluster(
           companyReferenceType,
           extractedAmountDue,
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-          extractedFreightAmount,
+          extractedFreightAmount: submitFreightAmount,
           freightAsLines,
-          extractedTaxAmount,
-          freightCleared,
-          taxCleared,
+          extractedTaxAmount: submitTaxAmount,
+          freightCleared: submitFreightCleared,
+          taxCleared: submitTaxCleared,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1631,11 +1640,11 @@ async function processInvoiceCluster(
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-      extractedFreightAmount,
+      extractedFreightAmount: submitFreightAmount,
       freightAsLines,
-      extractedTaxAmount,
-      freightCleared,
-      taxCleared,
+      extractedTaxAmount: submitTaxAmount,
+      freightCleared: submitFreightCleared,
+      taxCleared: submitTaxCleared,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,
