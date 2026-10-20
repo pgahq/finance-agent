@@ -48,7 +48,8 @@ export const InvoiceOcrSchema = z.object({
   })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
-  extractedJobNumber: printedText(enrichment.extractedJobNumber),
+  extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
+  extractedSupplierReferenceKind: printedText(enrichment.extractedSupplierReferenceKind),
   extractedCustomerId: printedText(enrichment.extractedCustomerId),
   extractedServicePeriod: printedText(enrichment.extractedServicePeriod),
   extractedPaymentTerms: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt"). Empty string if none are printed.'),
@@ -177,7 +178,7 @@ Populate \`printedSupplier\` with the supplier (vendor) details printed on the i
 - supplierName, street address, phone, email, tax ID or EIN, website, and contact person
 - remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
-- memo: a terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.
+- memo: a few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "office supplies"). No ending period, and do not name PGA, the venue, or the location the service is for. If not clear, or if it would only repeat the supplier name or an identifier, leave the memo empty. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.
 
 ## Part 2: Bill-to company as printed
 
@@ -261,11 +262,11 @@ Read the invoice attachment and extract the purchase order number if one is refe
 
 ## Part 7.5: Memo identifiers
 
-Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code joins values with a period, in check-print order (account, customer ID, job/order, PO, service period, then the memo sentence). Do not copy these identifiers into \`printedSupplier.memo\`, and do not use pipe \`|\` or \`#\` labels there.
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code builds the memo from them in this order, separated by single spaces: account or customer ID, one supplier reference, service dates, then the short description (for example \`Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service\`). PGA's PO is not part of the memo. Do not copy these identifiers into \`printedSupplier.memo\`, and do not use pipe \`|\` or \`#\` labels there.
 
 1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
 
-2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number. If Order # / Job # is the same PGA PO already extracted (\`PO-\` + 6 word chars), leave job number null.
+2. **Supplier reference** (\`extractedSupplierReference\` and \`extractedSupplierReferenceKind\`): the single most useful supplier-side reference. Labels: "Order #" / "Order Number" (kind \`order\`), "Confirmation #" / "Conf #" (kind \`confirmation\`), "Job #" / "Job Number" / "Job No" (kind \`job\`). On a legal invoice use the file, case, or matter number instead (kind \`file\` for a file or matter number, \`case\` for a case number). When several are printed, return only the one that best identifies the work. Do not use an unlabeled Project / PRJ value. Never use PGA's PO, the supplier invoice number, or the account or customer number; if the only Order # / Job # is the PGA PO already extracted (\`PO-\` + 6 word chars), leave both fields empty.
 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 

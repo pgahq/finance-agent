@@ -93,22 +93,32 @@ On-demand enrichment for an existing Workday supplier invoice. Body: `{ "supplie
 
 ## Invoice memos
 
-Create and enrich compose Workday header and line `Memo` values in code after enrichment (`src/lib/invoice_memo.ts`). Include a token only when that field is present (any combination). Join with `. ` (never `|`). Token order is check-print first: `AC`, `Customer ID`, `Job`, PO, `Service Period`, then the existing one-sentence description.
+Create and enrich compose Workday header and line `Memo` values in code after enrichment (`src/lib/invoice_memo.ts`). The structure is supplier identifier, supplier reference, service dates, then an optional short description, separated by single spaces. Example: `Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service`; with an order number, `Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 monthly software subscription`. Include a token only when that field is present (any combination). Never use `. ` or `|` between fields, and keep punctuation only when it is part of an identifier.
+
+1. **Supplier identifier:** `Acct <account number>`, else `Cust <customer ID>`. Only one is emitted; the account number wins when both are printed.
+2. **Supplier reference** (`extractedSupplierReference` plus `extractedSupplierReferenceKind`): one reference, labeled `Ord` (order), `Conf` (confirmation), `Job`, `File` (file or matter number), or `Case`. A legal invoice uses its file, case, or matter number. A reference with no usable kind is labeled `Ref`; a kind-less value that starts with a known label (`Order #5914196`) takes that label. The reference is dropped when it normalizes to the extracted PGA PO. The Workday note records `Supplier Reference (from document): Order 5914196`.
+3. **Service dates:** `Svc Prd` plus `MM/DD/YY`; a range is `MM/DD/YY - MM/DD/YY` (spaced hyphen); a whole month stated as `2026 - September` becomes its first and last day; a quarter is `Q4 26`. Dates are read before pay-file sanitizing, so an en or em dash range reads as a range (`09/01/2026 – 09/30/2026`). Only whole month names and their usual short forms (`Aug`, `Sept`) count as months, so `Augusta 2026` stays as printed. Text that is not a readable date with a year (`Sept 28 - Oct 2`) stays as printed, with an en or em dash written as a hyphen (`formatMemoServiceDates`).
+4. **Description:** a few lowercase words with no ending period, such as `elevator phone line service`. The prompts tell the model to omit PGA, the venue, or the service location and to leave it empty when it would only repeat the supplier name or an identifier. Code lowercases a leading capitalized word (acronyms such as `HVAC` and words with digits keep their case) and drops trailing periods. With identifiers, the description is left out when the memo would pass `INVOICE_MEMO_MAX_LENGTH`; identifiers are never cut. A description-only memo (no identifiers) is sanitized and cut at the limit, so a long line memo never reaches Workday raw.
+
+**The PGA PO is not in the memo.** It already rides on the invoice and on `Purchase_Order_Line_Reference`. `memoIdentifiersFromEnrichment` takes the matched, email, or note PO (falling back to the extracted PO) only so a supplier reference that is really that PO is dropped.
+
+**Open item:** `INVOICE_MEMO_MAX_LENGTH` (500) is a placeholder. AP still has to confirm the check/ACH character limit and which memo field (header or line) feeds checks and ACH before the final length is set.
 
 Pay-file / check print safety:
 
-- Do not emit `|`, `>`, or `<`. Labels we control do not use `#` (`AC 1033562`, `Job 5914196`). A `#` that is part of a supplier-provided value may stay.
+- Do not emit `|`, `>`, or `<`. Labels we control do not use `#` (`Acct 1033562`, `Job 5914196`). A `#` that is part of a supplier-provided value may stay.
 - After compose, keep letters, digits, space, hyphen, period, comma, apostrophe, slash, and `#`; replace other characters with a space.
 - `composeSuppliersInvoiceNumber` sets SOAP `Suppliers_Invoice_Number` on create and enrich. It keeps letters, digits, hyphen, period, slash, and `#`; other characters become `-`. Do not rewrite an existing Workday `Invoice_Number` on enrich.
 
-- Memo PO is the **matched Workday document number** when a PO was loaded, otherwise the normalized extracted value (`PO-` + 6 word chars). Free-text PO column values that are not `PO-xxxxxx` (e.g. `PGA COACHING`) are not put in the memo.
+Extraction rules:
+
 - Account number is PGA's customer/sold-to account at the supplier (`Account #`, `Sold To Number`). Skip bank/ABA/ACH remittance account numbers (Cushman `FOR ELECTRONIC PAYMENTS`) in the **OCR prompt only** (`src/prompts/invoice_ocr_prompt.ts`) — there is no code-side remittance parser. Do not use GL, cost center, company code, or the supplier invoice number. Do not strip an `AC-` prefix from a sold-to value such as `AC-1033562`.
-- Job aliases include **Order #**. Do not map unlabeled Project / `PRJ…` to Job. Drop Job when it normalizes to the same PGA PO already in the memo.
-- Customer ID aliases include **Bill-To Customer ID** and **Cust ID**. If it equals the account number, emit only `AC`.
-- Service period may appear inside a line description; keep the document wording.
-- The same identifier prefix is applied to every invoice line memo. Header `extractedInformation.memo` and the line-merge prompt must not prepend identifiers — composition strips those tokens if the model still includes them.
-- **Create** always submits the composed memo, including a description-only sentence on a new invoice.
-- **Enrich** submits a composed header memo only when identifier tokens exist, so a description-only extraction does not overwrite an existing OCR header memo. Workday keeps `currentInvoice.Memo` when `memo` is omitted. Line memos still get the identifier prefix when identifiers exist.
+- Supplier reference aliases include **Order #**, **Confirmation #**, and **Job #**. Do not map unlabeled Project / `PRJ…` to a reference.
+- Customer ID aliases include **Bill-To Customer ID** and **Cust ID**. If it equals the account number, the model leaves it empty; code emits only `Acct` whenever an account number exists.
+- Service period may appear inside a line description; the model keeps the document wording and code normalizes the dates.
+- The same identifier prefix is applied to every invoice line memo. Header `extractedInformation.memo` and the line-merge prompt must not prepend identifiers — composition strips those tokens (current labels and the earlier `AC 123. Job 456.` form) if the model still includes them.
+- **Create** always submits the composed memo, including a description-only memo on a new invoice.
+- **Enrich** submits a composed header memo only when identifier tokens exist, so a description-only extraction does not overwrite an existing OCR header memo. Workday keeps `currentInvoice.Memo` when `memo` is omitted. Line memos still get the identifier prefix when identifiers exist, and are lowercased and unpunctuated either way.
 
 ## Invoice line item descriptions
 
@@ -116,7 +126,7 @@ Workday Line Item Description (`Item_Description`) is the concatenated identifyi
 
 The OCR prompt (`src/prompts/invoice_ocr_prompt.ts` Part 9) extracts `descriptionCells` left-to-right (Activity, Resource, SKU, Description, and similar) and asks the model to skip Notes and Comments. `composeInvoiceLineDescription` / `withComposedLineDescriptions` in `src/lib/invoice_lines.ts` then join those cells with ` - ` when any identifying cells exist (the model `description` is fallback only). Code drops empty cells and cells that match the line's printed quantity, unit cost, amount, or a `$` currency value; it does not drop Notes/Comments by column name. A shorter cell is dropped only when a longer cell contains it as a whole token, not as a raw substring. Example: Activity `Ryan Poland` + Description `Project Management` → `Ryan Poland - Project Management`. Header service dates, PO, account, job, and customer ID stay out of Item Description. Freight is classified from the original Description column, then remaining merchandise rows are composed. Compose keeps that original Description when the concatenated cells would classify as freight and the original would not, so SOAP `splitFreightLines` does not reclass the merchandise row.
 
-The terse 1-sentence summary is line `Memo`, generated **after** that concatenation (merge prompt), then identifier-prefixed in `composeInvoiceMemo`. After merge, `pinExtractedLineDescriptions` overlays the composed description by line index so the merge model cannot shorten Item Description.
+The short lowercase description is line `Memo`, generated **after** that concatenation (merge prompt), then identifier-prefixed in `composeInvoiceMemo`. After merge, `pinExtractedLineDescriptions` overlays the composed description by line index so the merge model cannot shorten Item Description.
 
 ## Secrets / env
 
