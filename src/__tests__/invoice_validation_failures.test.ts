@@ -3,7 +3,9 @@ import {
   getInvoiceValidationFailuresConfig,
   humanWorkdayValidationMessage,
   isClosedPurchaseOrderLineError,
+  invalidShipToAddressLinePositions,
   isConfigurableAttributeValidationError,
+  isInvalidShipToAddressError,
   isDuplicateSuppliersInvoiceNumberError,
   isDisallowedLineOfBusinessWorktagError,
   isLineOfBusinessRelatedWorktagError,
@@ -387,5 +389,45 @@ describe('isPositiveQuantityRequiredForPoLineError', () => {
   it('ignores other quantity faults', () => {
     expect(isPositiveQuantityRequiredForPoLineError('Either Quantity and Unit Cost must equal zero or the Extended Amount must equal Quantity * Unit Cost.')).toBe(false);
     expect(isPositiveQuantityRequiredForPoLineError("The distribution method for the provided purchase order line is 'Quantity,' but the sum of the line split quantities is 0.")).toBe(false);
+  });
+});
+
+describe('isInvalidShipToAddressError', () => {
+  const fault = (...rows: number[]) => ({
+    Validation_Fault: {
+      Validation_Error: rows.map(row => ({
+        Message: 'The Provided Ship To Address is Invalid for this Supplier Invoice Document',
+        Detail_Message: 'Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-The Provided Ship To Address is Invalid for this Supplier Invoice Document{+4}- on Supplier Invoice Line Replacement Data',
+        Xpath: `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[${row}]`,
+      })),
+    },
+  });
+
+  it('matches the Workday fault and reads the 0-based rows it names', () => {
+    expect(isInvalidShipToAddressError(fault(1, 2, 3))).toBe(true);
+    expect(invalidShipToAddressLinePositions(fault(1, 3))).toEqual([0, 2]);
+  });
+
+  it('matches the fault text from a serialized error message', () => {
+    const text = 'Validation error occurred. The Provided Ship To Address is Invalid for this Supplier Invoice Document Xpath: /wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]';
+    expect(isInvalidShipToAddressError(text)).toBe(true);
+    expect(invalidShipToAddressLinePositions(text)).toEqual([1]);
+  });
+
+  it('returns no rows when the fault names none', () => {
+    expect(invalidShipToAddressLinePositions('The Provided Ship To Address is Invalid for this Supplier Invoice Document')).toEqual([]);
+  });
+
+  it('ignores the ship-to contact fault and unrelated faults', () => {
+    const contact = {
+      Validation_Fault: { Validation_Error: [{
+        Message: 'The entered information does not meet the restrictions defined for this field.',
+        Detail_Message: 'Please verify the referenced ship-to contact before submitting.',
+        Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]/wd:Ship_To_Contact_Reference',
+      }] },
+    };
+    expect(isInvalidShipToAddressError(contact)).toBe(false);
+    expect(isInvalidShipToAddressError('Enter a quantity that is greater than zero')).toBe(false);
+    expect(invalidShipToAddressLinePositions(contact)).toEqual([]);
   });
 });

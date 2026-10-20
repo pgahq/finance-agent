@@ -556,6 +556,28 @@ describe('po_worktags', () => {
     });
   });
 
+  describe('splits priced from a line total that differs from quantity x PO unit cost by rounding (Semicolon 26-2177)', () => {
+    const split = (quantity: number) => ({ quantity, extendedAmount: 0, worktagReference: [] });
+    const amountsOf = (rows: any[] | undefined) => rows?.map(row => [row.Quantity, row.Extended_Amount]);
+
+    it.each([
+      ['Sintra signs', [14, 40], 54, 238.679815, 12888.71, [[14, 3341.52], [40, 9547.19]]],
+      ['Alumacorr footers', [6, 6], 12, 212.5325, 2550.39, [[6, 1275.2], [6, 1275.19]]],
+      ['Cut vinyl', [36, 40], 76, 10.715526, 814.38, [[36, 385.76], [40, 428.62]]],
+    ])('splits %s so the amounts add up to the line total', (_name, quantities, quantity, unitCost, total, expected) => {
+      const rows = mapPoSplitsToSupplierInvoiceSplitLineData(
+        (quantities as number[]).map(split),
+        total as number,
+        undefined,
+        undefined,
+        { quantity: quantity as number, unitCost: unitCost as number }
+      );
+      expect(amountsOf(rows)).toEqual(expected);
+      const sum = rows!.reduce((acc: number, row: any) => acc + Math.round(row.Extended_Amount * 100), 0);
+      expect(sum).toBe(Math.round((total as number) * 100));
+    });
+  });
+
   describe('lineOrdersExceedingQuantityPoLine', () => {
     const splits = [
       { quantity: 1, extendedAmount: 251.5, worktagReference: [] },

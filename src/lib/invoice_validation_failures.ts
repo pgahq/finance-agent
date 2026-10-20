@@ -529,6 +529,27 @@ export function isPositiveQuantityRequiredForPoLineError(text: unknown): boolean
   return /Enter a quantity that is greater than zero for supplier invoice lines related to purchase order/i.test(asValidationText(text));
 }
 
+const INVALID_SHIP_TO_ADDRESS_PATTERN = /Provided Ship[- ]To Address is Invalid for this Supplier Invoice/i;
+
+export function isInvalidShipToAddressError(text: unknown): boolean {
+  return INVALID_SHIP_TO_ADDRESS_PATTERN.test(validationHaystack(text));
+}
+
+/**
+ * Positions (0-based) of the Invoice_Line_Replacement_Data rows a Ship To fault names. An empty
+ * list means the fault is a Ship To fault but no row could be read from it.
+ */
+export function invalidShipToAddressLinePositions(text: unknown): number[] {
+  const haystack = validationHaystack(text);
+  const positions = new Set<number>();
+  const faultPattern = new RegExp(`${INVALID_SHIP_TO_ADDRESS_PATTERN.source}[\\s\\S]*?Xpath:\\s*(\\S+)`, 'gi');
+  for (const match of haystack.matchAll(faultPattern)) {
+    const row = match[1].match(/Invoice_Line_Replacement_Data\[(\d+)\]/i);
+    if (row) positions.add(Number(row[1]) - 1);
+  }
+  return [...positions].sort((a, b) => a - b);
+}
+
 export function isSupplierNotAllowedForPurchaseOrderError(value: unknown): boolean {
   return /can['’]?t select this supplier to invoice this purchase order/i.test(validationHaystack(value));
 }
