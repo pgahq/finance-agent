@@ -338,7 +338,7 @@ describe('create_invoice', () => {
       await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
 
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([omitted]);
-      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry did not send it)');
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry kept the invoice\'s current due date)');
       expect(notes).not.toContain('Fallback values applied: omitted due date');
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',

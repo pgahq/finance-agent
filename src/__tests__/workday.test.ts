@@ -1898,9 +1898,12 @@ describe('Workday utilities', () => {
         ]));
       });
 
-      it('sends no override on the retry after Workday rejects the printed date over a draft override', async () => {
-        const fault = Object.assign(new Error("You can't override the invoice due date when you enter payment schedules."), {
-          detail: { Validation_Fault: { Validation_Error: { Message: "You can't override the invoice due date when you enter payment schedules." } } },
+      it.each([
+        ["You can't override the invoice due date when you enter payment schedules.", undefined, 'omitted due date and the current override (payment schedules)'],
+        ['Due Date must not be earlier than Invoice Date.', '2026-12-01', 'omitted due date'],
+      ])('on "%s" over a draft override, the retry sends %s', async (message, retryOverride, label) => {
+        const fault = Object.assign(new Error(message), {
+          detail: { Validation_Fault: { Validation_Error: { Message: message } } },
         });
         const mockClient = {
           setSecurity: jest.fn(),
@@ -1922,8 +1925,8 @@ describe('Workday utilities', () => {
 
         const sent = mockClient.Submit_Supplier_Invoice.mock.calls.map(([request]: any[]) => request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data);
         expect(sent[0].Due_Date_Override).toBe('2026-11-11');
-        expect(sent[1]).not.toHaveProperty('Due_Date_Override');
-        const omitted = { field: 'dueDate', label: 'omitted due date', dueToValidationError: true };
+        expect(sent[1].Due_Date_Override).toBe(retryOverride);
+        const omitted = { field: 'dueDate', label, dueToValidationError: true };
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([omitted]));
         expect(buildNotes).toHaveBeenLastCalledWith(expect.arrayContaining([omitted]), expect.any(Array));
       });
@@ -5958,6 +5961,26 @@ describe('Workday utilities', () => {
         expect(buildNotes).toHaveBeenCalledWith(expect.arrayContaining([notApplied]), []);
       });
 
+      it.each([
+        ['2027-04-08', true],
+        ['2027-04-09', false],
+        ['2062-11-11', false],
+      ])('sends a due date of %s only within 180 days of the invoice date (%s)', async (dueDate, sent) => {
+        const mockClient = mockSoapClient();
+        let capturedRequest: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          capturedRequest = request;
+          callback(null, createdResponse);
+        });
+
+        const result = await submitNewSupplierInvoiceForTest({ invoiceDate: '2026-10-10', dueDate });
+
+        expect(invoiceData(capturedRequest).Due_Date_Override).toBe(sent ? dueDate : undefined);
+        const notApplied = { field: 'dueDate', label: `due date not applied (${dueDate} is more than 180 days after invoice date 2026-10-10)` };
+        if (sent) expect(result.appliedFallbacks).not.toEqual(expect.arrayContaining([notApplied]));
+        else expect(result.appliedFallbacks).toEqual(expect.arrayContaining([notApplied]));
+      });
+
       it('compares against the first-of-month default when no invoice date was extracted', async () => {
         const mockClient = mockSoapClient();
         let capturedRequest: any;
@@ -6001,7 +6024,8 @@ describe('Workday utilities', () => {
         expect(invoiceData(capturedRequests[0]).Due_Date_Override).toBe('2026-11-11');
         expect(invoiceData(capturedRequests[1])).not.toHaveProperty('Due_Date_Override');
         expect(invoiceData(capturedRequests[1]).Invoice_Date).toBe('2026-10-10');
-        const omitted = { field: 'dueDate', label: 'omitted due date', dueToValidationError: true };
+        const label = message.startsWith('You can') ? 'omitted due date and the current override (payment schedules)' : 'omitted due date';
+        const omitted = { field: 'dueDate', label, dueToValidationError: true };
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([omitted]));
         expect(result.priorFailures).toEqual([expect.objectContaining({ attempt: 1, message: expect.stringContaining(message.slice(0, 20)) })]);
         expect(buildNotes).toHaveBeenLastCalledWith(expect.arrayContaining([omitted]), expect.any(Array));

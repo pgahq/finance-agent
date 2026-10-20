@@ -508,10 +508,27 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+const PAYMENT_SCHEDULES_OVERRIDE_MESSAGE = /\boverride\s+the\s+(?:invoice\s+)?due\s+date\b/i;
 const DUE_DATE_FAULT_MESSAGES = [
   /\bDue[\s_]+Date\s+must\s+not\s+be\s+earlier\s+than\s+(?:the\s+)?Invoice[\s_]+Date\b/i,
-  /\boverride\s+the\s+(?:invoice\s+)?due\s+date\b/i,
+  PAYMENT_SCHEDULES_OVERRIDE_MESSAGE,
 ];
+
+function validationErrorMessages(value: unknown): string[] {
+  if (!value || typeof value !== 'object') return [asValidationText(value)];
+  const soapFault = (value as { root?: { Envelope?: { Body?: { Fault?: unknown } } } }).root?.Envelope?.Body?.Fault;
+  return [
+    ...extractWorkdayValidationErrorDetailsList([value, soapFault])
+      .map((details) => [details.message, details.detailMessage].filter(Boolean).join(' ')),
+    asValidationText(value),
+  ];
+}
+
+// "You can't override the invoice due date when you enter payment schedules": Workday refuses any override,
+// including one already on the invoice.
+export function isPaymentSchedulesOverrideError(value: unknown): boolean {
+  return validationErrorMessages(value).some((message) => PAYMENT_SCHEDULES_OVERRIDE_MESSAGE.test(message));
+}
 const DUE_DATE_OVERRIDE_XPATH = /\/(?:\w+:)?Due_Date_Override(?:\[\d+\])?$/i;
 
 // "Due Date must not be earlier than Invoice Date", "You can't override the invoice due date when you

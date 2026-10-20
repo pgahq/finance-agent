@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isDueDateValidationError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isDueDateValidationError, isPaymentSchedulesOverrideError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
@@ -525,6 +525,8 @@ interface buildSubmitInvoiceDataOptions {
   /** Printed due date, sent as Due_Date_Override; it replaces the invoice's current override. */
   dueDate?: string;
   omitDueDateOverride?: boolean;
+  /** Set with omitDueDateOverride when Workday refuses any override because the invoice has payment schedules. */
+  clearDueDateOverride?: boolean;
   paymentTermsWID?: string;
   applyFundFallback?: boolean;
   applyCostCenterFallback?: boolean;
@@ -636,6 +638,13 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 }
 
 export const OMITTED_DUE_DATE_LABEL = 'omitted due date';
+export const CLEARED_DUE_DATE_OVERRIDE_LABEL = 'omitted due date and the current override (payment schedules)';
+/** A printed due date further out than this is more likely a misread year than real terms, so it is not sent. */
+export const MAX_DUE_DATE_DAYS_AFTER_INVOICE = 180;
+
+function daysBetween(fromIsoDate: string, toIsoDate: string): number {
+  return Math.round((Date.parse(`${toIsoDate}T00:00:00Z`) - Date.parse(`${fromIsoDate}T00:00:00Z`)) / 86_400_000);
+}
 
 function calendarDate(year: number, month: number, day: number): string | undefined {
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -664,21 +673,27 @@ function readXsdDate(value: unknown): string | undefined {
   return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
 }
 
-// Workday rejects a Due_Date_Override earlier than Invoice_Date, so such a date is never sent. With no usable
-// extracted date the current override is resent as-is, as before this field existed. The retry after Workday
-// rejects the extracted date sends no override at all.
+// Workday rejects a Due_Date_Override earlier than Invoice_Date, so such a date is never sent, and neither is one
+// more than MAX_DUE_DATE_DAYS_AFTER_INVOICE days later. Whenever the extracted date is not sent the current override
+// is resent as before this field existed, except on a payment-schedules retry, where Workday refuses any override.
 function resolveDueDateOverride(
-  options: Pick<buildSubmitInvoiceDataOptions, 'currentInvoice' | 'invoiceDate' | 'dueDate' | 'omitDueDateOverride'>
+  options: Pick<buildSubmitInvoiceDataOptions, 'currentInvoice' | 'invoiceDate' | 'dueDate' | 'omitDueDateOverride' | 'clearDueDateOverride'>
 ): { value?: unknown; sendsExtracted?: boolean; notAppliedLabel?: string } {
   // A current override in an unrecognized form is resent unchanged rather than dropped.
   const current = options.currentInvoice?.Due_Date_Override;
   const keepCurrent = current ? { value: readXsdDate(current) ?? current } : {};
   const dueDate = extractedDueDate(options.dueDate);
   if (!dueDate) return keepCurrent;
-  if (options.omitDueDateOverride) return {};
+  if (options.omitDueDateOverride) return options.clearDueDateOverride ? {} : keepCurrent;
   const invoiceDate = resolveInvoiceDate(options.currentInvoice, options.invoiceDate);
   if (dueDate < invoiceDate) {
     return { ...keepCurrent, notAppliedLabel: `due date not applied (${dueDate} is earlier than invoice date ${invoiceDate})` };
+  }
+  if (daysBetween(invoiceDate, dueDate) > MAX_DUE_DATE_DAYS_AFTER_INVOICE) {
+    return {
+      ...keepCurrent,
+      notAppliedLabel: `due date not applied (${dueDate} is more than ${MAX_DUE_DATE_DAYS_AFTER_INVOICE} days after invoice date ${invoiceDate})`,
+    };
   }
   return { value: dueDate, sendsExtracted: true };
 }
@@ -935,7 +950,7 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
   if (dueDateOverride.notAppliedLabel) {
     fallbacks.push({ field: 'dueDate', label: dueDateOverride.notAppliedLabel });
   } else if (options.omitDueDateOverride && submitsExtractedDueDate({ ...options, omitDueDateOverride: false })) {
-    fallbacks.push({ field: 'dueDate', label: OMITTED_DUE_DATE_LABEL });
+    fallbacks.push({ field: 'dueDate', label: options.clearDueDateOverride ? CLEARED_DUE_DATE_OVERRIDE_LABEL : OMITTED_DUE_DATE_LABEL });
   }
 
   if (process.env.FALLBACK_PAYMENT_TERMS_ID && paymentTermsWID === process.env.FALLBACK_PAYMENT_TERMS_ID) {
@@ -1334,7 +1349,8 @@ async function getValidationFallbackField(
 
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
-  field: FallbackField
+  field: FallbackField,
+  fault: { paymentSchedules?: boolean } = {}
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -1430,8 +1446,8 @@ function getFallbackRetryBuildOptions(
 
   if (field === 'dueDate' && submitsExtractedDueDate(options)) {
     return {
-      buildOptions: { ...options, omitDueDateOverride: true },
-      fallbackLabel: OMITTED_DUE_DATE_LABEL,
+      buildOptions: { ...options, omitDueDateOverride: true, ...(fault.paymentSchedules ? { clearDueDateOverride: true } : {}) },
+      fallbackLabel: fault.paymentSchedules ? CLEARED_DUE_DATE_OVERRIDE_LABEL : OMITTED_DUE_DATE_LABEL,
     };
   }
 
@@ -2291,7 +2307,9 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const fallbackRetry = validationFallbackField
-        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField)
+        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField, {
+          paymentSchedules: isPaymentSchedulesOverrideError(error) || isPaymentSchedulesOverrideError(validationError),
+        })
         : undefined;
       if (!fallbackRetry) {
         debug(

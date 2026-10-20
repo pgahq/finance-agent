@@ -193,6 +193,7 @@ Guidelines:
 - Only return the invoice date if it is clearly visible on the document.
 - Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or Default_OCR_Spend_Category dates.
 - If the document shows multiple dates and the invoice date is ambiguous, omit the field.
+- Read numeric dates as month/day/year. Read the invoice date and the due date (Part 3.5) in the same order.
 - Do not guess a date.
 
 ---
@@ -205,7 +206,7 @@ Guidelines:
 - Never compute a due date from payment terms such as "Net 30", and never add days to the invoice date.
 - Return an empty string for "Due on receipt", "Due upon receipt", or "Immediate" with no printed date, when no due date is printed, or when it is ambiguous.
 - Expand a two-digit year to 20YY. For example, an invoice that prints Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11".
-- Read numeric dates as month/day/year.
+- Read numeric dates as month/day/year, the same order as the invoice date in Part 3.
 
 ---
 

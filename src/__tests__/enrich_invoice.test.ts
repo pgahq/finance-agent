@@ -1523,7 +1523,7 @@ describe('enrich_invoice', () => {
       await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
       const notes = submitSupplierInvoiceUpdate.mock.calls[0][1].buildNotes([omitted]);
-      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry did not send it)');
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry kept the invoice\'s current due date)');
       expect(notes).not.toContain('Fallback values applied');
       const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
       expect(notification.extracted).toEqual(expect.objectContaining({ dueDate: '2026-11-11', dueDateNotApplied: true }));

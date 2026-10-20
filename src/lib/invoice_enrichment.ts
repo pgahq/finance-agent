@@ -461,8 +461,9 @@ export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string 
 }
 
 /**
- * A due-date fallback means the printed date was not sent as Due_Date_Override; the invoice keeps the due date
- * Workday already had (its current override, or the one derived from the payment terms).
+ * A due-date fallback means the printed date was not sent as Due_Date_Override. The invoice keeps the due date
+ * Workday already had (its current override, or the one derived from the payment terms), except after a
+ * payment-schedules fault, where no override is sent.
  */
 export function formatDueDateNotes(
   result: InvoiceEnrichmentResult,
@@ -474,11 +475,16 @@ export function formatDueDateNotes(
   }
   const fallback = appliedFallbacks.find((f) => f.field === 'dueDate');
   if (!fallback) return `\n\nDue Date (from document): ${dueDate}`;
-  const reason = fallback.label === 'omitted due date'
-    ? 'Workday rejected it, so the retry did not send it'
-    : fallback.label?.startsWith('due date not applied')
-      ? 'not sent because it is earlier than the invoice date'
-      : `not sent: ${fallback.label}`;
+  const label = fallback.label ?? '';
+  const reason = label === 'omitted due date'
+    ? 'Workday rejected it, so the retry kept the invoice\'s current due date'
+    : label.startsWith('omitted due date and the current override')
+      ? 'Workday allows no due date override on an invoice with payment schedules, so the retry sent none'
+      : label.startsWith('due date not applied') && label.includes('is earlier than')
+        ? 'not sent because it is earlier than the invoice date'
+        : label.startsWith('due date not applied') && label.includes('days after invoice date')
+          ? `not sent because it is ${label.match(/more than \d+ days/)?.[0] ?? 'too far'} after the invoice date; check the year`
+          : `not sent: ${label}`;
   return `\n\nDue Date (from document): ${dueDate} (${reason})`;
 }
 
