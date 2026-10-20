@@ -187,8 +187,18 @@ src/
 - Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`) through the Vercel AI Gateway reads the invoice PDFs (OCR and field extraction only)
 - GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway matches the supplier and company and codes the invoice from that extraction, with the lookup tools
 - Structured responses with confidence scoring
+- When the invoice prints an explicit due date, it is sent to Workday as `Due_Date_Override` (ISO `YYYY-MM-DD`, like `Invoice_Date`); see [Due date](#due-date)
 - Analyzes invoice content and metadata
 - Integrates with vector database for context
+
+### Due date
+
+- **Source:** the OCR pass returns `extractedDueDate` only for a date printed as the due date, payment due date, or pay-by date. It is never computed from payment terms such as "Net 30", and "Due on receipt" gives none. Code normalizes it to `YYYY-MM-DD` and reads a two-digit year as 20YY (`11/11/26` is `2026-11-11`); anything it cannot read as a calendar date is dropped. The matching model does not receive it.
+- **Submit:** create, resend updates, and enrich send it as `Due_Date_Override` next to `Payment_Terms_Reference`, replacing the invoice's current override.
+- **Earlier than the invoice date, or more than 180 days after it:** Workday rejects an earlier date ("Due Date must not be earlier than Invoice Date"), and a date that far out is more likely a misread year (`11/11/62`) than real terms, so the printed date is not sent and the invoice keeps its current override, if any. The comparison uses the submitted invoice date, including the first-of-month default. Both dates are read as month/day/year. When that reading is not plausible but exchanging month and day on both dates is (for example `05/10/2026` due `04/11/2026`), the invoice probably prints day/month/year dates; the Workday note says so and shows that reading, and the printed date is still not sent. A pair that is plausible either way cannot be told apart and gets no note; AP checks the date on the draft.
+- **Retry:** when Workday rejects the printed date ("Due Date must not be earlier than Invoice Date", "You can't override the invoice due date when you enter payment schedules", or a fault on `Due_Date_Override`), the submit retries once without the printed date, labeled `omitted due date`, and resends the invoice's current override, if any. Only the payment-schedules fault clears that override too, because Workday allows no override on such an invoice (`omitted due date and the current override (payment schedules)`). A later fault goes to the other repairs.
+- **No printed due date:** the invoice's current override, if any, is sent unchanged; otherwise Workday derives the due date from the invoice date and payment terms, as before.
+- The Workday note records `Due Date (from document)` and why it was not sent; Slack shows a `Due Date` line. AP changes to the override count as agent touches (`dueDate` scored field).
 
 ## 🧠 AI-Powered Features
 
@@ -455,6 +465,7 @@ flowchart TD
 Retry guardrails:
 
 - A duplicate supplier invoice number is not retried; the submit fails with the original Workday validation message so the team can investigate the conflict.
+- A due date fault on the printed `Due_Date_Override` retries once without it (`omitted due date`) and never reaches the classifier; a later fault on that retry goes to the normal repairs.
 - Only Workday validation faults are eligible for repair; non-validation errors are rethrown immediately.
 - The repair agent must inspect the latest failed request before deciding whether to retry.
 - Repairs are intentionally narrow: invoice date, memo, appended notes, or switching to the configured default supplier when available. The default supplier is never used when a submitted line links to a PO line, because Workday only lets the PO's own supplier invoice it.

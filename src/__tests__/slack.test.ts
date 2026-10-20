@@ -252,6 +252,31 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('conversationUrl');
   });
 
+  it('shows the printed due date next to the invoice date and payment terms on create', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-470100',
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-11-11', purchaseOrderNumber: 'PO-413821', paymentTerms: 'Net 30' },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Invoice Date* → 2026-10-10\n• *Due Date* → 2026-11-11');
+    expect(texts).toContain('*Payment Terms* → Net 30');
+  });
+
+  it('marks a printed due date that was not sent to Workday and lists why under fallbacks', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-470101',
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-11-11', dueDateNotApplied: true },
+      appliedFallbacks: ['omitted due date'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Due Date* → not applied (invoice shows 2026-11-11)');
+    expect(texts).toContain('omitted due date');
+  });
+
   it('shows a PO taken from an Intercom note with its line and the invoice PO it replaced', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -834,6 +859,52 @@ describe('notifyEnrichmentResult', () => {
     expect(texts).not.toContain('GOLF GEAR LTD (was:');
     expect(texts).toContain('Confirm the PO number.');
     expect(texts).toContain('*PO #* → PO-414373 (from email; invoice shows PO-411406)');
+  });
+
+  it('shows the printed due date on enrich success', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-470102',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'IBS', isDefault: false },
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-11-11' },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('*Invoice Date* → 2026-10-10\n• *Due Date* → 2026-11-11');
+  });
+
+  it('lists the due date under Analysis, not Changes, when enrich only annotates', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-470104',
+      canModify: false,
+      supplier: { status: 'not_found', isDefault: false },
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-11-11' },
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('_Invoice modification disabled — notes only_');
+    expect(texts).toContain('*Analysis*');
+    expect(texts).toContain('*Due Date* → 2026-11-11');
+    expect(texts).not.toContain('*Changes*');
+  });
+
+  it('marks a due date earlier than the invoice date as not applied on enrich', async () => {
+    await notifyEnrichmentResult({
+      processingTime: 1500,
+      invoiceNumber: 'SUPIN-470103',
+      canModify: true,
+      supplier: { status: 'matching', resolvedName: 'IBS', isDefault: false },
+      extracted: { invoiceDate: '2026-10-10', dueDate: '2026-10-01', dueDateNotApplied: true },
+      appliedFallbackLabels: ['due date not applied (2026-10-01 is earlier than invoice date 2026-10-10)'],
+      fallbacks: { defaultSupplier: false },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Due Date* → not applied (invoice shows 2026-10-01)');
+    expect(texts).toContain('due date not applied (2026-10-01 is earlier than invoice date 2026-10-10)');
   });
 
   it('shows corrected tax and cleared freight on enrich success', async () => {

@@ -108,6 +108,8 @@ export interface WorkdayReference {
 export interface WorkdayInvoice {
   Invoice_Number?: string;
   Invoice_Date?: string;
+  /** Overrides the due date Workday derives from Invoice_Date and the payment terms. */
+  Due_Date_Override?: string;
   controlTotalAmount?: string;
   company1?: WorkdayReference;
   OCRSupplierInvoice?: WorkdayReference;

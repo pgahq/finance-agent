@@ -90,6 +90,7 @@ export function mergeInvoiceEnrichment(
     return {
       ...matching,
       extractedInvoiceDate: null,
+      extractedDueDate: null,
       extractedAmountDue: null,
       extractedSuppliersInvoiceNumber: null,
       extractedFreightAmount: null,
@@ -126,6 +127,7 @@ export function mergeInvoiceEnrichment(
     companyVerification: { ...matching.companyVerification, extractedInformation: ocr.printedBillTo },
     emailSummary: matching.emailSummary,
     extractedInvoiceDate: ocr.extractedInvoiceDate,
+    extractedDueDate: ocr.extractedDueDate,
     extractedAmountDue: ocr.extractedAmountDue,
     extractedSuppliersInvoiceNumber: ocr.extractedSuppliersInvoiceNumber,
     extractedFreightAmount: ocr.extractedFreightAmount,
