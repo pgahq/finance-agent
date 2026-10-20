@@ -27,12 +27,14 @@ export interface ScoredFields {
   company?: string;
   suppliersInvoiceNumber?: string;
   invoiceDate?: string;
+  /** Due_Date_Override; absent when Workday derives the due date from the payment terms. */
+  dueDate?: string;
   controlTotal?: number;
   memo?: string;
   lines: ScoredLine[];
 }
 
-export const HEADER_FIELDS = ['supplier', 'company', 'suppliersInvoiceNumber', 'invoiceDate', 'controlTotal', 'memo'] as const;
+export const HEADER_FIELDS = ['supplier', 'company', 'suppliersInvoiceNumber', 'invoiceDate', 'dueDate', 'controlTotal', 'memo'] as const;
 export const LINE_FIELDS = [
   'amount',
   'purchaseOrderLine',
@@ -84,6 +86,22 @@ function text(value: unknown): string | undefined {
   if (raw == null) return undefined;
   const trimmed = String(raw).trim();
   return trimmed ? trimmed : undefined;
+}
+
+/**
+ * An xsd:date read back from Workday as YYYY-MM-DD: `2026-11-11` or `2026-11-11-08:00`, or the Date strong-soap
+ * builds from it at UTC midnight (it drops the offset), read with UTC components. Anything else is absent.
+ */
+function isoDate(value: unknown): string | undefined {
+  const raw = scalar(Array.isArray(value) ? value[0] : value);
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? undefined : isoDate(`${raw.getUTCFullYear()}-${String(raw.getUTCMonth() + 1).padStart(2, '0')}-${String(raw.getUTCDate()).padStart(2, '0')}`);
+  }
+  const match = text(raw)?.match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))?$/);
+  if (!match) return undefined;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? `${match[1]}-${match[2]}-${match[3]}` : undefined;
 }
 
 function amount(value: unknown): number | undefined {
@@ -188,6 +206,7 @@ function withDefined<K extends string, V>(key: K, value: V | undefined): Partial
 export function extractScoredFields(invoice: unknown): ScoredFields {
   const data = (invoice && typeof invoice === 'object' ? invoice : {}) as Record<string, unknown>;
   const invoiceDate = text(data.Invoice_Date)?.slice(0, 10);
+  const dueDate = isoDate(data.Due_Date_Override);
   const lines = asArray(data.Invoice_Line_Replacement_Data)
     .filter((line): line is Record<string, unknown> => Boolean(line) && typeof line === 'object')
     .map(extractLine)
@@ -197,6 +216,7 @@ export function extractScoredFields(invoice: unknown): ScoredFields {
     ...withDefined('company', referenceKey(data.Company_Reference)),
     ...withDefined('suppliersInvoiceNumber', text(data.Suppliers_Invoice_Number)),
     ...withDefined('invoiceDate', invoiceDate),
+    ...withDefined('dueDate', dueDate),
     ...withDefined('controlTotal', amount(data.Control_Amount_Total)),
     ...withDefined('memo', text(data.Memo)),
     lines,

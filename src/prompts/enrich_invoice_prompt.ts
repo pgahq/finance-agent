@@ -51,7 +51,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024", "Legal consulting services", "Monthly software subscription"). Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.')
+      memo: z.string().nullable().describe('A few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "monthly software subscription", "legal consulting"). No ending period, and do not name PGA, the venue, or the location the service is for. Leave it empty when it would only repeat the supplier name or an identifier. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
@@ -99,6 +99,8 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedInvoiceDate: z.string().nullable().describe('The invoice date as shown on the document, normalized to YYYY-MM-DD. Only include this if the document clearly provides an invoice date you can read confidently. Null if no invoice date is visible or the date is ambiguous.'),
 
+  extractedDueDate: z.string().nullable().describe('The due date explicitly printed on the invoice (labeled "Due Date", "Payment Due", "Pay By", or similar), normalized to YYYY-MM-DD. Expand a two-digit year to 20YY (11/11/26 is 2026-11-11). Never compute it from payment terms such as "Net 30". Null for "Due on receipt", when no due date is printed, or when it is ambiguous.'),
+
   extractedAmountDue: z.string().nullable().describe('The amount due or invoice total as read from the invoice attachment. Null if no amount could be found. The amount may be found by either a total amount, or a sum of the individual line items if a total is not explicitly stated. Should be returned as it appears on the invoice (e.g. "$8,573.40").'),
 
   extractedSuppliersInvoiceNumber: z.string().nullable().describe('The invoice number as it appears on the supplier\'s invoice document. Prefer letters, digits, hyphen, period, and slash. Do not use pipe |, greater-than, or less-than characters. Null if not visible or unclear.'),
@@ -120,7 +122,9 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
 
-  extractedJobNumber: z.string().nullable().describe('Job or order number from the invoice. Labels include "Job #", "Job Number", "Job No", "Order #", and "Order Number". Order # is the same as Job #. Null if not visible. Do not use an unlabeled Project / PRJ value as the job number.'),
+  extractedSupplierReference: z.string().nullable().describe('The single most useful supplier-side reference for the memo: an order number, confirmation number, or job number ("Order #", "Order Number", "Confirmation #", "Conf #", "Job #", "Job No"). On a legal invoice use the file, case, or matter number instead. If several are printed, choose the one that best identifies the work. Null if none is visible. Never use PGA\'s purchase order number, the supplier invoice number, or the account/customer number. Do not use an unlabeled Project / PRJ value.'),
+
+  extractedSupplierReferenceKind: z.string().nullable().describe('What extractedSupplierReference is: one of "order", "confirmation", "job", "file", or "case" (use "file" for a matter number). Null when there is no reference.'),
 
   extractedCustomerId: z.string().nullable().describe('Customer ID from the invoice. Labels include "Customer ID", "Bill-To Customer ID", "Customer #", and "Cust ID". Null if not visible. Distinct from account number: if the same value was already captured as extractedAccountNumber, leave this null.'),
 

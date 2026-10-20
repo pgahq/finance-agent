@@ -1,7 +1,8 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isIntercompanyValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isIntercompanyValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isDueDateValidationError, isPaymentSchedulesOverrideError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
+import { daysBetween, MAX_DUE_DATE_DAYS_AFTER_INVOICE } from './due_date.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
 import {
@@ -522,6 +523,11 @@ interface buildSubmitInvoiceDataOptions {
   memo?: string;
   invoiceDate?: string;
   invoiceReceivedDate?: string;
+  /** Printed due date, sent as Due_Date_Override; it replaces the invoice's current override. */
+  dueDate?: string;
+  omitDueDateOverride?: boolean;
+  /** Set with omitDueDateOverride when Workday refuses any override because the invoice has payment schedules. */
+  clearDueDateOverride?: boolean;
   paymentTermsWID?: string;
   applyFundFallback?: boolean;
   applyCostCenterFallback?: boolean;
@@ -563,8 +569,8 @@ interface buildSubmitInvoiceDataOptions {
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'dueDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'dueDate' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export function intercompanyOmittedLabel(lines: FinalInvoiceLine[] | undefined): string {
   const moved = (lines ?? [])
@@ -643,6 +649,65 @@ function normalizeInvoiceDate(invoiceDate?: string | Date | unknown): string | u
 
 function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string {
   return normalizeInvoiceDate(invoiceDate) ?? getFirstDayOfCurrentMonth();
+}
+
+export const OMITTED_DUE_DATE_LABEL = 'omitted due date';
+export const CLEARED_DUE_DATE_OVERRIDE_LABEL = 'omitted due date and the current override (payment schedules)';
+
+function calendarDate(year: number, month: number, day: number): string | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function extractedDueDate(dueDate?: string): string | undefined {
+  const match = dueDate?.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
+}
+
+// strong-soap parses an xsd:date into a Date at UTC midnight (it drops the offset) and serializes it back with
+// toISOString, so UTC components are the calendar date. A value in no recognized form is undefined.
+function readXsdDate(value: unknown): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const scalarValue = raw && typeof raw === 'object' && !(raw instanceof Date) && '$value' in raw ? (raw as { $value: unknown }).$value : raw;
+  if (scalarValue instanceof Date) {
+    return Number.isNaN(scalarValue.getTime())
+      ? undefined
+      : calendarDate(scalarValue.getUTCFullYear(), scalarValue.getUTCMonth() + 1, scalarValue.getUTCDate());
+  }
+  const match = typeof scalarValue === 'string'
+    ? scalarValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))?$/)
+    : null;
+  return match ? calendarDate(Number(match[1]), Number(match[2]), Number(match[3])) : undefined;
+}
+
+// Workday rejects a Due_Date_Override earlier than Invoice_Date, so such a date is never sent, and neither is one
+// more than MAX_DUE_DATE_DAYS_AFTER_INVOICE days later. Whenever the extracted date is not sent the current override
+// is resent as before this field existed, except on a payment-schedules retry, where Workday refuses any override.
+function resolveDueDateOverride(
+  options: Pick<buildSubmitInvoiceDataOptions, 'currentInvoice' | 'invoiceDate' | 'dueDate' | 'omitDueDateOverride' | 'clearDueDateOverride'>
+): { value?: unknown; sendsExtracted?: boolean; notAppliedLabel?: string } {
+  // A current override in an unrecognized form is resent unchanged rather than dropped.
+  const current = options.currentInvoice?.Due_Date_Override;
+  const keepCurrent = current ? { value: readXsdDate(current) ?? current } : {};
+  const dueDate = extractedDueDate(options.dueDate);
+  if (!dueDate) return keepCurrent;
+  if (options.omitDueDateOverride) return options.clearDueDateOverride ? {} : keepCurrent;
+  const invoiceDate = resolveInvoiceDate(options.currentInvoice, options.invoiceDate);
+  if (dueDate < invoiceDate) {
+    return { ...keepCurrent, notAppliedLabel: `due date not applied (${dueDate} is earlier than invoice date ${invoiceDate})` };
+  }
+  if (daysBetween(invoiceDate, dueDate) > MAX_DUE_DATE_DAYS_AFTER_INVOICE) {
+    return {
+      ...keepCurrent,
+      notAppliedLabel: `due date not applied (${dueDate} is more than ${MAX_DUE_DATE_DAYS_AFTER_INVOICE} days after invoice date ${invoiceDate})`,
+    };
+  }
+  return { value: dueDate, sendsExtracted: true };
+}
+
+function submitsExtractedDueDate(options: buildSubmitInvoiceDataOptions): boolean {
+  return Boolean(resolveDueDateOverride(options).sendsExtracted);
 }
 
 function createReference(type: string, value: string): { ID: Array<{ $attributes: { type: string }; $value: string }> } {
@@ -891,6 +956,13 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
 
   if (!normalizeInvoiceDate(invoiceDate)) {
     fallbacks.push({ field: 'invoiceDate', label: 'default invoice date' });
+  }
+
+  const dueDateOverride = resolveDueDateOverride(options);
+  if (dueDateOverride.notAppliedLabel) {
+    fallbacks.push({ field: 'dueDate', label: dueDateOverride.notAppliedLabel });
+  } else if (options.omitDueDateOverride && submitsExtractedDueDate({ ...options, omitDueDateOverride: false })) {
+    fallbacks.push({ field: 'dueDate', label: options.clearDueDateOverride ? CLEARED_DUE_DATE_OVERRIDE_LABEL : OMITTED_DUE_DATE_LABEL });
   }
 
   if (process.env.FALLBACK_PAYMENT_TERMS_ID && paymentTermsWID === process.env.FALLBACK_PAYMENT_TERMS_ID) {
@@ -1180,6 +1252,12 @@ async function getValidationFallbackField(
     return 'assignee';
   }
 
+  // Only the agent's extracted date is removed; a later fault falls through to the other repairs.
+  if (submitsExtractedDueDate(options) && (isDueDateValidationError(error) || isDueDateValidationError(validationText))) {
+    debug('Validation rejects the extracted due date; retrying without it as Due_Date_Override');
+    return 'dueDate';
+  }
+
   if (isClosedPurchaseOrderLineError(validationText) && submittedLinesCarryPurchaseOrderLineReference(options)) {
     debug('Validation references a Closed or Pending Close PO line; retrying without Purchase_Order_Line_Reference');
     return 'purchaseOrderLine';
@@ -1292,7 +1370,8 @@ async function getValidationFallbackField(
 
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
-  field: FallbackField
+  field: FallbackField,
+  fault: { paymentSchedules?: boolean } = {}
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -1384,6 +1463,13 @@ function getFallbackRetryBuildOptions(
 
   if (field === 'invoiceLineAmounts') {
     return getAmountOnlyLineRetryBuildOptions(options);
+  }
+
+  if (field === 'dueDate' && submitsExtractedDueDate(options)) {
+    return {
+      buildOptions: { ...options, omitDueDateOverride: true, ...(fault.paymentSchedules ? { clearDueDateOverride: true } : {}) },
+      fallbackLabel: fault.paymentSchedules ? CLEARED_DUE_DATE_OVERRIDE_LABEL : OMITTED_DUE_DATE_LABEL,
+    };
   }
 
   if (field === 'positiveQuantityPurchaseOrderLine') {
@@ -1902,7 +1988,10 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     ...((memo || currentInvoice.Memo) && { Memo: memo || currentInvoice.Memo }),
 
     ...(paymentTermsRef && { Payment_Terms_Reference: paymentTermsRef }),
-    ...(currentInvoice.Due_Date_Override && { Due_Date_Override: currentInvoice.Due_Date_Override }),
+    ...(() => {
+      const { value } = resolveDueDateOverride(options);
+      return value ? { Due_Date_Override: value } : {};
+    })(),
 
     ...((assigneeWID && !omitAssigneeReference) || workQueueTags || notes) && {
       Work_Queue_Information_Data: {
@@ -2249,7 +2338,9 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const fallbackRetry = validationFallbackField
-        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField)
+        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField, {
+          paymentSchedules: isPaymentSchedulesOverrideError(error) || isPaymentSchedulesOverrideError(validationError),
+        })
         : undefined;
       if (!fallbackRetry) {
         debug(
@@ -2641,6 +2732,7 @@ export interface SubmitSupplierInvoiceUpdateParams {
   buildNotes: (appliedFallbacks: AppliedFallback[], priorFailures: SupplierInvoiceSubmitPriorFailure[]) => string;
   memo?: string;
   invoiceDate?: string;
+  dueDate?: string;
   companyWID?: string;
   companyReferenceType?: string;
   extractedAmountDue?: string;
@@ -2668,6 +2760,7 @@ export async function submitSupplierInvoiceUpdate(
     buildNotes,
     memo,
     invoiceDate,
+    dueDate,
     companyWID,
     companyReferenceType,
     extractedAmountDue,
@@ -2737,6 +2830,7 @@ export async function submitSupplierInvoiceUpdate(
       workQueueTags,
       memo,
       invoiceDate,
+      dueDate,
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,
@@ -2783,6 +2877,7 @@ export interface SubmitNewSupplierInvoiceParams {
   memo?: string;
   invoiceDate?: string;
   invoiceReceivedDate?: string;
+  dueDate?: string;
   extractedAmountDue?: string;
   suppliersInvoiceNumber?: string;
   extractedFreightAmount?: string;
@@ -2814,6 +2909,7 @@ export async function submitNewSupplierInvoice(
     memo,
     invoiceDate,
     invoiceReceivedDate,
+    dueDate,
     extractedAmountDue,
     suppliersInvoiceNumber,
     extractedFreightAmount,
@@ -2887,6 +2983,7 @@ export async function submitNewSupplierInvoice(
       memo,
       invoiceDate,
       invoiceReceivedDate,
+      dueDate,
       extractedAmountDue,
       suppliersInvoiceNumber,
       extractedFreightAmount,

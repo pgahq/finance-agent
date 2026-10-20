@@ -1,6 +1,7 @@
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
+import { normalizePrintedDate } from './prompts/invoice_ocr_prompt.js';
 import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import {
   enrichInvoiceFromAttachments,
@@ -14,6 +15,7 @@ import {
   describeEmailBudgetSplit,
   formatFreightAmountNotes,
   formatInvoiceDateNotes,
+  formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
@@ -948,6 +950,7 @@ async function processInvoiceCluster(
     }
 
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
+    const extractedDueDate = normalizePrintedDate(result.extractedDueDate) ?? undefined;
 
     const targetSupplierWID = result.supplier.resolvedSupplier?.workdayId ?? DEFAULT_SUPPLIER_WID;
     const recommendedCompanyWID = result.companyVerification?.status === 'different'
@@ -1306,7 +1309,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1318,14 +1321,16 @@ async function processInvoiceCluster(
         ? { chargeCheck: lines, ...(lines.some(isAmountMismatchMessage) ? { amountMismatch: true } : {}) }
         : {};
     };
+    const isDueDateFallback = (f: AppliedFallback) => f.field === 'dueDate';
+    const isListedInNotes = (f: AppliedFallback) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f) && !isDueDateFallback(f);
     const buildNotes = (appliedFallbacks: AppliedFallback[]) => {
       const assigneeOmitted = appliedFallbacks.some((f) => f.label === 'omitted assignee');
-      const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
+      const listedFallbacks = appliedFallbacks.filter(isListedInNotes);
       const amountCheck = amountCheckLines(appliedFallbacks);
       // An unexplained gap goes first so AP sees it before the supporting detail.
       const mismatchFirst = amountCheck.some(isAmountMismatchMessage);
       return (mismatchFirst ? formatAmountCheckNotes(amountCheck).trimStart() + '\n\n' : '')
-        + baseNotes
+        + baseNotes(appliedFallbacks)
         + (mismatchFirst ? '' : formatAmountCheckNotes(amountCheck))
         + formatWorkQueueAssigneeNotes(appliedFallbacks, {
           assigneeEmail,
@@ -1394,6 +1399,7 @@ async function processInvoiceCluster(
       company: companyNotification,
       extracted: {
         invoiceDate: extractedInvoiceDate,
+        dueDate: extractedDueDate,
         amountDue: extractedAmountDue,
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
@@ -1562,8 +1568,8 @@ async function processInvoiceCluster(
           ? loaded
           : loaded.filter((file) => file.receivedAt != null && file.receivedAt > watermark);
         const buildUpdateNotes = (appliedFallbacks: AppliedFallback[]) => {
-          const listedFallbacks = appliedFallbacks.filter((f) => !isPurchaseOrderLineFallback(f) && !isAmountCheck(f));
-          return `${baseNotes}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
+          const listedFallbacks = appliedFallbacks.filter(isListedInNotes);
+          return `${baseNotes(appliedFallbacks)}${formatAmountCheckNotes(amountCheckLines(appliedFallbacks))}\n\nResubmission: conversation re-triggered; updated with the latest documents and messages.` +
             (newFiles.length ? ` New attachments: ${newFiles.map((file) => file.fileName).join(', ')}.` : ' No new attachments.') +
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
@@ -1574,6 +1580,7 @@ async function processInvoiceCluster(
           buildNotes: buildUpdateNotes,
           memo,
           invoiceDate: extractedInvoiceDate,
+          dueDate: extractedDueDate,
           companyWID,
           companyReferenceType,
           extractedAmountDue,
@@ -1622,6 +1629,7 @@ async function processInvoiceCluster(
             ...sharedSlackDetails.extracted,
             suppliersInvoiceNumber: updateOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
             ...(updateOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
+            ...(updateOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
           },
           updated: true,
           newAttachments: newFiles.map((file) => file.fileName),
@@ -1650,6 +1658,7 @@ async function processInvoiceCluster(
         (replacedInvoiceLabel ? `\n\nReplaces canceled invoice ${replacedInvoiceLabel} from the same conversation.` : ''),
       memo,
       invoiceDate: extractedInvoiceDate,
+      dueDate: extractedDueDate,
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
@@ -1710,6 +1719,7 @@ async function processInvoiceCluster(
         ...sharedSlackDetails.extracted,
         suppliersInvoiceNumber: createOutcome.suppliersInvoiceNumber ?? extractedSuppliersInvoiceNumber,
         ...(createOutcome.appliedFallbacks.some(isPurchaseOrderLineFallback) ? { purchaseOrderNotLinked: true } : {}),
+        ...(createOutcome.appliedFallbacks.some(isDueDateFallback) ? { dueDateNotApplied: true } : {}),
       },
       invoiceWID: createOutcome.invoiceWID,
       invoiceNumber: createOutcome.invoiceNumber,

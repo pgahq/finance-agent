@@ -1441,6 +1441,96 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
   });
 
+  describe('printed due date', () => {
+    // IBS invoice 1026465: Invoice Date 10/10/26, Due Date 11/11/26, Net 30.
+    const ibsEnrichment = {
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'IBS', memo: 'Services' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceDate: '2026-10-10',
+      extractedDueDate: '2026-11-11',
+      extractedSuppliersInvoiceNumber: '1026465',
+      extractedPaymentTerms: { name: 'Net 30', workdayId: 'NET_30' },
+    };
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'IBS', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    it('sends the due date on update and shows it in the note and Slack', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      enrichmentResponse.mockResolvedValueOnce(ibsEnrichment);
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({ invoiceDate: '2026-10-10', dueDate: '2026-11-11', paymentTermsId: 'NET_30' }));
+      expect(params.buildNotes([])).toContain('Invoice Date (from document): 2026-10-10\n\nDue Date (from document): 2026-11-11');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted).toEqual(expect.objectContaining({ invoiceDate: '2026-10-10', dueDate: '2026-11-11' }));
+      expect(notification.extracted).not.toHaveProperty('dueDateNotApplied');
+      expect(notification).not.toHaveProperty('appliedFallbackLabels');
+    });
+
+    it('only notes the due date when it annotates the invoice without a supplier to submit', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate, annotateSupplierInvoice } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        supplier: { ...ibsEnrichment.supplier, status: 'not_found', resolvedSupplier: null },
+      });
+
+      await expect(processor({
+        data: [{ ...mockEvent.data[0], supplier: undefined }],
+      } as any)).resolves.not.toThrow();
+
+      expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).toContain('Due Date (from document): 2026-11-11');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.canModify).toBe(false);
+      expect(notification.extracted.dueDate).toBe('2026-11-11');
+    });
+
+    it('reports a due date removed on retry in the note and Slack', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      enrichmentResponse.mockResolvedValueOnce(ibsEnrichment);
+      const omitted = { field: 'dueDate', label: 'omitted due date', dueToValidationError: true };
+      submitSupplierInvoiceUpdate.mockResolvedValueOnce({ success: true, appliedFallbacks: [omitted] });
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const notes = submitSupplierInvoiceUpdate.mock.calls[0][1].buildNotes([omitted]);
+      expect(notes).toContain('Due Date (from document): 2026-11-11 (Workday rejected it, so the retry kept the invoice\'s current due date)');
+      expect(notes).not.toContain('Fallback values applied');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted).toEqual(expect.objectContaining({ dueDate: '2026-11-11', dueDateNotApplied: true }));
+      expect(notification.appliedFallbackLabels).toEqual(['omitted due date']);
+    });
+  });
+
   describe('mislabeled freight and tax', () => {
     const enrichmentWith = (charges: Record<string, unknown>) => ({
       supplier: {
@@ -1623,7 +1713,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(params.finalLines[0].memo).toBe(
-      'PO-413898. Service Period 9/7/26 - 9/13/26. Project management services for Ryan Poland'
+      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
   });
 
@@ -2171,7 +2261,8 @@ describe('enrich_invoice', () => {
       },
       extractedSuppliersInvoiceNumber: 'INV|001>>>',
       extractedAccountNumber: '1033562',
-      extractedJobNumber: '5914196',
+      extractedSupplierReference: '5914196',
+      extractedSupplierReferenceKind: 'order',
       extractedCustomerId: 'CU0122145',
       extractedServicePeriod: '2026 - September',
       extractedInvoiceLines: [
@@ -2194,13 +2285,11 @@ describe('enrich_invoice', () => {
     } as any)).resolves.not.toThrow();
 
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(params.memo).toBe(
-      'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Test invoice'
-    );
+    expect(params.memo).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 test invoice');
     expect(params.suppliersInvoiceNumber).toBe('INV-001');
     expect(params.finalLines).toEqual([
       expect.objectContaining({
-        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Widget purchase',
+        memo: 'Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 widget purchase',
       }),
     ]);
     expect(params.buildNotes([])).toContain('Account Number (from document): 1033562');
@@ -2364,7 +2453,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.memo).toBeUndefined();
     expect(params.finalLines).toEqual([
-      expect.objectContaining({ memo: 'Widget purchase' }),
+      expect.objectContaining({ memo: 'widget purchase' }),
     ]);
   });
 });

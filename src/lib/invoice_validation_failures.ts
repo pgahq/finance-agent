@@ -513,6 +513,46 @@ export function isIntercompanyValidationError(text: unknown): boolean {
   return /not configured to allow intercompany transactions/i.test(validationText) || /Intercompany_Affiliate_Reference/i.test(validationText);
 }
 
+const PAYMENT_SCHEDULES_OVERRIDE_MESSAGE = /\boverride\s+the\s+(?:invoice\s+)?due\s+date\b/i;
+const DUE_DATE_FAULT_MESSAGES = [
+  /\bDue[\s_]+Date\s+must\s+not\s+be\s+earlier\s+than\s+(?:the\s+)?Invoice[\s_]+Date\b/i,
+  PAYMENT_SCHEDULES_OVERRIDE_MESSAGE,
+];
+
+function validationErrorMessages(value: unknown): string[] {
+  if (!value || typeof value !== 'object') return [asValidationText(value)];
+  const soapFault = (value as { root?: { Envelope?: { Body?: { Fault?: unknown } } } }).root?.Envelope?.Body?.Fault;
+  return [
+    ...extractWorkdayValidationErrorDetailsList([value, soapFault])
+      .map((details) => [details.message, details.detailMessage].filter(Boolean).join(' ')),
+    asValidationText(value),
+  ];
+}
+
+// "You can't override the invoice due date when you enter payment schedules": Workday refuses any override,
+// including one already on the invoice.
+export function isPaymentSchedulesOverrideError(value: unknown): boolean {
+  return validationErrorMessages(value).some((message) => PAYMENT_SCHEDULES_OVERRIDE_MESSAGE.test(message));
+}
+const DUE_DATE_OVERRIDE_XPATH = /\/(?:\w+:)?Due_Date_Override(?:\[\d+\])?$/i;
+
+// "Due Date must not be earlier than Invoice Date", "You can't override the invoice due date when you
+// enter payment schedules.", or a fault whose XPath ends at Due_Date_Override. Each validation error is read
+// on its own, including the parsed envelope strong-soap puts on `root`.
+export function isDueDateValidationError(value: unknown): boolean {
+  const matchesMessage = (text: string) => DUE_DATE_FAULT_MESSAGES.some((pattern) => pattern.test(text));
+  if (value && typeof value === 'object') {
+    const soapFault = (value as { root?: { Envelope?: { Body?: { Fault?: unknown } } } }).root?.Envelope?.Body?.Fault;
+    const faultFound = extractWorkdayValidationErrorDetailsList([value, soapFault]).some((details) =>
+      matchesMessage([details.message, details.detailMessage].filter(Boolean).join(' '))
+      || DUE_DATE_OVERRIDE_XPATH.test(details.xpath?.trim() ?? ''));
+    if (faultFound) return true;
+  }
+  const validationText = asValidationText(value);
+  return matchesMessage(validationText)
+    || /\bXpath:\s*\S*\/(?:\w+:)?Due_Date_Override(?:\[\d+\])?(?=\s|$)/i.test(validationText);
+}
+
 export function isClosedPurchaseOrderLineError(text: unknown): boolean {
   // Other Purchase_Order_Line_Reference faults (duplicate, canceled, wrong PO) must not unlink lines.
   return /PO that is Closed or Pending Close/i.test(asValidationText(text));
