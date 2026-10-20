@@ -56,6 +56,33 @@ export const CREATE_AGENT_INVOICE_TOUCH_DAILY_TABLE = `
 `;
 
 /**
+ * Agent coverage, one row per Central day an invoice was created in Workday (see `invoice_coverage.ts`).
+ * `invoices` is the share's denominator: PGA Corp invoices that were not canceled.
+ */
+export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
+  CREATE TABLE IF NOT EXISTS agent_invoice_coverage_daily (
+    created_day DATE PRIMARY KEY,
+    invoices INTEGER NOT NULL,
+    agent_created INTEGER NOT NULL,
+    agent_enriched INTEGER NOT NULL,
+    agent_notes_only INTEGER NOT NULL,
+    uncovered_ocr INTEGER NOT NULL,
+    uncovered_manual INTEGER NOT NULL,
+    uncovered_integration INTEGER NOT NULL,
+    canceled INTEGER NOT NULL,
+    coverage_share NUMERIC(5, 4),
+    coverage_share_without_integrations NUMERIC(5, 4),
+    computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+export async function ensureCoverageReporting(
+  query: (sql: string, params?: unknown[]) => Promise<unknown>
+): Promise<void> {
+  await query(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE);
+}
+
+/**
  * Creates the daily table and, only when it is missing, the view, under a lock so concurrent cold starts do not
  * collide. An existing view is left alone (no per-cold-start ACCESS EXCLUSIVE lock); Postgres can only append
  * columns with CREATE OR REPLACE, so changing the view means dropping it in a migration first.

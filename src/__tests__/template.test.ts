@@ -84,7 +84,7 @@ describe('SAM template', () => {
     it('runs the scoring query daily and dispatches to its processor', () => {
       const query = resourceBlock('ScoreInvoicesFunction');
       expect(query).toContain('Handler: dist/score_invoices.handler');
-      expect(query).toMatch(/Schedule:\s*cron\(0 14 \* \* \? \*\)/);
+      expect(query).toMatch(/Schedule:\s*cron\(0 1 \* \* \? \*\)/);
       const processor = resourceBlock('ScoreInvoicesProcessor');
       expect(processor).toContain('FunctionName: !Sub "${AWS::StackName}-ScoreInvoicesProcessor"');
       expect(processor).toContain('Handler: dist/score_invoices_processor.processor');
@@ -97,7 +97,7 @@ describe('SAM template', () => {
       const digest = resourceBlock('ScoreDigestFunction');
       expect(digest).toContain('Handler: dist/score_digest.handler');
       expect(digest).toMatch(/Schedule:\s*cron\(30 14 \? \* MON \*\)\s*\n\s*Input: '\{"mode":"weekly"\}'/);
-      expect(digest).toMatch(/Schedule:\s*cron\(20 14 \* \* \? \*\)\s*\n\s*Input: '\{"mode":"daily"\}'/);
+      expect(digest).toMatch(/Schedule:\s*cron\(20 1 \* \* \? \*\)\s*\n\s*Input: '\{"mode":"daily"\}'/);
       expect(digest).toMatch(/AUDIT_SLACK_BOT_TOKEN:\s*ssm:\/finance-agent\/audit-slack-bot-token/);
       expect(template.match(/AUDIT_SLACK_BOT_TOKEN:/g)).toHaveLength(1);
       expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);

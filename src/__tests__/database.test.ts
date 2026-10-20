@@ -178,6 +178,7 @@ describe('Database Library', () => {
         'idx_agent_invoice_scores_entry_read_at',
         'CREATE TABLE IF NOT EXISTS cancel_labels',
         'CREATE TABLE IF NOT EXISTS agent_invoice_touch_daily',
+        'CREATE TABLE IF NOT EXISTS agent_invoice_coverage_daily',
         'CREATE OR REPLACE VIEW agent_invoice_touches',
       ];
       for (const fragment of scoringSchema) expect(position(fragment)).toBeGreaterThan(position('invoice_cluster_plans'));

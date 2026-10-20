@@ -10,7 +10,7 @@ import {
   resolveRelatedLobId,
   type RelatedLob,
 } from './related_worktags.js';
-import { worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
+import { isQuantityDistributedSplits, worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -130,6 +130,10 @@ export interface FinalInvoiceLine {
   eventWid?: string | null;
   shipToAddressId?: string | null;
   purchaseOrderLineId?: string | null;
+  /** Ordered quantity of the matched PO line; set only for goods lines ordered by quantity. */
+  purchaseOrderLineQuantity?: number | null;
+  /** Workday rejected quantity 0 on a PO-linked line, so it must submit a positive quantity. */
+  forcePositivePoQuantity?: boolean;
   /** Matched PO line is fully invoiced or closed: keep its coding, drop its reference. */
   omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
@@ -145,6 +149,17 @@ export function isDiscountLine(line: Pick<FinalInvoiceLine, 'hasDiscount' | 'ext
   if (amount != null && amount < 0) return true;
   if (line.hasDiscount !== true) return false;
   return amount == null || amount <= 0;
+}
+
+// Workday rejects quantity 0 on an invoice line tied to a PO line ordered by quantity. Lines on a
+// quantity-split PO line follow the split-quantity rules instead (unlinked when they carry no quantity).
+export function requiresPositivePoQuantity(
+  line: Pick<FinalInvoiceLine, 'hasDiscount' | 'extendedAmount' | 'unitCost' | 'purchaseOrderLineId' | 'purchaseOrderLineQuantity' | 'forcePositivePoQuantity' | 'omitPurchaseOrderLineReference' | 'supplierInvoiceSplitLineData'>
+): boolean {
+  if (!line.purchaseOrderLineId || isDiscountLine(line)) return false;
+  if (isQuantityDistributedSplits(line.supplierInvoiceSplitLineData)) return false;
+  if (line.forcePositivePoQuantity) return true;
+  return !line.omitPurchaseOrderLineReference && (line.purchaseOrderLineQuantity ?? 0) > 0;
 }
 
 export interface BuiltInvoiceLines {
@@ -1105,6 +1120,7 @@ export interface ParsedPoLineWorktags {
   memo: string | null;
   shipToAddressId: string | null;
   splitLineData: PurchaseOrderLineSplit[];
+  quantity?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   availableForInvoicing?: boolean;
@@ -1130,6 +1146,7 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       lineLevelWorktagsReference,
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
+      quantity: line.quantity != null && Number.isFinite(line.quantity) && line.quantity > 0 ? line.quantity : null,
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
       availableForInvoicing: line.availableForInvoicing !== false,
@@ -1190,6 +1207,7 @@ export function overlayPoWorktagsFromPurchaseOrder(
         ...line,
         poPassthroughWorktagsReference: passthroughForPoLine(poLine),
         ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
+        purchaseOrderLineQuantity: poLine.quantity,
       };
     }
     if (fallbackPassthrough.length === 0 || line.poPassthroughWorktagsReference?.length) return line;
@@ -1204,6 +1222,8 @@ export function overlaySharedPoWorktagsOnUnmatchedLines(
   const unmatched = lines.map(line => ({
     ...line,
     purchaseOrderLineId: null,
+    purchaseOrderLineQuantity: undefined,
+    forcePositivePoQuantity: undefined,
     poPassthroughWorktagsReference: undefined,
     supplierInvoiceSplitLineData: undefined,
   }));
@@ -1616,7 +1636,12 @@ function toCents(value: number): number {
   return Math.round(roundToDecimals(value, AMOUNT_DECIMALS) * 100);
 }
 
+// A PO-linked line with no usable quantity submits one unit at the line amount, which always equals
+// the total. A printed quantity is not kept: a misread one would count against the PO line.
 function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null): FinalInvoiceLine {
+  if (extendedAmount != null && extendedAmount > 0 && requiresPositivePoQuantity(line)) {
+    return { ...line, quantity: 1, unitCost: extendedAmount, extendedAmount };
+  }
   return {
     ...line,
     quantity: 0,
@@ -1678,7 +1703,11 @@ function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(limitLineAmountPrecision).map(line => {
     if (isDiscountLine(line)) return line;
-    if (line.quantity === 0 && line.unitCost === 0) return line;
+    if (line.quantity === 0 && line.unitCost === 0) {
+      return line.extendedAmount != null && requiresPositivePoQuantity(line)
+        ? asAmountOnlyLine(line, line.extendedAmount)
+        : line;
+    }
 
     const extendedAmount = line.extendedAmount ?? null;
     const unitCost = line.unitCost ?? null;
@@ -2027,11 +2056,40 @@ export function applyAmountOnlyLineRetry(lines: FinalInvoiceLine[]): FinalInvoic
   return lines.map(line => {
     if (isDiscountLine(line)) return line;
     if (!lineHasQuantityOrUnitAndExtended(line)) return line;
-    return {
-      ...line,
-      quantity: 0,
-      unitCost: 0,
-    };
+    return asAmountOnlyLine(line, line.extendedAmount ?? null);
+  });
+}
+
+const POSITIVE_QUANTITY_NOTE_LINES_LISTED = 5;
+
+// Lists the lines that now submit one unit because their PO line is ordered by quantity, so AP sees
+// the quantity and unit cost that differ from the printed row.
+export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalInvoiceLine[]): string | undefined {
+  const changed = after.filter((line, index) =>
+    requiresPositivePoQuantity(line)
+    && line.quantity === 1
+    && before[index] != null
+    && (before[index].quantity !== 1 || before[index].unitCost !== line.unitCost)
+  );
+  if (changed.length === 0) return undefined;
+  const listed = changed
+    .slice(0, POSITIVE_QUANTITY_NOTE_LINES_LISTED)
+    .map(line => `"${line.description}" (${formatCents(toCents(line.extendedAmount ?? 0))})`);
+  const unlisted = changed.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'is' : 'are'}`
+    + ` linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
+    + ` Submitted as quantity 1 at the line amount, which can differ from the printed quantity or unit cost; the line total is unchanged.`;
+}
+
+// Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
+// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead.
+export function applyPositivePoQuantityRetry(lines: FinalInvoiceLine[], zeroQuantityLineOrders: Set<number>): FinalInvoiceLine[] {
+  return lines.map(line => {
+    if (!zeroQuantityLineOrders.has(line.lineOrder)) return line;
+    const amount = line.extendedAmount ?? line.unitCost ?? null;
+    if (amount == null || amount <= 0) return line;
+    return { ...line, forcePositivePoQuantity: true, quantity: 1, unitCost: amount, extendedAmount: amount };
   });
 }
 
