@@ -288,6 +288,7 @@ describe('invoice OCR pass', () => {
         amount: '$15,000',
         percent: null,
         equalShare: null,
+        company: null,
         event: null,
         lineOfBusiness: null,
         fund: null,

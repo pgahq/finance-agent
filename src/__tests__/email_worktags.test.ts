@@ -10,6 +10,7 @@ jest.mock('@pga/logger', () => ({
 }));
 
 const brandCoding = {
+  company: null,
   event: null,
   lineOfBusiness: { extracted: 'Production & Advertising', referenceId: 'LOB-Production_&_Advertising' },
   fund: null,
@@ -17,6 +18,7 @@ const brandCoding = {
   spendCategory: { extracted: 'Advertising & Promotion', name: 'Advertising and Promotion', referenceId: 'SC-Advertising_and_Promotion' },
 };
 const recruitmentCoding = {
+  company: null,
   event: null,
   lineOfBusiness: { extracted: 'Recruitment', referenceId: 'LOB-Recruitment' },
   fund: null,

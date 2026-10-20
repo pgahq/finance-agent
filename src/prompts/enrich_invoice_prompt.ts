@@ -159,7 +159,7 @@ export const InvoiceEnrichmentSchema = z.object({
     percent: z.number().nullable().describe('The percentage the email assigns to this budget as a number (60 for 60%). Null unless the email states a percentage for this budget. Never compute it.'),
     equalShare: z.boolean().nullable().describe('True only when the email says the cost is split evenly or equally (for example "split evenly", "50/50") and states no dollar amount or percentage for this budget. Otherwise null.'),
     ...emailCodingFields,
-    company: emailBudgetCompanySchema.nullable().optional().describe('The company this budget\'s own coding block names, only when it differs from the company that applies to the whole invoice (which goes in emailWorktags.company). Null otherwise.'),
+    company: emailBudgetCompanySchema.nullable().describe('The company this budget\'s own coding block names, only when it differs from the company that applies to the whole invoice (which goes in emailWorktags.company). Null otherwise.'),
   })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding.'),
 
 });
