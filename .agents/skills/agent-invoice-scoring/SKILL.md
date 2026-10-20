@@ -45,7 +45,16 @@ Workday OCR email.
 
 `extractScoredFields` is the scored-field whitelist and `diffScoredFields` the
 line pairing (a reorder alone is not a change). Notes, assignee, tags,
-attachments, and Workday-computed tax are left out on purpose.
+attachments, and Workday-computed tax are left out on purpose. `dueDate` is
+`Due_Date_Override`, set from the printed due date; it is absent when Workday
+derives the due date from payment terms, and it is a material field. On an
+enrich invoice the agent owns it like any other field: when the enrich write
+changed the override from the baseline, a later AP change counts against the
+agent. Snapshots saved before `dueDate` was scored have no value for it, so on
+create and resend invoices written before then, any override on a later read
+(one AP set, or one already on a resent draft) counts as a change, while on enrich
+invoices written before then it is not agent-owned, because neither that
+baseline nor that snapshot recorded it.
 
 ## Daily scoring
 
@@ -74,7 +83,7 @@ defaults (Draft, In Progress, Approved, Canceled; Denied assumed).
 
 Each stage is written once, and the upsert never reopens a terminal row.
 
-`MATERIAL_FIELDS` count against the agent; `CONVENTION_FIELDS` (memos, item
+`MATERIAL_FIELDS` (including `dueDate`) count against the agent; `CONVENTION_FIELDS` (memos, item
 description, supplier invoice number) are reported apart, so an invoice with
 only convention changes is `submitted_clean`. On an enrich invoice a change
 counts only when the agent changed that field from the OCR baseline

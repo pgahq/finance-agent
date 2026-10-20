@@ -6,6 +6,7 @@ import {
   isConfigurableAttributeValidationError,
   isDuplicateSuppliersInvoiceNumberError,
   isDisallowedLineOfBusinessWorktagError,
+  isDueDateValidationError,
   isLineOfBusinessRelatedWorktagError,
   isLineQuantityOrUnitCostPrecisionError,
   isPositiveQuantityRequiredForPoLineError,
@@ -68,6 +69,40 @@ describe('invoice_validation_failures', () => {
       }
     })).toBe(true);
     expect(isClosedPurchaseOrderLineError('Spend Category is required')).toBe(false);
+  });
+
+  it('recognizes the Workday due date and payment schedule faults', () => {
+    expect(isDueDateValidationError('Due Date must not be earlier than Invoice Date.')).toBe(true);
+    expect(isDueDateValidationError("You can't override the invoice due date when you enter payment schedules.")).toBe(true);
+    expect(isDueDateValidationError({
+      Validation_Fault: {
+        Validation_Error: {
+          Message: 'Invalid value',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+        },
+      },
+    })).toBe(true);
+    expect(isDueDateValidationError('Invoice Date must be in an open period')).toBe(false);
+    expect(isDueDateValidationError('Xpath: /wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:due_date_override[1]')).toBe(true);
+    expect(isDueDateValidationError('Memo is too long. Due_Date_Override was also set.')).toBe(false);
+    expect(isDueDateValidationError('Invalid Xpath: /wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]/wd:Child[1]')).toBe(false);
+    expect(isDueDateValidationError('Due  Date must not be earlier than\n the Invoice Date')).toBe(true);
+    const nestedEnvelope = (validationError: Record<string, string>) => Object.assign(new Error('Validation error occurred.'), {
+      root: { Envelope: { Body: { Fault: { faultstring: 'Validation error occurred.', detail: { Validation_Fault: { Validation_Error: validationError } } } } } },
+    });
+    expect(isDueDateValidationError(nestedEnvelope({
+      Message: 'Invalid value',
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Due_Date_Override[1]',
+    }))).toBe(true);
+    expect(isDueDateValidationError(nestedEnvelope({ Message: 'Due Date must not be earlier than Invoice Date.' }))).toBe(true);
+    expect(isDueDateValidationError(nestedEnvelope({
+      Message: 'Memo is too long',
+      Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Memo[1]',
+    }))).toBe(false);
+    expect(isDueDateValidationError('Overdue Date reminder setting is invalid')).toBe(false);
+    expect(isDueDateValidationError('Payment Terms NET_99 cannot calculate a Due Date for this supplier')).toBe(false);
+    expect(isDueDateValidationError('Prepaid amount scheduled per payment schedule')).toBe(false);
+    expect(isDueDateValidationError("Enter a Supplier's Invoice Number that isn't already in use on another supplier invoice")).toBe(false);
   });
 
   it('does not treat other Purchase_Order_Line_Reference faults as a closed PO', () => {

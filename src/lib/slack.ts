@@ -205,6 +205,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
 
   const extracted = details.extracted as {
     invoiceDate?: string;
+    dueDate?: string;
+    dueDateNotApplied?: boolean;
     amountDue?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
@@ -220,6 +222,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     paymentTerms?: string;
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
+  if (extracted?.dueDate) changeLines.push(dueDateChangeLine(extracted.dueDate, extracted.dueDateNotApplied));
   if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted?.freightCleared) changeLines.push('*Freight* → none');
@@ -746,6 +749,9 @@ export interface EnrichmentNotification {
   };
   extracted: {
     invoiceDate?: string;
+    /** The due date printed on the invoice; dueDateNotApplied means it was not sent as Due_Date_Override. */
+    dueDate?: string;
+    dueDateNotApplied?: boolean;
     amountDue?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
@@ -778,6 +784,11 @@ export interface EnrichmentNotification {
     /** Closed-PO and consumed-PO-line notes for dropped Purchase_Order_Line_Reference values. */
     purchaseOrderLineNotes?: string;
   };
+}
+
+function dueDateChangeLine(dueDate: string, notApplied?: boolean): string {
+  const shown = escapeSlackMrkdwn(dueDate);
+  return notApplied ? `*Due Date* → not applied (invoice shows ${shown})` : `*Due Date* → ${shown}`;
 }
 
 export async function notifyEnrichmentResult(notification: EnrichmentNotification): Promise<void> {
@@ -841,6 +852,7 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
   }
 
   if (extracted.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
+  if (extracted.dueDate) changeLines.push(dueDateChangeLine(extracted.dueDate, extracted.dueDateNotApplied));
   if (extracted.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
   if (extracted.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted.freightCleared) changeLines.push('*Freight* → none');
