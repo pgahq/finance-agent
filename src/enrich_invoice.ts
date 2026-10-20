@@ -32,7 +32,7 @@ import {
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
-import { findSolePurchaseOrderNumber, normalizePurchaseOrderNumber } from './lib/purchase_order.js';
+import { findSolePurchaseOrderNumber } from './lib/purchase_order.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import {
   buildFinalInvoiceLines,
@@ -441,10 +441,7 @@ async function processInvoice(
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
 
-    const memoIdentifiers = memoIdentifiersFromEnrichment(
-      result,
-      extractedPurchaseOrderNumber ?? normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber)
-    );
+    const memoIdentifiers = memoIdentifiersFromEnrichment(result);
     const memo = hasMemoIdentifiers(memoIdentifiers)
       ? composeInvoiceMemo({
           ...memoIdentifiers,

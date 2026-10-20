@@ -1623,7 +1623,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(params.finalLines[0].memo).toBe(
-      'PO-413898. Service Period 9/7/26 - 9/13/26. Project management services for Ryan Poland'
+      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
   });
 
@@ -2171,7 +2171,8 @@ describe('enrich_invoice', () => {
       },
       extractedSuppliersInvoiceNumber: 'INV|001>>>',
       extractedAccountNumber: '1033562',
-      extractedJobNumber: '5914196',
+      extractedSupplierReference: '5914196',
+      extractedSupplierReferenceKind: 'order',
       extractedCustomerId: 'CU0122145',
       extractedServicePeriod: '2026 - September',
       extractedInvoiceLines: [
@@ -2194,13 +2195,11 @@ describe('enrich_invoice', () => {
     } as any)).resolves.not.toThrow();
 
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
-    expect(params.memo).toBe(
-      'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Test invoice'
-    );
+    expect(params.memo).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 test invoice');
     expect(params.suppliersInvoiceNumber).toBe('INV-001');
     expect(params.finalLines).toEqual([
       expect.objectContaining({
-        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September. Widget purchase',
+        memo: 'Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 widget purchase',
       }),
     ]);
     expect(params.buildNotes([])).toContain('Account Number (from document): 1033562');
@@ -2364,7 +2363,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.memo).toBeUndefined();
     expect(params.finalLines).toEqual([
-      expect.objectContaining({ memo: 'Widget purchase' }),
+      expect.objectContaining({ memo: 'widget purchase' }),
     ]);
   });
 });

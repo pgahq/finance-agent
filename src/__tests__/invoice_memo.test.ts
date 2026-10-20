@@ -1,6 +1,7 @@
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
+  formatMemoServiceDates,
   hasMemoIdentifiers,
   INVOICE_MEMO_MAX_LENGTH,
   memoIdentifiersFromEnrichment,
@@ -18,131 +19,223 @@ describe('composeInvoiceMemo', () => {
     expect(composeInvoiceMemo({ description: '   ' })).toBeUndefined();
   });
 
-  it('returns the descriptive sentence alone when no identifiers are present', () => {
-    expect(composeInvoiceMemo({ description: 'Office supplies' })).toBe('Office supplies');
+  it('returns the description alone, lowercase with no ending period, when no identifiers are present', () => {
+    expect(composeInvoiceMemo({ description: 'Office supplies.' })).toBe('office supplies');
   });
 
-  it('includes each present identifier independently in check-print order', () => {
+  it('matches the AP example: customer, service dates, short description', () => {
     expect(composeInvoiceMemo({
-      po: 'PO-404770',
+      customerId: '115117',
+      servicePeriod: '09/01/2026 - 09/30/2026',
+      description: 'Elevator phone line service.',
+    })).toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service');
+  });
+
+  it('orders account, supplier reference, service dates, then description with single spaces', () => {
+    expect(composeInvoiceMemo({
       accountNumber: '1033562',
-      jobNumber: '5914196',
-      customerId: 'CU0122145',
+      supplierReference: '5914196',
+      supplierReferenceKind: 'order',
       servicePeriod: '2026 - September',
       description: 'Monthly software subscription',
-    })).toBe('AC 1033562. Customer ID CU0122145. Job 5914196. PO-404770. Service Period 2026 - September. Monthly software subscription');
+    })).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 monthly software subscription');
+  });
+
+  it('never uses periods to separate fields', () => {
+    const memo = composeInvoiceMemo({
+      accountNumber: '1033562',
+      supplierReference: '5914196',
+      supplierReferenceKind: 'job',
+      servicePeriod: '9/7/26 - 9/13/26',
+      description: 'Landscaping.',
+    });
+    expect(memo).toBe('Acct 1033562 Job 5914196 Svc Prd 09/07/26 - 09/13/26 landscaping');
+    expect(memo).not.toMatch(/\. /);
+  });
+
+  it('emits the account number and drops the customer ID when both are printed', () => {
+    expect(composeInvoiceMemo({
+      accountNumber: '1033562',
+      customerId: 'CU0122145',
+      description: 'License fee',
+    })).toBe('Acct 1033562 license fee');
+  });
+
+  it('falls back to the customer ID when there is no account number', () => {
+    expect(composeInvoiceMemo({ customerId: 'CU0122145', description: 'License fee' })).toBe('Cust CU0122145 license fee');
+    expect(composeInvoiceMemo({ customerId: 'Cust ID 44012' })).toBe('Cust 44012');
   });
 
   it('omits missing identifiers without treating later fields as fallbacks', () => {
     expect(composeInvoiceMemo({
       accountNumber: '1033562',
-      jobNumber: '5914196',
+      supplierReference: '5914196',
+      supplierReferenceKind: 'order',
       description: 'Sales type lease license fee',
-    })).toBe('AC 1033562. Job 5914196. Sales type lease license fee');
+    })).toBe('Acct 1033562 Ord 5914196 sales type lease license fee');
 
     expect(composeInvoiceMemo({
       customerId: 'CU0122145',
-      servicePeriod: '2026 - September',
+      servicePeriod: 'Q4 2026',
       description: 'Technology package tech fees',
-    })).toBe('Customer ID CU0122145. Service Period 2026 - September. Technology package tech fees');
+    })).toBe('Cust CU0122145 Svc Prd Q4 26 technology package tech fees');
   });
 
-  it('normalizes PGA PO numbers and drops free-text PO values', () => {
-    expect(composeInvoiceMemo({ po: '414498', description: 'Summit ENG' })).toBe('PO-414498. Summit ENG');
-    expect(composeInvoiceMemo({ po: 'PGA COACHING', description: 'License fee' })).toBe('License fee');
+  it.each([
+    ['order', 'Ord'],
+    ['confirmation', 'Conf'],
+    ['job', 'Job'],
+    ['file', 'File'],
+    ['case', 'Case'],
+  ])('labels a %s reference as %s', (kind, label) => {
+    expect(composeInvoiceMemo({ supplierReference: '77-1234', supplierReferenceKind: kind })).toBe(`${label} 77-1234`);
+  });
+
+  it('infers the label from the value when no kind is given, and otherwise uses Ref', () => {
+    expect(composeInvoiceMemo({ supplierReference: 'Order #5914196' })).toBe('Ord 5914196');
+    expect(composeInvoiceMemo({ supplierReference: 'Conf No. AB12' })).toBe('Conf AB12');
+    expect(composeInvoiceMemo({ supplierReference: '5914196' })).toBe('Ref 5914196');
+  });
+
+  it('prefers the stated reference kind over a label in the value', () => {
+    expect(composeInvoiceMemo({ supplierReference: 'Matter 2026-14', supplierReferenceKind: 'file' })).toBe('File 2026-14');
+  });
+
+  it('drops the PGA PO from the memo and drops a supplier reference that is that PO', () => {
+    expect(composeInvoiceMemo({ po: '414498', description: 'Summit ENG' })).toBe('summit ENG');
+    expect(composeInvoiceMemo({ po: 'PO-414498', accountNumber: '12345', description: 'Summit ENG' })).toBe('Acct 12345 summit ENG');
+    expect(composeInvoiceMemo({
+      po: 'PO-414498',
+      supplierReference: 'Order #414498',
+      supplierReferenceKind: 'order',
+      description: 'Summit ENG',
+    })).toBe('summit ENG');
+    expect(composeInvoiceMemo({ po: 'PGA COACHING', description: 'License fee' })).toBe('license fee');
   });
 
   it('strips redundant labels from extracted values', () => {
     expect(composeInvoiceMemo({
       accountNumber: 'AC #1033562',
-      jobNumber: 'Order #5914196',
-      customerId: 'Bill-To Customer ID: CU0122145',
-      servicePeriod: 'Service Period: 2026 - September',
-    })).toBe('AC 1033562. Customer ID CU0122145. Job 5914196. Service Period 2026 - September');
+      supplierReference: 'Order #5914196',
+      servicePeriod: 'Service Period: 09/01/2026 - 09/30/2026',
+    })).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26');
 
-    expect(composeInvoiceMemo({
-      customerId: 'Cust ID 44012',
-    })).toBe('Customer ID 44012');
+    expect(composeInvoiceMemo({ customerId: 'Bill-To Customer ID: CU0122145' })).toBe('Cust CU0122145');
   });
 
   it('does not treat an AC- sold-to value as an AC label', () => {
     expect(composeInvoiceMemo({
       accountNumber: 'AC-1033562',
       description: 'License fee',
-    })).toBe('AC AC-1033562. License fee');
+    })).toBe('Acct AC-1033562 license fee');
   });
 
-  it('drops Job when it normalizes to the same PGA PO', () => {
-    expect(composeInvoiceMemo({
-      po: 'PO-414498',
-      jobNumber: '414498',
-      description: 'Summit ENG',
-    })).toBe('PO-414498. Summit ENG');
-
-    expect(composeInvoiceMemo({
-      po: 'PO-414498',
-      jobNumber: 'Order #414498',
-      description: 'Summit ENG',
-    })).toBe('PO-414498. Summit ENG');
-  });
-
-  it('does not emit Customer ID when it duplicates the account number', () => {
-    expect(composeInvoiceMemo({
-      accountNumber: '1033562',
-      customerId: '1033562',
-      description: 'License fee',
-    })).toBe('AC 1033562. License fee');
+  it('keeps case for acronyms and words with digits in the description', () => {
+    expect(composeInvoiceMemo({ description: 'HVAC repair' })).toBe('HVAC repair');
+    expect(composeInvoiceMemo({ description: '3M signage' })).toBe('3M signage');
+    expect(composeInvoiceMemo({ description: "McDonald's catering" })).toBe("McDonald's catering");
   });
 
   it('uses identifier text alone when there is no descriptive sentence', () => {
-    expect(composeInvoiceMemo({ po: 'PO-404770', accountNumber: '12345' })).toBe('AC 12345. PO-404770');
+    expect(composeInvoiceMemo({ po: 'PO-404770', accountNumber: '12345' })).toBe('Acct 12345');
   });
 
-  it('does not duplicate an identifier prefix already on the description', () => {
+  it('does not duplicate identifiers the model copied into the description', () => {
     expect(composeInvoiceMemo({
       po: 'PO-404770',
       description: 'PO-404770 | Office supplies',
-    })).toBe('PO-404770. Office supplies');
+    })).toBe('office supplies');
 
     expect(composeInvoiceMemo({
       po: 'PO-404770',
-      description: 'PO-404770. Office supplies',
-    })).toBe('PO-404770. Office supplies');
+      accountNumber: '1033562',
+      description: 'Acct 1033562 Office supplies',
+    })).toBe('Acct 1033562 office supplies');
 
     expect(composeInvoiceMemo({
       po: 'PO-404770',
       accountNumber: '1033562',
       description: 'AC 1033562. PO-404770. Office supplies',
-    })).toBe('AC 1033562. PO-404770. Office supplies');
+    })).toBe('Acct 1033562 office supplies');
   });
 
-  it('strips identifier tokens from the description even when they are not a leading full prefix', () => {
+  it('strips old-style and current identifier tokens from the description even when they are not a leading prefix', () => {
     expect(composeInvoiceMemo({
-      po: 'PO-404770',
+      accountNumber: '12345',
+      description: 'monthly AC 12345 software',
+    })).toBe('Acct 12345 monthly software');
+
+    expect(composeInvoiceMemo({
       accountNumber: '12345',
       description: 'AC #12345 monthly software',
-    })).toBe('AC 12345. PO-404770. monthly software');
+    })).toBe('Acct 12345 monthly software');
+
+    expect(composeInvoiceMemo({
+      customerId: '115117',
+      servicePeriod: '09/01/2026 - 09/30/2026',
+      description: 'Customer ID 115117. Service Period 09/01/2026 - 09/30/2026. Elevator phone line service',
+    })).toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service');
+
+    expect(composeInvoiceMemo({
+      customerId: '115117',
+      servicePeriod: '09/01/2026 - 09/30/2026',
+      description: 'Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service',
+    })).toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service');
   });
 
   it('does not treat periods inside amounts or abbreviations as token separators', () => {
     expect(composeInvoiceMemo({
       accountNumber: '1033562',
       description: 'License fee 12.50 monthly for U.S. Open e.g. hospitality',
-    })).toBe('AC 1033562. License fee 12.50 monthly for U.S. Open e.g. hospitality');
+    })).toBe('Acct 1033562 license fee 12.50 monthly for U.S. Open e.g. hospitality');
   });
 
   it('replaces pay-file-unsafe characters in identifier values and descriptions', () => {
     expect(composeInvoiceMemo({
       accountNumber: '103|3562',
       description: 'Widgets >>> restock',
-    })).toBe('AC 103 3562. Widgets restock');
+    })).toBe('Acct 103 3562 widgets restock');
   });
 
-  it('caps memo length', () => {
-    const memo = composeInvoiceMemo({
-      description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH + 50),
-    });
+  it('leaves the description out when it would push the memo past the cap', () => {
+    expect(composeInvoiceMemo({
+      accountNumber: '1033562',
+      description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH),
+    })).toBe('Acct 1033562');
+    expect(composeInvoiceMemo({ description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH + 50) })).toBeUndefined();
+  });
+
+  it('keeps a description that fits exactly', () => {
+    const description = 'x'.repeat(INVOICE_MEMO_MAX_LENGTH - 'Acct 1 '.length);
+    const memo = composeInvoiceMemo({ accountNumber: '1', description });
     expect(memo).toHaveLength(INVOICE_MEMO_MAX_LENGTH);
+  });
+});
+
+describe('formatMemoServiceDates', () => {
+  it.each([
+    ['09/01/2026 - 09/30/2026', '09/01/26 - 09/30/26'],
+    ['9/7/26 - 9/13/26', '09/07/26 - 09/13/26'],
+    ['9/7/26-9/13/26', '09/07/26 - 09/13/26'],
+    ['2026-09-01 to 2026-09-30', '09/01/26 - 09/30/26'],
+    ['Sep 1, 2026 - Sep 30, 2026', '09/01/26 - 09/30/26'],
+    ['9/7/2026', '09/07/26'],
+    ['2026-09-07', '09/07/26'],
+    ['2026 - September', '09/01/26 - 09/30/26'],
+    ['September 2026', '09/01/26 - 09/30/26'],
+    ['Sept 2026', '09/01/26 - 09/30/26'],
+    ['2026-02', '02/01/26 - 02/28/26'],
+    ['02/2028', '02/01/28 - 02/29/28'],
+    ['Q4 2026', 'Q4 26'],
+    ['2026 Q1', 'Q1 26'],
+  ])('formats %s as %s', (input, expected) => {
+    expect(formatMemoServiceDates(input)).toBe(expected);
+  });
+
+  it('keeps text it cannot read as printed', () => {
+    expect(formatMemoServiceDates('Sept 28 - Oct 2')).toBe('Sept 28 - Oct 2');
+    expect(formatMemoServiceDates('13/45/2026')).toBe('13/45/2026');
+    expect(formatMemoServiceDates('Annual services')).toBe('Annual services');
   });
 });
 
@@ -250,24 +343,30 @@ describe('hasMemoIdentifiers', () => {
   it('is true only when at least one identifier token would be emitted', () => {
     expect(hasMemoIdentifiers({})).toBe(false);
     expect(hasMemoIdentifiers({ po: 'PGA COACHING' })).toBe(false);
-    expect(hasMemoIdentifiers({ po: 'PO-414498' })).toBe(true);
+    expect(hasMemoIdentifiers({ po: 'PO-414498' })).toBe(false);
     expect(hasMemoIdentifiers({ accountNumber: '1033562' })).toBe(true);
+    expect(hasMemoIdentifiers({ customerId: 'CU0122145' })).toBe(true);
+    expect(hasMemoIdentifiers({ supplierReference: '5914196', supplierReferenceKind: 'order' })).toBe(true);
+    expect(hasMemoIdentifiers({ servicePeriod: 'Q4 2026' })).toBe(true);
+    expect(hasMemoIdentifiers({ po: 'PO-414498', supplierReference: 'PO-414498' })).toBe(false);
   });
 });
 
 describe('memoIdentifiersFromEnrichment', () => {
-  it('prefers a matched PO document number over the extracted value', () => {
+  it('reads the document identifiers and the extracted PO used only to drop a duplicate reference', () => {
     expect(memoIdentifiersFromEnrichment({
       extractedPurchaseOrderNumber: 'PO-111111',
       extractedAccountNumber: '1033562',
-      extractedJobNumber: null,
+      extractedSupplierReference: '5914196',
+      extractedSupplierReferenceKind: 'order',
       extractedCustomerId: null,
       extractedServicePeriod: null,
-    }, 'PO-414498')).toEqual({
-      po: 'PO-414498',
+    })).toEqual({
+      po: 'PO-111111',
       accountNumber: '1033562',
-      jobNumber: null,
       customerId: null,
+      supplierReference: '5914196',
+      supplierReferenceKind: 'order',
       servicePeriod: null,
     });
   });
@@ -282,10 +381,11 @@ describe('applyInvoiceMemoIdentifiersToLines', () => {
 
     expect(applyInvoiceMemoIdentifiersToLines(lines, {
       accountNumber: '1033562',
-      jobNumber: '5914196',
+      supplierReference: '5914196',
+      supplierReferenceKind: 'job',
     })).toEqual([
-      { lineOrder: 1, description: 'Widgets', memo: 'AC 1033562. Job 5914196. Widget purchase', quantity: 1, unitCost: 10 },
-      { lineOrder: 2, description: 'Services', memo: 'AC 1033562. Job 5914196', quantity: 1, unitCost: 20 },
+      { lineOrder: 1, description: 'Widgets', memo: 'Acct 1033562 Job 5914196 widget purchase', quantity: 1, unitCost: 10 },
+      { lineOrder: 2, description: 'Services', memo: 'Acct 1033562 Job 5914196', quantity: 1, unitCost: 20 },
     ]);
   });
 
@@ -301,13 +401,14 @@ describe('formatMemoIdentifierNotes', () => {
   it('adds a notes line for each extracted identifier', () => {
     const notes = formatMemoIdentifierNotes({
       extractedAccountNumber: '1033562',
-      extractedJobNumber: '5914196',
+      extractedSupplierReference: '5914196',
+      extractedSupplierReferenceKind: 'order',
       extractedCustomerId: 'CU0122145',
       extractedServicePeriod: '2026 - September',
     });
 
     expect(notes).toContain('Account Number (from document): 1033562');
-    expect(notes).toContain('Job Number (from document): 5914196');
+    expect(notes).toContain('Supplier Reference (from document): Order 5914196');
     expect(notes).toContain('Customer ID (from document): CU0122145');
     expect(notes).toContain('Service Period (from document): 2026 - September');
   });

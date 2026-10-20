@@ -539,7 +539,7 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(submitArgs.finalLines[0].memo).toBe(
-      'PO-413898. Service Period 9/7/26 - 9/13/26. Project management services for Ryan Poland'
+      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
     expect(submitArgs.finalLines[0].description).not.toContain('PO-413898');
   });
@@ -1871,7 +1871,7 @@ describe('create_invoice', () => {
     });
   });
 
-  it('should keep PO company, memo, and line coding but omit PO line refs for a Closed PO', async () => {
+  it('should keep PO company and line coding but omit PO line refs for a Closed PO', async () => {
     const parsedPo = {
       documentNumber: 'PO-414498',
       company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
@@ -1913,7 +1913,7 @@ describe('create_invoice', () => {
     expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual(parsedPo.lines);
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.companyWID).toBe('pga-company-wid');
-    expect(submitArgs.memo).toContain('PO-414498');
+    expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-414498');
     expect(submitArgs.omitPurchaseOrderLineReference).toBe(true);
     expect(submitArgs.finalLines[0]).toEqual(expect.objectContaining({
       purchaseOrderLineId: 'POL-1',
@@ -2097,8 +2097,7 @@ describe('create_invoice', () => {
         expect.objectContaining({ lineOrder: 7, purchaseOrderLineId: 'POL-413672-7' })
       ]);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-413672');
-      expect(submitArgs.memo).not.toContain('411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: Used PO-413672 Line 7 from the Intercom note instead of PO-411406 on the invoice.'
       );
@@ -2112,7 +2111,7 @@ describe('create_invoice', () => {
     });
 
     it('uses the note PO when the note also names the invoice PO it rejects', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2125,7 +2124,7 @@ describe('create_invoice', () => {
         data: [arrowRequest('req-note-rejects-invoice-po', { conversationParts: note, adminConversationParts: note })]
       } as any);
 
-      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].memo).toContain('PO-413672');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(8);
     });
 
@@ -2144,7 +2143,7 @@ describe('create_invoice', () => {
         data: [arrowRequest('req-note-po-for-this-invoice', { conversationParts: note, adminConversationParts: note })]
       } as any);
 
-      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].memo).toContain('PO-413672');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
         expect.objectContaining({ lineOrder: 7, purchaseOrderLineId: 'POL-413672-7' })
       ]);
@@ -2155,7 +2154,7 @@ describe('create_invoice', () => {
     });
 
     it('keeps the invoice PO for an invoice the note does not name', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2170,14 +2169,14 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: The Intercom note names PO-413672 for invoice 69962682, not this invoice (69962699); kept PO-411406.'
       );
     });
 
     it('says the note PO was for another invoice when the invoice number was not read', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2192,14 +2191,14 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: The Intercom note names PO-413672 for invoice 69962682, not this invoice; kept PO-411406.'
       );
     });
 
     it('keeps the invoice PO when the note confirms it for this invoice', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2215,7 +2214,7 @@ describe('create_invoice', () => {
 
       expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-411406']);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
     });
 
@@ -2237,7 +2236,7 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-413672');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: Used PO-413672 from the email or conversation instead of PO-411406 on the invoice.'
       );
@@ -2249,7 +2248,7 @@ describe('create_invoice', () => {
     });
 
     it('keeps the invoice PO when only an older message in the thread names another PO', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2267,12 +2266,12 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
     });
 
     it('ignores the thread subject for an invoice attached to a later reply', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2290,7 +2289,7 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-413672');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
     });
 
@@ -2317,7 +2316,7 @@ describe('create_invoice', () => {
     });
 
     it('keeps the invoice PO when the email and conversation name several POs', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2333,12 +2332,12 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).not.toContain('from the email or conversation');
     });
 
     it('falls back to the invoice PO when the conversation PO is not in Workday', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday, { 'PO-411406': invoicePo });
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...baseEnrichmentResult,
@@ -2355,7 +2354,7 @@ describe('create_invoice', () => {
       } as any);
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: PO-413672 from the email or conversation was not found in Workday; used PO-411406 instead.'
       );
@@ -2376,7 +2375,7 @@ describe('create_invoice', () => {
 
       expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413672', 'PO-411406']);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: PO-413672 from the Intercom note was not found in Workday; used PO-411406 instead.'
       );
@@ -2384,7 +2383,7 @@ describe('create_invoice', () => {
     });
 
     it('falls back to the subject PO when the note PO is not in Workday and the PDF has no PO', async () => {
-      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       loadArrowPos(workday, { 'PO-411406': invoicePo });
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
@@ -2402,7 +2401,7 @@ describe('create_invoice', () => {
         expect.objectContaining({ documentNumber: 'PO-411406' })
       );
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-411406');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: PO-413672 from the Intercom note was not found in Workday; used PO-411406 instead.'
       );
@@ -2425,7 +2424,7 @@ describe('create_invoice', () => {
 
       expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413672']);
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.memo).toContain('PO-413672');
+      expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413672');
       expect(submitArgs.buildNotes([])).toContain(
         'Purchase order: Used PO-413672 from the Intercom note instead of PO-411406 in the email.'
       );
@@ -3348,7 +3347,8 @@ describe('create_invoice', () => {
       extractedSuppliersInvoiceNumber: 'INV|001>>>',
       extractedPurchaseOrderNumber: 'PO-414498',
       extractedAccountNumber: '1033562',
-      extractedJobNumber: '5914196',
+      extractedSupplierReference: '5914196',
+      extractedSupplierReferenceKind: 'order',
       extractedCustomerId: 'CU0122145',
       extractedServicePeriod: '2026 - September',
     });
@@ -3358,18 +3358,16 @@ describe('create_invoice', () => {
     } as any);
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.memo).toBe(
-      'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Office supplies'
-    );
+    expect(submitArgs.memo).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 office supplies');
     expect(submitArgs.suppliersInvoiceNumber).toBe('INV-001');
     expect(submitArgs.finalLines).toEqual([
       expect.objectContaining({
         description: 'Widgets',
-        memo: 'AC 1033562. Customer ID CU0122145. Job 5914196. PO-414498. Service Period 2026 - September. Widget purchase',
+        memo: 'Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 widget purchase',
       }),
     ]);
     expect(submitArgs.buildNotes([])).toContain('Account Number (from document): 1033562');
-    expect(submitArgs.buildNotes([])).toContain('Job Number (from document): 5914196');
+    expect(submitArgs.buildNotes([])).toContain('Supplier Reference (from document): Order 5914196');
     expect(submitArgs.buildNotes([])).toContain('Customer ID (from document): CU0122145');
     expect(submitArgs.buildNotes([])).toContain('Service Period (from document): 2026 - September');
   });

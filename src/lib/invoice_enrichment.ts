@@ -305,15 +305,17 @@ export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): strin
 export function formatMemoIdentifierNotes(
   result: Pick<
     InvoiceEnrichmentResult,
-    'extractedAccountNumber' | 'extractedJobNumber' | 'extractedCustomerId' | 'extractedServicePeriod'
+    'extractedAccountNumber' | 'extractedSupplierReference' | 'extractedSupplierReferenceKind' | 'extractedCustomerId' | 'extractedServicePeriod'
   >
 ): string {
   const parts: string[] = [];
   if (result.extractedAccountNumber) {
     parts.push(`Account Number (from document): ${result.extractedAccountNumber}`);
   }
-  if (result.extractedJobNumber) {
-    parts.push(`Job Number (from document): ${result.extractedJobNumber}`);
+  if (result.extractedSupplierReference) {
+    const kind = result.extractedSupplierReferenceKind?.trim();
+    const label = kind ? `${kind.charAt(0).toUpperCase()}${kind.slice(1).toLowerCase()} ` : '';
+    parts.push(`Supplier Reference (from document): ${label}${result.extractedSupplierReference}`);
   }
   if (result.extractedCustomerId) {
     parts.push(`Customer ID (from document): ${result.extractedCustomerId}`);
