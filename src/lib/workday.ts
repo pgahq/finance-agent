@@ -1239,7 +1239,7 @@ async function getValidationFallbackField(
 
   // The fault carries only line paths and no worktag type, so it never reaches the classifier.
   if (isInvalidShipToAddressError(validationText)) {
-    if (!options.omitShipToAddress && submittedLinesCarryShipToAddress(options, invalidShipToAddressLinePositions(validationText))) {
+    if (!options.omitShipToAddress && submittedLinesCarryShipToAddress(options, invalidShipToAddressLinePositions(error))) {
       debug('Validation rejects the line ship-to address; retrying without Ship_To_Address_Reference on the named lines');
       return 'shipToAddress';
     }
@@ -1315,7 +1315,7 @@ async function getValidationFallbackField(
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
   field: FallbackField,
-  validationText?: string
+  validationFault?: unknown
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -1439,7 +1439,7 @@ function getFallbackRetryBuildOptions(
   }
 
   if (field === 'shipToAddress' && !options.omitShipToAddress) {
-    const positions = validationText ? invalidShipToAddressLinePositions(validationText) : [];
+    const positions = validationFault !== undefined ? invalidShipToAddressLinePositions(validationFault) : [];
     if (!submittedLinesCarryShipToAddress(options, positions)) return undefined;
     return {
       buildOptions: { ...options, omitShipToAddress: true, omitShipToAddressPositions: positions },
@@ -2271,7 +2271,7 @@ async function submitSupplierInvoiceWithRepair({
       }
 
       const fallbackRetry = validationFallbackField
-        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField, collectWorkdayValidationErrorText(error) || validationError)
+        ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField, error)
         : undefined;
       if (!fallbackRetry) {
         debug(

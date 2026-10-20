@@ -3509,11 +3509,20 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
       expect(line).toMatchObject({ quantity: 54, unitCost: 238.679815, extendedAmount: 12888.71 });
     });
 
-    it('applies to a quantity PO line without splits too', () => {
+    it('pins the per-unit bound: a gap under a cent a unit passes, a larger one is a price change', () => {
+      const [under] = alignSupplierInvoiceLineAmounts([priced(1, 54, 12888.23, 54, 238.68)]);
+      expect(under).toMatchObject({ quantity: 54, unitCost: 238.670926, unitCostFromLineTotal: true });
+      const [over] = alignSupplierInvoiceLineAmounts([priced(1, 54, 12888, 54, 238.68)]);
+      expect(over).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 12888 });
+      expect(over.unitCostFromLineTotal).toBeUndefined();
+    });
+
+    it('leaves a non-split quantity PO line to the one-unit rule', () => {
       const [line] = alignSupplierInvoiceLineAmounts([
         priced(1, 54, 12888.71, 54, 238.68, { supplierInvoiceSplitLineData: undefined }),
       ]);
-      expect(line).toMatchObject({ quantity: 54, unitCost: 238.679815 });
+      expect(line).toMatchObject({ quantity: 1, unitCost: 12888.71, extendedAmount: 12888.71 });
+      expect(line.unitCostFromLineTotal).toBeUndefined();
     });
 
     it.each([
@@ -3546,7 +3555,7 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
       const result = normalizeSupplierInvoiceLineAmounts([priced(1, 54, 12888.71, 54, 238.68)], true);
       const note = unitCostFromLineTotalNote(result);
       expect(note).toContain('"Line 1" (54 x 238.679815 vs PO unit cost 238.68)');
-      expect(note).toContain('stays linked to its PO line');
+      expect(note).toContain('by less than a cent a unit');
       expect(unitCostFromLineTotalNote([poLinked(1, 'Plain', 2, 5, 10)])).toBeUndefined();
     });
   });

@@ -1710,22 +1710,24 @@ function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
   };
 }
 
-// A line total can sit a few cents off quantity x PO unit cost because the supplier rounds its own
-// extension. The line then keeps its printed quantity, so Workday counts that quantity against the PO line
-// (and against each split's quantity), and takes its unit cost from the total. The implied unit cost must
-// sit within PO_UNIT_COST_TOLERANCE of the PO's, so a misread quantity or a different price is not absorbed.
-const PO_UNIT_COST_TOLERANCE = 0.005;
+// A supplier can price a unit with more decimals than the PO does (238.679815 against 238.68), so the printed
+// total sits a few cents off quantity x PO unit cost. A quantity-split line then keeps its printed quantity, so
+// Workday counts it against the PO line and each split's quantity, and takes its unit cost from the total.
+// The gap is bounded per unit, so a real price change is never absorbed. Non-split lines keep the
+// one-unit rule: their PO line may be partly invoiced, and nothing here knows what is still open on it.
+const PO_UNIT_COST_MAX_DIFFERENCE = 0.01;
 
 function unitCostFromPoRoundedTotal(line: FinalInvoiceLine, extendedAmount: number): FinalInvoiceLine | null {
   const quantity = line.quantity;
   const poQuantity = line.purchaseOrderLineQuantity;
   const poUnitCost = line.purchaseOrderLineUnitCost;
   if (!line.purchaseOrderLineId || line.omitPurchaseOrderLineReference || isDiscountLine(line)) return null;
+  if (!isQuantityDistributedSplits(line.supplierInvoiceSplitLineData)) return null;
   if (quantity == null || quantity <= 0 || poQuantity == null || poQuantity <= 0) return null;
   if (poUnitCost == null || poUnitCost <= 0 || extendedAmount <= 0) return null;
   if (quantity > poQuantity + 1e-9) return null;
   const impliedUnitCost = roundToDecimals(extendedAmount / quantity, UNIT_COST_DECIMALS);
-  if (Math.abs(impliedUnitCost - poUnitCost) / poUnitCost > PO_UNIT_COST_TOLERANCE) return null;
+  if (Math.abs(impliedUnitCost - poUnitCost) >= PO_UNIT_COST_MAX_DIFFERENCE) return null;
   if (toCents(quantity * impliedUnitCost) !== toCents(extendedAmount)) return null;
   return { ...line, unitCost: impliedUnitCost, unitCostFromLineTotal: true };
 }
@@ -2124,7 +2126,7 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
   const unlisted = changed.length - listed.length;
   if (unlisted > 0) listed.push(`${unlisted} more`);
   return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'was' : 'were'} submitted with the printed quantity`
-    + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost only by rounding; the line stays linked to its PO line and the total is unchanged.`;
+    + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost by less than a cent a unit; the total is unchanged.`;
 }
 
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.

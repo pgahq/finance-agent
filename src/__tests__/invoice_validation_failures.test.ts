@@ -414,6 +414,30 @@ describe('isInvalidShipToAddressError', () => {
     expect(invalidShipToAddressLinePositions(text)).toEqual([1]);
   });
 
+  it('does not borrow the row of another fault when the Ship To fault has no Xpath', () => {
+    const mixed = {
+      Validation_Fault: { Validation_Error: [
+        { Message: 'The Provided Ship To Address is Invalid for this Supplier Invoice Document' },
+        {
+          Message: 'The tax code is not valid for this line.',
+          Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[3]',
+        },
+      ] },
+    };
+    expect(isInvalidShipToAddressError(mixed)).toBe(true);
+    expect(invalidShipToAddressLinePositions(mixed)).toEqual([]);
+  });
+
+  it('reads only the Ship To faults when another fault names a different row', () => {
+    const mixed = {
+      Validation_Fault: { Validation_Error: [
+        { Message: 'The tax code is not valid for this line.', Xpath: '/wd:Invoice_Line_Replacement_Data[1]' },
+        { Message: 'The Provided Ship To Address is Invalid for this Supplier Invoice Document', Xpath: '/wd:Invoice_Line_Replacement_Data[2]' },
+      ] },
+    };
+    expect(invalidShipToAddressLinePositions(mixed)).toEqual([1]);
+  });
+
   it('returns no rows when the fault names none', () => {
     expect(invalidShipToAddressLinePositions('The Provided Ship To Address is Invalid for this Supplier Invoice Document')).toEqual([]);
   });
