@@ -1,17 +1,19 @@
 # AGENTS.md
 
-Guidance for AI agents and automated reviewers (including Divot) working in this repository.
+Facts about this repository that tools and contributors can rely on.
 
 ## Every invoice is created as a Workday draft
 
-This agent never submits an invoice for approval or payment. `buildSubmitInvoiceData` in `src/lib/workday.ts` always sends `Submit: false`, and it is the only place the `Submit` flag is set. Create, update, and every repair retry go through that builder, so each invoice lands in Workday as a draft that AP reviews and submits by hand.
+This agent never submits an invoice for approval or payment. `buildSubmitInvoiceData` in `src/lib/workday.ts` always sends `Submit: false`, and it is the only place the `Submit` flag is set. `Submit_Supplier_Invoice` is the only Workday write, and the first attempt and every repair retry build their payload through `buildSubmitInvoiceData`. Each invoice lands in Workday as a draft.
 
-When scoring risk or reviewing a change to invoice lines, coding, amounts, or PO matching:
+A change that sets `Submit: true` or adds another submit path changes this and should be called out in its PR.
 
-- A wrong line quantity, unit cost, worktag, or PO link on a draft is corrected by AP before it can become a payment. Weigh it as a review-time defect, not a payment error.
-- Do not ask for an environment gate or feature flag on that basis alone. Ask for one when a change alters what is submitted outside the draft path, or what is sent to a system other than Workday.
-- Keep the invoice total unchanged. AP notes and fallback labels must describe what was actually submitted (see the notes built from applied fallbacks in `src/lib/workday.ts`), because AP relies on them when reviewing the draft.
-- If a change ever sets `Submit: true` or adds another submit path, treat it as high risk and say so in the PR.
+### Limits of the draft guarantee
+
+- Nothing in this code makes AP review a draft before AP submits it. Review is a team process, not something the agent enforces.
+- A supplier resend can overwrite AP's edits. The resend path calls `submitSupplierInvoiceUpdate` on a Draft, unpaid, uncancelled invoice and replaces its lines, so a fix AP made by hand can be lost and AP may have to correct the same defect again. `agent-invoice-scoring` describes this ("A resend update still overwrites AP edits on a Draft invoice") and `invoice-attachment-clustering` covers the resend flow.
+
+So a draft is not a guarantee that AP corrects a defect. Notes on the invoice (fallback labels, review notes) describe what was actually submitted, and AP relies on them.
 
 ## Where the rules live
 
