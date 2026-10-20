@@ -158,10 +158,11 @@ export function memoIdentifiersFromEnrichment(
     | 'extractedSupplierReferenceKind'
     | 'extractedCustomerId'
     | 'extractedServicePeriod'
-  >
+  >,
+  po?: string | null
 ): InvoiceMemoIdentifierFields {
   return {
-    po: normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber) ?? null,
+    po: blankToNull(po) ?? normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber) ?? null,
     accountNumber: result.extractedAccountNumber,
     customerId: result.extractedCustomerId,
     supplierReference: result.extractedSupplierReference,
@@ -172,7 +173,7 @@ export function memoIdentifiersFromEnrichment(
 
 const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const DATE_PATTERN = '(?:\\d{1,2}\\/\\d{1,2}\\/(?:\\d{4}|\\d{2})|\\d{4}-\\d{1,2}-\\d{1,2}|[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{4})';
-const DATE_RANGE = new RegExp(`^(${DATE_PATTERN})\\s*(?:-|–|—|to|through|thru)\\s*(${DATE_PATTERN})$`, 'i');
+const DATE_RANGE = new RegExp(`^(${DATE_PATTERN})\\s*(?:-|to|through|thru)\\s*(${DATE_PATTERN})$`, 'i');
 const SINGLE_DATE = new RegExp(`^(${DATE_PATTERN})$`, 'i');
 
 interface CalendarDate {
@@ -181,10 +182,12 @@ interface CalendarDate {
   day: number;
 }
 
+// Whole month names and their usual short forms only; a word that merely starts like a month ("Augusta") is not one.
+const MONTH_WORD = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?$/i;
+
 function monthFromName(name: string): number | undefined {
-  if (!/^[A-Za-z]{3,9}\.?$/.test(name)) return undefined;
-  const index = MONTH_NAMES.indexOf(name.slice(0, 3).toLowerCase());
-  return index >= 0 ? index + 1 : undefined;
+  const match = name.match(MONTH_WORD);
+  return match ? MONTH_NAMES.indexOf(match[1].slice(0, 3).toLowerCase()) + 1 : undefined;
 }
 
 function fullYear(value: string): number {
@@ -245,7 +248,7 @@ function parseWholeMonth(text: string): string | undefined {
  * first and last day. Text that is not a recognizable date or period (no year, odd wording) stays as printed.
  */
 export function formatMemoServiceDates(value: string): string {
-  const text = value.trim().replace(/\s+/g, ' ');
+  const text = value.trim().replace(/[\u2013\u2014]/g, '-').replace(/\s+/g, ' ');
   const quarter = parseQuarter(text);
   if (quarter) return quarter;
   const month = parseWholeMonth(text);
@@ -281,7 +284,9 @@ function identifierParts(fields: InvoiceMemoIdentifierFields): IdentifierParts {
   const labelWord = rawReference?.match(REFERENCE_LABEL)?.[1];
   const referenceValue = sanitizeMemoFragment(stripLeadingLabel(rawReference, REFERENCE_LABEL));
   const referenceIsPo = referenceValue ? normalizePurchaseOrderNumber(referenceValue) === po : false;
-  const servicePeriodText = sanitizeMemoFragment(stripLeadingLabel(blankToNull(fields.servicePeriod), SERVICE_PERIOD_LABEL));
+  // Dates are read before sanitizing, which would turn an en or em dash into a space and break the range.
+  const rawServicePeriod = stripLeadingLabel(blankToNull(fields.servicePeriod), SERVICE_PERIOD_LABEL);
+  const servicePeriodText = sanitizeMemoFragment(rawServicePeriod);
 
   return {
     po,
@@ -291,7 +296,7 @@ function identifierParts(fields: InvoiceMemoIdentifierFields): IdentifierParts {
       referenceTokenLabel(fields.supplierReferenceKind) ?? referenceTokenLabel(labelWord) ?? UNKNOWN_REFERENCE_TOKEN_LABEL,
     reference: referenceIsPo ? null : referenceValue,
     servicePeriodText,
-    servicePeriod: servicePeriodText ? sanitizeMemoFragment(formatMemoServiceDates(servicePeriodText)) : null,
+    servicePeriod: rawServicePeriod ? sanitizeMemoFragment(formatMemoServiceDates(rawServicePeriod)) : null,
   };
 }
 
@@ -359,10 +364,10 @@ export function composeInvoiceMemo(input: InvoiceMemoInput): string | undefined 
   }
   description = polishDescription(description);
 
-  // Identifiers are never cut; the description is left out when it would not fit.
+  // Identifiers are never cut; the description is left out when it would not fit. A description-only memo is cut.
   const composed = prefix ? `${prefix}${description ? `${INVOICE_MEMO_TOKEN_SEPARATOR}${description}` : ''}` : description;
   const memo = sanitizeMemoText(composed);
-  if (!prefix && memo.length > INVOICE_MEMO_MAX_LENGTH) return undefined;
+  if (!prefix && memo.length > INVOICE_MEMO_MAX_LENGTH) return memo.slice(0, INVOICE_MEMO_MAX_LENGTH).trimEnd();
   if (prefix && memo.length > INVOICE_MEMO_MAX_LENGTH) return sanitizeMemoText(prefix);
   return memo || undefined;
 }

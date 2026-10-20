@@ -1027,7 +1027,7 @@ async function processInvoiceCluster(
       appliedLineNumber: notePoLineNumber,
       noteLineMissing: pinnedPo.lineMissing && !usedDefaultCompany,
     });
-    const memoIdentifiers = memoIdentifiersFromEnrichment(result);
+    const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
       description: result.supplier.extractedInformation?.memo,

@@ -202,7 +202,40 @@ describe('composeInvoiceMemo', () => {
       accountNumber: '1033562',
       description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH),
     })).toBe('Acct 1033562');
-    expect(composeInvoiceMemo({ description: 'x'.repeat(INVOICE_MEMO_MAX_LENGTH + 50) })).toBeUndefined();
+  });
+
+  it('cuts and sanitizes a description-only memo that passes the cap', () => {
+    const memo = composeInvoiceMemo({ description: `${'word '.repeat(INVOICE_MEMO_MAX_LENGTH / 5 + 20)}| <b>` });
+    expect(memo).toHaveLength(INVOICE_MEMO_MAX_LENGTH - 1);
+    expect(memo).not.toMatch(/[|<>]/);
+    expect(memo?.endsWith(' ')).toBe(false);
+  });
+
+  it('formats an en-dash or em-dash service period before sanitizing it', () => {
+    expect(composeInvoiceMemo({ customerId: '115117', servicePeriod: '09/01/2026 \u2013 09/30/2026' }))
+      .toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26');
+    expect(composeInvoiceMemo({ customerId: '115117', servicePeriod: '9/1/26\u20149/30/26' }))
+      .toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26');
+    expect(composeInvoiceMemo({ customerId: '115117', servicePeriod: 'Sept 28 \u2013 Oct 2' }))
+      .toBe('Cust 115117 Svc Prd Sept 28 - Oct 2');
+  });
+
+  it('does not strip an en-dash service period copied into the description', () => {
+    expect(composeInvoiceMemo({
+      customerId: '115117',
+      servicePeriod: '09/01/2026 \u2013 09/30/2026',
+      description: 'Service Period 09/01/2026 \u2013 09/30/2026 elevator phone line service',
+    })).toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service');
+  });
+
+  it('drops a supplier reference that is the email or note PO passed in', () => {
+    expect(composeInvoiceMemo({
+      po: 'PO-123456',
+      supplierReference: 'Order # 123456',
+      supplierReferenceKind: 'order',
+      accountNumber: '12345',
+    })).toBe('Acct 12345');
+    expect(composeInvoiceMemo({ po: null, supplierReference: '123456', supplierReferenceKind: 'order' })).toBe('Ord 123456');
   });
 
   it('keeps a description that fits exactly', () => {
@@ -228,6 +261,14 @@ describe('formatMemoServiceDates', () => {
     ['02/2028', '02/01/28 - 02/29/28'],
     ['Q4 2026', 'Q4 26'],
     ['2026 Q1', 'Q1 26'],
+    ['09/01/2026 \u2013 09/30/2026', '09/01/26 - 09/30/26'],
+    ['9/1/26\u20149/30/26', '09/01/26 - 09/30/26'],
+    ['Aug 2026', '08/01/26 - 08/31/26'],
+    ['AUGUST 2026', '08/01/26 - 08/31/26'],
+    ['Sep. 2026', '09/01/26 - 09/30/26'],
+    ['June 2026', '06/01/26 - 06/30/26'],
+    ['2026 - Dec', '12/01/26 - 12/31/26'],
+    ['Aug 5, 2026', '08/05/26'],
   ])('formats %s as %s', (input, expected) => {
     expect(formatMemoServiceDates(input)).toBe(expected);
   });
@@ -236,7 +277,15 @@ describe('formatMemoServiceDates', () => {
     expect(formatMemoServiceDates('Sept 28 - Oct 2')).toBe('Sept 28 - Oct 2');
     expect(formatMemoServiceDates('13/45/2026')).toBe('13/45/2026');
     expect(formatMemoServiceDates('Annual services')).toBe('Annual services');
+    expect(formatMemoServiceDates('Sept 28 \u2013 Oct 2')).toBe('Sept 28 - Oct 2');
   });
+
+  it.each(['Augusta 2026', 'Marketing 2026', 'Junior 2026', '2026 Mayhem', 'Octane 2026', 'Decatur 2026'])(
+    'does not read the month-like word in "%s" as a month',
+    (input) => {
+      expect(formatMemoServiceDates(input)).toBe(input);
+    }
+  );
 });
 
 describe('sanitizeMemoText', () => {
@@ -370,9 +419,31 @@ describe('memoIdentifiersFromEnrichment', () => {
       servicePeriod: null,
     });
   });
+
+  it('prefers the matched, email, or note PO over the extracted one', () => {
+    const identifiers = memoIdentifiersFromEnrichment({
+      extractedPurchaseOrderNumber: null,
+      extractedAccountNumber: null,
+      extractedSupplierReference: 'Order # 123456',
+      extractedSupplierReferenceKind: 'order',
+      extractedCustomerId: null,
+      extractedServicePeriod: null,
+    }, 'PO-123456');
+    expect(identifiers.po).toBe('PO-123456');
+    expect(composeInvoiceMemo(identifiers)).toBeUndefined();
+  });
 });
 
 describe('applyInvoiceMemoIdentifiersToLines', () => {
+  it('cuts and sanitizes a long description-only line memo when there are no identifiers', () => {
+    const lines: FinalInvoiceLine[] = [
+      { lineOrder: 1, description: 'Widgets', memo: `${'word '.repeat(150)}| <b>`, quantity: 1, unitCost: 10 },
+    ];
+    const [line] = applyInvoiceMemoIdentifiersToLines(lines, {});
+    expect(line.memo).toHaveLength(INVOICE_MEMO_MAX_LENGTH - 1);
+    expect(line.memo).not.toMatch(/[|<>]/);
+  });
+
   it('applies the same identifier prefix to each line memo', () => {
     const lines: FinalInvoiceLine[] = [
       { lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 1, unitCost: 10 },
