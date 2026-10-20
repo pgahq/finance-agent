@@ -73,6 +73,12 @@ describe('scoreChanges and entryOutcome', () => {
     expect(entryOutcome([scored[0]])).toBe('submitted_clean');
   });
 
+  it('counts an AP change to the due date against the agent', () => {
+    const [change] = scoreChanges([{ field: 'dueDate', before: '2026-11-11', after: '2026-11-25' }]);
+    expect(change).toMatchObject({ category: 'material', agentOwned: true });
+    expect(entryOutcome([change])).toBe('submitted_edited');
+  });
+
   it('counts added and removed lines as agent-owned when the agent rebuilt the lines', () => {
     expect(scoreChanges([{ field: 'line.removed', line: 1 }], ['line.amount'])[0].agentOwned).toBe(true);
     expect(scoreChanges([{ field: 'line.removed', line: 1 }], ['supplier'])[0].agentOwned).toBe(false);

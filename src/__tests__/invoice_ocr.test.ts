@@ -2,7 +2,7 @@ import { enrichInvoiceFromAttachments } from '../lib/invoice_enrichment.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment } from '../lib/invoice_ocr.js';
 import { DEFAULT_OCR_MODEL_ID, getOcrModel } from '../lib/models.js';
 import { InvoiceMatchingSchema } from '../prompts/enrich_invoice_prompt.js';
-import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
+import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, normalizePrintedDate, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PurchaseOrderEnrichmentContext } from '../lib/purchase_order.js';
 import type { PresignedAttachment } from '../lib/types.js';
@@ -59,6 +59,7 @@ const ocrResult: InvoiceOcrResult = {
     email: null,
   },
   extractedInvoiceDate: '2026-10-02',
+  extractedDueDate: '2026-11-01',
   extractedAmountDue: '$1,540.00',
   extractedSuppliersInvoiceNumber: '401',
   extractedFreightAmount: null,
@@ -68,7 +69,8 @@ const ocrResult: InvoiceOcrResult = {
   extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
-  extractedJobNumber: null,
+  extractedSupplierReference: null,
+  extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
   extractedServicePeriod: 'Sept 28 - Oct 2',
   extractedPaymentTerms: { name: 'Due on receipt' },
@@ -105,6 +107,7 @@ const ocrResponse: InvoiceOcrResponse = {
     email: '',
   },
   extractedInvoiceDate: '2026-10-02',
+  extractedDueDate: '2026-11-01',
   extractedAmountDue: '$1,540.00',
   extractedSuppliersInvoiceNumber: '401',
   extractedFreightAmount: '',
@@ -114,7 +117,8 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedOtherCharges: [{ label: ' EnvChg Tax ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
-  extractedJobNumber: '',
+  extractedSupplierReference: '',
+  extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
   extractedServicePeriod: 'Sept 28 - Oct 2',
   extractedPaymentTerms: 'Due on receipt',
@@ -218,7 +222,10 @@ describe('invoice OCR pass', () => {
 
     expect(unions).toBeLessThanOrEqual(16);
     expect(unions).toBe(3);
+    expect(optional).toBeLessThanOrEqual(24);
     expect(optional).toBe(0);
+    expect((jsonSchema as any).properties.extractedDueDate).toMatchObject({ type: 'string' });
+    expect((jsonSchema as any).required).toContain('extractedDueDate');
   });
 
   it('turns empty strings and arrays from Haiku back into null', () => {
@@ -355,6 +362,74 @@ describe('invoice OCR pass', () => {
     });
   });
 
+  describe('printed due date', () => {
+    // IBS invoice 1026465 prints Invoice Date 10/10/26, Due Date 11/11/26, and PO-413821.
+    const ibsResponse: InvoiceOcrResponse = {
+      ...ocrResponse,
+      extractedInvoiceDate: '2026-10-10',
+      extractedDueDate: '11/11/26',
+      extractedSuppliersInvoiceNumber: '1026465',
+      extractedPurchaseOrderNumber: 'PO-413821',
+      extractedPaymentTerms: 'Net 30',
+    };
+
+    it('normalizes the IBS 1026465 due date 11/11/26 to 2026-11-11 and keeps it through the merge', () => {
+      const ocr = normalizeInvoiceOcrResult(ibsResponse);
+
+      expect(ocr).toMatchObject({
+        extractedInvoiceDate: '2026-10-10',
+        extractedDueDate: '2026-11-11',
+        extractedPurchaseOrderNumber: 'PO-413821',
+      });
+      expect(mergeInvoiceEnrichment(matchingResult, ocr)).toMatchObject({
+        extractedDueDate: '2026-11-11',
+        extractedPaymentTerms: { name: 'Net 30', workdayId: 'Immediate' },
+      });
+    });
+
+    it('turns an empty or unreadable due date into null', () => {
+      expect(normalizeInvoiceOcrResult({ ...ibsResponse, extractedDueDate: '' }).extractedDueDate).toBeNull();
+      expect(normalizeInvoiceOcrResult({ ...ibsResponse, extractedDueDate: '  ' }).extractedDueDate).toBeNull();
+      expect(normalizeInvoiceOcrResult({ ...ibsResponse, extractedDueDate: 'Due on receipt' }).extractedDueDate).toBeNull();
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).extractedDueDate).toBeNull();
+    });
+
+    it.each([
+      ['2026-11-11', '2026-11-11'],
+      ['11/11/2026', '2026-11-11'],
+      ['1/5/26', '2026-01-05'],
+      ['11-11-26', '2026-11-11'],
+      ['Nov 11, 2026', '2026-11-11'],
+      ['November 11 2026', '2026-11-11'],
+      ['11 Nov 2026', '2026-11-11'],
+      ['November 11th, 2026', '2026-11-11'],
+      ['Sept 30, 2026', '2026-09-30'],
+      ['September 3rd, 2026', '2026-09-03'],
+      ['22nd Feb 2026', '2026-02-22'],
+      ['November 11st, 2026', null],
+      ['February 22th, 2026', null],
+      ['1th March 2026', null],
+      ['2/30/26', null],
+      ['13/01/26', null],
+      ['Net 30', null],
+      ['2026-11-11Tgarbage', null],
+      ['2026-11-11-08:00', null],
+      ['11/11-26', null],
+      ['05.11.2026', null],
+      ['Mayday 11 2026', null],
+      ['Novemberish 11, 2026', null],
+      ['Nov 11, 26', null],
+    ])('normalizes the printed date %s to %s', (printed, expected) => {
+      expect(normalizePrintedDate(printed)).toBe(expected);
+    });
+
+    it('asks for an explicitly printed due date only, with the IBS example', () => {
+      expect(InvoiceOcrSchema.shape.extractedDueDate).toBeDefined();
+      expect(invoiceOcrPrompt).toContain('Never compute a due date from payment terms such as "Net 30"');
+      expect(invoiceOcrPrompt).toContain('Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11"');
+    });
+  });
+
   describe('other printed charges', () => {
     it('keeps printed charges with a label and an amount and drops blank entries', () => {
       expect(normalizeInvoiceOcrResult(ocrResponse).extractedOtherCharges).toEqual([{ label: 'EnvChg Tax', amount: '$17.00' }]);
@@ -400,7 +475,10 @@ describe('invoice OCR pass', () => {
       const matchingContent = matchingCall.messages[0].content;
       expect(matchingContent).toHaveLength(1);
       expect(matchingContent[0].type).toBe('text');
-      expect(matchingContent[0].text).toContain(JSON.stringify(normalizeInvoiceOcrResult(ocrResponse), null, 2));
+      const { extractedDueDate, ...ocrForMatching } = normalizeInvoiceOcrResult(ocrResponse);
+      expect(extractedDueDate).toBe('2026-11-01');
+      expect(matchingContent[0].text).toContain(JSON.stringify(ocrForMatching, null, 2));
+      expect(matchingContent[0].text).not.toContain('extractedDueDate');
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
