@@ -380,6 +380,26 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].extracted.dueDate).toBeUndefined();
     });
 
+    it('tells AP when the printed dates only make sense read day/month/year', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...ibsEnrichmentResult,
+        extractedInvoiceDate: '2026-05-10',
+        extractedDueDate: '2026-04-11',
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([
+        { field: 'dueDate', label: 'due date not applied (2026-04-11 is earlier than invoice date 2026-05-10)' },
+      ]);
+      expect(notes).toContain('not sent because it is earlier than the invoice date) The printed dates may be day/month/year: read that way, the invoice date is 2026-10-05 and the due date is 2026-11-04. Check the invoice.');
+      const ordinary = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(ordinary).toContain('Due Date (from document): 2026-04-11 The printed dates may be day/month/year');
+    });
+
     it('sends no due date when none is printed', async () => {
       process.env.INVOICE_MOD_ENABLED = 'true';
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();

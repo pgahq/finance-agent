@@ -12,6 +12,7 @@ import {
 import { invoiceMatchingPrompt, InvoiceMatchingSchema, type InvoiceEnrichmentResult, type InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachmentRole } from './invoice_ocr.js';
 import { normalizePrintedDate } from '../prompts/invoice_ocr_prompt.js';
+import { dayMonthYearReading } from './due_date.js';
 import { withComposedLineDescriptions, type EmailBudgetSplitOutcome } from './invoice_lines.js';
 import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
@@ -473,8 +474,12 @@ export function formatDueDateNotes(
   if (!dueDate) {
     return result.extractedDueDate?.trim() ? '\n\nDue Date (from document): unreadable, not sent' : '';
   }
+  const flipped = dayMonthYearReading(result.extractedInvoiceDate, dueDate);
+  const flipNote = flipped
+    ? ` The printed dates may be day/month/year: read that way, the invoice date is ${flipped.invoiceDate} and the due date is ${flipped.dueDate}. Check the invoice.`
+    : '';
   const fallback = appliedFallbacks.find((f) => f.field === 'dueDate');
-  if (!fallback) return `\n\nDue Date (from document): ${dueDate}`;
+  if (!fallback) return `\n\nDue Date (from document): ${dueDate}${flipNote}`;
   const label = fallback.label ?? '';
   const reason = label === 'omitted due date'
     ? 'Workday rejected it, so the retry kept the invoice\'s current due date'
@@ -485,7 +490,7 @@ export function formatDueDateNotes(
         : label.startsWith('due date not applied') && label.includes('days after invoice date')
           ? `not sent because it is ${label.match(/more than \d+ days/)?.[0] ?? 'too far'} after the invoice date; check the year`
           : `not sent: ${label}`;
-  return `\n\nDue Date (from document): ${dueDate} (${reason})`;
+  return `\n\nDue Date (from document): ${dueDate} (${reason})${flipNote}`;
 }
 
 // Helper functions to extract data from invoice

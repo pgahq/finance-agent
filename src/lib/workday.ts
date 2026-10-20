@@ -2,6 +2,7 @@ import { debug } from '@pga/logger';
 import path from 'path';
 import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isDueDateValidationError, isPaymentSchedulesOverrideError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
+import { daysBetween, MAX_DUE_DATE_DAYS_AFTER_INVOICE } from './due_date.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
 import { applyAmountOnlyLineRetry, applyPositivePoQuantityRetry, applyRelatedLobWorktags, CHARGE_RECONCILIATION_FALLBACK_FIELD, chargeAmount, FREIGHT_HEADER_FALLBACK_MESSAGE, chargeReconciliationLogSummary, chargeReconciliationMessages, isDiscountLine, lineHasQuantityOrUnitAndExtended, parseExtractedAmount, reconcileSubmittedCharges, requiresPositivePoQuantity, splitFreightLines } from './invoice_lines.js';
 import {
@@ -639,12 +640,6 @@ function resolveInvoiceDate(_currentInvoice: any, invoiceDate?: string): string 
 
 export const OMITTED_DUE_DATE_LABEL = 'omitted due date';
 export const CLEARED_DUE_DATE_OVERRIDE_LABEL = 'omitted due date and the current override (payment schedules)';
-/** A printed due date further out than this is more likely a misread year than real terms, so it is not sent. */
-export const MAX_DUE_DATE_DAYS_AFTER_INVOICE = 180;
-
-function daysBetween(fromIsoDate: string, toIsoDate: string): number {
-  return Math.round((Date.parse(`${toIsoDate}T00:00:00Z`) - Date.parse(`${fromIsoDate}T00:00:00Z`)) / 86_400_000);
-}
 
 function calendarDate(year: number, month: number, day: number): string | undefined {
   const date = new Date(Date.UTC(year, month - 1, day));
