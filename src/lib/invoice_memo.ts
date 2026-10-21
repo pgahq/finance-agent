@@ -31,6 +31,12 @@ const REFERENCE_LABEL = /^(job|order|confirmation|conf|file|case|matter|ref(?:er
 const CUSTOMER_LABEL = /^(?:bill[-\s]?to\s+)?(?:customer|cust)(?:\s*(?:id|#|number))?\s*[:#.-]*\s*/i;
 const SERVICE_PERIOD_LABEL = /^(?:service\s+period|billing\s+period|period\s+covered)\s*[:#.-]*\s*/i;
 
+// Labels a period can sit behind when the model copies it into the description.
+const PERIOD_LABELS = [
+  'Service Period', 'Billing Period', 'Period Covered', 'Pay Date Range', 'Pay Period', 'Week Ending',
+  'Week Of', 'Date Range', 'Service Dates', 'Billing Dates',
+];
+
 const REFERENCE_TOKEN_LABELS: ReadonlyArray<readonly [prefix: string, label: string]> = [
   ['ord', 'Ord'],
   ['conf', 'Conf'],
@@ -173,7 +179,7 @@ export function memoIdentifiersFromEnrichment(
 
 const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const DATE_PATTERN = '(?:\\d{1,2}\\/\\d{1,2}\\/(?:\\d{4}|\\d{2})|\\d{4}-\\d{1,2}-\\d{1,2}|[A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{4})';
-const DATE_RANGE = new RegExp(`^(${DATE_PATTERN})\\s*(?:-|to|through|thru)\\s*(${DATE_PATTERN})$`, 'i');
+const DATE_RANGE = new RegExp(`^(${DATE_PATTERN})\\s*(?:-|to:?|through|thru)\\s*(${DATE_PATTERN})$`, 'i');
 const SINGLE_DATE = new RegExp(`^(${DATE_PATTERN})$`, 'i');
 
 interface CalendarDate {
@@ -265,9 +271,14 @@ function parseServiceDates(text: string): string | undefined {
 // to reach dates that start further in.
 const MAX_LEADING_LABEL_WORDS = 5;
 
-function parseLabeledServiceDates(text: string): string | undefined {
+function parseLabeledServiceDates(value: string): string | undefined {
+  // A delimiter stuck to the first date ("Pay Date Range:09/28/2026") would otherwise hide the date from the word split.
+  const text = value.replace(/([A-Za-z])[:#/.-]+(?=\d)/g, '$1 ');
   const words = text.split(' ');
   for (let skip = 1; skip <= Math.min(MAX_LEADING_LABEL_WORDS, words.length - 1); skip++) {
+    // A label word never holds a digit, a month, or a quarter; skipping one would cut the start off a range.
+    const skipped = words[skip - 1].replace(/[:#.,]+$/, '');
+    if (/\d/.test(skipped) || monthFromName(skipped) || /^q[1-4]$/i.test(skipped)) return undefined;
     const rest = words.slice(skip).join(' ').replace(/^[:#.-]+\s*/, '');
     const dates = parseServiceDates(rest);
     if (dates) return dates;
@@ -341,9 +352,12 @@ function descriptionTokensToStrip(fields: InvoiceMemoIdentifierFields, tokens: s
   if (customerId) legacy.push(`Customer ID ${customerId}`, `${CUSTOMER_TOKEN_LABEL} ${customerId}`);
   if (reference) legacy.push(`Job ${reference}`);
   if (po) legacy.push(po);
-  for (const period of [servicePeriodText, servicePeriod]) {
-    if (period) legacy.push(`Service Period ${period}`, `${SERVICE_PERIOD_TOKEN_LABEL} ${period}`);
+  const periods = [servicePeriodText, servicePeriod].filter((period): period is string => Boolean(period));
+  for (const period of periods) {
+    for (const label of [...PERIOD_LABELS, SERVICE_PERIOD_TOKEN_LABEL]) legacy.push(`${label} ${period}`);
   }
+  // The model may copy the period as printed, with or without its label ("Pay Date Range 09/28/2026 - 10/11/2026").
+  legacy.push(...periods);
   return [...tokens, ...legacy];
 }
 

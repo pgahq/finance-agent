@@ -270,7 +270,7 @@ Extract these identifiers independently when they appear on the invoice or in a 
 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 
-4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", or From/To. Return the dates or period only, without the label in front of them (\`09/28/2026 - 10/11/2026\`, not \`Pay Date Range 09/28/2026 - 10/11/2026\`). Keep the document wording for the dates; do not invent dates.
+4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To. Return the dates or period only, without the label in front of them (\`09/28/2026 - 10/11/2026\`, not \`Pay Date Range 09/28/2026 - 10/11/2026\`). Keep the document wording for the dates; do not invent dates.
 
 ---
 
