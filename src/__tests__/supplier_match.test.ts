@@ -451,4 +451,14 @@ describe('findSupplierByDistinctiveWord', () => {
     expect(findByWord).toHaveBeenCalledTimes(MAX_DISTINCTIVE_WORDS);
     expect(findByWord.mock.calls.map(([, word]) => word)).toEqual(['alpha', 'bravo', 'charlie', 'delta']);
   });
+
+  it('names only the leading word in the evidence when several unique words match', async () => {
+    const both = supplierRow('wid-both', 'MASEK BRIGHTWATER ALBUQUERQUE', 'S-030011');
+    wordIndex({ masek: [both], brightwater: [both] });
+
+    const { match } = await findSupplierByDistinctiveWord(db, { printedName: 'Masek Brightwater Carts' });
+
+    expect(match?.evidence[0]).toContain('leads with the distinctive word "MASEK"');
+    expect(match?.evidence[0]).not.toContain('BRIGHTWATER');
+  });
 });

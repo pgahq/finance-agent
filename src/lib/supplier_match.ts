@@ -341,7 +341,7 @@ export async function findSupplierByDistinctiveWord(
   const matchedWords = [...entry.uniqueWords].map((word) => `"${word.toUpperCase()}"`).join(', ');
   const evidence = signal === 'phone'
     ? `the printed phone is on this supplier, and the printed name's distinctive word ${matchedWords} is on no other supplier`
-    : `printed name "${printedName}" leads with the distinctive word ${matchedWords}, which also leads this supplier's name and is on no other supplier`;
+    : `printed name "${printedName}" leads with the distinctive word "${(printedLead ?? '').toUpperCase()}", which also leads this supplier's name and is on no other supplier`;
   return {
     match: {
       workdayId,
