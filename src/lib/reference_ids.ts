@@ -475,10 +475,15 @@ export async function resolveBudgetSplitCompanies(options: {
         apNotes: options.apNotes,
         emailCompany: claim,
       });
-      const confirmed = match?.referenceId
-        && (!claimedReferenceId || match.referenceId.toLowerCase() === claimedReferenceId.toLowerCase());
+      // A company matched by name alone carries the model's own WID and reference ID, so the reference ID that
+      // goes on the line is read from the company cache instead, which also proves the WID exists.
+      const referenceId = match?.origin === 'name'
+        ? await companyReferenceIdForWorkdayId(options.db, match.workdayId)
+        : match?.referenceId;
+      const confirmed = referenceId
+        && (!claimedReferenceId || referenceId.toLowerCase() === claimedReferenceId.toLowerCase());
       return confirmed
-        ? { referenceId: match.referenceId, name: match.name ?? claim.name ?? undefined }
+        ? { referenceId, name: match?.name ?? claim.name ?? undefined }
         : { unverified: label };
     } catch (error) {
       debug('Budget company could not be verified:', error);

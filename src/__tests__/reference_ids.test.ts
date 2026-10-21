@@ -239,6 +239,35 @@ describe('resolveBudgetSplitCompanies', () => {
     })).resolves.toEqual([undefined, { unverified: '410' }]);
   });
 
+  it('reads the reference id of a company matched by name from the cache, not from the model', async () => {
+    mockReferenceLookup({});
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([{ workday_id: 'wid-410', metadata: { companyReferenceId: '410' } }]);
+    const claim = { extracted: 'PGA Corporation', workdayId: 'wid-410', referenceId: '410', name: 'PGA Corporation' };
+
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ referenceId: '410', name: 'PGA Corporation' }]);
+
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([]);
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ unverified: 'PGA Corporation' }]);
+
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([{ workday_id: 'wid-410', metadata: { companyReferenceId: '999' } }]);
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ unverified: 'PGA Corporation' }]);
+  });
+
   it('reports a company that matches no cached company as unverified', async () => {
     mockReferenceLookup({ '310': [company310], '999': [] });
 
