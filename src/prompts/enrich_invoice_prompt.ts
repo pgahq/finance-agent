@@ -120,7 +120,7 @@ export const InvoiceEnrichmentSchema = z.object({
 
   extractedCustomerId: z.string().nullable().describe('Customer ID from the invoice. Labels include "Customer ID", "Bill-To Customer ID", "Customer #", and "Cust ID". Null if not visible. Distinct from account number: if the same value was already captured as extractedAccountNumber, leave this null.'),
 
-  extractedServicePeriod: z.string().nullable().describe('Billing or service period as shown on the document, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", or From/To date ranges. Keep the document wording; do not invent dates. Null if not visible.'),
+  extractedServicePeriod: z.string().nullable().describe('Billing or service period as shown on the document, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To date ranges. Return the dates or period only, without the label in front of them (for example "09/28/2026 - 10/11/2026" for "Pay Date Range 09/28/2026 - 10/11/2026"). Keep the document wording for the dates; do not invent dates. Null if not visible.'),
 
   extractedPaymentTerms: z.object({
     name: z.string().describe('The payment terms as they appear on the invoice document (e.g. "Net 30", "Net 60")'),
