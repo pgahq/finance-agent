@@ -16,7 +16,16 @@ import { dayMonthYearReading } from './due_date.js';
 import { withComposedLineDescriptions, type EmailBudgetSplitOutcome } from './invoice_lines.js';
 import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
-import { findUniqueSupplierByNameEvidence, type SupplierNameMatch } from './supplier_match.js';
+import {
+  MAX_POSSIBLE_SUPPLIERS,
+  findSupplierByDistinctiveWord,
+  findUniqueSupplierByNameEvidence,
+  printedSupplierNameCandidates,
+  supplierRecordFromDocument,
+  type PossibleSupplier,
+  type SupplierNameMatch,
+} from './supplier_match.js';
+import { queryDocuments } from './rag.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
 
 async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
@@ -161,11 +170,58 @@ export async function enrichInvoiceFromAttachments(
 }
 
 const NAME_EVIDENCE_CONFIDENCE = 0.85;
+const DISTINCTIVE_WORD_CONFIDENCE = 0.8;
+const NAME_SEARCH_LIMIT = 5;
+const NAME_SEARCH_MIN_SIMILARITY = 0.6;
+
+function describeSupplier(supplier: { supplierId?: string; supplierName: string }): string {
+  return `${supplier.supplierId ? `${supplier.supplierId} ` : ''}${supplier.supplierName}`;
+}
 
 /**
- * A branch prints its own address and phone, which the parent supplier record does not carry, so the model
- * scores such a match low and reports not_found. When the remit-to company or the printed name equals exactly one
- * cached supplier's name or alternate name, that supplier is found. Anything else stays as the model decided.
+ * A name-only vector search (no address, phone, or industry in the query) for suppliers the model's combined
+ * query ranked low. Its results are only ever listed for AP; they never pick a supplier.
+ */
+async function nameOnlySupplierCandidates(
+  printedName: string,
+  excluded: Set<string>
+): Promise<PossibleSupplier[]> {
+  const queries = printedSupplierNameCandidates(printedName).slice(0, 2);
+  const found = new Map<string, PossibleSupplier>();
+  for (const query of queries) {
+    const results = await queryDocuments({
+      query,
+      documentType: 'supplier',
+      limit: NAME_SEARCH_LIMIT,
+      similarityThreshold: NAME_SEARCH_MIN_SIMILARITY,
+    });
+    debug('Supplier name-only search', {
+      query,
+      candidates: results.map((result) => {
+        const record = supplierRecordFromDocument(result);
+        return { workdayId: result.workday_id, supplierId: record.supplierId, supplierName: record.supplierName, alternateNames: record.alternateNames, similarity: result.similarity.toFixed(3) };
+      }),
+    });
+    for (const result of results) {
+      if (excluded.has(result.workday_id) || found.has(result.workday_id)) continue;
+      const record = supplierRecordFromDocument(result);
+      found.set(result.workday_id, {
+        workdayId: result.workday_id,
+        ...(record.supplierId ? { supplierId: record.supplierId } : {}),
+        supplierName: record.supplierName,
+        reason: `name search "${query}" scored ${result.similarity.toFixed(2)}`,
+      });
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * A branch prints its own address and phone, which the parent supplier record does not carry, and a printed name
+ * can carry words the record lacks, so the model scores such a match low and reports not_found. A supplier is found
+ * when the remit-to company or the printed name equals exactly one cached supplier's name or alternate name, or when
+ * a distinctive word of the printed name is on exactly one supplier. When no supplier can be picked, the near
+ * candidates are listed in the supplier note instead. A model result that is not not_found stays as decided.
  */
 export async function resolveSupplierByNameEvidence(
   result: InvoiceEnrichmentResult,
@@ -173,37 +229,68 @@ export async function resolveSupplierByNameEvidence(
 ): Promise<InvoiceEnrichmentResult> {
   if (result.supplier.status !== 'not_found') return result;
 
+  const printedName = result.supplier.extractedInformation.supplierName;
+  const excludeWorkdayIds = [process.env.WORKDAY_DEFAULT_SUPPLIER_WID];
   let match: SupplierNameMatch | undefined;
+  let confidence = NAME_EVIDENCE_CONFIDENCE;
+  let wordPossible: PossibleSupplier[] = [];
+  let byWord = false;
   try {
     const db = await getDatabaseConnection(process.env);
-    match = await findUniqueSupplierByNameEvidence(db, {
-      printedName: result.supplier.extractedInformation.supplierName,
-      remitToAddress,
-      excludeWorkdayIds: [process.env.WORKDAY_DEFAULT_SUPPLIER_WID],
-    });
+    match = await findUniqueSupplierByNameEvidence(db, { printedName, remitToAddress, excludeWorkdayIds });
+    if (!match) {
+      const lookup = await findSupplierByDistinctiveWord(db, { printedName, phone: result.supplier.extractedInformation.phone, excludeWorkdayIds });
+      match = lookup.match;
+      wordPossible = lookup.possible;
+      byWord = Boolean(match);
+      confidence = DISTINCTIVE_WORD_CONFIDENCE;
+    }
   } catch (error) {
     debug('Supplier name evidence lookup failed; keeping the not_found result:', error);
     return result;
   }
-  if (!match) return result;
 
-  const label = `${match.supplierId ? `${match.supplierId} ` : ''}${match.supplierName}`;
-  const note = `${match.evidence.join('; ')}. The printed branch address and phone are not required to match the supplier record; confirm ${label}.`;
+  if (match) {
+    const note = byWord
+      ? `${match.evidence.join('; ')}. The rest of the printed name, the address, and the phone are not required to match the supplier record; confirm ${describeSupplier(match)}.`
+      : `${match.evidence.join('; ')}. The printed branch address and phone are not required to match the supplier record; confirm ${describeSupplier(match)}.`;
+    return {
+      ...result,
+      supplier: {
+        ...result.supplier,
+        status: 'found',
+        confidence,
+        resolvedSupplier: {
+          workdayId: match.workdayId,
+          supplierName: match.supplierName,
+          confidence,
+          reason: note,
+        },
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'update_invoice', reason: note },
+        reason: `${note} Model result before the name check: ${result.supplier.reason}`,
+      },
+    };
+  }
+
+  const excluded = new Set(excludeWorkdayIds.filter((id): id is string => Boolean(id)));
+  let searched: PossibleSupplier[] = [];
+  if (printedName) {
+    try {
+      searched = await nameOnlySupplierCandidates(printedName, excluded);
+    } catch (error) {
+      debug('Supplier name-only search failed; listing only the word matches:', error);
+    }
+  }
+  const possible = [...new Map([...wordPossible, ...searched].map((supplier) => [supplier.workdayId, supplier])).values()].slice(0, MAX_POSSIBLE_SUPPLIERS);
+  if (possible.length === 0) return result;
+
+  const listed = possible.map((supplier) => `${describeSupplier(supplier)} (${supplier.reason})`).join('; ');
   return {
     ...result,
     supplier: {
       ...result.supplier,
-      status: 'found',
-      confidence: NAME_EVIDENCE_CONFIDENCE,
-      resolvedSupplier: {
-        workdayId: match.workdayId,
-        supplierName: match.supplierName,
-        confidence: NAME_EVIDENCE_CONFIDENCE,
-        reason: note,
-      },
-      potentialDuplicateSuppliers: null,
-      recommendation: { action: 'update_invoice', reason: note },
-      reason: `${note} Model result before the name check: ${result.supplier.reason}`,
+      reason: `${result.supplier.reason} Possible Workday suppliers the agent did not apply because no single supplier was a confident match, confirm before using one: ${listed}.`,
     },
   };
 }
