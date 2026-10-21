@@ -207,6 +207,9 @@ const GENERIC_NAME_WORDS = new Set([
 
 const MIN_DISTINCTIVE_WORD_LENGTH = 4;
 
+/** Each word is a full scan of the supplier cache, so a long or misread printed name only searches its first words. */
+export const MAX_DISTINCTIVE_WORDS = 4;
+
 /** A word found in this many supplier names is common, however distinctive it looks. */
 export const DISTINCTIVE_WORD_SUPPLIER_LIMIT = 25;
 
@@ -239,18 +242,40 @@ export function distinctiveNameWords(printedName: string | null | undefined): st
   return [...words];
 }
 
+function firstNameToken(name: string | undefined): string | undefined {
+  return name ? [...nameTokens(name)][0] : undefined;
+}
+
+function digitsKey(phone: string): string | undefined {
+  const digits = phone.replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : undefined;
+}
+
+function pickSignal(
+  entry: { record: SupplierRecord; uniqueWords: Set<string> },
+  printedLead: string | undefined,
+  printedPhone: string | null | undefined
+): 'lead' | 'phone' | undefined {
+  const names = [entry.record.supplierName, ...entry.record.alternateNames];
+  if (printedLead && entry.uniqueWords.has(printedLead) && names.some((name) => firstNameToken(name) === printedLead)) return 'lead';
+  const phone = printedPhone ? digitsKey(printedPhone) : undefined;
+  if (phone && entry.record.phones.some((recordPhone) => digitsKey(recordPhone) === phone)) return 'phone';
+  return undefined;
+}
+
 /**
  * Finds the one cached supplier a distinctive word of the printed name points to, even when the rest of the
  * printed name, the address, and the phone differ from the record. A word counts only when it appears as a whole
  * word in the names of fewer than DISTINCTIVE_WORD_SUPPLIER_LIMIT suppliers, and it picks a supplier only when
- * that word is on exactly one supplier and no other supplier matches as many printed words. Anything less never
- * guesses: the suppliers that share a word come back as possible matches for AP to review.
+ * that word is on exactly one supplier, no other supplier matches as many printed words, and a second signal agrees:
+ * the word leads both the printed name and a name on the record, or the printed phone is on the record. Anything
+ * less never guesses: the suppliers that share a word come back as possible matches for AP to review.
  */
 export async function findSupplierByDistinctiveWord(
   db: DatabaseConnection,
-  input: { printedName?: string | null; excludeWorkdayIds?: Array<string | undefined> }
+  input: { printedName?: string | null; phone?: string | null; excludeWorkdayIds?: Array<string | undefined> }
 ): Promise<DistinctiveWordLookup> {
-  const words = distinctiveNameWords(input.printedName);
+  const words = distinctiveNameWords(input.printedName).slice(0, MAX_DISTINCTIVE_WORDS);
   if (words.length === 0) return { possible: [] };
 
   const excluded = new Set((input.excludeWorkdayIds ?? []).filter((id): id is string => Boolean(id)));
@@ -276,10 +301,15 @@ export async function findSupplierByDistinctiveWord(
   const ranked = [...suppliers.entries()].sort((a, b) => b[1].words.size - a[1].words.size);
   const withUniqueWord = ranked.filter(([, entry]) => entry.uniqueWords.size > 0);
   const [top, runnerUp] = ranked;
-  const pickedEntry = withUniqueWord.length === 1 && top && top[0] === withUniqueWord[0]?.[0]
+  const uniqueTop = withUniqueWord.length === 1 && top && top[0] === withUniqueWord[0]?.[0]
     && (!runnerUp || top[1].words.size > runnerUp[1].words.size)
     ? top
     : undefined;
+  // A leftover word on one cached supplier (a city, surname, or trade word) must not claim a new supplier, so the
+  // word also has to lead the printed name and a name on the record, or the printed phone must be on the record.
+  const printedLead = firstNameToken(printedSupplierNameCandidates(input.printedName)[0]);
+  const signal = uniqueTop ? pickSignal(uniqueTop[1], printedLead, input.phone) : undefined;
+  const pickedEntry = uniqueTop && signal ? uniqueTop : undefined;
 
   const possible = ranked
     .filter(([, entry]) => entry.narrowWords.size > 0)
@@ -301,6 +331,7 @@ export async function findSupplierByDistinctiveWord(
       words: [...entry.words],
       uniqueWords: [...entry.uniqueWords],
     })),
+    signal,
     accepted: pickedEntry?.[0],
   });
 
@@ -308,12 +339,15 @@ export async function findSupplierByDistinctiveWord(
   const [workdayId, entry] = pickedEntry;
   const printedName = cleanName(input.printedName ?? '');
   const matchedWords = [...entry.uniqueWords].map((word) => `"${word.toUpperCase()}"`).join(', ');
+  const evidence = signal === 'phone'
+    ? `the printed phone is on this supplier, and the printed name's distinctive word ${matchedWords} is on no other supplier`
+    : `printed name "${printedName}" leads with the distinctive word ${matchedWords}, which also leads this supplier's name and is on no other supplier`;
   return {
     match: {
       workdayId,
       supplierName: entry.record.supplierName,
       ...(entry.record.supplierId ? { supplierId: entry.record.supplierId } : {}),
-      evidence: [`printed name "${printedName}" has the distinctive word ${matchedWords}, which only this supplier's name or alternate name has`],
+      evidence: [evidence],
       sources: ['printed'],
       recordNames: [entry.record.supplierName, ...entry.record.alternateNames],
     },

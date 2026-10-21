@@ -234,13 +234,15 @@ export async function resolveSupplierByNameEvidence(
   let match: SupplierNameMatch | undefined;
   let confidence = NAME_EVIDENCE_CONFIDENCE;
   let wordPossible: PossibleSupplier[] = [];
+  let byWord = false;
   try {
     const db = await getDatabaseConnection(process.env);
     match = await findUniqueSupplierByNameEvidence(db, { printedName, remitToAddress, excludeWorkdayIds });
     if (!match) {
-      const byWord = await findSupplierByDistinctiveWord(db, { printedName, excludeWorkdayIds });
-      match = byWord.match;
-      wordPossible = byWord.possible;
+      const lookup = await findSupplierByDistinctiveWord(db, { printedName, phone: result.supplier.extractedInformation.phone, excludeWorkdayIds });
+      match = lookup.match;
+      wordPossible = lookup.possible;
+      byWord = Boolean(match);
       confidence = DISTINCTIVE_WORD_CONFIDENCE;
     }
   } catch (error) {
@@ -249,7 +251,9 @@ export async function resolveSupplierByNameEvidence(
   }
 
   if (match) {
-    const note = `${match.evidence.join('; ')}. The printed branch name, address, and phone are not required to match the supplier record; confirm ${describeSupplier(match)}.`;
+    const note = byWord
+      ? `${match.evidence.join('; ')}. The rest of the printed name, the address, and the phone are not required to match the supplier record; confirm ${describeSupplier(match)}.`
+      : `${match.evidence.join('; ')}. The printed branch address and phone are not required to match the supplier record; confirm ${describeSupplier(match)}.`;
     return {
       ...result,
       supplier: {

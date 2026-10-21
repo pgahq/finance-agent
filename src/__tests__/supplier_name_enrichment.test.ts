@@ -160,6 +160,7 @@ describe('resolveSupplierByNameEvidence distinctive word and candidates', () => 
     const notes = formatSupplierNotes(result);
     expect(notes).toContain('S-030001 MASEK GOLF CARS ALBUQUERQUE');
     expect(notes).toContain('"MASEK"');
+    expect(notes).toContain('The rest of the printed name, the address, and the phone are not required to match');
     expect(notes).toContain('The closest Masek record does not match');
     expect(nameSearch).not.toHaveBeenCalled();
   });
@@ -171,6 +172,9 @@ describe('resolveSupplierByNameEvidence distinctive word and candidates', () => 
 
     expect(result.supplier.confidence).toBe(0.85);
     expect(findByWord).not.toHaveBeenCalled();
+    const notes = formatSupplierNotes(result);
+    expect(notes).toContain('The printed branch address and phone are not required to match');
+    expect(notes).not.toContain('The rest of the printed name');
   });
 
   it('lists the name-search candidates and keeps not_found when only common words match', async () => {
@@ -188,6 +192,18 @@ describe('resolveSupplierByNameEvidence distinctive word and candidates', () => 
     expect(notes).toContain('Possible Workday suppliers the agent did not apply');
     expect(notes).toContain('S-020312 ROCKY MOUNTAIN GOLF COURSE SUPERINTENDENTS ASSOCIATION');
     expect(nameSearch).toHaveBeenCalledWith(expect.objectContaining({ query: 'Rocky Mountain Golf Cars', documentType: 'supplier' }));
+  });
+
+  it('lists a cached supplier instead of applying it to a new supplier that only shares a city word', async () => {
+    findByWord.mockImplementation(async (_db: unknown, word: string) => (word === 'albuquerque' ? [masekRow] : []));
+    const original = masekNotFound();
+    original.supplier.extractedInformation.supplierName = 'Albuquerque Turf Supply';
+
+    const result = await resolveSupplierByNameEvidence(original, null);
+
+    expect(result.supplier.status).toBe('not_found');
+    expect(result.supplier.resolvedSupplier).toBeNull();
+    expect(formatSupplierNotes(result)).toContain('S-030001 MASEK GOLF CARS ALBUQUERQUE (name has "ALBUQUERQUE")');
   });
 
   it('lists every supplier that shares the distinctive word and picks none', async () => {
