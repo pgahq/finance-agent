@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import path from 'path';
-import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isIntercompanyValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isDueDateValidationError, isPaymentSchedulesOverrideError } from './invoice_validation_failures.js';
+import { isWorkdayValidationError, parseWorkdayValidationDetails, summarizeValidationError, humanWorkdayValidationMessage, isLineOfBusinessRelatedWorktagError, isRequiredLineOfBusinessWorktagError, isQuantityUnitExtendedMismatchError, isLineQuantityOrUnitCostPrecisionError, isAssigneeValidationError, isTaxApplicabilityValidationError, isIntercompanyValidationError, isClosedPurchaseOrderLineError, collectWorkdayValidationErrorText, getWorkdayValidationFault, isConfigurableAttributeValidationError, isDuplicateSuppliersInvoiceNumberError, isDuplicateWorktagTypeError, isQuantityDistributionSplitError, isPositiveQuantityRequiredForPoLineError, isSupplierNotAllowedForPurchaseOrderError, isInvalidShipToAddressError, invalidShipToAddressLinePositions, isDueDateValidationError, isPaymentSchedulesOverrideError } from './invoice_validation_failures.js';
 import { classifyWorkdayValidationField } from './workday_validation_field_agent.js';
 import { daysBetween, MAX_DUE_DATE_DAYS_AFTER_INVOICE } from './due_date.js';
 import type { FinalInvoiceLine } from './invoice_lines.js';
@@ -565,12 +565,16 @@ interface buildSubmitInvoiceDataOptions {
   omitPurchaseOrderLineReference?: boolean;
   /** Workday rejected PO split quantities: drop the PO line link from every split line and code it by amount. */
   unlinkQuantitySplitPoLines?: boolean;
+  /** Workday rejected the ship-to address on invoice lines: resend without Ship_To_Address_Reference. */
+  omitShipToAddress?: boolean;
+  /** 0-based payload rows the Ship To fault named; when empty, every row drops its ship-to. */
+  omitShipToAddressPositions?: number[];
   conversationUrl?: string;
   omitConversationUrlField?: boolean;
 }
 
-type FallbackField = 'supplier' | 'invoiceDate' | 'dueDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
-type ClassifierFallbackField = Exclude<FallbackField, 'dueDate' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
+type FallbackField = 'supplier' | 'invoiceDate' | 'dueDate' | 'paymentTerms' | 'worktag:fund' | 'worktag:costCenter' | 'worktag:spendCategory' | 'worktag:event' | 'worktag:lob' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation';
+type ClassifierFallbackField = Exclude<FallbackField, 'dueDate' | 'invoiceLineAmounts' | 'positiveQuantityPurchaseOrderLine' | 'assignee' | 'taxApplicability' | 'intercompany' | 'purchaseOrderLine' | 'consumedPurchaseOrderLine' | 'quantityPurchaseOrderLine' | 'shipToAddress' | 'poPassthroughWorktags' | 'duplicateWorktags' | 'conversationUrl' | 'suppliersInvoiceNumber' | 'chargeReconciliation'>;
 
 export function intercompanyOmittedLabel(lines: FinalInvoiceLine[] | undefined): string {
   const moved = (lines ?? [])
@@ -586,6 +590,7 @@ export function intercompanyOmittedLabel(lines: FinalInvoiceLine[] | undefined):
 export const OMITTED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO closed or pending close)';
 export const CONSUMED_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (PO line fully invoiced or closed)';
 export const QUANTITY_PO_LINE_REFERENCE_LABEL = 'omitted PO line reference (invoice line not matched to the PO line quantity split)';
+export const OMITTED_SHIP_TO_ADDRESS_LABEL = 'omitted line ship-to address (Workday rejected the PO line ship-to)';
 export const AMOUNT_ONLY_RETRY_LABEL = 'quantity and unit cost set to zero';
 export const AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL = 'quantity and unit cost set to zero (quantity 1 at the line amount on lines linked to a quantity-based PO line)';
 export const POSITIVE_PO_QUANTITY_LABEL = 'quantity 1 at the line amount for PO-linked lines that had no quantity';
@@ -832,6 +837,34 @@ function quantityPurchaseOrderLineUnlinkedLineOrders(
   return unlinked;
 }
 
+function shipToPayloadPositions(
+  lines: any[],
+  options: Pick<buildSubmitInvoiceDataOptions, 'omitShipToAddress' | 'omitShipToAddressPositions'>
+): Set<number> {
+  if (!options.omitShipToAddress) return new Set();
+  const named = options.omitShipToAddressPositions ?? [];
+  return new Set(named.length > 0 ? named : lines.map((_line, index) => index));
+}
+
+function stripShipToAddressReferences(lines: any[], options: buildSubmitInvoiceDataOptions): any[] {
+  const positions = shipToPayloadPositions(lines, options);
+  if (positions.size === 0) return lines;
+  return lines.map((line, index) => {
+    if (!positions.has(index) || !line?.Ship_To_Address_Reference) return line;
+    const { Ship_To_Address_Reference: _shipTo, ...rest } = line;
+    return rest;
+  });
+}
+
+function submittedLinesCarryShipToAddress(options: buildSubmitInvoiceDataOptions, positions?: number[]): boolean {
+  const lines = ([] as any[]).concat(
+    buildSubmitInvoiceData({ ...options, omitShipToAddress: false, omitShipToAddressPositions: undefined }).Invoice_Line_Replacement_Data ?? []
+  );
+  return lines.some((line: any, index: number) =>
+    Boolean(line.Ship_To_Address_Reference) && (!positions?.length || positions.includes(index))
+  );
+}
+
 function submittedLinesCarryPurchaseOrderLineReference(options: buildSubmitInvoiceDataOptions): boolean {
   const lines = ([] as any[]).concat(
     buildSubmitInvoiceData({ ...options, omitPurchaseOrderLineReference: false }).Invoice_Line_Replacement_Data ?? []
@@ -911,6 +944,7 @@ function summarizeSubmittedLines(invoiceData: Record<string, unknown>): unknown[
     unitCost: line.Unit_Cost,
     extendedAmount: line.Extended_Amount,
     ...(line.Purchase_Order_Line_Reference ? { purchaseOrderLine: formatWorktagForLog(line.Purchase_Order_Line_Reference) } : {}),
+    ...(line.Ship_To_Address_Reference ? { shipTo: formatWorktagForLog(line.Ship_To_Address_Reference) } : {}),
   }));
 }
 
@@ -1025,6 +1059,10 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
 
   if (quantityPurchaseOrderLineUnlinkedLineOrders(options, (submittedCharges ?? resolveSubmittedCharges(options)).merchandiseFinalLines).size > 0) {
     fallbacks.push({ field: 'quantityPurchaseOrderLine', label: QUANTITY_PO_LINE_REFERENCE_LABEL });
+  }
+
+  if (options.omitShipToAddress && submittedLinesCarryShipToAddress(options, options.omitShipToAddressPositions)) {
+    fallbacks.push({ field: 'shipToAddress', label: OMITTED_SHIP_TO_ADDRESS_LABEL });
   }
 
   if (options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
@@ -1303,6 +1341,16 @@ async function getValidationFallbackField(
     return undefined;
   }
 
+  // The fault carries only line paths and no worktag type, so it never reaches the classifier.
+  if (isInvalidShipToAddressError(validationText)) {
+    if (!options.omitShipToAddress && submittedLinesCarryShipToAddress(options, invalidShipToAddressLinePositions(error))) {
+      debug('Validation rejects the line ship-to address; retrying without Ship_To_Address_Reference on the named lines');
+      return 'shipToAddress';
+    }
+    debug('Validation rejects the line ship-to address but no submitted line carries one; skipping retry');
+    return undefined;
+  }
+
   // Both faults use the document-wide amount-only retry: every eligible merchandise line drops its quantity,
   // so Workday stops counting PO line quantity as invoiced on that resubmission. Totals and PO links are kept.
   // A line linked to a quantity-based PO line keeps one unit instead, because Workday rejects quantity 0 there.
@@ -1371,7 +1419,7 @@ async function getValidationFallbackField(
 function getFallbackRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions,
   field: FallbackField,
-  fault: { paymentSchedules?: boolean } = {}
+  fault: { paymentSchedules?: boolean; validation?: unknown } = {}
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
   const defaultSupplierWID = getConfiguredDefaultSupplierWID(options);
 
@@ -1506,6 +1554,15 @@ function getFallbackRetryBuildOptions(
 
   if (field === 'quantityPurchaseOrderLine') {
     return getQuantitySplitUnlinkRetryBuildOptions(options);
+  }
+
+  if (field === 'shipToAddress' && !options.omitShipToAddress) {
+    const positions = fault.validation !== undefined ? invalidShipToAddressLinePositions(fault.validation) : [];
+    if (!submittedLinesCarryShipToAddress(options, positions)) return undefined;
+    return {
+      buildOptions: { ...options, omitShipToAddress: true, omitShipToAddressPositions: positions },
+      fallbackLabel: OMITTED_SHIP_TO_ADDRESS_LABEL,
+    };
   }
 
   if (field === 'poPassthroughWorktags' && !options.omitPoPassthroughWorktags && linesCarryPoPassthroughWorktags(options)) {
@@ -1982,7 +2039,7 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
     } : {}),
 
     ...((invoiceLines?.length || (invoiceHadExistingLines && invoiceLines)) && {
-      Invoice_Line_Replacement_Data: invoiceLines,
+      Invoice_Line_Replacement_Data: Array.isArray(invoiceLines) ? stripShipToAddressReferences(invoiceLines, options) : invoiceLines,
     }),
 
     ...((memo || currentInvoice.Memo) && { Memo: memo || currentInvoice.Memo }),
@@ -2340,6 +2397,7 @@ async function submitSupplierInvoiceWithRepair({
       const fallbackRetry = validationFallbackField
         ? getFallbackRetryBuildOptions(attemptBuildOptions, validationFallbackField, {
           paymentSchedules: isPaymentSchedulesOverrideError(error) || isPaymentSchedulesOverrideError(validationError),
+          validation: error,
         })
         : undefined;
       if (!fallbackRetry) {
@@ -3271,6 +3329,7 @@ function summarizePurchaseOrderLineWorktags(lines: PurchaseOrderLine[]): unknown
     worktags: ([] as any[]).concat(line.lineLevelWorktagsReference ?? line.worktagsReference ?? []).map(formatWorktagForLog),
     ...(line.quantity !== undefined && { quantity: line.quantity }),
     ...(line.unitCost !== undefined && { unitCost: line.unitCost }),
+    ...(line.shipToAddressId ? { shipTo: line.shipToAddressId } : {}),
     ...(line.splitLineData?.length
       ? {
           splits: line.splitLineData.map(split => split.worktagReference.map(formatWorktagForLog)),

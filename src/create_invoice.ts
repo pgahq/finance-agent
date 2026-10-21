@@ -67,6 +67,7 @@ import {
   lineTotalMismatchNote,
   normalizeSupplierInvoiceLineAmounts,
   positivePoQuantityNote,
+  unitCostFromLineTotalNote,
   overlaySharedPoWorktagsOnUnmatchedLines,
   unappliedEmailBudgetSplit,
   parseExtractedAmount,
@@ -1261,7 +1262,7 @@ async function processInvoiceCluster(
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
-      poQuantityNote = positivePoQuantityNote(printedLines, finalLines);
+      poQuantityNote = [positivePoQuantityNote(printedLines, finalLines), unitCostFromLineTotalNote(finalLines)].filter(Boolean).join(' ') || undefined;
       if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
     }
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
