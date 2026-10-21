@@ -211,6 +211,14 @@ describe('composeInvoiceMemo', () => {
     expect(memo?.endsWith(' ')).toBe(false);
   });
 
+  it('formats a labeled service period such as the Pay Date Range on a payroll invoice', () => {
+    expect(composeInvoiceMemo({
+      customerId: 'CU0122145',
+      servicePeriod: 'Pay Date Range 09/28/2026 - 10/11/2026',
+      description: 'construction project labor charges',
+    })).toBe('Cust CU0122145 Svc Prd 09/28/26 - 10/11/26 construction project labor charges');
+  });
+
   it('formats an en-dash or em-dash service period before sanitizing it', () => {
     expect(composeInvoiceMemo({ customerId: '115117', servicePeriod: '09/01/2026 \u2013 09/30/2026' }))
       .toBe('Cust 115117 Svc Prd 09/01/26 - 09/30/26');
@@ -269,6 +277,13 @@ describe('formatMemoServiceDates', () => {
     ['June 2026', '06/01/26 - 06/30/26'],
     ['2026 - Dec', '12/01/26 - 12/31/26'],
     ['Aug 5, 2026', '08/05/26'],
+    ['Pay Date Range 09/28/2026 - 10/11/2026', '09/28/26 - 10/11/26'],
+    ['Pay Date Range: 09/28/2026 \u2013 10/11/2026', '09/28/26 - 10/11/26'],
+    ['Pay Period 9/28/26-10/11/26', '09/28/26 - 10/11/26'],
+    ['Week Ending 10/11/2026', '10/11/26'],
+    ['Billing Period Sep 1, 2026 - Sep 30, 2026', '09/01/26 - 09/30/26'],
+    ['Service Dates: September 2026', '09/01/26 - 09/30/26'],
+    ['Coverage Quarter Q4 2026', 'Q4 26'],
   ])('formats %s as %s', (input, expected) => {
     expect(formatMemoServiceDates(input)).toBe(expected);
   });
@@ -278,6 +293,8 @@ describe('formatMemoServiceDates', () => {
     expect(formatMemoServiceDates('13/45/2026')).toBe('13/45/2026');
     expect(formatMemoServiceDates('Annual services')).toBe('Annual services');
     expect(formatMemoServiceDates('Sept 28 \u2013 Oct 2')).toBe('Sept 28 - Oct 2');
+    expect(formatMemoServiceDates('Pay Date Range Sept 28 - Oct 2')).toBe('Pay Date Range Sept 28 - Oct 2');
+    expect(formatMemoServiceDates('one two three four five six 09/28/2026')).toBe('one two three four five six 09/28/2026');
   });
 
   it.each(['Augusta 2026', 'Marketing 2026', 'Junior 2026', '2026 Mayhem', 'Octane 2026', 'Decatur 2026'])(
