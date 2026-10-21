@@ -722,6 +722,31 @@ export async function findDocumentsContainingWords(
   return rows;
 }
 
+/**
+ * Cached suppliers whose primary or alternate name contains the word as a whole word. Addresses, emails, and
+ * phones never count, so a street or city that shares the word does not make a supplier a candidate.
+ */
+export async function findSuppliersByNameWord(
+  db: DatabaseConnection,
+  word: string,
+  limit: number = 25
+): Promise<Array<{ workday_id: string; content?: string | null; metadata: unknown }>> {
+  const clean = word.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (!clean) return [];
+
+  const results: unknown = await db.query(`
+    SELECT workday_id, content, metadata
+    FROM documents
+    WHERE type = 'supplier' AND content ~* $1
+    ORDER BY workday_id
+    LIMIT $2
+  `, [`(^|\n)(Company Name|Alternate Names): [^\n]*\\m${clean}\\M`, limit]);
+
+  const rows = (Array.isArray(results) ? results : []) as Array<{ workday_id: string; content?: string | null; metadata: unknown }>;
+  debug(`Found ${rows.length} cached supplier document(s) with "${clean}" as a whole name word`);
+  return rows;
+}
+
 // Bulk operations for better performance
 export async function bulkInsertDocuments(
   db: DatabaseConnection,
