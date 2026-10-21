@@ -569,6 +569,45 @@ export function isPositiveQuantityRequiredForPoLineError(text: unknown): boolean
   return /Enter a quantity that is greater than zero for supplier invoice lines related to purchase order/i.test(asValidationText(text));
 }
 
+const INVALID_SHIP_TO_ADDRESS_PATTERN = /Provided Ship[- ]To Address is Invalid for this Supplier Invoice/i;
+
+export function isInvalidShipToAddressError(text: unknown): boolean {
+  return INVALID_SHIP_TO_ADDRESS_PATTERN.test(validationHaystack(text));
+}
+
+function lineRowPosition(xpath: string | undefined): number | undefined {
+  const row = xpath?.match(/Invoice_Line_Replacement_Data\[(\d+)\]/i);
+  return row ? Number(row[1]) - 1 : undefined;
+}
+
+/**
+ * Positions (0-based) of the Invoice_Line_Replacement_Data rows a Ship To fault names. An empty
+ * list means the fault is a Ship To fault but no row could be read from it. A structured error is
+ * read fault by fault, so a Ship To fault without an Xpath never borrows another fault's row.
+ */
+export function invalidShipToAddressLinePositions(value: unknown): number[] {
+  const positions = new Set<number>();
+  const faults = value && typeof value === 'object' ? extractWorkdayValidationErrorDetailsList(value) : [];
+  if (faults.length > 0) {
+    for (const fault of faults) {
+      if (!INVALID_SHIP_TO_ADDRESS_PATTERN.test(`${fault.message ?? ''} ${fault.detailMessage ?? ''}`)) continue;
+      const position = lineRowPosition(fault.xpath);
+      if (position !== undefined) positions.add(position);
+    }
+    return [...positions].sort((a, b) => a - b);
+  }
+
+  const faultPattern = new RegExp(
+    `${INVALID_SHIP_TO_ADDRESS_PATTERN.source}(?:(?!${INVALID_SHIP_TO_ADDRESS_PATTERN.source})[\\s\\S])*?Xpath:\\s*(\\S+)`,
+    'gi'
+  );
+  for (const match of asValidationText(value).matchAll(faultPattern)) {
+    const position = lineRowPosition(match[1]);
+    if (position !== undefined) positions.add(position);
+  }
+  return [...positions].sort((a, b) => a - b);
+}
+
 export function isSupplierNotAllowedForPurchaseOrderError(value: unknown): boolean {
   return /can['’]?t select this supplier to invoice this purchase order/i.test(validationHaystack(value));
 }
