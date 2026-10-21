@@ -3392,6 +3392,65 @@ describe('create_invoice', () => {
       expect(slackDetails).not.toHaveProperty('lineReview');
     });
 
+    it('submits no header tax or freight when the email budgets total the amount due and the lines carry them', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      mockCompany310();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...budgetEnrichment(),
+        extractedAmountDue: '$13,621.74',
+        extractedTaxAmount: '$1,122.66',
+        extractedTaxLabel: 'OCCUPANCY TAX',
+        extractedOtherCharges: [{ label: 'TOURISM TAX', amount: '$25.08' }],
+        extractedInvoiceLines: [
+          { description: 'GUEST ROOM - A', quantity: null, unitCost: null, totalPrice: '$12,000.00', hasDiscount: false },
+          { description: 'GUEST ROOM - B', quantity: null, unitCost: null, totalPrice: '$474.00', hasDiscount: false },
+        ],
+        emailBudgetSplits: budgetEnrichment().emailBudgetSplits.map((split, index) => ({
+          ...split,
+          amount: index === 0 ? '$11,764.23' : '$1,857.51',
+        })),
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: 'GUEST ROOM', quantity: 0, unitCost: 0, extendedAmount: 11764.23, costCenterId: 'CC-Recruitment' },
+          { lineOrder: 2, description: 'GUEST ROOM', quantity: 0, unitCost: 0, extendedAmount: 1857.51, costCenterId: 'CC-Brand_&_Digital_Marketing', intercompanyAffiliateId: '410' },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map(),
+        emailBudgetSplit: {
+          applied: true,
+          budgets: [
+            { label: "Chris Kulinski's Budget", amountCents: 1176423, costCenterId: 'CC-Recruitment', spendCategoryId: null },
+            { label: 'Brand and Marketing Budget', amountCents: 185751, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: null, companyId: '410' },
+          ],
+          headerChargesRolledIn: { amountDueCents: 1362174, lineTotalCents: 1247400 },
+        },
+      });
+
+      await processor({
+        data: [{
+          ...attachmentRequest('new-invoices/req-budget-split-gross/invoice.pdf'),
+          emailContext: { plainTextBody: 'Company 310. Split $11,764.23 / $1,857.51.' },
+        }]
+      } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+        budgetSplitBaseCents: 1247400,
+        budgetSplitGrossCents: 1362174,
+      }));
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBeUndefined();
+      expect(submitArgs.taxCleared).toBe(true);
+      expect(submitArgs.freightCleared).toBe(true);
+      expect(submitArgs.extractedAmountDue).toBe('$13,621.74');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toMatch(/Tax Amount \(from document\): 1147\.74/);
+      expect(notes).toContain('the full amount due, so each budget line carries its share');
+      expect(notes).not.toContain('Line total review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+    });
+
     it('reports why the budgets were not split in the Workday note and Slack line review', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       mockCompany310();

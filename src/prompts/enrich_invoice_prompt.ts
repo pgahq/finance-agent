@@ -26,6 +26,14 @@ const emailCodingFields = {
   }).nullable().describe('Spend category worktag resolved from email content. Null if no spend category was mentioned.'),
 };
 
+// A company an email budget names for itself, resolved the same way as emailWorktags.company.
+const emailBudgetCompanySchema = z.object({
+  extracted: z.string().nullable().describe('The company name or Company_Reference_ID exactly as the email writes it for this budget (quote it).'),
+  name: z.string().nullable().describe('The matched company name from Workday. Populate after resolveReferenceCode or findCompanies.'),
+  workdayId: z.string().nullable().describe('The Workday WID of the matched company. Populate from resolveReferenceCode or findCompanies metadata.'),
+  referenceId: z.string().nullable().describe('The Company_Reference_ID of the matched company (e.g. "410"). Populate from resolveReferenceCode or findCompanies metadata.'),
+});
+
 // Unified schema for invoice enrichment — handles both supplier identification and verification
 export const InvoiceEnrichmentSchema = z.object({
   supplier: z.object({
@@ -155,7 +163,8 @@ export const InvoiceEnrichmentSchema = z.object({
     percent: z.number().nullable().describe('The percentage the email assigns to this budget as a number (60 for 60%). Null unless the email states a percentage for this budget. Never compute it.'),
     equalShare: z.boolean().nullable().describe('True only when the email says the cost is split evenly or equally (for example "split evenly", "50/50") and states no dollar amount or percentage for this budget. Otherwise null.'),
     ...emailCodingFields,
-  })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding; the company is never repeated here.'),
+    company: emailBudgetCompanySchema.nullable().describe('The company this budget\'s own coding block names, only when it differs from the company that applies to the whole invoice (which goes in emailWorktags.company). Null otherwise.'),
+  })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding.'),
 
 });
 
@@ -350,8 +359,10 @@ If email context is provided, scan the email body for any contextual mentions of
    - Set label to the budget name as the email words it.
    - Set amount to the dollar amount the email states for that budget, exactly as written, or percent to the percentage it states, or equalShare to true when the email says the cost is split evenly. Set the other two to null. Never calculate an amount or percentage yourself, and when the email states none of the three for a budget, leave all three null.
    - A worktag the email applies to every budget (for example one fund, event, or spend category for the whole invoice) goes in emailWorktags and is left null in the entries. When splits are returned, leave emailWorktags.costCenter and emailWorktags.lineOfBusiness null unless the email also names a cost center that applies to the whole invoice. Never copy one budget's coding into emailWorktags.
-   - The company belongs only in emailWorktags.company, never in an entry.
+   - The company that applies to the whole invoice, or to the first budget when the budgets share the invoice, belongs in emailWorktags.company. When a budget's own coding block names a different company (for example "Company 410 PGA Corporation" under a second budget), resolve it as in item 6 and put it in that entry's company; leave company null on entries that use the invoice's company.
    - When several spend categories match with the same confidence, choose the one whose name matches the email's wording for that budget.
+   - An "Expense Item" or expense type named for a budget (for example "Expense Item: Hotel") is a spend-category hint for that budget. Call findSpendCategories with it and use the top result only when its name clearly matches that wording; otherwise leave that budget's spendCategory null. A hotel or lodging stay is usually the "Lodging" spend category, so when "Hotel" finds no clear match, search "Lodging" before leaving it null.
+   - The amounts the email states may include the invoice's tax, so do not adjust them; copy each exactly as written.
    - Return null for emailBudgetSplits when the email codes the whole invoice to one budget or does not divide the cost.
 
 8. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.

@@ -1,4 +1,4 @@
-import { findDocumentsByReferenceId, findDocumentsByReferenceIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
+import { findDocumentsByReferenceId, findDocumentsByReferenceIds, getDocumentsByWorkdayIds, searchDocumentsByTypes, type DatabaseConnection, type DocumentType } from '../lib/database.js';
 import { createEmbedding } from '../lib/rag.js';
 import { emailCodingText } from '../lib/email_coding_text.js';
 import { describeEmailCompanyReview } from '../lib/invoice_enrichment.js';
@@ -6,6 +6,8 @@ import {
   explicitCodingCodes,
   extractReferenceCodeCandidates,
   findCachedReferenceMatches,
+  companyReferenceIdForWorkdayId,
+  resolveBudgetSplitCompanies,
   resolveCompanyFromEmail,
   resolveReferenceCodesFromText,
   selectCompanyForCreateInvoice,
@@ -22,6 +24,7 @@ jest.mock('@pga/logger', () => ({
 jest.mock('../lib/database.js', () => ({
   findDocumentsByReferenceId: jest.fn(),
   findDocumentsByReferenceIds: jest.fn(),
+  getDocumentsByWorkdayIds: jest.fn(),
   searchDocumentsByTypes: jest.fn(),
   getDatabaseConnection: jest.fn(),
 }));
@@ -32,6 +35,7 @@ jest.mock('../lib/rag.js', () => ({
 
 const mockFindDocumentsByReferenceId = findDocumentsByReferenceId as jest.MockedFunction<typeof findDocumentsByReferenceId>;
 const mockFindDocumentsByReferenceIds = findDocumentsByReferenceIds as jest.MockedFunction<typeof findDocumentsByReferenceIds>;
+const mockGetDocumentsByWorkdayIds = getDocumentsByWorkdayIds as jest.MockedFunction<typeof getDocumentsByWorkdayIds>;
 const mockSearchDocumentsByTypes = searchDocumentsByTypes as jest.MockedFunction<typeof searchDocumentsByTypes>;
 const mockCreateEmbedding = createEmbedding as jest.MockedFunction<typeof createEmbedding>;
 
@@ -194,6 +198,100 @@ describe('explicitCodingCodes', () => {
     expect(explicitCodingCodes('624065 PGA OF AMERICA')).toEqual([]);
     expect(explicitCodingCodes('Your reference is 2600 for this order')).toEqual([]);
     expect(explicitCodingCodes('Call +1 267.482.8292 today')).toEqual([]);
+  });
+});
+
+describe('resolveBudgetSplitCompanies', () => {
+  const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
+  const email = 'Split 1\nCompany: 310\nCost center: Broadcasting\n\nSplit 2\nCompany: 410 PGA Corporation\nCost center: Global Media';
+  const company310 = companyDoc({ workday_id: 'wid-310', metadata: { companyReferenceId: '310', companyName: 'PGA of America' } });
+  const company410 = companyDoc({ workday_id: 'wid-410', metadata: { companyReferenceId: '410', companyName: 'PGA Corporation' } });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSearchDocumentsByTypes.mockResolvedValue([]);
+    mockCreateEmbedding.mockResolvedValue([0.1, 0.2, 0.3]);
+  });
+
+  it('verifies a budget company that is coding in the email and matches one cached company', async () => {
+    mockReferenceLookup({ '310': [company310], '410': [company410] });
+
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: email,
+      splits: [
+        { company: null },
+        { company: { extracted: '410 PGA Corporation', workdayId: 'wid-410', referenceId: '410', name: 'PGA Corporation' } },
+      ],
+    })).resolves.toEqual([undefined, { referenceId: '410', name: 'PGA Corporation' }]);
+  });
+
+  it('reports a company the email does not contain as unverified instead of using the invoice company', async () => {
+    mockReferenceLookup({ '310': [company310] });
+
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Company: 310\nSplit $1 / $2',
+      splits: [
+        { company: null },
+        { company: { extracted: '410', workdayId: 'wid-410', referenceId: '410', name: 'PGA Corporation' } },
+      ],
+    })).resolves.toEqual([undefined, { unverified: '410' }]);
+  });
+
+  it('reads the reference id of a company matched by name from the cache, not from the model', async () => {
+    mockReferenceLookup({});
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([{ workday_id: 'wid-410', metadata: { companyReferenceId: '410' } }]);
+    const claim = { extracted: 'PGA Corporation', workdayId: 'wid-410', referenceId: '410', name: 'PGA Corporation' };
+
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ referenceId: '410', name: 'PGA Corporation' }]);
+
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([]);
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ unverified: 'PGA Corporation' }]);
+
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([{ workday_id: 'wid-410', metadata: { companyReferenceId: '999' } }]);
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Split 2 goes to PGA Corporation.',
+      codingText: 'Split 2 goes to PGA Corporation.',
+      splits: [{ company: claim }],
+    })).resolves.toEqual([{ unverified: 'PGA Corporation' }]);
+  });
+
+  it('reports a company that matches no cached company as unverified', async () => {
+    mockReferenceLookup({ '310': [company310], '999': [] });
+
+    await expect(resolveBudgetSplitCompanies({
+      db,
+      emailBody: 'Company: 310\nCompany: 999',
+      splits: [{ company: { extracted: '999', workdayId: null, referenceId: '999', name: null } }],
+    })).resolves.toEqual([{ unverified: '999' }]);
+  });
+});
+
+describe('companyReferenceIdForWorkdayId', () => {
+  const db = { query: jest.fn(), close: jest.fn() } as unknown as DatabaseConnection;
+
+  it('reads the cached Company_Reference_ID for a WID and gives up quietly otherwise', async () => {
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([{ workday_id: 'wid-310', metadata: { companyReferenceId: '310' } }]);
+    await expect(companyReferenceIdForWorkdayId(db, 'wid-310')).resolves.toBe('310');
+
+    mockGetDocumentsByWorkdayIds.mockResolvedValueOnce([]);
+    await expect(companyReferenceIdForWorkdayId(db, 'wid-x')).resolves.toBeUndefined();
+
+    mockGetDocumentsByWorkdayIds.mockRejectedValueOnce(new Error('db down'));
+    await expect(companyReferenceIdForWorkdayId(db, 'wid-310')).resolves.toBeUndefined();
+    await expect(companyReferenceIdForWorkdayId(db, undefined)).resolves.toBeUndefined();
   });
 });
 

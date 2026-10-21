@@ -1242,6 +1242,187 @@ describe('applyEmailBudgetSplits', () => {
   });
 });
 
+describe('applyEmailBudgetSplits with amounts that include tax', () => {
+  const guestLines = (): FinalInvoiceLine[] => Array.from({ length: 66 }, (_, index) => ({
+    lineOrder: index + 1,
+    description: `GUEST ROOM - Transferred from Rm ${600 + index}, GUEST ${index}, 2026-10-09`,
+    memo: null,
+    quantity: null,
+    unitCost: null,
+    extendedAmount: 189,
+    costCenterId: 'CC0000',
+    fundId: 'FUND-General_Fund_Unrestricted',
+    spendCategoryId: 'Default_OCR_Spend_Category',
+    lineOfBusinessId: 'Default_Line_Of_Business',
+  }));
+  const broadcasting: EmailBudgetSplit = {
+    label: 'SPLIT #1',
+    amount: '$11,764.23',
+    costCenterId: 'CC-Other_Broadcasting',
+    lobReferenceId: 'LOB-Broadcasting',
+    spendCategoryReferenceId: 'SC-Miscellaneous_ENG',
+    companyReferenceId: '310',
+  };
+  const globalMedia: EmailBudgetSplit = {
+    label: 'SPLIT #2 - Code like an Expense Report for Donnelly Wolf & Mallory Crosland please!',
+    amount: '$1,857.51',
+    costCenterId: 'CC-Global_Media',
+    lobReferenceId: 'LOB-Broadcasting',
+    fundReferenceId: 'FUND-General_Fund_Unrestricted',
+    spendCategoryReferenceId: null,
+    companyReferenceId: '410',
+    companyName: 'PGA Corporation',
+  };
+  const carson = (budgetSplits: EmailBudgetSplit[]): EmailWorktags => ({
+    budgetSplits,
+    budgetSplitBaseCents: 1247400,
+    budgetSplitGrossCents: 1362174,
+    companyReferenceId: '310',
+  });
+
+  beforeEach(() => {
+    delete process.env.FALLBACK_COST_CENTER_ID;
+    delete process.env.FALLBACK_SPEND_CATEGORY_ID;
+  });
+
+  it('uses the email amounts as the line amounts when they total the amount due, and rolls the header charges in', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
+
+    expect(lines.map(line => line.extendedAmount)).toEqual([11764.23, 1857.51]);
+    expect(lines.map(line => line.costCenterId)).toEqual(['CC-Other_Broadcasting', 'CC-Global_Media']);
+    expect(outcome?.applied).toBe(true);
+    expect(outcome?.headerChargesRolledIn).toEqual({ amountDueCents: 1362174, lineTotalCents: 1247400 });
+  });
+
+  it('sets the company only on a budget whose company differs from the invoice company', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, '410']);
+    expect(outcome?.budgets.map(budget => budget.companyId)).toEqual([undefined, '410']);
+  });
+
+  it('compares each budget with the submitted header company, not with another budget', () => {
+    const { lines } = applyEmailBudgetSplits(
+      guestLines(),
+      { ...carson([broadcasting, globalMedia]), companyReferenceId: '410' },
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual(['310', null]);
+  });
+
+  it('sets no company and says so when the header company is not known', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      { ...carson([broadcasting, globalMedia]), companyReferenceId: null },
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, null]);
+    expect(outcome?.review).toContain('SPLIT #1 names company 310');
+    expect(outcome?.review).toContain('the invoice company could not be identified, so no company was set on its line');
+  });
+
+  it('keeps an unverified budget company off the line and flags it', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([broadcasting, { ...globalMedia, companyReferenceId: null, companyName: null, companyUnverified: '410 PGA Corporation' }]),
+      false
+    );
+
+    expect(lines.map(line => line.intercompanyAffiliateId)).toEqual([null, null]);
+    expect(outcome?.review).toContain('SPLIT #2 - Code like an Expense Report for Donnelly Wolf & Mallory Crosland please! names company 410 PGA Corporation, but the email and the company list do not confirm it');
+  });
+
+  it('does not roll header charges in when the amounts match the line total', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([{ ...broadcasting, amount: '$10,773.00' }, { ...globalMedia, amount: '$1,701.00' }]),
+      false
+    );
+
+    expect(lines.map(line => line.extendedAmount)).toEqual([10773, 1701]);
+    expect(outcome?.headerChargesRolledIn).toBeUndefined();
+  });
+
+  it('caps the combined description instead of listing every folio row on each budget line', () => {
+    const { lines } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
+
+    expect(lines[0].description.length).toBeLessThan(260);
+    expect(lines[0].description).toMatch(/^GUEST ROOM - Transferred from Rm 600, GUEST 0, 2026-10-09; /);
+    expect(lines[0].description).toMatch(/; and \d+ more lines$/);
+  });
+
+  it('still rejects amounts that match neither the line total nor the amount due', () => {
+    const { lines, outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([broadcasting, { ...globalMedia, amount: '$1,800.00' }]),
+      false
+    );
+
+    expect(outcome?.applied).toBe(false);
+    expect(outcome?.review).toContain('$13,564.23, not $12,474.00 before freight and tax or $13,621.74 with them');
+    expect(lines).toHaveLength(66);
+  });
+
+  it('applies the split but flags a budget with no spend category', () => {
+    process.env.FALLBACK_SPEND_CATEGORY_ID = 'Default_OCR_Spend_Category';
+    const { lines, outcome } = applyEmailBudgetSplits(guestLines(), carson([broadcasting, globalMedia]), false);
+
+    expect(lines[1].spendCategoryId).toBe('Default_OCR_Spend_Category');
+    expect(outcome?.review).toContain('has no spend category in the email, so it is on Default_OCR_Spend_Category');
+    expect(outcome?.review).not.toContain('SPLIT #1 has no spend category');
+  });
+
+  it('does not flag a budget whose company matches the invoice company', () => {
+    const { outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([broadcasting, { ...globalMedia, companyReferenceId: '310', spendCategoryReferenceId: 'SC-Hotel' }]),
+      false
+    );
+
+    expect(outcome?.review).toBeUndefined();
+  });
+
+  it('says the lines are on default coding when a rejected split leaves no single coding', () => {
+    process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+    process.env.FALLBACK_LOB_ID = 'Default_Line_Of_Business';
+    process.env.FALLBACK_SPEND_CATEGORY_ID = 'Default_OCR_Spend_Category';
+    const { outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      carson([broadcasting, { ...globalMedia, amount: '$1,800.00' }]),
+      false
+    );
+    delete process.env.FALLBACK_LOB_ID;
+
+    expect(outcome?.review).toContain(
+      'all 66 lines are on default coding (cost center CC0000, line of business Default_Line_Of_Business, spend category Default_OCR_Spend_Category); recode before approving.'
+    );
+  });
+
+  it('does not claim default coding when the email codes the whole invoice to a cost center', () => {
+    process.env.FALLBACK_COST_CENTER_ID = 'CC0000';
+    const { outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      { ...carson([broadcasting, { ...globalMedia, amount: '$1,800.00' }]), costCenterId: 'CC-Shared' },
+      false
+    );
+
+    expect(outcome?.review).not.toContain('default coding');
+  });
+
+  it('does not scale when the invoice has no header charges and the amounts are off', () => {
+    const { outcome } = applyEmailBudgetSplits(
+      guestLines(),
+      { budgetSplits: [broadcasting, globalMedia], budgetSplitBaseCents: 1362174, budgetSplitGrossCents: 1362174 },
+      false
+    );
+
+    expect(outcome?.applied).toBe(false);
+    expect(outcome?.review).toContain('the invoice lines total $12,474.00, not $13,621.74');
+  });
+});
+
 describe('buildFinalInvoiceLines with email budget splits', () => {
   beforeEach(() => {
     jest.clearAllMocks();

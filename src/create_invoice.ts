@@ -97,7 +97,7 @@ import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
 import { emailCodingText, sourceEmailBody } from './lib/email_coding_text.js';
-import { budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
+import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
 import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
@@ -1079,7 +1079,7 @@ async function processInvoiceCluster(
       { allowFreightAsLines: true, removeDuplicates: true }
     );
     const { freightAmount: extractedFreightAmount, freightAsLines, reconciliation: chargeReconciliation } = charges;
-    const chargeCheck = [
+    let chargeCheck = [
       ...(restoredFreight.message ? [restoredFreight.message] : []),
       ...(taxCharges.message ? [taxCharges.message] : []),
       ...chargeReconciliationMessages(chargeReconciliation),
@@ -1113,19 +1113,32 @@ async function processInvoiceCluster(
       spendCategoryId: process.env.FALLBACK_SPEND_CATEGORY_ID,
       lineOfBusinessId: process.env.FALLBACK_LOB_ID,
     };
+    const budgetCompanies = usedDefaultCompany ? {} : await budgetCompanyOptions({
+      db: context.dbConnection,
+      result,
+      emailBody: emailContext?.plainTextBody,
+      codingText: emailCodingText(emailContext),
+      apNotes: emailContext?.adminConversationParts,
+      emailCompany,
+      headerCompanyId: companyWID,
+      companyReferenceType,
+    });
     const emailWorktags = usedDefaultCompany
       ? undefined
-      : buildEmailWorktags(result, emailCompany, budgetSplitOptions({
-        charges: {
-          amountDue: extractedAmountDue,
-          freightAmount: extractedFreightAmount,
-          taxAmount: extractedTaxAmount,
-          freightCleared,
-          taxCleared,
-        },
-        freightAsLines,
-        chargeWithheld,
-      }));
+      : buildEmailWorktags(result, emailCompany, {
+        ...budgetSplitOptions({
+          charges: {
+            amountDue: extractedAmountDue,
+            freightAmount: extractedFreightAmount,
+            taxAmount: extractedTaxAmount,
+            freightCleared,
+            taxCleared,
+          },
+          freightAsLines,
+          chargeWithheld,
+        }),
+        ...budgetCompanies,
+      });
 
     const relatedLobLookup = (costCenterIds: string[]) =>
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
@@ -1235,6 +1248,15 @@ async function processInvoiceCluster(
         : undefined;
     }
 
+    // Email budgets that total the amount due carry the header tax and freight in their lines, so the header
+    // submits none; the notes above still show what the document printed.
+    const chargesInLines = Boolean(emailBudgetSplit?.headerChargesRolledIn);
+    const submitFreightAmount = chargesInLines ? undefined : extractedFreightAmount;
+    const submitTaxAmount = chargesInLines ? undefined : extractedTaxAmount;
+    const submitFreightCleared = chargesInLines || freightCleared;
+    const submitTaxCleared = chargesInLines || taxCleared;
+    if (chargesInLines) chargeCheck = [];
+
     let poQuantityNote: string | undefined;
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
@@ -1247,10 +1269,10 @@ async function processInvoiceCluster(
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = chargeWithheld || freightAsLines ? undefined : lineTotalMismatchNote(finalLines, {
       amountDue: extractedAmountDue,
-      freightAmount: extractedFreightAmount,
-      taxAmount: extractedTaxAmount,
-      freightCleared,
-      taxCleared,
+      freightAmount: submitFreightAmount,
+      taxAmount: submitTaxAmount,
+      freightCleared: submitFreightCleared,
+      taxCleared: submitTaxCleared,
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
     const lineReview = [
@@ -1564,11 +1586,11 @@ async function processInvoiceCluster(
           companyReferenceType,
           extractedAmountDue,
           suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-          extractedFreightAmount,
+          extractedFreightAmount: submitFreightAmount,
           freightAsLines,
-          extractedTaxAmount,
-          freightCleared,
-          taxCleared,
+          extractedTaxAmount: submitTaxAmount,
+          freightCleared: submitFreightCleared,
+          taxCleared: submitTaxCleared,
           finalLines,
           invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
           relatedLobByCostCenter,
@@ -1641,11 +1663,11 @@ async function processInvoiceCluster(
       ...(conversationCreatedAt ? { invoiceReceivedDate: conversationCreatedAt } : {}),
       extractedAmountDue,
       suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
-      extractedFreightAmount,
+      extractedFreightAmount: submitFreightAmount,
       freightAsLines,
-      extractedTaxAmount,
-      freightCleared,
-      taxCleared,
+      extractedTaxAmount: submitTaxAmount,
+      freightCleared: submitFreightCleared,
+      taxCleared: submitTaxCleared,
       finalLines,
       invoiceLineQuantityDisplayed: invoiceLineQuantityDisplayed ? undefined : false,
       relatedLobByCostCenter,
