@@ -132,6 +132,10 @@ export interface FinalInvoiceLine {
   purchaseOrderLineId?: string | null;
   /** Ordered quantity of the matched PO line; set only for goods lines ordered by quantity. */
   purchaseOrderLineQuantity?: number | null;
+  /** Unit cost of the matched PO line; set only for goods lines ordered by quantity. */
+  purchaseOrderLineUnitCost?: number | null;
+  /** Unit cost taken from the line total because it differs from the PO unit cost only by rounding. */
+  unitCostFromLineTotal?: boolean;
   /** Workday rejected quantity 0 on a PO-linked line, so it must submit a positive quantity. */
   forcePositivePoQuantity?: boolean;
   /** Matched PO line is fully invoiced or closed: keep its coding, drop its reference. */
@@ -1121,6 +1125,7 @@ export interface ParsedPoLineWorktags {
   shipToAddressId: string | null;
   splitLineData: PurchaseOrderLineSplit[];
   quantity?: number | null;
+  unitCost?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   availableForInvoicing?: boolean;
@@ -1147,6 +1152,7 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       shipToAddressId: line.shipToAddressId ?? null,
       splitLineData: line.splitLineData ?? [],
       quantity: line.quantity != null && Number.isFinite(line.quantity) && line.quantity > 0 ? line.quantity : null,
+      unitCost: line.unitCost != null && Number.isFinite(line.unitCost) && line.unitCost > 0 ? line.unitCost : null,
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
       availableForInvoicing: line.availableForInvoicing !== false,
@@ -1208,6 +1214,7 @@ export function overlayPoWorktagsFromPurchaseOrder(
         poPassthroughWorktagsReference: passthroughForPoLine(poLine),
         ...(poLine.splitLineData.length > 0 && { supplierInvoiceSplitLineData: poLine.splitLineData }),
         purchaseOrderLineQuantity: poLine.quantity,
+        purchaseOrderLineUnitCost: poLine.unitCost,
       };
     }
     if (fallbackPassthrough.length === 0 || line.poPassthroughWorktagsReference?.length) return line;
@@ -1223,6 +1230,8 @@ export function overlaySharedPoWorktagsOnUnmatchedLines(
     ...line,
     purchaseOrderLineId: null,
     purchaseOrderLineQuantity: undefined,
+    purchaseOrderLineUnitCost: undefined,
+    unitCostFromLineTotal: undefined,
     forcePositivePoQuantity: undefined,
     poPassthroughWorktagsReference: undefined,
     supplierInvoiceSplitLineData: undefined,
@@ -1644,6 +1653,7 @@ function asAmountOnlyLine(line: FinalInvoiceLine, extendedAmount: number | null)
   }
   return {
     ...line,
+    unitCostFromLineTotal: undefined,
     quantity: 0,
     unitCost: 0,
     extendedAmount,
@@ -1700,6 +1710,28 @@ function limitLineAmountPrecision(line: FinalInvoiceLine): FinalInvoiceLine {
   };
 }
 
+// A supplier can price a unit with more decimals than the PO does (238.679815 against 238.68), so the printed
+// total sits a few cents off quantity x PO unit cost. A quantity-split line then keeps its printed quantity, so
+// Workday counts it against the PO line and each split's quantity, and takes its unit cost from the total.
+// The gap is bounded per unit, so a real price change is never absorbed. Non-split lines keep the
+// one-unit rule: their PO line may be partly invoiced, and nothing here knows what is still open on it.
+const PO_UNIT_COST_MAX_DIFFERENCE = 0.01;
+
+function unitCostFromPoRoundedTotal(line: FinalInvoiceLine, extendedAmount: number): FinalInvoiceLine | null {
+  const quantity = line.quantity;
+  const poQuantity = line.purchaseOrderLineQuantity;
+  const poUnitCost = line.purchaseOrderLineUnitCost;
+  if (!line.purchaseOrderLineId || line.omitPurchaseOrderLineReference || isDiscountLine(line)) return null;
+  if (!isQuantityDistributedSplits(line.supplierInvoiceSplitLineData)) return null;
+  if (quantity == null || quantity <= 0 || poQuantity == null || poQuantity <= 0) return null;
+  if (poUnitCost == null || poUnitCost <= 0 || extendedAmount <= 0) return null;
+  if (quantity > poQuantity + 1e-9) return null;
+  const impliedUnitCost = roundToDecimals(extendedAmount / quantity, UNIT_COST_DECIMALS);
+  if (Math.abs(impliedUnitCost - poUnitCost) >= PO_UNIT_COST_MAX_DIFFERENCE) return null;
+  if (toCents(quantity * impliedUnitCost) !== toCents(extendedAmount)) return null;
+  return { ...line, unitCost: impliedUnitCost, unitCostFromLineTotal: true };
+}
+
 export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): FinalInvoiceLine[] {
   return lines.map(limitLineAmountPrecision).map(line => {
     if (isDiscountLine(line)) return line;
@@ -1714,13 +1746,15 @@ export function alignSupplierInvoiceLineAmounts(lines: FinalInvoiceLine[]): Fina
     const soapQuantity = line.quantity ?? 1;
 
     if (extendedAmount != null && unitCost == null) {
-      return asAmountOnlyLine(line, extendedAmount);
+      const poPriced = unitCostFromPoRoundedTotal(line, extendedAmount);
+      return poPriced ?? asAmountOnlyLine(line, extendedAmount);
     }
 
     if (extendedAmount != null && unitCost != null && toCents(soapQuantity * unitCost) !== toCents(extendedAmount)) {
       const netUnitCost = netUnitCostForDiscountedPurchaseOrderLine(line, extendedAmount);
       if (netUnitCost != null) return { ...line, unitCost: netUnitCost };
-      return asAmountOnlyLine(line, extendedAmount);
+      const poPriced = unitCostFromPoRoundedTotal(line, extendedAmount);
+      return poPriced ?? asAmountOnlyLine(line, extendedAmount);
     }
 
     return line;
@@ -2080,6 +2114,19 @@ export function positivePoQuantityNote(before: FinalInvoiceLine[], after: FinalI
   return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'is' : 'are'}`
     + ` linked to a PO line ordered by quantity, so Workday requires a positive quantity.`
     + ` Submitted as quantity 1 at the line amount, which can differ from the printed quantity or unit cost; the line total is unchanged.`;
+}
+
+// Lists the lines whose unit cost was taken from the printed total, so AP sees why it is not the PO unit cost.
+export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | undefined {
+  const changed = lines.filter(line => line.unitCostFromLineTotal && line.unitCost != null && line.quantity != null && line.quantity > 0);
+  if (changed.length === 0) return undefined;
+  const listed = changed
+    .slice(0, POSITIVE_QUANTITY_NOTE_LINES_LISTED)
+    .map(line => `"${line.description}" (${line.quantity} x ${line.unitCost} vs PO unit cost ${line.purchaseOrderLineUnitCost})`);
+  const unlisted = changed.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return `${changed.length === 1 ? 'Line' : 'Lines'} ${listed.join(', ')} ${changed.length === 1 ? 'was' : 'were'} submitted with the printed quantity`
+    + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost by less than a cent a unit; the total is unchanged.`;
 }
 
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.

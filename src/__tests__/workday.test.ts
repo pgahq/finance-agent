@@ -6632,6 +6632,176 @@ describe('Workday utilities', () => {
           expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
         });
 
+        describe('Semicolon 26-2177 on PO-414547 (totals a few cents off quantity x PO unit cost)', () => {
+          const eventTags = (event: string, wid: string) => [
+            lob('LOB-Member_Championships', 'wid-lob-mc'),
+            ref('Organization_Reference_ID', event, wid),
+            fund,
+            costCenter('CC-Member_Championships', 'wid-cc-mc'),
+          ];
+          const assistants = eventTags('2026-Assistants_Champ', 'wid-assistants');
+          const seniors = eventTags('2026_Sr_PGA_Pro_Champ', 'wid-seniors');
+          const poLine = (id: string, description: string, quantity: number, unitCost: number, total: number, splits: any[]) => ({
+            lineOrder: 0,
+            description,
+            quantity,
+            unitCost: null,
+            extendedAmount: total,
+            purchaseOrderLineId: id,
+            purchaseOrderLineQuantity: quantity,
+            purchaseOrderLineUnitCost: unitCost,
+            poPassthroughWorktagsReference: [],
+            supplierInvoiceSplitLineData: splits,
+          });
+          const semicolonLines = () => [
+            { ...poLine('ITEM_ORDER_LINE-3-29563', '47.5x72 & 47.5x95.5 Sintra Signs', 54, 238.68, 12888.71, [
+              { quantity: 14, extendedAmount: 3341.52, worktagReference: assistants },
+              { quantity: 40, extendedAmount: 9547.2, worktagReference: seniors },
+            ]), lineOrder: 1 },
+            { ...poLine('ITEM_ORDER_LINE-3-29564', '12x95.5 Alumacorr Footers', 12, 212.54, 2550.39, [
+              { quantity: 6, extendedAmount: 1275.24, worktagReference: seniors },
+              { quantity: 6, extendedAmount: 1275.24, worktagReference: assistants },
+            ]), lineOrder: 2 },
+            { ...poLine('ITEM_ORDER_LINE-3-29562', '5.75x12.25 Cut Vinyl HYP', 76, 10.72, 814.38, [
+              { quantity: 36, extendedAmount: 385.92, worktagReference: assistants },
+              { quantity: 40, extendedAmount: 428.8, worktagReference: seniors },
+            ]), lineOrder: 3 },
+          ];
+
+          it('posts all three lines linked to their PO lines with the PO split quantities, in one attempt', async () => {
+            const mockClient = mockSoapClient();
+            const capturedRequests: any[] = [];
+            mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+              capturedRequests.push(request);
+              callback(null, newInvoiceResponse);
+            });
+
+            const result = await submitNewSupplierInvoiceForTest({
+              finalLines: normalizeSupplierInvoiceLineAmounts(semicolonLines(), true),
+              extractedAmountDue: '$20,213.48',
+              extractedFreightAmount: '$3,960.00',
+              extractedTaxAmount: '$0.00',
+            });
+
+            expect(result.success).toBe(true);
+            expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+            const header = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+            expect(header.Control_Amount_Total).toBe(20213.48);
+            expect(header.Freight_Amount).toBe(3960);
+
+            const lines = submittedLines(capturedRequests[0]);
+            expect(lines.map((line: any) => ({
+              id: line.Purchase_Order_Line_Reference?.ID?.[0]?.$value,
+              quantity: line.Quantity,
+              unitCost: line.Unit_Cost,
+              amount: line.Extended_Amount,
+            }))).toEqual([
+              { id: 'ITEM_ORDER_LINE-3-29563', quantity: 54, unitCost: 238.679815, amount: 12888.71 },
+              { id: 'ITEM_ORDER_LINE-3-29564', quantity: 12, unitCost: 212.5325, amount: 2550.39 },
+              { id: 'ITEM_ORDER_LINE-3-29562', quantity: 76, unitCost: 10.715526, amount: 814.38 },
+            ]);
+            expect(lines.map((line: any) => splitRows(line).map((split: any) => split.Quantity))).toEqual([[14, 40], [6, 6], [36, 40]]);
+            for (const line of lines) {
+              const splitTotal = splitRows(line).reduce((sum: number, split: any) => sum + split.Extended_Amount, 0);
+              expect(Math.round(splitTotal * 100)).toBe(Math.round(line.Extended_Amount * 100));
+            }
+            const lineTotal = lines.reduce((sum: number, line: any) => sum + line.Extended_Amount, 0);
+            expect(Math.round((lineTotal + header.Freight_Amount) * 100)).toBe(2021348);
+            expect(result.appliedFallbacks).not.toEqual(expect.arrayContaining([
+              expect.objectContaining({ field: 'quantityPurchaseOrderLine' }),
+            ]));
+          });
+        });
+
+        describe('invalid ship-to address fault', () => {
+          const shipToFault = (...positions: number[]) => ({
+            Validation_Fault: {
+              Validation_Error: positions.map(position => ({
+                Message: 'The Provided Ship To Address is Invalid for this Supplier Invoice Document',
+                Detail_Message: 'Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-The Provided Ship To Address is Invalid for this Supplier Invoice Document{+4}- on Supplier Invoice Line Replacement Data',
+                Xpath: `/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[${position}]`,
+              })),
+            },
+          });
+          const shipToOf = (line: any) => line.Ship_To_Address_Reference?.ID?.[0]?.$value;
+          const shipToLines = (shipTo: string | null) => [1, 2].map(lineOrder => ({
+            lineOrder,
+            description: `Line ${lineOrder}`,
+            quantity: 1,
+            unitCost: 100,
+            extendedAmount: 100,
+            shipToAddressId: shipTo,
+          }));
+
+          it('resends without ship-to on the lines the fault names, without calling the classifier', async () => {
+            const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+            classifyWorkdayValidationField.mockClear();
+            const mockClient = mockSoapClient();
+            const capturedRequests: any[] = [];
+            mockClient.Submit_Supplier_Invoice
+              .mockImplementationOnce((request: any, callback: any) => {
+                capturedRequests.push(request);
+                callback(shipToFault(2), null);
+              })
+              .mockImplementationOnce((request: any, callback: any) => {
+                capturedRequests.push(request);
+                callback(null, newInvoiceResponse);
+              });
+
+            const result = await submitNewSupplierInvoiceForTest({ finalLines: shipToLines('ADDR-1') });
+
+            expect(result.success).toBe(true);
+            expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+            expect(submittedLines(capturedRequests[0]).map(shipToOf)).toEqual(['ADDR-1', 'ADDR-1']);
+            expect(submittedLines(capturedRequests[1]).map(shipToOf)).toEqual(['ADDR-1', undefined]);
+            expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+              expect.objectContaining({ field: 'shipToAddress', dueToValidationError: true }),
+            ]));
+          });
+
+          it('resends every line without ship-to when the fault names no readable line', async () => {
+            const mockClient = mockSoapClient();
+            const capturedRequests: any[] = [];
+            const unreadable = shipToFault(1);
+            (unreadable.Validation_Fault.Validation_Error[0] as any).Xpath = '/wd:Submit_Supplier_Invoice_Request[1]';
+            mockClient.Submit_Supplier_Invoice
+              .mockImplementationOnce((request: any, callback: any) => {
+                capturedRequests.push(request);
+                callback(unreadable, null);
+              })
+              .mockImplementationOnce((request: any, callback: any) => {
+                capturedRequests.push(request);
+                callback(null, newInvoiceResponse);
+              });
+
+            await submitNewSupplierInvoiceForTest({ finalLines: shipToLines('ADDR-1') });
+
+            expect(submittedLines(capturedRequests[1]).map(shipToOf)).toEqual([undefined, undefined]);
+          });
+
+          it('does not retry when no submitted line carries a ship-to', async () => {
+            const mockClient = mockSoapClient();
+            mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+              callback(shipToFault(1), null);
+            });
+
+            await expect(submitNewSupplierInvoiceForTest({ finalLines: shipToLines(null) }))
+              .rejects.toThrow('Ship To Address is Invalid');
+            expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+          });
+
+          it('fails after one ship-to retry when Workday still rejects it', async () => {
+            const mockClient = mockSoapClient();
+            mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+              callback(shipToFault(1, 2), null);
+            });
+
+            await expect(submitNewSupplierInvoiceForTest({ finalLines: shipToLines('ADDR-1') }))
+              .rejects.toThrow('Ship To Address is Invalid');
+            expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+          });
+        });
+
         it('keeps split quantities when the duplicate worktag retry omits PO pass-through worktags', async () => {
           const mockClient = mockSoapClient();
           const capturedRequests: any[] = [];

@@ -26,6 +26,7 @@ import {
   requiresPositivePoQuantity,
   normalizeSupplierInvoiceLineAmounts,
   positivePoQuantityNote,
+  unitCostFromLineTotalNote,
   parseExtractedAmount,
   parseExtractedLineAmount,
   parseExtractedUnitCost,
@@ -3475,6 +3476,109 @@ describe('amount-only lines linked to a quantity-based PO line (PO-414088)', () 
     const [first, second] = applyPositivePoQuantityRetry([zeroed, untouched], new Set([1]));
     expect(first).toMatchObject({ quantity: 1, unitCost: 100, extendedAmount: 100, forcePositivePoQuantity: true });
     expect(second).toBe(untouched);
+  });
+
+  describe('totals that differ from quantity x PO unit cost only by rounding (Semicolon 26-2177)', () => {
+    const splits = [{ quantity: 14, worktagReference: [] }, { quantity: 40, worktagReference: [] }] as any;
+    const priced = (
+      lineOrder: number,
+      quantity: number | null,
+      total: number,
+      poQuantity: number,
+      poUnitCost: number | null,
+      overrides: Partial<FinalInvoiceLine> = {}
+    ): FinalInvoiceLine => ({
+      ...poLinked(lineOrder, `Line ${lineOrder}`, quantity, null, total),
+      purchaseOrderLineQuantity: poQuantity,
+      purchaseOrderLineUnitCost: poUnitCost,
+      supplierInvoiceSplitLineData: splits,
+      ...overrides,
+    });
+
+    it('keeps the printed quantity and takes the unit cost from the total on all three lines', () => {
+      const result = normalizeSupplierInvoiceLineAmounts([
+        priced(1, 54, 12888.71, 54, 238.68),
+        priced(2, 12, 2550.39, 12, 212.54),
+        priced(3, 76, 814.38, 76, 10.72),
+      ], true);
+      expect(result.map(line => [line.quantity, line.unitCost, line.extendedAmount])).toEqual([
+        [54, 238.679815, 12888.71],
+        [12, 212.5325, 2550.39],
+        [76, 10.715526, 814.38],
+      ]);
+      expect(result.every(line => line.unitCostFromLineTotal && line.purchaseOrderLineId === PO_LINE)).toBe(true);
+      expect(sumCents(result)).toBe(1625348);
+    });
+
+    it('also applies to a printed unit cost that misses the total by a few cents', () => {
+      const [line] = alignSupplierInvoiceLineAmounts([{ ...priced(1, 54, 12888.71, 54, 238.68), unitCost: 238.68 }]);
+      expect(line).toMatchObject({ quantity: 54, unitCost: 238.679815, extendedAmount: 12888.71 });
+    });
+
+    it('pins the per-unit bound: a gap under a cent a unit passes, a larger one is a price change', () => {
+      const [under] = alignSupplierInvoiceLineAmounts([priced(1, 54, 12888.23, 54, 238.68)]);
+      expect(under).toMatchObject({ quantity: 54, unitCost: 238.670926, unitCostFromLineTotal: true });
+      const [over] = alignSupplierInvoiceLineAmounts([priced(1, 54, 12888, 54, 238.68)]);
+      expect(over).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 12888 });
+      expect(over.unitCostFromLineTotal).toBeUndefined();
+    });
+
+    it('leaves a non-split quantity PO line to the one-unit rule', () => {
+      const [line] = alignSupplierInvoiceLineAmounts([
+        priced(1, 54, 12888.71, 54, 238.68, { supplierInvoiceSplitLineData: undefined }),
+      ]);
+      expect(line).toMatchObject({ quantity: 1, unitCost: 12888.71, extendedAmount: 12888.71 });
+      expect(line.unitCostFromLineTotal).toBeUndefined();
+    });
+
+    it.each([
+      ['a quantity above the PO line quantity', priced(1, 60, 12888.71, 54, 238.68)],
+      ['a misread quantity whose implied unit cost is far from the PO price', priced(1, 5, 12888.71, 54, 238.68)],
+      ['a PO line with no unit cost', priced(1, 54, 12888.71, 54, null)],
+      ['a line with no printed quantity', priced(1, null, 12888.71, 54, 238.68)],
+      ['a line whose PO reference is omitted', priced(1, 54, 12888.71, 54, 238.68, { omitPurchaseOrderLineReference: true })],
+    ])('keeps today\'s behavior for %s', (_name, line) => {
+      const [result] = alignSupplierInvoiceLineAmounts([line]);
+      expect(result.unitCostFromLineTotal).toBeUndefined();
+      expect(result.unitCost === 0 || result.unitCost === 12888.71 || result.quantity === 1).toBe(true);
+    });
+
+    it('leaves a discounted line to the net unit cost rule', () => {
+      const [line] = alignSupplierInvoiceLineAmounts([
+        { ...priced(1, 45, 1966.95, 45, 46.5), unitCost: 46.5, hasDiscount: true },
+      ]);
+      expect(line).toMatchObject({ quantity: 45, unitCost: 43.71 });
+      expect(line.unitCostFromLineTotal).toBeUndefined();
+    });
+
+    it('drops the marker when the amount-only retry rewrites the line', () => {
+      const [line] = alignSupplierInvoiceLineAmounts([priced(1, 54, 12888.71, 54, 238.68)]);
+      const [retried] = applyAmountOnlyLineRetry([line]);
+      expect(retried.unitCostFromLineTotal).toBeUndefined();
+    });
+
+    it('names the lines in an AP note', () => {
+      const result = normalizeSupplierInvoiceLineAmounts([priced(1, 54, 12888.71, 54, 238.68)], true);
+      const note = unitCostFromLineTotalNote(result);
+      expect(note).toContain('"Line 1" (54 x 238.679815 vs PO unit cost 238.68)');
+      expect(note).toContain('by less than a cent a unit');
+      expect(unitCostFromLineTotalNote([poLinked(1, 'Plain', 2, 5, 10)])).toBeUndefined();
+    });
+  });
+
+  it('copies the PO unit cost with the quantity and drops it when the line is detached', () => {
+    const base = {
+      lineOfBusinessId: null, costCenterId: null, fundId: null, spendCategoryId: null,
+      worktagsReference: [], description: null, memo: null, shipToAddressId: null, splitLineData: [],
+    };
+    const [matched] = overlayPoWorktagsFromPurchaseOrder(
+      [{ lineOrder: 1, description: 'Goods', purchaseOrderLineId: 'GOODS-1' }],
+      [{ ...base, lineOrder: 1, purchaseOrderLineId: 'GOODS-1', quantity: 54, unitCost: 238.68 }]
+    );
+    expect(matched).toMatchObject({ purchaseOrderLineQuantity: 54, purchaseOrderLineUnitCost: 238.68 });
+    const [detached] = overlaySharedPoWorktagsOnUnmatchedLines([{ ...matched, unitCostFromLineTotal: true }], undefined);
+    expect(detached.purchaseOrderLineUnitCost).toBeUndefined();
+    expect(detached.unitCostFromLineTotal).toBeUndefined();
   });
 
   it('copies the PO line quantity onto matched invoice lines but not service lines', () => {
