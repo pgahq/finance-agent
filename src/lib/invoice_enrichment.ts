@@ -430,6 +430,7 @@ export function describeEmailBudgetSplit(outcome: EmailBudgetSplitOutcome | unde
   if (!outcome?.applied) return [];
   return outcome.budgets.map(budget => {
     const coding = [
+      budget.companyId && `Company ${budget.companyId}`,
       budget.costCenterId && `Cost Center ${budget.costCenterId}`,
       budget.spendCategoryId && `Spend Category ${budget.spendCategoryId}`,
     ].filter(Boolean).join(', ');
@@ -451,7 +452,11 @@ export function suggestedBudgetCostCenters(
 export function formatEmailBudgetSplitNotes(outcome: EmailBudgetSplitOutcome | undefined): string {
   if (!outcome) return '';
   if (!outcome.applied) return outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';
-  return `\n\nEmail budget split (one invoice line per budget): ${describeEmailBudgetSplit(outcome).join('; ')}`;
+  const scaled = outcome.headerChargesRolledIn
+    ? `. The email's amounts total ${formatBudgetAmount(outcome.headerChargesRolledIn.amountDueCents)}, the full amount due, so each budget line carries its share of the ${formatBudgetAmount(outcome.headerChargesRolledIn.amountDueCents - outcome.headerChargesRolledIn.lineTotalCents)} of tax and freight and the invoice header tax and freight were cleared`
+    : '';
+  const review = outcome.review ? `\n\nBudget split review: ${outcome.review}` : '';
+  return `\n\nEmail budget split (one invoice line per budget): ${describeEmailBudgetSplit(outcome).join('; ')}${scaled}${review}`;
 }
 
 export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string {

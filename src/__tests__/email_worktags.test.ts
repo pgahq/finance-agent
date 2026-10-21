@@ -10,6 +10,7 @@ jest.mock('@pga/logger', () => ({
 }));
 
 const brandCoding = {
+  company: null,
   event: null,
   lineOfBusiness: { extracted: 'Production & Advertising', referenceId: 'LOB-Production_&_Advertising' },
   fund: null,
@@ -17,6 +18,7 @@ const brandCoding = {
   spendCategory: { extracted: 'Advertising & Promotion', name: 'Advertising and Promotion', referenceId: 'SC-Advertising_and_Promotion' },
 };
 const recruitmentCoding = {
+  company: null,
   event: null,
   lineOfBusiness: { extracted: 'Recruitment', referenceId: 'LOB-Recruitment' },
   fund: null,
@@ -64,6 +66,54 @@ describe('buildEmailWorktags', () => {
     ]);
   });
 
+  it('carries each budget\'s verified company and the submitted header company', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: { ...brandCoding, company },
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        {
+          label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding,
+          company: { extracted: '410', name: 'PGA Corporation', workdayId: 'wid-410', referenceId: '410' },
+        },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, {
+      budgetSplitBaseCents: 300,
+      budgetSplitGrossCents: 330,
+      budgetCompanies: [undefined, { referenceId: '410', name: 'PGA Corporation' }],
+      headerCompanyReferenceId: '412',
+    });
+
+    expect(result?.companyReferenceId).toBe('412');
+    expect(result?.budgetSplitGrossCents).toBe(330);
+    expect(result?.budgetSplits?.map(split => split.companyReferenceId)).toEqual([null, '410']);
+    expect(result?.budgetSplits?.[1].companyName).toBe('PGA Corporation');
+  });
+
+  it('ignores the model\'s own budget company until it is verified, and records an unverified one', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        { label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding, company: { extracted: '410', name: null, workdayId: null, referenceId: '410' } },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetCompanies: [undefined, { unverified: '410' }], headerCompanyReferenceId: null });
+
+    expect(result?.companyReferenceId).toBeNull();
+    expect(result?.budgetSplits?.[1]).toEqual(expect.objectContaining({ companyReferenceId: null, companyUnverified: '410' }));
+  });
+
+  it('drops a budget cost center that is really that budget\'s own company code', () => {
+    const result = buildEmailWorktags({
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'A', amount: '$1', percent: null, equalShare: null, ...recruitmentCoding },
+        { label: 'B', amount: '$2', percent: null, equalShare: null, ...brandCoding, costCenter: { extracted: '410', name: null, code: '410' } },
+      ],
+    }, { referenceId: '310', workdayId: 'wid-310' }, { budgetCompanies: [undefined, { referenceId: '410', name: 'PGA Corporation' }] });
+
+    expect(result?.budgetSplits?.[1].costCenterId).toBeNull();
+  });
+
   it('works when the model returns budgets but no invoice-wide coding', () => {
     const result = buildEmailWorktags({
       emailWorktags: null,
@@ -108,9 +158,9 @@ describe('budgetSplitOptions', () => {
   const charges = { amountDue: '$35,000', freightAmount: undefined, taxAmount: undefined };
 
   it('uses amount due less freight and tax as the base', () => {
-    expect(budgetSplitOptions({ charges })).toEqual({ budgetSplitBaseCents: 3500000 });
+    expect(budgetSplitOptions({ charges })).toEqual({ budgetSplitBaseCents: 3500000, budgetSplitGrossCents: 3500000 });
     expect(budgetSplitOptions({ charges: { amountDue: '$1,000.00', freightAmount: '$50.00', taxAmount: '$25.50' } }))
-      .toEqual({ budgetSplitBaseCents: 92450 });
+      .toEqual({ budgetSplitBaseCents: 92450, budgetSplitGrossCents: 100000 });
   });
 
   it('blocks splits for all-freight invoices, withheld charges, and unreadable amounts due', () => {
@@ -141,6 +191,23 @@ describe('email budget split notes', () => {
     );
   });
 
+  it('names the company and explains the rolled-in tax when the email budgeted the amount due', () => {
+    const rolledIn = {
+      applied: true,
+      budgets: [
+        { label: 'SPLIT #1', amountCents: 1176423, costCenterId: 'CC-A', spendCategoryId: null, companyId: null },
+        { label: 'SPLIT #2', amountCents: 185751, costCenterId: 'CC-B', spendCategoryId: null, companyId: '410' },
+      ],
+      headerChargesRolledIn: { amountDueCents: 1362174, lineTotalCents: 1247400 },
+      review: 'SPLIT #2 has no spend category in the email; set its spend category before approving.',
+    };
+
+    expect(describeEmailBudgetSplit(rolledIn)[1]).toBe('$1,857.51 SPLIT #2 (Company 410, Cost Center CC-B)');
+    const notes = formatEmailBudgetSplitNotes(rolledIn);
+    expect(notes).toContain("The email's amounts total $13,621.74, the full amount due, so each budget line carries its share of the $1,147.74 of tax and freight and the invoice header tax and freight were cleared");
+    expect(notes).toContain('\n\nBudget split review: SPLIT #2 has no spend category');
+  });
+
   it('writes the review note when the split was not applied and nothing otherwise', () => {
     expect(formatEmailBudgetSplitNotes({ applied: false, review: 'The email splits the cost across 2 budgets (A; B), but x.', budgets: [] }))
       .toBe('\n\nBudget split review: The email splits the cost across 2 budgets (A; B), but x.');
@@ -164,5 +231,11 @@ describe('budget split prompt rule', () => {
     );
     expect(invoiceMatchingPrompt).toContain('Merely naming more than one budget is not a split');
     expect(invoiceMatchingPrompt).toContain('"$15,000 to Recruitment and $20,000 to Brand and Marketing"');
+  });
+
+  it('asks for a per-budget company and an expense item as a spend category hint', () => {
+    expect(invoiceMatchingPrompt).toContain("put it in that entry's company");
+    expect(invoiceMatchingPrompt).toContain('"Expense Item: Hotel"');
+    expect(invoiceMatchingPrompt).toContain('"Lodging" spend category');
   });
 });

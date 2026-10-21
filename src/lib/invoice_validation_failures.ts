@@ -508,6 +508,11 @@ export function isTaxApplicabilityValidationError(text: unknown): boolean {
   );
 }
 
+export function isIntercompanyValidationError(text: unknown): boolean {
+  const validationText = asValidationText(text);
+  return /not configured to allow intercompany transactions/i.test(validationText) || /Intercompany_Affiliate_Reference/i.test(validationText);
+}
+
 const PAYMENT_SCHEDULES_OVERRIDE_MESSAGE = /\boverride\s+the\s+(?:invoice\s+)?due\s+date\b/i;
 const DUE_DATE_FAULT_MESSAGES = [
   /\bDue[\s_]+Date\s+must\s+not\s+be\s+earlier\s+than\s+(?:the\s+)?Invoice[\s_]+Date\b/i,

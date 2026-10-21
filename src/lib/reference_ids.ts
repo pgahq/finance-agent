@@ -5,6 +5,7 @@ import {
   findDocumentsByReferenceId,
   findDocumentsByReferenceIds,
   getDatabaseConnection,
+  getDocumentsByWorkdayIds,
   searchDocumentsByTypes,
   type DatabaseConnection,
   type DocumentType,
@@ -439,6 +440,73 @@ export async function resolveCompanyFromEmail(options: {
     return { ...exactCompanies[0], origin: 'code' };
   }
   return undefined;
+}
+
+export interface BudgetCompanyResolution {
+  /** Company_Reference_ID of a company the email verifiably names for this budget. */
+  referenceId?: string;
+  name?: string;
+  /** The company the model read for this budget, when the email and the company cache do not confirm it. */
+  unverified?: string;
+}
+
+/**
+ * Holds each budget's company to the rule the invoice company follows: the code must be coding in the email and
+ * match exactly one cached company, and it must be the code the model claimed. Anything else is reported as unverified.
+ */
+export async function resolveBudgetSplitCompanies(options: {
+  db: DatabaseConnection;
+  emailBody?: string;
+  codingText?: string;
+  apNotes?: string;
+  splits?: Array<{ company?: { extracted?: string | null; workdayId?: string | null; referenceId?: string | null; name?: string | null } | null } | null> | null;
+}): Promise<Array<BudgetCompanyResolution | undefined>> {
+  const splits = (options.splits ?? []).filter((split) => split != null);
+  return Promise.all(splits.map(async (split) => {
+    const claim = split?.company;
+    if (!claim || !(claim.extracted?.trim() || claim.referenceId?.trim() || claim.workdayId?.trim())) return undefined;
+    const claimedReferenceId = claim.referenceId?.trim();
+    const label = claim.extracted?.trim() || claimedReferenceId || claim.name?.trim() || claim.workdayId?.trim();
+    try {
+      const match = await resolveCompanyFromEmail({
+        db: options.db,
+        emailBody: options.emailBody,
+        codingText: options.codingText,
+        apNotes: options.apNotes,
+        emailCompany: claim,
+      });
+      // A company matched by name alone carries the model's own WID and reference ID, so the reference ID that
+      // goes on the line is read from the company cache instead, which also proves the WID exists.
+      const referenceId = match?.origin === 'name'
+        ? await companyReferenceIdForWorkdayId(options.db, match.workdayId)
+        : match?.referenceId;
+      const confirmed = referenceId
+        && (!claimedReferenceId || referenceId.toLowerCase() === claimedReferenceId.toLowerCase());
+      return confirmed
+        ? { referenceId, name: match?.name ?? claim.name ?? undefined }
+        : { unverified: label };
+    } catch (error) {
+      debug('Budget company could not be verified:', error);
+      return { unverified: label };
+    }
+  }));
+}
+
+/** The Company_Reference_ID of a cached company, for comparing the submitted header company with a budget's. */
+export async function companyReferenceIdForWorkdayId(
+  db: DatabaseConnection,
+  workdayId: string | undefined
+): Promise<string | undefined> {
+  if (!workdayId) return undefined;
+  try {
+    const rows = await getDocumentsByWorkdayIds(db, 'company', [workdayId]);
+    const metadata = (rows?.[0]?.metadata ?? {}) as Record<string, unknown>;
+    const id = metadata.companyReferenceId;
+    return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+  } catch (error) {
+    debug('Header company reference id lookup failed:', error);
+    return undefined;
+  }
 }
 
 export type CreateInvoiceCompanySource = 'email' | 'po' | 'recommended' | 'default';

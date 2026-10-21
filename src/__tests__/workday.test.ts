@@ -4392,6 +4392,97 @@ describe('Workday utilities', () => {
           );
         });
 
+        it('should send the line company as Intercompany_Affiliate_Reference and clear header tax when charges are in the lines', async () => {
+          const { getCapturedRequest } = setupMockClient();
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            extractedTaxAmount: undefined,
+            taxCleared: true,
+            freightCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          });
+
+          expect(result.success).toBe(true);
+          const data = getCapturedRequest().Submit_Supplier_Invoice_Request.Supplier_Invoice_Data;
+          expect(data.Tax_Amount).toBe(0);
+          expect(data.Invoice_Line_Replacement_Data[0].Intercompany_Affiliate_Reference).toBeUndefined();
+          expect(data.Invoice_Line_Replacement_Data[0].Tax_Applicability_Reference).toBeUndefined();
+          expect(data.Invoice_Line_Replacement_Data[1].Intercompany_Affiliate_Reference).toEqual({
+            ID: [{ $attributes: { type: 'Company_Reference_ID' }, $value: '410' }],
+          });
+        });
+
+        it('should retry with every line under the invoice company when Workday rejects the intercompany pairing', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            if (capturedRequests.length === 1) {
+              callback({
+                Validation_Fault: {
+                  Validation_Error: {
+                    Message: 'PGA Corporation is not configured to allow intercompany transactions with The Professional Golfers Association of America',
+                    Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Intercompany_Affiliate_Reference'
+                  }
+                }
+              }, null);
+              return;
+            }
+            callback(null, { Response_Data: { success: true } });
+          });
+
+          const result = await submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            taxCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          });
+
+          expect(result.success).toBe(true);
+          expect(capturedRequests).toHaveLength(2);
+          const firstLines = capturedRequests[0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          const retryLines = capturedRequests[1].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data;
+          expect(firstLines[1].Intercompany_Affiliate_Reference).toBeDefined();
+          expect(retryLines[1].Intercompany_Affiliate_Reference).toBeUndefined();
+          expect(result.appliedFallbacks).toEqual(
+            expect.arrayContaining([expect.objectContaining({ field: 'intercompany', label: expect.stringContaining('line 2 $1,857.51 (company 410) is booked under the invoice company') })])
+          );
+        });
+
+        it('should not move a line off its company for a fault that only mentions intercompany in passing', async () => {
+          const { mockClient } = setupMockClient();
+          const capturedRequests: any[] = [];
+          mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback({
+              Validation_Fault: {
+                Validation_Error: {
+                  Message: 'The Cost Center is not available for use with the company; see the intercompany policy.',
+                  Xpath: '/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[2]/wd:Worktags_Reference'
+                }
+              }
+            }, null);
+          });
+
+          await expect(submitSupplierInvoiceUpdateForTest({
+            extractedAmountDue: '$13,621.74',
+            taxCleared: true,
+            finalLines: [
+              { lineOrder: 1, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 11764.23 },
+              { lineOrder: 2, description: 'Rooms', quantity: 0, unitCost: 0, extendedAmount: 1857.51, intercompanyAffiliateId: '410' },
+            ],
+          })).rejects.toThrow('intercompany policy');
+
+          const sentLines = capturedRequests.map(request => request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Line_Replacement_Data);
+          expect(sentLines.every(lines => lines[1].Intercompany_Affiliate_Reference !== undefined)).toBe(true);
+        });
+
         it('should retry without Tax_Applicability_Reference when Workday rejects the applicability ID', async () => {
           const { mockClient } = setupMockClient();
           const capturedRequests: any[] = [];
