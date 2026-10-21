@@ -65,6 +65,7 @@ export const MATERIAL_FIELDS: ReadonlySet<ScoredFieldName> = new Set<ScoredField
   'supplier',
   'company',
   'invoiceDate',
+  'dueDate',
   'controlTotal',
   'line.amount',
   'line.purchaseOrderLine',

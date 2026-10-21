@@ -35,6 +35,7 @@ export const InvoiceOcrSchema = z.object({
   printedBillTo: z.object(printedTextShape(enrichment.companyVerification.shape.extractedInformation.shape))
     .describe('The bill-to company (the buyer being billed, not the supplier) exactly as printed on the invoice'),
   extractedInvoiceDate: printedText(enrichment.extractedInvoiceDate),
+  extractedDueDate: printedText(enrichment.extractedDueDate),
   extractedAmountDue: printedText(enrichment.extractedAmountDue),
   extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
   extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
@@ -47,7 +48,8 @@ export const InvoiceOcrSchema = z.object({
   })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
-  extractedJobNumber: printedText(enrichment.extractedJobNumber),
+  extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
+  extractedSupplierReferenceKind: printedText(enrichment.extractedSupplierReferenceKind),
   extractedCustomerId: printedText(enrichment.extractedCustomerId),
   extractedServicePeriod: printedText(enrichment.extractedServicePeriod),
   extractedPaymentTerms: z.string().describe('The payment terms as printed on the invoice (e.g. "Net 30", "Due on Receipt"). Empty string if none are printed.'),
@@ -86,6 +88,61 @@ function nullableTextFields<T extends Record<string, unknown>>(fields: T): Nulla
   ) as NullableText<T>;
 }
 
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+function monthNumber(name: string): number {
+  const word = name.toLowerCase();
+  const index = MONTHS.findIndex((month) => month === word || month.slice(0, 3) === word || (word === 'sept' && month === 'september'));
+  return index + 1;
+}
+
+function isoCalendarDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function ordinalMatchesDay(day: string, suffix: string | undefined): boolean {
+  if (!suffix) return true;
+  const n = Number(day);
+  const expected = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th';
+  return suffix.toLowerCase() === expected;
+}
+
+function fullYear(year: string): number {
+  return year.length === 2 ? 2000 + Number(year) : Number(year);
+}
+
+/**
+ * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
+ * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
+ * else is null.
+ */
+export function normalizePrintedDate(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  if (!text) return null;
+
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+
+  const numeric = text.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
+  if (numeric) return isoCalendarDate(fullYear(numeric[4]), Number(numeric[1]), Number(numeric[3]));
+
+  const monthFirst = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})$/i);
+  const dayFirst = text.match(/^(\d{1,2})(st|nd|rd|th)?\s+([A-Za-z]+)\.?,?\s+(\d{4})$/i);
+  const named = monthFirst
+    ? { month: monthFirst[1], day: monthFirst[2], suffix: monthFirst[3], year: monthFirst[4] }
+    : dayFirst ? { month: dayFirst[3], day: dayFirst[1], suffix: dayFirst[2], year: dayFirst[4] } : undefined;
+  if (named) {
+    const month = monthNumber(named.month);
+    return month && ordinalMatchesDay(named.day, named.suffix)
+      ? isoCalendarDate(Number(named.year), month, Number(named.day))
+      : null;
+  }
+
+  return null;
+}
+
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, ...headerFields } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -94,6 +151,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
     .map(charge => ({ label: charge.label.trim(), amount: charge.amount.trim() }));
   return {
     ...nullableTextFields(headerFields),
+    extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     printedSupplier: nullableTextFields(printedSupplier),
     printedBillTo: nullableTextFields(printedBillTo),
@@ -120,7 +178,7 @@ Populate \`printedSupplier\` with the supplier (vendor) details printed on the i
 - supplierName, street address, phone, email, tax ID or EIN, website, and contact person
 - remitToAddress when a separate remit-to or payment address is printed, starting with the payee company name exactly as printed (for example "SiteOne Landscape Supply, LLC, 24110 Network Place, Chicago, IL 60673-1241")
 - industry only when the document makes the business type clear
-- memo: a terse 1-sentence summary of what the invoice is for (e.g., "Office supplies for Q1 2024"). If not clear, leave the memo empty. Do not prepend PO, account, job, customer ID, or service period identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels in this sentence.
+- memo: a few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "office supplies"). No ending period, and do not name PGA, the venue, or the location the service is for. If not clear, or if it would only repeat the supplier name or an identifier, leave the memo empty. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.
 
 ## Part 2: Bill-to company as printed
 
@@ -136,7 +194,20 @@ Guidelines:
 - Only return the invoice date if it is clearly visible on the document.
 - Prefer the document's invoice date over service dates, due dates, delivery dates, billing period dates, or Default_OCR_Spend_Category dates.
 - If the document shows multiple dates and the invoice date is ambiguous, omit the field.
+- Read numeric dates as month/day/year. Read the invoice date and the due date (Part 3.5) in the same order.
 - Do not guess a date.
+
+---
+
+## Part 3.5: Due Date
+
+Populate \`extractedDueDate\` only with a date explicitly printed as the due date, payment due date, or pay-by date (e.g. "Due Date", "Payment Due", "Pay By", "Due"), normalized to \`YYYY-MM-DD\`.
+
+Guidelines:
+- Never compute a due date from payment terms such as "Net 30", and never add days to the invoice date.
+- Return an empty string for "Due on receipt", "Due upon receipt", or "Immediate" with no printed date, when no due date is printed, or when it is ambiguous.
+- Expand a two-digit year to 20YY. For example, an invoice that prints Invoice Date 10/10/26 and Due Date 11/11/26 must return extractedInvoiceDate "2026-10-10" and extractedDueDate "2026-11-11".
+- Read numeric dates as month/day/year, the same order as the invoice date in Part 3.
 
 ---
 
@@ -191,11 +262,11 @@ Read the invoice attachment and extract the purchase order number if one is refe
 
 ## Part 7.5: Memo identifiers
 
-Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code joins values with a period, in check-print order (account, customer ID, job/order, PO, service period, then the memo sentence). Do not copy these identifiers into \`printedSupplier.memo\`, and do not use pipe \`|\` or \`#\` labels there.
+Extract these identifiers independently when they appear on the invoice or in a line description. Omit a field when it is not on the document. Code builds the memo from them in this order, separated by single spaces: account or customer ID, one supplier reference, service dates, then the short description (for example \`Cust 115117 Svc Prd 09/01/26 - 09/30/26 elevator phone line service\`). PGA's PO is not part of the memo. Do not copy these identifiers into \`printedSupplier.memo\`, and do not use pipe \`|\` or \`#\` labels there.
 
 1. **Account number** (\`extractedAccountNumber\`): PGA's customer/sold-to account at this supplier. Labels: "Account Number", "Account #", "Acct #", "AC #", "Customer Account", "Sold To Number" (when that sold-to value is the billed-account id, as on Topgolf). If "Account Number" sits next to ABA/routing in an electronic payments, remit-to, ACH, or wire block, skip it — that is a bank account (Cushman pattern). Never use GL, cost center, company code, or the supplier invoice number.
 
-2. **Job number** (\`extractedJobNumber\`): "Job #", "Job Number", "Job No", **"Order #" / "Order Number"** (Order # is the same as Job #). Do not use an unlabeled Project / PRJ value as the job number. If Order # / Job # is the same PGA PO already extracted (\`PO-\` + 6 word chars), leave job number null.
+2. **Supplier reference** (\`extractedSupplierReference\` and \`extractedSupplierReferenceKind\`): the single most useful supplier-side reference. Labels: "Order #" / "Order Number" (kind \`order\`), "Confirmation #" / "Conf #" (kind \`confirmation\`), "Job #" / "Job Number" / "Job No" (kind \`job\`). On a legal invoice use the file, case, or matter number instead (kind \`file\` for a file or matter number, \`case\` for a case number). When several are printed, return only the one that best identifies the work. Do not use an unlabeled Project / PRJ value. Never use PGA's PO, the supplier invoice number, or the account or customer number; if the only Order # / Job # is the PGA PO already extracted (\`PO-\` + 6 word chars), leave both fields empty.
 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 

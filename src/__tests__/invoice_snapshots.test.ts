@@ -127,6 +127,28 @@ describe('diffScoredFields', () => {
     ]);
   });
 
+  it('scores the Due_Date_Override as dueDate, so an AP change to it is a header change', () => {
+    const agentWrite = extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11-08:00' });
+    const apSaved = extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-25' });
+
+    expect(agentWrite.dueDate).toBe('2026-11-11');
+    expect(base.dueDate).toBeUndefined();
+    expect(diffScoredFields(agentWrite, apSaved)).toEqual([{ field: 'dueDate', before: '2026-11-11', after: '2026-11-25' }]);
+    expect(diffScoredFields(agentWrite, base)).toEqual([{ field: 'dueDate', before: '2026-11-11', after: undefined }]);
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: { $value: '2026-11-11' } }).dueDate).toBe('2026-11-11');
+    // strong-soap parses xsd:date '2026-11-11-08:00' as new Date('2026-11-11'), UTC midnight.
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: new Date('2026-11-11') }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-02-30' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: 'not a date' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11garbage' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11T00:00:00' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11Z' }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+05:30' }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+14:00' }).dueDate).toBe('2026-11-11');
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11+99:99' }).dueDate).toBeUndefined();
+    expect(extractScoredFields({ ...invoice, Due_Date_Override: '2026-11-11-14:30' }).dueDate).toBeUndefined();
+  });
+
   it('pairs reordered lines by amount instead of reporting every field as changed', () => {
     const reordered: ScoredFields = { ...base, lines: [base.lines[1], base.lines[0]] };
     expect(diffScoredFields(base, reordered)).toEqual([]);

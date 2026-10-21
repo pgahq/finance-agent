@@ -11,6 +11,8 @@ import {
 } from './supplier_note_hints.js';
 import { invoiceMatchingPrompt, InvoiceMatchingSchema, type InvoiceEnrichmentResult, type InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachmentRole } from './invoice_ocr.js';
+import { normalizePrintedDate } from '../prompts/invoice_ocr_prompt.js';
+import { dayMonthYearReading } from './due_date.js';
 import { withComposedLineDescriptions, type EmailBudgetSplitOutcome } from './invoice_lines.js';
 import { defaultModel } from './models.js';
 import { type PurchaseOrderEnrichmentContext } from './purchase_order.js';
@@ -125,8 +127,10 @@ export async function enrichInvoiceFromAttachments(
       ? `Use the printed supplier and bill-to company from the invoice document extraction. Compare them with the existing supplier and company. Use the findSuppliers tool if you think the supplier might be different. Use the findCompanies tool if you think the company might be different.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`
       : `Use the findSuppliers tool to search for relevant suppliers and then provide your analysis. Use the printed supplier details in the invoice document extraction to help you identify the supplier. Also verify the company using the findCompanies tool if needed.${companySearchInstructions} If email context is provided, extract coding including company, cost center, event, LOB, fund, and spend category. Call resolveReferenceCode for short codes before assuming a number is a cost center.${poInstructions}`;
 
+    // Matching never uses the due date, so it stays out of the matching prompt.
+    const { extractedDueDate: _unusedDueDate, ...ocrForMatching } = ocr ?? {};
     const documentExtractionText = ocr
-      ? `\n\nInvoice document extraction (read from the invoice documents by a separate OCR pass):\n${JSON.stringify(ocr, null, 2)}`
+      ? `\n\nInvoice document extraction (read from the invoice documents by a separate OCR pass):\n${JSON.stringify(ocrForMatching, null, 2)}`
       : '\n\nInvoice document extraction: none (no readable PDF or image was attached).';
 
     const matching = await getAiResponse({
@@ -305,15 +309,17 @@ export function formatPurchaseOrderNotes(result: InvoiceEnrichmentResult): strin
 export function formatMemoIdentifierNotes(
   result: Pick<
     InvoiceEnrichmentResult,
-    'extractedAccountNumber' | 'extractedJobNumber' | 'extractedCustomerId' | 'extractedServicePeriod'
+    'extractedAccountNumber' | 'extractedSupplierReference' | 'extractedSupplierReferenceKind' | 'extractedCustomerId' | 'extractedServicePeriod'
   >
 ): string {
   const parts: string[] = [];
   if (result.extractedAccountNumber) {
     parts.push(`Account Number (from document): ${result.extractedAccountNumber}`);
   }
-  if (result.extractedJobNumber) {
-    parts.push(`Job Number (from document): ${result.extractedJobNumber}`);
+  if (result.extractedSupplierReference) {
+    const kind = result.extractedSupplierReferenceKind?.trim();
+    const label = kind ? `${kind.charAt(0).toUpperCase()}${kind.slice(1).toLowerCase()} ` : '';
+    parts.push(`Supplier Reference (from document): ${label}${result.extractedSupplierReference}`);
   }
   if (result.extractedCustomerId) {
     parts.push(`Customer ID (from document): ${result.extractedCustomerId}`);
@@ -455,6 +461,38 @@ export function formatInvoiceDateNotes(result: InvoiceEnrichmentResult): string 
 
   const fallbackInvoiceDate = getFirstDayOfCurrentMonth();
   return `\n\nInvoice Date: Date was not extracted from the document and defaulted to the beginning of the current month (${fallbackInvoiceDate}).`;
+}
+
+/**
+ * A due-date fallback means the printed date was not sent as Due_Date_Override. The invoice keeps the due date
+ * Workday already had (its current override, or the one derived from the payment terms), except after a
+ * payment-schedules fault, where no override is sent.
+ */
+export function formatDueDateNotes(
+  result: InvoiceEnrichmentResult,
+  appliedFallbacks: Array<{ field?: string; label?: string }> = [],
+): string {
+  const dueDate = normalizePrintedDate(result.extractedDueDate);
+  if (!dueDate) {
+    return result.extractedDueDate?.trim() ? '\n\nDue Date (from document): unreadable, not sent' : '';
+  }
+  const flipped = dayMonthYearReading(result.extractedInvoiceDate, dueDate);
+  const flipNote = flipped
+    ? ` The printed dates may be day/month/year: read that way, the invoice date is ${flipped.invoiceDate} and the due date is ${flipped.dueDate}. Check the invoice.`
+    : '';
+  const fallback = appliedFallbacks.find((f) => f.field === 'dueDate');
+  if (!fallback) return `\n\nDue Date (from document): ${dueDate}${flipNote}`;
+  const label = fallback.label ?? '';
+  const reason = label === 'omitted due date'
+    ? 'Workday rejected it, so the retry kept the invoice\'s current due date'
+    : label.startsWith('omitted due date and the current override')
+      ? 'Workday allows no due date override on an invoice with payment schedules, so the retry sent none'
+      : label.startsWith('due date not applied') && label.includes('is earlier than')
+        ? 'not sent because it is earlier than the invoice date'
+        : label.startsWith('due date not applied') && label.includes('days after invoice date')
+          ? `not sent because it is ${label.match(/more than \d+ days/)?.[0] ?? 'too far'} after the invoice date; check the year`
+          : `not sent: ${label}`;
+  return `\n\nDue Date (from document): ${dueDate} (${reason})${flipNote}`;
 }
 
 // Helper functions to extract data from invoice
