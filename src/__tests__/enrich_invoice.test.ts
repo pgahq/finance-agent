@@ -117,13 +117,15 @@ jest.mock('../lib/ai.js', () => {
   const toOcrResult = (full: any) => {
     const headerText = Object.fromEntries(
       Object.entries(full ?? {})
-        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines'].includes(key))
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges'].includes(key))
         .map(([key, value]) => [key, text(value)])
     );
     return {
       printedSupplier: textFields(full?.supplier?.extractedInformation),
       printedBillTo: textFields(full?.companyVerification?.extractedInformation),
       ...headerText,
+      extractedOtherCharges: full?.extractedOtherCharges ?? [],
+      extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
       extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
       invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
       extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
@@ -1439,6 +1441,65 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
     expect(params.buildNotes([])).not.toContain('Line total review');
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
+  });
+
+  it('adds the SUPIN-470485 totals-block Decoration $5.00 as a line on update', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Summit Golf Brands', memo: 'logo merchandise' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$312.68',
+      extractedFreightAmount: '$25.18',
+      extractedFreightLabel: 'S&H',
+      extractedTaxAmount: null,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'Polo - Navy', quantity: null, unitCost: null, totalPrice: '180.00', hasDiscount: null },
+        { description: 'Cap - White', quantity: null, unitCost: null, totalPrice: '102.50', hasDiscount: null },
+      ],
+      extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Sub Total', amount: '$287.50' }],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice) })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines.map((line: { description: string; extendedAmount: number }) => [line.description, line.extendedAmount]))
+      .toEqual([['Polo - Navy', 180], ['Cap - White', 102.5], ['Decoration', 5]]);
+    const added = 'Added "Decoration" $5.00 from the invoice totals as an invoice line so lines, freight, and tax equal the amount due.';
+    expect(params.buildNotes([])).toContain(`Amount check: ${added}`);
+    expect(params.buildNotes([])).not.toContain('Line total review');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([added]);
   });
 
   describe('printed due date', () => {

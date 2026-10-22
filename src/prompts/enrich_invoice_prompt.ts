@@ -118,6 +118,11 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
   })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Null when there is none.'),
 
+  extractedSummaryCharges: z.array(z.object({
+    label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
+    amount: z.string().nullable().describe('The amount as printed, keeping a printed minus sign or parentheses. Null when only a rate is printed.'),
+  })).nullable().optional().describe('Priced rows in the invoice totals block that are not line items, subtotals, freight, tax, totals, payments, or deposits, such as a decoration fee or a discount. Null when there is none.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),

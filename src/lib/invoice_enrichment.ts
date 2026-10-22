@@ -383,6 +383,10 @@ export function formatRepeatedLineNotes(note: string | undefined): string {
   return note ? `\n\nRepeated line review: ${note}` : '';
 }
 
+export function formatTotalsChargeReviewNotes(note: string | undefined): string {
+  return note ? `\n\nTotals charge review: ${note}` : '';
+}
+
 export function formatInvoiceNumberNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedSuppliersInvoiceNumber) return '';
   return `\n\nSupplier Invoice Number (from document): ${result.extractedSuppliersInvoiceNumber}`;

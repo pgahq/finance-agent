@@ -46,6 +46,10 @@ export const InvoiceOcrSchema = z.object({
     label: z.string().describe('The exact printed label of the tax row (e.g. "5% EnvChg Tax").'),
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00"). Never compute it from a rate.'),
   })).describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Return an empty array when there is none.'),
+  extractedSummaryCharges: z.array(z.object({
+    label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
+    amount: z.string().describe('The amount as printed, keeping a printed minus sign or parentheses (e.g. "$5.00", "-$13.80", "($13.80)"). Empty string when only a rate is printed. Never compute it from a rate.'),
+  })).describe('Every priced row in the invoice totals block that is not a line item, subtotal, freight, tax, total, payment, or deposit, such as a decoration fee or a discount. Return an empty array when there is none.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -64,14 +68,20 @@ export interface InvoiceOcrOtherCharge {
   label: string;
   amount: string;
 }
+export interface InvoiceOcrSummaryCharge {
+  label: string;
+  /** Null when the row prints only a rate. */
+  amount: string | null;
+}
 type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLines'][number]>, 'description' | 'descriptionCells'> & {
   description: string;
   descriptionCells: string[] | null;
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges'> & {
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
+  extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
   printedBillTo: NullableText<InvoiceOcrResponse['printedBillTo']>;
   extractedPaymentTerms: { name: string } | null;
@@ -144,15 +154,22 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 }
 
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
-  const { printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, ...headerFields } = response;
+  const {
+    printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
+    ...headerFields
+  } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
   const otherCharges = (extractedOtherCharges ?? [])
     .filter(charge => charge.label.trim() && charge.amount.trim())
     .map(charge => ({ label: charge.label.trim(), amount: charge.amount.trim() }));
+  const summaryCharges = (extractedSummaryCharges ?? [])
+    .filter(charge => charge.label.trim())
+    .map(charge => ({ label: charge.label.trim(), amount: textOrNull(charge.amount)?.trim() ?? null }));
   return {
     ...nullableTextFields(headerFields),
     extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
+    extractedSummaryCharges: summaryCharges.length ? summaryCharges : null,
     printedSupplier: nullableTextFields(printedSupplier),
     printedBillTo: nullableTextFields(printedBillTo),
     extractedPaymentTerms: paymentTerms ? { name: paymentTerms } : null,
@@ -245,6 +262,21 @@ An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5
 - Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
 - For example, an invoice with two lines totaling $342.50, Sales Tax $28.26, and a "5% EnvChg Tax" row of $17.00, and Amount Due $387.76 must return extractedTaxAmount "$28.26", extractedTaxLabel "Sales Tax", and extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }].
 - If there is no additional tax row, return an empty array.
+
+---
+
+## Part 5.7: Other Totals-Block Rows
+
+Many invoices print priced rows in the totals block (next to Sub Total and Total) that are not in the line table, for example "Decoration $5.00", "Setup Charge $25.00", or "Merchandise Discount $13.80". List every such row in \`extractedSummaryCharges\` with its exact printed label and printed amount.
+
+- Include fees and charges (decoration, setup, screen, digitizing, service fees) and price reductions (discounts, allowances, rebates, promotions, coupons).
+- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds. Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
+- Copy the label exactly as printed.
+- Copy the amount exactly as printed, keeping a minus sign or parentheses when they are printed ("-$13.80", "($13.80)"). Do not add a minus sign that is not printed.
+- If only a rate is printed (for example "Discount 10%") and no amount, list the row with an empty amount. Never compute an amount from a rate.
+- A row printed in the line table belongs in \`extractedInvoiceLines\`, not here. Do not list a totals-block row that only restates a line already in the line table.
+- For example, an invoice with Merchandise $282.50, Decoration $5.00, Sub Total $287.50, S&H $25.18, and Total $312.68 must return extractedFreightAmount "$25.18" and extractedSummaryCharges [{ label: "Decoration", amount: "$5.00" }].
+- If there is no such row, return an empty array.
 
 ---
 
