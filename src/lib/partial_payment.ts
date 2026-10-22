@@ -183,7 +183,10 @@ export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPl
   }
   const freight = parseCanonicalChargeAmount(input.freightAmount) ?? 0;
   const tax = parseCanonicalChargeAmount(input.taxAmount) ?? 0;
-  if (freight > 0 || tax > 0) return notApplied('freight or tax is also printed', label);
+  // AP does not pay tax on a deposit; it is paid with the balance invoice, so a printed tax needs a person to say
+  // whether the amount due includes it.
+  if (tax > 0) return notApplied('a tax amount is printed, and AP does not pay tax on a deposit (it is paid with the balance invoice), so check whether the amount due includes it', label);
+  if (freight > 0) return notApplied('freight is also printed', label);
 
   const printedBase = parseCanonicalChargeAmount(input.lineSubtotal?.amount);
   const baseCents = printedBase != null ? toCents(printedBase) : sumExtractedLineCents(input.lines);
