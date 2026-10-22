@@ -81,6 +81,7 @@ import {
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1087,11 +1088,26 @@ async function processInvoiceCluster(
     ];
     if (chargeCheck.length) debug('Invoice amount check', chargeReconciliationLogSummary(chargeReconciliation));
     const extractedCandidateLines = withComposedLineDescriptions(charges.lines);
+    // A deposit invoice bills a printed amount smaller than its contract total, so one deposit line replaces the lines.
+    const depositPlan = chargeWithheld || freightAsLines
+      ? undefined
+      : planPartialPayment({
+        partialPayment: result.extractedPartialPayment,
+        lineSubtotal: result.extractedLineSubtotal,
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        lines: extractedCandidateLines,
+        poLines,
+      });
+    const depositApplied = Boolean(depositPlan?.applied);
+    if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
+    if (depositApplied) chargeCheck = [];
 
     // A withheld charge leaves the submitted header unknown, and a row dropped for a missing
     // description or amount leaves its table's total unknown, so no line can be judged a repeat.
     // Freight sent as lines is not on the header, so the header freight below would not apply.
-    const repeatedLines = chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+    const repeatedLines = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
       ? { lines: extractedCandidateLines, note: undefined }
       : removeRepeatedLineTables(extractedCandidateLines, {
         amountDue: extractedAmountDue,
@@ -1101,8 +1117,15 @@ async function processInvoiceCluster(
         taxCleared,
       }, poClosedForInvoicing ? undefined : poLines);
     if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
+    // Rows are compared as read, before freight, tax, and repeated tables are taken out; a removed repeated table
+    // would otherwise look like rows read twice.
+    const lineSubtotalNote = [
+      secondReadRowsNote(result.extractedRowsAddedOnSecondRead),
+      repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal),
+    ].filter(Boolean).join(' ') || undefined;
+    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
-    const summaryCharges: PlacedSummaryCharges = chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+    const summaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
       ? { lines: [] }
       : placeSummaryCharges({
         charges: result.extractedSummaryCharges,
@@ -1116,12 +1139,12 @@ async function processInvoiceCluster(
     if (summaryCharges.lines.length || summaryCharges.reviewNote) {
       debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
     }
-    const candidateLines = [...repeatedLines.lines, ...summaryCharges.lines];
+    const candidateLines = depositPlan?.line ? [depositPlan.line] : [...repeatedLines.lines, ...summaryCharges.lines];
 
-    const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
-      result.invoiceLineQuantityDisplayed,
-      candidateLines
-    );
+    // The deposit line is a quantity 1 line at the deposit amount, so it counts as one unit on its PO line.
+    const invoiceLineQuantityDisplayed = depositApplied
+      ? true
+      : resolveInvoiceLineQuantityDisplayed(result.invoiceLineQuantityDisplayed, candidateLines);
 
     const fallbackIds = {
       fundId: process.env.FALLBACK_FUND_ID,
@@ -1160,7 +1183,7 @@ async function processInvoiceCluster(
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
     const merged = await buildFinalInvoiceLines(
       candidateLines,
-      poLines,
+      depositPlan?.poLines ?? poLines,
       emailContext?.plainTextBody,
       fallbackIds,
       emailWorktags,
@@ -1297,6 +1320,7 @@ async function processInvoiceCluster(
     });
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
     const lineReview = [
+      lineSubtotalNote && `Line subtotal review: ${lineSubtotalNote}`,
       repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
       totalsChargeReview && `Totals charge review: ${totalsChargeReview}`,
       lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
@@ -1332,7 +1356,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(depositPlan?.note) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1424,6 +1448,7 @@ async function processInvoiceCluster(
         invoiceDate: extractedInvoiceDate,
         dueDate: extractedDueDate,
         amountDue: extractedAmountDue,
+        ...(depositPlan?.amountDueNote && depositApplied ? { amountDueNote: depositPlan.amountDueNote } : {}),
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         taxAmount: extractedTaxAmount,
@@ -1448,6 +1473,7 @@ async function processInvoiceCluster(
       },
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),
+      ...(depositPlan?.slackLines.length ? { deposit: depositPlan.slackLines } : {}),
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 

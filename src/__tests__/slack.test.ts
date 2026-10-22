@@ -361,6 +361,34 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('"lineReview"');
   });
 
+  it('shows the deposit under Amount Due and in its own section on create success', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-470584',
+      supplier: { status: 'found', resolvedName: 'Activity Planners Inc', isDefault: false },
+      extracted: { amountDue: '$34,429.50', amountDueNote: '90% deposit of $38,255.00' },
+      deposit: ['Advance Deposit Due: $34,429.50 is 90% of $38,255.00. Submitted as one deposit line, not the printed lines.'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Amount Due* → $34,429.50 (90% deposit of $38,255.00)');
+    expect(texts).toContain('*Deposit*\n• Advance Deposit Due: $34,429.50 is 90% of $38,255.00. Submitted as one deposit line, not the printed lines.');
+    expect(texts).not.toContain('"deposit"');
+  });
+
+  it('shows why a deposit was not applied and keeps a plain Amount Due', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-470584',
+      extracted: { amountDue: '$34,429.50' },
+      deposit: ['Deposit or partial payment not applied: no PO line is for $34,429.50.'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Amount Due* → $34,429.50\n');
+    expect(texts).toContain('*Deposit*\n• Deposit or partial payment not applied: no PO line is for $34,429.50.');
+  });
+
   it('lists each budget the invoice was split into on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

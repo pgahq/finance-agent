@@ -6381,7 +6381,7 @@ describe('Workday utilities', () => {
 
         expect(parsed?.documentNumber).toBe('PO-414007');
         expect(debug).toHaveBeenCalledWith(
-          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]],"splitQuantities":[null],"splitAmounts":[100]}]'
+          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"description":"Gas - 2 pass","splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]],"splitQuantities":[null],"splitAmounts":[100]}]'
         );
         expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('PO response for PO-414007'));
       });
