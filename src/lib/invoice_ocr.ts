@@ -4,6 +4,8 @@ import { getOcrModel } from './models.js';
 import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PresignedAttachment } from './types.js';
+import { lineSubtotalShortfallCents, sumExtractedLineCents } from './partial_payment.js';
+import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
   fileName: string;
@@ -58,27 +60,64 @@ export async function extractInvoiceDocuments(
 
   const documentBytes = processedAttachments.reduce((total, att) => total + (att.buffer?.byteLength ?? 0), 0);
   const startedAt = Date.now();
-  const response = await getAiResponse({
-    prompt: invoiceOcrPrompt,
-    schema: InvoiceOcrSchema,
-    model: getOcrModel(),
-    tools: {},
-    temperature: null,
-    abortSignal,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: `Extract the printed invoice details from the attached documents.\n\nDocuments: ${fileList}${documentRolesText}` },
-          ...parts
-        ]
-      }
-    ]
-  }) as InvoiceOcrResponse;
-  const result = normalizeInvoiceOcrResult(response);
+  const read = async (extraInstruction?: string): Promise<InvoiceOcrResult> => {
+    const response = await getAiResponse({
+      prompt: invoiceOcrPrompt,
+      schema: InvoiceOcrSchema,
+      model: getOcrModel(),
+      tools: {},
+      temperature: null,
+      abortSignal,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: `Extract the printed invoice details from the attached documents.\n\nDocuments: ${fileList}${documentRolesText}${extraInstruction ? `\n\n${extraInstruction}` : ''}` },
+            ...parts
+          ]
+        }
+      ]
+    }) as InvoiceOcrResponse;
+    return normalizeInvoiceOcrResult(response);
+  };
+
+  let result = await read();
   debug('Invoice OCR finished', { durationMs: Date.now() - startedAt, documentCount: parts.length, documentBytes });
   debug('Invoice OCR result:', result);
+
+  const retryInstruction = missingRowsInstruction(result);
+  if (retryInstruction) {
+    debug('Invoice OCR lines fall short of the printed line total; reading the lines once more');
+    try {
+      const retried = await read(retryInstruction);
+      const retriedCents = sumExtractedLineCents(retried.extractedInvoiceLines ?? []);
+      // A second read replaces the first only when it closes the gap to the printed total exactly.
+      if (retriedCents !== undefined && retriedCents === lineSubtotalCents(result)) {
+        debug('Invoice OCR second read matches the printed line total; using it', { durationMs: Date.now() - startedAt });
+        result = { ...result, extractedInvoiceLines: retried.extractedInvoiceLines };
+      } else {
+        debug('Invoice OCR second read does not match the printed line total; keeping the first read');
+      }
+    } catch (error) {
+      if (abortSignal?.aborted) throw error;
+      debug('Invoice OCR second read failed; keeping the first read', error);
+    }
+  }
   return result;
+}
+
+function lineSubtotalCents(result: InvoiceOcrResult): number | undefined {
+  const parsed = parseCanonicalChargeAmount(result.extractedLineSubtotal?.amount);
+  return parsed === undefined ? undefined : Math.round(parsed * 100);
+}
+
+function missingRowsInstruction(result: InvoiceOcrResult): string | undefined {
+  const lines = result.extractedInvoiceLines ?? [];
+  const shortfall = lineSubtotalShortfallCents(lines, result.extractedLineSubtotal);
+  const summed = sumExtractedLineCents(lines);
+  if (shortfall === undefined || summed === undefined || !result.extractedLineSubtotal) return undefined;
+  return `A first read returned ${lines.length} rows totaling ${formatChargeDollars(summed / 100)}, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}". `
+    + 'Read the line table again row by row and return every printed row, including a row that is identical to another row but printed under a different date, event, or section heading.';
 }
 
 // OCR values win for every document field; the matching pass supplies supplier, company, coding, and the payment terms ID.
@@ -99,6 +138,8 @@ export function mergeInvoiceEnrichment(
       extractedTaxLabel: null,
       extractedOtherCharges: null,
       extractedSummaryCharges: null,
+      extractedLineSubtotal: null,
+      extractedPartialPayment: null,
       extractedPurchaseOrderNumber: null,
       extractedAccountNumber: null,
       extractedSupplierReference: null,
@@ -138,6 +179,8 @@ export function mergeInvoiceEnrichment(
     extractedTaxLabel: ocr.extractedTaxLabel,
     extractedOtherCharges: ocr.extractedOtherCharges,
     extractedSummaryCharges: ocr.extractedSummaryCharges,
+    extractedLineSubtotal: ocr.extractedLineSubtotal,
+    extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
     extractedAccountNumber: ocr.extractedAccountNumber,
     extractedSupplierReference: ocr.extractedSupplierReference,

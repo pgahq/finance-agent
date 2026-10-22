@@ -117,7 +117,7 @@ jest.mock('../lib/ai.js', () => {
   const toOcrResult = (full: any) => {
     const headerText = Object.fromEntries(
       Object.entries(full ?? {})
-        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges'].includes(key))
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment'].includes(key))
         .map(([key, value]) => [key, text(value)])
     );
     return {
@@ -126,6 +126,8 @@ jest.mock('../lib/ai.js', () => {
       ...headerText,
       extractedOtherCharges: full?.extractedOtherCharges ?? [],
       extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
+      extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
+      extractedPartialPayment: full?.extractedPartialPayment ?? { label: '', percent: '', amount: '' },
       extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
       invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
       extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
@@ -133,6 +135,7 @@ jest.mock('../lib/ai.js', () => {
         descriptionCells: line.descriptionCells ?? [],
         unitCost: text(line.unitCost),
         totalPrice: text(line.totalPrice),
+        ...(line.sectionLabel !== undefined ? { sectionLabel: text(line.sectionLabel) } : {}),
       })),
     };
   };
@@ -1500,6 +1503,59 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain(`Amount check: ${added}`);
     expect(params.buildNotes([])).not.toContain('Line total review');
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([added]);
+  });
+
+  it('replaces the printed lines with one deposit line on update (SUPIN-470584)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin470584Header, supin470584Rows } = require('./fixtures/supin_470584.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Activity Planners, Inc.', memo: 'event decor deposit' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin470584Header,
+      extractedInvoiceLines: supin470584Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 34429.5, extendedAmount: 34429.5 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Advance Deposit Due (90% of $38,255.00)', quantity: 1, totalPrice: '$34,429.50' })]);
+    expect(built[6]).toBe(true);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines).toHaveLength(1);
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Deposit invoice: "Advance Deposit Due" $34,429.50 is 90% of $38,255.00 for the contract total (28 printed lines).');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
   });
 
   describe('printed due date', () => {

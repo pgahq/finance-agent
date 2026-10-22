@@ -6,6 +6,7 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, normaliz
 import type { InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import type { PurchaseOrderEnrichmentContext } from '../lib/purchase_order.js';
 import type { PresignedAttachment } from '../lib/types.js';
+import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 
@@ -68,6 +69,8 @@ const ocrResult: InvoiceOcrResult = {
   extractedTaxLabel: 'Sales Tax',
   extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
   extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Discount 10%', amount: null }],
+  extractedLineSubtotal: null,
+  extractedPartialPayment: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: null,
@@ -84,6 +87,7 @@ const ocrResult: InvoiceOcrResult = {
     totalPrice: '$1,540.00',
     hasDiscount: null,
     tableNumber: 1,
+    sectionLabel: null,
   }],
 };
 
@@ -117,6 +121,8 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedTaxLabel: 'Sales Tax',
   extractedOtherCharges: [{ label: ' EnvChg Tax ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
   extractedSummaryCharges: [{ label: ' Decoration ', amount: ' $5.00 ' }, { label: '', amount: '$2.00' }, { label: 'Discount 10%', amount: '' }],
+  extractedLineSubtotal: { label: '', amount: '' },
+  extractedPartialPayment: { label: '', percent: '', amount: '' },
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: '',
@@ -133,6 +139,7 @@ const ocrResponse: InvoiceOcrResponse = {
     totalPrice: '$1,540.00',
     hasDiscount: null,
     tableNumber: 1,
+    sectionLabel: '',
   }],
 };
 
@@ -282,11 +289,172 @@ describe('invoice OCR pass', () => {
       expect(mockGetAiResponse).not.toHaveBeenCalled();
     });
 
+    describe('missing rows against the printed line total', () => {
+      const subtotal = { label: 'Total Cost of Contracted Services', amount: '$38,255.00' };
+      const fullRows = supin470584Rows.map(row => ({ ...row, descriptionCells: [] as string[] }));
+      const productionRows = supin470584ProductionRows.map(row => ({ ...row, descriptionCells: [] as string[] }));
+      const responseWith = (rows: typeof fullRows): InvoiceOcrResponse => ({
+        ...ocrResponse,
+        extractedLineSubtotal: subtotal,
+        extractedPartialPayment: { label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' },
+        extractedInvoiceLines: rows,
+      });
+
+      it('reads the document once more and uses the second read when it matches the printed total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(fullRows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+        expect(result?.extractedInvoiceLines).toHaveLength(28);
+        expect(result?.extractedLineSubtotal).toEqual(subtotal);
+        expect(result?.extractedPartialPayment).toEqual({ label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' });
+        const retryText = mockGetAiResponse.mock.calls[1][0].messages[0].content[0].text;
+        expect(retryText).toContain('A first read returned 27 rows totaling $34,205.00');
+        expect(retryText).toContain('"Total Cost of Contracted Services"');
+        expect(retryText).toContain('identical to another row but printed under a different date, event, or section heading');
+        expect(mockGetAiResponse.mock.calls[0][0].messages[0].content[0].text).not.toContain('A first read returned');
+      });
+
+      it('keeps the first read when the second read still does not match the printed total', async () => {
+        const stillShort = productionRows.slice(0, 20);
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(stillShort));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+      });
+
+      it('keeps the first read when the second read overshoots the printed total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith([...fullRows, fullRows[0]]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+      });
+
+      it('keeps the first read when the second read fails', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockRejectedValueOnce(new Error('No object generated'));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+      });
+
+      it('does not read again when the rows already total the printed line total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(fullRows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+        expect(result?.extractedInvoiceLines).toHaveLength(28);
+      });
+
+      it('does not read again when the rows total more than the printed line total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith([...fullRows, fullRows[0]]));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not read again when the document prints no line total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce({ ...responseWith(productionRows), extractedLineSubtotal: { label: '', amount: '' } });
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not read again when a row has no printed total', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith([{ ...productionRows[0], totalPrice: '' }]));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops when the run is aborted during the second read', async () => {
+        const controller = new AbortController();
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockImplementationOnce(async () => {
+          controller.abort();
+          throw new Error('aborted');
+        });
+
+        await expect(extractInvoiceDocuments([pdf], undefined, controller.signal)).rejects.toThrow('aborted');
+      });
+    });
+
     it('throws an OCR failure without retrying on another model', async () => {
       mockGetAiResponse.mockRejectedValueOnce(new Error('No object generated'));
 
       await expect(extractInvoiceDocuments([pdf])).rejects.toThrow('No object generated');
       expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('line total, deposit, and section fields', () => {
+    const response = (overrides: Partial<InvoiceOcrResponse>): InvoiceOcrResponse => ({ ...ocrResponse, ...overrides });
+
+    it('normalizes a printed line total and deposit, and turns empty strings into null', () => {
+      const normalized = normalizeInvoiceOcrResult(response({
+        extractedLineSubtotal: { label: ' Total Cost of Contracted Services ', amount: ' $38,255.00 ' },
+        extractedPartialPayment: { label: ' Advance Deposit Due ', percent: ' 90% ', amount: ' $34,429.50 ' },
+      }));
+
+      expect(normalized.extractedLineSubtotal).toEqual({ label: 'Total Cost of Contracted Services', amount: '$38,255.00' });
+      expect(normalized.extractedPartialPayment).toEqual({ label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' });
+      expect(normalizeInvoiceOcrResult(response({
+        extractedPartialPayment: { label: 'Advance Deposit Due', percent: '', amount: '$34,429.50' },
+      })).extractedPartialPayment).toEqual({ label: 'Advance Deposit Due', percent: null, amount: '$34,429.50' });
+      expect(normalizeInvoiceOcrResult(response({
+        extractedLineSubtotal: { label: 'Sub Total', amount: '' },
+        extractedPartialPayment: { label: '', percent: '', amount: '' },
+      }))).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
+    });
+
+    it('tolerates an older response without the new fields', () => {
+      const { extractedLineSubtotal: _subtotal, extractedPartialPayment: _deposit, ...older } = ocrResponse;
+      expect(normalizeInvoiceOcrResult(older as InvoiceOcrResponse)).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
+    });
+
+    it('keeps each row section label and turns a blank one into null', () => {
+      const normalized = normalizeInvoiceOcrResult(response({
+        extractedInvoiceLines: [
+          { ...ocrResponse.extractedInvoiceLines[0], sectionLabel: 'Wednesday, November 4, 2026 - Awards Event Enhancements' },
+          { ...ocrResponse.extractedInvoiceLines[0], sectionLabel: '' },
+        ],
+      }));
+
+      expect(normalized.extractedInvoiceLines?.map(line => line.sectionLabel)).toEqual([
+        'Wednesday, November 4, 2026 - Awards Event Enhancements',
+        null,
+      ]);
+    });
+
+    it('carries the line total and deposit through the merge, and is empty without OCR', () => {
+      const withFields: InvoiceOcrResult = {
+        ...ocrResult,
+        extractedLineSubtotal: { label: 'Sub Total', amount: '$38,255.00' },
+        extractedPartialPayment: { label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' },
+      };
+
+      const merged = mergeInvoiceEnrichment(matchingResult, withFields);
+      expect(merged.extractedLineSubtotal).toEqual(withFields.extractedLineSubtotal);
+      expect(merged.extractedPartialPayment).toEqual(withFields.extractedPartialPayment);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined)).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
+    });
+
+    it('asks for every printed row, the section label, the printed line total, and the deposit with the SUPIN-470584 example', () => {
+      expect(invoiceOcrPrompt).toContain('Extract every printed row, in document order.');
+      expect(invoiceOcrPrompt).toContain('printed under different dates, events, or section headings');
+      expect(invoiceOcrPrompt).toContain('**Section Label**');
+      expect(invoiceOcrPrompt).toContain('Rows printed under different date or section headings in the same table share one table number.');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Cost of Contracted Services", amount: "$38,255.00" }');
+      expect(invoiceOcrPrompt).toContain('extractedPartialPayment { label: "Advance Deposit Due", percent: "90%", amount: "$34,429.50" }');
+      expect(invoiceOcrPrompt).toContain('Never compute an amount from a percentage.');
+      expect(invoiceOcrPrompt).toContain('"Less deposit paid"');
     });
   });
 

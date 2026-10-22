@@ -3327,6 +3327,8 @@ function summarizePurchaseOrderLineWorktags(lines: PurchaseOrderLine[]): unknown
   return lines.map(line => ({
     line: line.purchaseOrderLineId,
     worktags: ([] as any[]).concat(line.lineLevelWorktagsReference ?? line.worktagsReference ?? []).map(formatWorktagForLog),
+    ...(line.description ? { description: line.description.slice(0, 80) } : {}),
+    ...(line.extendedAmount !== undefined && { extendedAmount: line.extendedAmount }),
     ...(line.quantity !== undefined && { quantity: line.quantity }),
     ...(line.unitCost !== undefined && { unitCost: line.unitCost }),
     ...(line.shipToAddressId ? { shipTo: line.shipToAddressId } : {}),

@@ -123,6 +123,17 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().nullable().describe('The amount as printed, keeping a printed minus sign or parentheses. Null when only a rate is printed.'),
   })).nullable().optional().describe('Priced rows in the invoice totals block that are not line items, subtotals, freight, tax, totals, payments, or deposits, such as a decoration fee or a discount. Null when there is none.'),
 
+  extractedLineSubtotal: z.object({
+    label: z.string().describe('The exact printed label of the line-table total (e.g. "Total Cost of Contracted Services", "Sub Total").'),
+    amount: z.string().describe('The amount as printed (e.g. "$38,255.00").'),
+  }).nullable().optional().describe('The total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment. Null when none is printed.'),
+
+  extractedPartialPayment: z.object({
+    label: z.string().describe('The exact printed label of the deposit or advance-payment row (e.g. "Advance Deposit Due").'),
+    percent: z.string().nullable().describe('The percentage printed for the deposit (e.g. "90%"). Null when none is printed.'),
+    amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
+  }).nullable().optional().describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Null when the invoice bills its full total.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
@@ -149,7 +160,8 @@ export const InvoiceEnrichmentSchema = z.object({
     unitCost: z.string().nullable().describe('Unit cost for the line item as it appears on the invoice. Null if not stated. Do not compute unit cost from quantity and total.'),
     totalPrice: z.string().nullable().describe('Total/extended price for the line item as it appears on the invoice. Null if not stated.'),
     hasDiscount: z.boolean().nullable().describe('True if the invoice document shows an explicit discount applied to this line item — e.g. a discount percentage, a discount amount, or a discount notation is visible on the line. Do NOT infer from math; only set true if there is a visible discount indicator on the invoice. Null if not determinable.'),
-    tableNumber: z.number().int().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.')
+    tableNumber: z.number().int().nullable().describe('Which table on the document this row came from, numbered 1, 2, 3... in document order. Rows from the same table share a number. Use 1 when the document has one line-item table. Null only if you cannot tell which table the row belongs to.'),
+    sectionLabel: z.string().nullable().optional().describe('The heading the row is printed under (for example a date and event name such as "Wednesday, November 4, 2026 - Awards Event Enhancements"). It tells apart rows that are otherwise identical. Null when the row has no heading.')
   })).nullable().describe('Line items extracted from the invoice document. Do NOT include freight, shipping, handling, delivery, or tax lines — those belong in extractedFreightAmount / extractedTaxAmount. Null if no line items could be extracted.'),
 
   emailWorktags: z.object({

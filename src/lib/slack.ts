@@ -208,6 +208,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     dueDate?: string;
     dueDateNotApplied?: boolean;
     amountDue?: string;
+    amountDueNote?: string;
     suppliersInvoiceNumber?: string;
     freightAmount?: string;
     taxAmount?: string;
@@ -223,7 +224,7 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
   if (extracted?.dueDate) changeLines.push(dueDateChangeLine(extracted.dueDate, extracted.dueDateNotApplied));
-  if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}`);
+  if (extracted?.amountDue) changeLines.push(`*Amount Due* → ${extracted.amountDue}${extracted.amountDueNote ? ` (${extracted.amountDueNote})` : ''}`);
   if (extracted?.suppliersInvoiceNumber) changeLines.push(`*Supplier Invoice #* → ${extracted.suppliersInvoiceNumber}`);
   if (extracted?.freightCleared) changeLines.push('*Freight* → none');
   else if (extracted?.freightAmount) changeLines.push(`*Freight* → ${extracted.freightAmount}`);
@@ -302,6 +303,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: truncateSlackText(`*Line review*\n${notes.join('\n')}`) }
+    });
+  }
+
+  const deposit = Array.isArray(details.deposit)
+    ? details.deposit.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : [];
+  if (deposit.length && details.skipped !== true) {
+    const lines = deposit.map((line) => `• ${escapeSlackText(line)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Deposit*\n${lines.join('\n')}`) }
     });
   }
 

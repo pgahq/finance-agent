@@ -3,6 +3,8 @@
 // vars it needs, resets the module registry, and re-requires the module (and its mocked
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
+import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
+
 jest.mock('@pga/lambda-env', () => ({
   __esModule: true,
   default: jest.fn().mockResolvedValue({})
@@ -2023,6 +2025,131 @@ describe('create_invoice', () => {
     expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  describe('deposit invoice (SUPIN-470584)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const parsedPo = (lines: any[] = supin470584PoLines) => ({
+      documentNumber: 'PO-414712',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      lines,
+    });
+    const depositEnrichment = (rows: any[]) => ({
+      ...baseEnrichmentResult,
+      ...supin470584Header,
+      extractedInvoiceLines: rows,
+    });
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')),
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        ...(lines.length === 1 ? { purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29976' } : {}),
+      })),
+      appliedFallbacks,
+    });
+    const run = async (rows: any[], po: any = parsedPo()) => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(po);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(depositEnrichment(rows));
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-deposit/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('submits one $34,429.50 line on the deposit PO line, with no amount mismatch', async () => {
+      const { workday, invoiceLines, slack } = await run(supin470584Rows);
+
+      const [candidates, poLines, , , , , quantityDisplayed] = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+      expect(candidates).toEqual([expect.objectContaining({
+        description: 'Advance Deposit Due (90% of $38,255.00)',
+        quantity: 1,
+        unitCost: '$34,429.50',
+        totalPrice: '$34,429.50',
+      })]);
+      expect(poLines.map((line: any) => line.purchaseOrderLineId)).toEqual(['ITEM_ORDER_LINE-3-29976']);
+      expect(quantityDisplayed).toBe(true);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toEqual([expect.objectContaining({
+        description: 'Advance Deposit Due (90% of $38,255.00)',
+        quantity: 1,
+        unitCost: 34429.5,
+        extendedAmount: 34429.5,
+        purchaseOrderLineId: 'ITEM_ORDER_LINE-3-29976',
+      })]);
+      expect(submitArgs.extractedAmountDue).toBe('$34,429.50');
+      expect(submitArgs.extractedFreightAmount).toBeUndefined();
+
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Deposit invoice: "Advance Deposit Due" $34,429.50 is 90% of $38,255.00 for the contract total (28 printed lines).');
+      expect(notes).toContain('Invoice Lines (from document)');
+      expect(notes).toContain('Fresh Cut Floral Centerpieces');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.deposit).toEqual(['Advance Deposit Due: $34,429.50 is 90% of $38,255.00. Submitted as one deposit line, not the printed lines.']);
+      expect(slackDetails.extracted.amountDueNote).toBe('90% deposit of $38,255.00');
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails).not.toHaveProperty('amountMismatch');
+      expect(slackDetails).not.toHaveProperty('lineReview');
+      expect(slackDetails.lineCount).toBe(1);
+    });
+
+    it('still bills the deposit when the model dropped the repeated floral row, and asks AP to check the lines', async () => {
+      const { workday, invoiceLines, slack } = await run(supin470584ProductionRows);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(1);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(1);
+      const review = 'The extracted lines total $34,205.00, but the document prints $38,255.00 as "Total Cost of Contracted Services".'
+        + ' The $4,050.00 difference equals "Fresh Cut Floral Centerpieces"; check whether that row is printed more than once.';
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
+      expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([`Line subtotal review: ${review}`]);
+    });
+
+    it('submits the printed lines unchanged and says why when no PO line is the deposit', async () => {
+      const { workday, invoiceLines, slack } = await run(supin470584Rows, parsedPo([supin470584PoLines[1]]));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(28);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(28);
+      const reason = 'no PO line is for $34,429.50';
+      expect(submitArgs.buildNotes([])).toContain(`Deposit invoice: "Advance Deposit Due" looks like a deposit or partial payment, but ${reason}, so the printed lines were submitted unchanged.`);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.deposit).toEqual([`Deposit or partial payment not applied: ${reason}.`]);
+      expect(slackDetails.extracted).not.toHaveProperty('amountDueNote');
+    });
+
+    it('keeps two identical rows printed under different headings when the invoice is not a deposit', async () => {
+      const mocks = freshRequire();
+      const rows = [
+        { description: 'Fresh Cut Floral Centerpieces', quantity: 30, unitCost: '$135.00', totalPrice: '$4,050.00', hasDiscount: null, tableNumber: 1, sectionLabel: 'Tuesday' },
+        { description: 'Fresh Cut Floral Centerpieces', quantity: 30, unitCost: '$135.00', totalPrice: '$4,050.00', hasDiscount: null, tableNumber: 1, sectionLabel: 'Wednesday' },
+      ];
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$8,100.00',
+        extractedLineSubtotal: { label: 'Total', amount: '$8,100.00' },
+        extractedPartialPayment: null,
+        extractedInvoiceLines: rows,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-twin-rows/invoice.pdf')] } as any);
+
+      expect(mocks.invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(2);
+      const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([4050, 4050]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).not.toContain('Deposit invoice');
+      expect(notes).not.toContain('Line subtotal review');
+      expect(mocks.slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('deposit');
+    });
   });
 
   describe('PO supplier', () => {
