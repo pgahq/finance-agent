@@ -25,6 +25,7 @@ import {
   formatPurchaseOrderNotes,
   formatRepeatedLineNotes,
   formatSupplierNotes,
+  formatTotalsChargeReviewNotes,
   formatTaxAmountNotes,
   formatWorkQueueAssigneeNotes,
   type InvoiceAttachmentRole,
@@ -79,7 +80,7 @@ import {
   splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1100,7 +1101,22 @@ async function processInvoiceCluster(
         taxCleared,
       }, poClosedForInvoicing ? undefined : poLines);
     if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
-    const candidateLines = repeatedLines.lines;
+    // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
+    const summaryCharges: PlacedSummaryCharges = chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+      ? { lines: [] }
+      : placeSummaryCharges({
+        charges: result.extractedSummaryCharges,
+        amountDue: extractedAmountDue,
+        lines: repeatedLines.lines,
+        freight: extractedFreightAmount,
+        tax: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
+      });
+    if (summaryCharges.lines.length || summaryCharges.reviewNote) {
+      debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
+    }
+    const candidateLines = [...repeatedLines.lines, ...summaryCharges.lines];
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -1248,6 +1264,11 @@ async function processInvoiceCluster(
         : undefined;
     }
 
+    const settledSummary = settlePlacedSummaryLines(finalLines, summaryCharges);
+    finalLines = settledSummary.lines;
+    if (settledSummary.message) chargeCheck = [...chargeCheck, settledSummary.message];
+    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.codingNote].filter(Boolean).join(' ') || undefined;
+
     // Email budgets that total the amount due carry the header tax and freight in their lines, so the header
     // submits none; the notes above still show what the document printed.
     const chargesInLines = Boolean(emailBudgetSplit?.headerChargesRolledIn);
@@ -1277,6 +1298,7 @@ async function processInvoiceCluster(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
     const lineReview = [
       repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
+      totalsChargeReview && `Totals charge review: ${totalsChargeReview}`,
       lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
       poQuantityNote && `PO line quantity: ${poQuantityNote}`,
       emailBudgetSplit?.review && `Budget split review: ${emailBudgetSplit.review}`,
@@ -1310,7 +1332,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,

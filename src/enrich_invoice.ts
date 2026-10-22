@@ -19,6 +19,7 @@ import {
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
   formatLineTotalReviewNotes,
+  formatTotalsChargeReviewNotes,
   formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
   formatPaymentTermsNotes,
@@ -60,7 +61,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -318,7 +319,8 @@ async function processInvoice(
       usedPurchaseOrderNumber: extractedPurchaseOrderNumber,
     });
 
-    const extractedLines = (result.extractedInvoiceLines ?? []).filter(l => l.description && (l.totalPrice || l.unitCost));
+    const extractedRows = result.extractedInvoiceLines ?? [];
+    const extractedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -378,7 +380,23 @@ async function processInvoice(
     if (chargeCheck.length) {
       debug('Invoice amount check', { ...chargeReconciliationLogSummary(checkedReconciliation), annotateOnly: !submitsLines });
     }
-    const candidateLines = withComposedLineDescriptions(charges.lines);
+    const composedLines = withComposedLineDescriptions(charges.lines);
+    // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
+    const summaryCharges: PlacedSummaryCharges = !submitsLines || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+      ? { lines: [] }
+      : placeSummaryCharges({
+        charges: result.extractedSummaryCharges,
+        amountDue: extractedAmountDue,
+        lines: composedLines,
+        freight: extractedFreightAmount,
+        tax: extractedTaxAmount,
+        freightCleared,
+        taxCleared,
+      });
+    if (summaryCharges.lines.length || summaryCharges.reviewNote) {
+      debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
+    }
+    const candidateLines = [...composedLines, ...summaryCharges.lines];
 
     const invoiceLineQuantityDisplayed = resolveInvoiceLineQuantityDisplayed(
       result.invoiceLineQuantityDisplayed,
@@ -457,6 +475,10 @@ async function processInvoice(
       relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
+    const settledSummary = settlePlacedSummaryLines(finalLines ?? [], summaryCharges);
+    if (finalLines) finalLines = settledSummary.lines;
+    if (settledSummary.message) chargeCheck = [...chargeCheck, settledSummary.message];
+    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.codingNote].filter(Boolean).join(' ') || undefined;
 
     const memoIdentifiers = memoIdentifiersFromEnrichment(
       result,
@@ -499,7 +521,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks
