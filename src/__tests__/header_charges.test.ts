@@ -369,6 +369,21 @@ describe('placeSummaryCharges', () => {
     );
   });
 
+  it('reads a leading "Less" as a printed credit sign', () => {
+    const invoice = {
+      lines: [{ description: 'Consulting', quantity: null, unitCost: null, totalPrice: '100.00', hasDiscount: null }],
+      freightCleared: false,
+      taxCleared: false,
+      charges: [{ label: 'Less Early Pay', amount: '$3.00' }],
+    };
+
+    expect(placeSummaryCharges({ ...invoice, amountDue: '$97.00' }).lines)
+      .toEqual([expect.objectContaining({ description: 'Less Early Pay', totalPrice: '-3.00', hasDiscount: true })]);
+    const charge = placeSummaryCharges({ ...invoice, amountDue: '$103.00' });
+    expect(charge.lines).toEqual([]);
+    expect(charge.reviewNote).toBe('"Less Early Pay" -$3.00 was printed in the invoice totals but not added: it does not explain the $3.00 difference between lines, freight, and tax ($100.00) and the amount due ($103.00).');
+  });
+
   it.each([['Decoration Total'], ['Credit Card Fee'], ['Setup Charge']])('treats %s as a charge', (label) => {
     expect(placeSummaryCharges({ ...summit, charges: [{ label, amount: '$5.00' }] }).lines)
       .toEqual([expect.objectContaining({ description: label, totalPrice: '5.00' })]);

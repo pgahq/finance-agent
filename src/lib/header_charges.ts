@@ -212,7 +212,8 @@ function significantTokens(tokens: string[]): string[] {
     && !/\d/.test(token)
     && !GENERIC_SUMMARY_WORDS.has(token)
     && !TOTAL_WORDS.has(token)
-    && !FEE_WORDS.has(token));
+    && !FEE_WORDS.has(token)
+    && token !== 'less');
 }
 
 function parseSummaryAmount(raw: string | null | undefined): { cents: number; printedCredit: boolean } | undefined {
@@ -346,7 +347,9 @@ export function placeSummaryCharges(input: {
     }
     if (parsed.cents === 0) continue;
     const discount = isDiscountLabel(tokens);
-    const sign: SummarySign = parsed.printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
+    // `Less Early Pay $3.00` says the row reduces the bill, the same as a printed minus sign.
+    const printedCredit = parsed.printedCredit || tokens[0] === 'less';
+    const sign: SummarySign = printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
     // A charge row for the same amount as header freight or tax is that charge under a label the matchers miss.
     if (sign === 'charge' && (parsed.cents === freightCents || parsed.cents === taxCents)) continue;
     const significant = significantTokens(tokens);
