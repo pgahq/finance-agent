@@ -1357,6 +1357,132 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('totals-block charges (SUPIN-470485, SUPIN-467235)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: Array<{ description: string; totalPrice: string | null }>) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: null,
+        unitCost: null,
+        extendedAmount: Number(line.totalPrice),
+      })),
+      appliedFallbacks,
+    });
+    // Summit Golf Brands 1654146: Merchandise $282.50, Decoration $5.00, S&H $25.18, TOTAL $312.68.
+    const summit = {
+      extractedAmountDue: '$312.68',
+      extractedFreightAmount: '$25.18',
+      extractedFreightLabel: 'S&H',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: 'Polo - Navy', quantity: null, unitCost: null, totalPrice: '180.00', hasDiscount: null },
+        { description: 'Cap - White', quantity: null, unitCost: null, totalPrice: '102.50', hasDiscount: null },
+      ],
+      extractedSummaryCharges: [
+        { label: 'Merchandise', amount: '$282.50' },
+        { label: 'Decoration', amount: '$5.00' },
+        { label: 'Sub Total', amount: '$287.50' },
+        { label: 'TOTAL', amount: '$312.68' },
+      ],
+    };
+
+    it('submits the SUPIN-470485 Decoration $5.00 as a line so the draft totals $312.68', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...baseEnrichmentResult, ...summit });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-summit/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0].map((line: any) => [line.description, line.totalPrice]))
+        .toEqual([['Polo - Navy', '180.00'], ['Cap - White', '102.50'], ['Decoration', '5.00']]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount]))
+        .toEqual([['Polo - Navy', 180], ['Cap - White', 102.5], ['Decoration', 5]]);
+      expect(submitArgs.extractedFreightAmount).toBe('$25.18');
+      const added = 'Added "Decoration" $5.00 from the invoice totals as an invoice line so lines, freight, and tax equal the amount due.';
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Amount check: ${added}`);
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Totals charge review');
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([added]);
+      expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('lineReview');
+    });
+
+    it('still names the Decoration row when two email budgets rewrite the lines', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({ ...baseEnrichmentResult, ...summit });
+      // applyEmailBudgetSplits replaces the lines with one line per budget once they total the $287.50 budget base.
+      const combined = 'Polo - Navy, Cap - White, Decoration';
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: combined, quantity: null, unitCost: null, extendedAmount: 150, costCenterId: 'CC-Recruitment' },
+          { lineOrder: 2, description: combined, quantity: null, unitCost: null, extendedAmount: 137.5, costCenterId: 'CC-Brand' },
+        ],
+        appliedFallbacks,
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-summit-budgets/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([150, 137.5]);
+      const added = 'Added "Decoration" $5.00 from the invoice totals so lines, freight, and tax equal the amount due. "Decoration" $5.00 is included in the submitted lines but not as a separate line.';
+      expect(submitArgs.buildNotes([])).toContain(`Amount check: ${added}`);
+      expect(slack.notifyResult.mock.calls[0][3].chargeCheck).toEqual([added]);
+    });
+
+    it('submits the SUPIN-467235 Merchandise Discount as a -$13.80 line when the credit makes $70.20', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$70.20',
+        extractedFreightAmount: '$10.00',
+        extractedFreightLabel: 'Freight',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: [
+          { description: 'Towel - Tri-fold', quantity: null, unitCost: null, totalPrice: '69.00', hasDiscount: null },
+          { description: 'Decoration', quantity: null, unitCost: null, totalPrice: '5.00', hasDiscount: null },
+        ],
+        extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Merchandise Discount', amount: '$13.80' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-summit-discount/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => [line.description, line.extendedAmount]))
+        .toEqual([['Towel - Tri-fold', 69], ['Decoration', 5], ['Merchandise Discount', -13.8]]);
+      expect(submitArgs.buildNotes([])).toContain('Added "Merchandise Discount" -$13.80 from the invoice totals as an invoice line');
+    });
+
+    it('submits the lines as read and gives both readings when only the charge reading adds up', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$97.80',
+        extractedFreightAmount: '$10.00',
+        extractedFreightLabel: 'Freight',
+        invoiceLineQuantityDisplayed: false,
+        extractedInvoiceLines: [
+          { description: 'Towel - Tri-fold', quantity: null, unitCost: null, totalPrice: '74.00', hasDiscount: null },
+        ],
+        extractedSummaryCharges: [{ label: 'Merchandise Discount', amount: '$13.80' }],
+      });
+      invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-summit-ambiguous/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(1);
+      const review = '"Merchandise Discount" $13.80 was not added: as a credit, lines, freight, and tax would total $70.20; as a charge, $97.80, which matches the amount due. Check which it is before approving.';
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(`Totals charge review: ${review}`);
+      expect(notes).toContain('Line total review');
+      expect(notes).not.toContain('from the invoice totals as an invoice line');
+      expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual(expect.arrayContaining([`Totals charge review: ${review}`]));
+    });
+  });
+
   it('moves a mislabeled sales-tax amount from freight to tax before submit', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({

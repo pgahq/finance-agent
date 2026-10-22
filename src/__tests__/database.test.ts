@@ -8,6 +8,7 @@ import {
   deleteDocument,
   searchDocuments,
   searchDocumentsByTypes,
+  findSuppliersByNameWord,
   findDocumentsByReferenceId,
   findCompanyByName,
   bulkInsertDocuments,
@@ -312,6 +313,32 @@ describe('Database Library', () => {
         expect.stringContaining('DELETE FROM documents'),
         ['doc-123', 'supplier']
       );
+    });
+  });
+
+  describe('findSuppliersByNameWord', () => {
+    it('queries primary and alternate name lines for the whole word only', async () => {
+      const row = { workday_id: 'wid-masek', content: 'Company Name: MASEK GOLF CARS', metadata: {} };
+      mockQuery.mockResolvedValue([row]);
+
+      const rows = await findSuppliersByNameWord({ query: mockQuery } as never, 'Masek', 25);
+
+      expect(rows).toEqual([row]);
+      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain("type = 'supplier'");
+      expect(sql).toContain('content ~* $1');
+      expect(params).toEqual(['(^|\n)(Company Name|Alternate Names): [^\n]*\\mmasek\\M', 25]);
+    });
+
+    it('strips regex characters from the word and skips an empty one', async () => {
+      mockQuery.mockResolvedValue([]);
+
+      await findSuppliersByNameWord({ query: mockQuery } as never, 'ma.*sek');
+      expect((mockQuery.mock.calls[0] as [string, string[]])[1][0]).toContain('\\mmasek\\M');
+
+      mockQuery.mockClear();
+      expect(await findSuppliersByNameWord({ query: mockQuery } as never, '.*')).toEqual([]);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 

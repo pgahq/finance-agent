@@ -118,6 +118,11 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The charge amount as printed (e.g. "$17.00").'),
   })).nullable().optional().describe('Every additional row whose printed label says tax, besides the main tax in extractedTaxAmount. Null when there is none.'),
 
+  extractedSummaryCharges: z.array(z.object({
+    label: z.string().describe('The exact printed label of the totals-block row (e.g. "Decoration", "Merchandise Discount").'),
+    amount: z.string().nullable().describe('The amount as printed, keeping a printed minus sign or parentheses. Null when only a rate is printed.'),
+  })).nullable().optional().describe('Priced rows in the invoice totals block that are not line items, subtotals, freight, tax, totals, payments, or deposits, such as a decoration fee or a discount. Null when there is none.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),
@@ -206,7 +211,7 @@ Your supplier task depends on whether an existing supplier is already assigned t
 ### If NO existing supplier is assigned — Identify the supplier:
 
 1. **Use the printed supplier**: Take the supplier details from \`printedSupplier\` in the invoice document extraction (name, street and remit-to address, phone, email, tax ID, website) and copy them, with the memo, into \`extractedInformation\`. Use every printed detail as matching evidence.
-2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers
+2. **Search Workday**: Use the findSuppliers tool to search for matching suppliers. Always run one name-only query first: the printed company name alone, with no address, phone, or industry, because a long combined query ranks suppliers by shared topic words and can bury the right record. Then search the other printed details as needed. Judge a result by its distinctive words (a rare word in the printed name such as a surname or brand), not by common words such as Golf, Mountain, or Rocky. When a result's name has the same distinctive word as the printed name, do not discard it only because the rest of the name, address, or phone differs; mention it in your reason.
 3. **Analyze Results**: Determine the best match and identify any potential duplicates
 4. **Make Recommendation**: Suggest the appropriate action based on your findings
 

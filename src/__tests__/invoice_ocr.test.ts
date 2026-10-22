@@ -67,6 +67,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
   extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
+  extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Discount 10%', amount: null }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: null,
@@ -115,6 +116,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedTaxAmount: '$40.00',
   extractedTaxLabel: 'Sales Tax',
   extractedOtherCharges: [{ label: ' EnvChg Tax ', amount: '$17.00' }, { label: '', amount: '$3.00' }, { label: 'Fuel Surcharge', amount: ' ' }],
+  extractedSummaryCharges: [{ label: ' Decoration ', amount: ' $5.00 ' }, { label: '', amount: '$2.00' }, { label: 'Discount 10%', amount: '' }],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: '',
@@ -441,6 +443,29 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }]');
       expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
+    });
+  });
+
+  describe('totals-block rows', () => {
+    it('keeps labeled rows, turns a rate-only amount into null, and drops rows without a label', () => {
+      expect(normalizeInvoiceOcrResult(ocrResponse).extractedSummaryCharges).toEqual([
+        { label: 'Decoration', amount: '$5.00' },
+        { label: 'Discount 10%', amount: null },
+      ]);
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, extractedSummaryCharges: [] }).extractedSummaryCharges).toBeNull();
+    });
+
+    it('carries the rows through the merge and leaves them null when no document was read', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, ocrResult).extractedSummaryCharges).toEqual(ocrResult.extractedSummaryCharges);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).extractedSummaryCharges).toBeNull();
+    });
+
+    it('asks for totals-block fees and discounts with the SUPIN-470485 example, keeping printed signs', () => {
+      expect(invoiceOcrPrompt).toContain('extractedSummaryCharges [{ label: "Decoration", amount: "$5.00" }]');
+      expect(invoiceOcrPrompt).toContain('A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal');
+      expect(invoiceOcrPrompt).toContain('Do not add a minus sign that is not printed');
+      expect(invoiceOcrPrompt).toContain('payments, deposits, applied credits, credit memos, retainers, or refunds');
+      expect(InvoiceOcrSchema.shape.extractedSummaryCharges).toBeDefined();
     });
   });
 

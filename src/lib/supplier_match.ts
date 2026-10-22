@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { findDocumentsContainingWords, type DatabaseConnection } from './database.js';
+import { findDocumentsContainingWords, findSuppliersByNameWord, type DatabaseConnection } from './database.js';
 import { nameTokens, namesShareToken, supplierNamesMatch } from './po_supplier.js';
 
 export interface SupplierRecord {
@@ -190,4 +190,167 @@ export async function findUniqueSupplierByNameEvidence(
     accepted: confirmed?.workdayId,
   });
   return confirmed;
+}
+
+/**
+ * Words too common in supplier names to identify a business on their own. The cache counts decide first (a word on
+ * many suppliers is never distinctive); this list is a backstop for a sparse or lagging cache.
+ */
+const GENERIC_NAME_WORDS = new Set([
+  'golf', 'club', 'clubs', 'country', 'course', 'courses', 'links', 'resort', 'resorts', 'pro', 'shop', 'shops',
+  'car', 'cars', 'cart', 'carts', 'rental', 'rentals', 'sales', 'service', 'services', 'supply', 'supplies',
+  'equipment', 'landscape', 'landscaping', 'turf', 'products', 'systems', 'solutions', 'associates', 'association',
+  'society', 'national', 'american', 'united', 'first', 'new', 'north', 'south', 'east', 'west', 'central',
+  'rocky', 'mountain', 'mountains', 'valley', 'lake', 'river', 'pacific', 'atlantic', 'southern', 'northern',
+  'eastern', 'western', 'texas', 'florida', 'carolina', 'california', 'mexico', 'arizona', 'colorado',
+]);
+
+const MIN_DISTINCTIVE_WORD_LENGTH = 4;
+
+/** Each word is a full scan of the supplier cache, so a long or misread printed name only searches its first words. */
+export const MAX_DISTINCTIVE_WORDS = 4;
+
+/** A word found in this many supplier names is common, however distinctive it looks. */
+export const DISTINCTIVE_WORD_SUPPLIER_LIMIT = 25;
+
+/** A shared word is worth listing for AP only while it narrows the field to a handful of suppliers. */
+const MAX_LISTED_PER_WORD = 5;
+export const MAX_POSSIBLE_SUPPLIERS = 5;
+
+export interface PossibleSupplier {
+  workdayId: string;
+  supplierId?: string;
+  supplierName: string;
+  reason: string;
+}
+
+export interface DistinctiveWordLookup {
+  match?: SupplierNameMatch;
+  possible: PossibleSupplier[];
+}
+
+/** The words of the printed name that could identify a business: not a legal suffix, generic term, or short fragment. */
+export function distinctiveNameWords(printedName: string | null | undefined): string[] {
+  const words = new Set<string>();
+  const candidates = printedSupplierNameCandidates(printedName);
+  // With a branch label the last candidate is the whole printed name, whose city label is not a business word.
+  for (const candidate of candidates.length > 1 ? candidates.slice(0, -1) : candidates) {
+    for (const token of nameTokens(candidate)) {
+      if (token.length >= MIN_DISTINCTIVE_WORD_LENGTH && !/^\d+$/.test(token) && !GENERIC_NAME_WORDS.has(token)) words.add(token);
+    }
+  }
+  return [...words];
+}
+
+function firstNameToken(name: string | undefined): string | undefined {
+  return name ? [...nameTokens(name)][0] : undefined;
+}
+
+function digitsKey(phone: string): string | undefined {
+  const digits = phone.replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : undefined;
+}
+
+function pickSignal(
+  entry: { record: SupplierRecord; uniqueWords: Set<string> },
+  printedLead: string | undefined,
+  printedPhone: string | null | undefined
+): 'lead' | 'phone' | undefined {
+  const names = [entry.record.supplierName, ...entry.record.alternateNames];
+  if (printedLead && entry.uniqueWords.has(printedLead) && names.some((name) => firstNameToken(name) === printedLead)) return 'lead';
+  const phone = printedPhone ? digitsKey(printedPhone) : undefined;
+  if (phone && entry.record.phones.some((recordPhone) => digitsKey(recordPhone) === phone)) return 'phone';
+  return undefined;
+}
+
+/**
+ * Finds the one cached supplier a distinctive word of the printed name points to, even when the rest of the
+ * printed name, the address, and the phone differ from the record. A word counts only when it appears as a whole
+ * word in the names of fewer than DISTINCTIVE_WORD_SUPPLIER_LIMIT suppliers, and it picks a supplier only when
+ * that word is on exactly one supplier, no other supplier matches as many printed words, and a second signal agrees:
+ * the word leads both the printed name and a name on the record, or the printed phone is on the record. Anything
+ * less never guesses: the suppliers that share a word come back as possible matches for AP to review.
+ */
+export async function findSupplierByDistinctiveWord(
+  db: DatabaseConnection,
+  input: { printedName?: string | null; phone?: string | null; excludeWorkdayIds?: Array<string | undefined> }
+): Promise<DistinctiveWordLookup> {
+  const words = distinctiveNameWords(input.printedName).slice(0, MAX_DISTINCTIVE_WORDS);
+  if (words.length === 0) return { possible: [] };
+
+  const excluded = new Set((input.excludeWorkdayIds ?? []).filter((id): id is string => Boolean(id)));
+  const suppliers = new Map<string, { record: SupplierRecord; words: Set<string>; uniqueWords: Set<string>; narrowWords: Set<string> }>();
+  const commonWords: string[] = [];
+
+  for (const word of words) {
+    const fetched = await findSuppliersByNameWord(db, word, DISTINCTIVE_WORD_SUPPLIER_LIMIT);
+    if (fetched.length >= DISTINCTIVE_WORD_SUPPLIER_LIMIT) {
+      commonWords.push(word);
+      continue;
+    }
+    const rows = fetched.filter((row) => !excluded.has(row.workday_id));
+    for (const row of rows) {
+      const entry = suppliers.get(row.workday_id) ?? { record: supplierRecordFromDocument(row), words: new Set(), uniqueWords: new Set(), narrowWords: new Set() };
+      entry.words.add(word);
+      if (fetched.length === 1) entry.uniqueWords.add(word);
+      if (fetched.length <= MAX_LISTED_PER_WORD) entry.narrowWords.add(word);
+      suppliers.set(row.workday_id, entry);
+    }
+  }
+
+  const ranked = [...suppliers.entries()].sort((a, b) => b[1].words.size - a[1].words.size);
+  const withUniqueWord = ranked.filter(([, entry]) => entry.uniqueWords.size > 0);
+  const [top, runnerUp] = ranked;
+  const uniqueTop = withUniqueWord.length === 1 && top && top[0] === withUniqueWord[0]?.[0]
+    && (!runnerUp || top[1].words.size > runnerUp[1].words.size)
+    ? top
+    : undefined;
+  // A leftover word on one cached supplier (a city, surname, or trade word) must not claim a new supplier, so the
+  // word also has to lead the printed name and a name on the record, or the printed phone must be on the record.
+  const printedLead = firstNameToken(printedSupplierNameCandidates(input.printedName)[0]);
+  const signal = uniqueTop ? pickSignal(uniqueTop[1], printedLead, input.phone) : undefined;
+  const pickedEntry = uniqueTop && signal ? uniqueTop : undefined;
+
+  const possible = ranked
+    .filter(([, entry]) => entry.narrowWords.size > 0)
+    .slice(0, MAX_POSSIBLE_SUPPLIERS)
+    .map(([workdayId, entry]): PossibleSupplier => ({
+      workdayId,
+      ...(entry.record.supplierId ? { supplierId: entry.record.supplierId } : {}),
+      supplierName: entry.record.supplierName,
+      reason: `name has ${[...entry.narrowWords].map((word) => `"${word.toUpperCase()}"`).join(', ')}`,
+    }));
+
+  debug('Supplier distinctive word lookup', {
+    words,
+    commonWords,
+    suppliers: ranked.map(([workdayId, entry]) => ({
+      workdayId,
+      supplierId: entry.record.supplierId,
+      supplierName: entry.record.supplierName,
+      words: [...entry.words],
+      uniqueWords: [...entry.uniqueWords],
+    })),
+    signal,
+    accepted: pickedEntry?.[0],
+  });
+
+  if (!pickedEntry) return { possible };
+  const [workdayId, entry] = pickedEntry;
+  const printedName = cleanName(input.printedName ?? '');
+  const matchedWords = [...entry.uniqueWords].map((word) => `"${word.toUpperCase()}"`).join(', ');
+  const evidence = signal === 'phone'
+    ? `the printed phone is on this supplier, and the printed name's distinctive word ${matchedWords} is on no other supplier`
+    : `printed name "${printedName}" leads with the distinctive word "${(printedLead ?? '').toUpperCase()}", which also leads this supplier's name and is on no other supplier`;
+  return {
+    match: {
+      workdayId,
+      supplierName: entry.record.supplierName,
+      ...(entry.record.supplierId ? { supplierId: entry.record.supplierId } : {}),
+      evidence: [evidence],
+      sources: ['printed'],
+      recordNames: [entry.record.supplierName, ...entry.record.alternateNames],
+    },
+    possible,
+  };
 }

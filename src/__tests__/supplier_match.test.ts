@@ -1,11 +1,16 @@
 jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 jest.mock('../lib/database.js', () => ({
   findDocumentsContainingWords: jest.fn(),
+  findSuppliersByNameWord: jest.fn(),
 }));
 
-import { findDocumentsContainingWords } from '../lib/database.js';
+import { findDocumentsContainingWords, findSuppliersByNameWord } from '../lib/database.js';
 import {
+  DISTINCTIVE_WORD_SUPPLIER_LIMIT,
+  MAX_DISTINCTIVE_WORDS,
   SUPPLIER_CANDIDATE_LIMIT,
+  distinctiveNameWords,
+  findSupplierByDistinctiveWord,
   findUniqueSupplierByNameEvidence,
   matchSuppliersByName,
   printedSupplierNameCandidates,
@@ -14,6 +19,7 @@ import {
 } from '../lib/supplier_match.js';
 
 const findDocuments = findDocumentsContainingWords as jest.Mock;
+const findByWord = findSuppliersByNameWord as jest.Mock;
 
 const SITEONE_CONTENT = [
   'Company Name: SITEONE LANDSCAPE SUPPLY LLC',
@@ -35,6 +41,7 @@ const db = {} as never;
 
 beforeEach(() => {
   findDocuments.mockReset();
+  findByWord.mockReset().mockResolvedValue([]);
 });
 
 describe('supplierRecordFromDocument', () => {
@@ -269,5 +276,189 @@ describe('findUniqueSupplierByNameEvidence', () => {
 
     expect(match).toBeUndefined();
     expect(findDocuments).not.toHaveBeenCalled();
+  });
+});
+
+function supplierRow(workdayId: string, supplierName: string, supplierId: string, alternateNames: string[] = []) {
+  return {
+    workday_id: workdayId,
+    content: [`Company Name: ${supplierName}`, `Supplier ID: ${supplierId}`, ...(alternateNames.length ? [`Alternate Names: ${alternateNames.join(', ')}`] : [])].join('\n'),
+    metadata: { supplierName, supplierId, alternateNames },
+  };
+}
+
+function wordIndex(index: Record<string, Array<ReturnType<typeof supplierRow>>>) {
+  findByWord.mockImplementation(async (_db: unknown, word: string) => index[word] ?? []);
+}
+
+const MASEK = 'MASEK ROCKY MOUNTAIN GOLF CARS';
+const masek = supplierRow('wid-masek', 'MASEK GOLF CARS ALBUQUERQUE', 'S-030001');
+
+describe('distinctiveNameWords', () => {
+  it('keeps only the word that identifies the Masek business', () => {
+    expect(distinctiveNameWords(MASEK)).toEqual(['masek']);
+  });
+
+  it.each(['Rocky Mountain Golf', 'The Golf Club', 'Country Club Pro Shop', 'ABC 123 LLC'])('finds nothing distinctive in "%s"', (name) => {
+    expect(distinctiveNameWords(name)).toEqual([]);
+  });
+
+  it('drops the branch label and keeps the company words', () => {
+    expect(distinctiveNameWords(PRINTED)).toEqual(['horticulture']);
+  });
+
+  it('returns nothing for an empty name', () => {
+    expect(distinctiveNameWords(null)).toEqual([]);
+  });
+});
+
+describe('findSupplierByDistinctiveWord', () => {
+  it('picks the one supplier a distinctive word points to when the rest of the name differs', async () => {
+    wordIndex({ masek: [masek] });
+
+    const { match, possible } = await findSupplierByDistinctiveWord(db, { printedName: MASEK });
+
+    expect(match).toMatchObject({ workdayId: 'wid-masek', supplierId: 'S-030001', supplierName: 'MASEK GOLF CARS ALBUQUERQUE', sources: ['printed'] });
+    expect(match?.evidence[0]).toContain('"MASEK"');
+    expect(possible.map((item) => item.workdayId)).toEqual(['wid-masek']);
+    expect(findByWord).toHaveBeenCalledTimes(1);
+    expect(findByWord).toHaveBeenCalledWith(db, 'masek', DISTINCTIVE_WORD_SUPPLIER_LIMIT);
+  });
+
+  it.each(['Rocky Mountain Golf', 'Rocky Mountain Golf Cars', 'Golf Club'])('never searches or picks on the common words of "%s"', async (name) => {
+    const result = await findSupplierByDistinctiveWord(db, { printedName: name });
+
+    expect(result).toEqual({ possible: [] });
+    expect(findByWord).not.toHaveBeenCalled();
+  });
+
+  it('does not pick a supplier that only shares common words even if the cache has one match', async () => {
+    wordIndex({ rocky: [supplierRow('wid-gcsa', 'ROCKY MOUNTAIN GOLF COURSE SUPERINTENDENTS ASSOCIATION', 'S-020312')] });
+
+    const result = await findSupplierByDistinctiveWord(db, { printedName: 'Rocky Mountain Golf Cars' });
+
+    expect(result.match).toBeUndefined();
+    expect(result.possible).toEqual([]);
+  });
+
+  it('never guesses when two suppliers share the distinctive word, and lists both', async () => {
+    const other = supplierRow('wid-masek-2', 'MASEK ELECTRIC', 'S-030002');
+    wordIndex({ masek: [masek, other] });
+
+    const { match, possible } = await findSupplierByDistinctiveWord(db, { printedName: MASEK });
+
+    expect(match).toBeUndefined();
+    expect(possible.map((item) => item.supplierId)).toEqual(['S-030001', 'S-030002']);
+    expect(possible[0]?.reason).toContain('"MASEK"');
+  });
+
+  it('never guesses when two distinctive words each point to a different supplier', async () => {
+    const brightwater = supplierRow('wid-bright', 'BRIGHTWATER SUPPLY', 'S-030003');
+    wordIndex({ masek: [masek], brightwater: [brightwater] });
+
+    const { match, possible } = await findSupplierByDistinctiveWord(db, { printedName: 'Masek Brightwater Carts' });
+
+    expect(match).toBeUndefined();
+    expect(possible.map((item) => item.workdayId).sort()).toEqual(['wid-bright', 'wid-masek']);
+  });
+
+  it('does not pick when a word shared by other suppliers ties the unique one', async () => {
+    const twinA = supplierRow('wid-twin-a', 'BRIGHTWATER ONE', 'S-030004');
+    const twinB = supplierRow('wid-twin-b', 'BRIGHTWATER TWO', 'S-030005');
+    wordIndex({ masek: [masek], brightwater: [twinA, twinB] });
+
+    expect((await findSupplierByDistinctiveWord(db, { printedName: 'Masek Brightwater Carts' })).match).toBeUndefined();
+  });
+
+  it('picks the supplier that matches more printed words than any other', async () => {
+    const both = supplierRow('wid-both', 'MASEK BRIGHTWATER', 'S-030006');
+    const lone = supplierRow('wid-lone', 'BRIGHTWATER OTHER', 'S-030007');
+    wordIndex({ masek: [both], brightwater: [both, lone] });
+
+    expect((await findSupplierByDistinctiveWord(db, { printedName: 'Masek Brightwater Carts' })).match?.workdayId).toBe('wid-both');
+  });
+
+  it('treats a word on a full page of suppliers as common', async () => {
+    findByWord.mockResolvedValue(Array.from({ length: DISTINCTIVE_WORD_SUPPLIER_LIMIT }, (_, index) => supplierRow(`wid-${index}`, `MASEK ${index}`, `S-${index}`)));
+
+    expect(await findSupplierByDistinctiveWord(db, { printedName: MASEK })).toEqual({ possible: [] });
+  });
+
+  it('does not list a word that is on too many suppliers to narrow the field', async () => {
+    wordIndex({ masek: Array.from({ length: 6 }, (_, index) => supplierRow(`wid-${index}`, `MASEK ${index}`, `S-${index}`)) });
+
+    expect(await findSupplierByDistinctiveWord(db, { printedName: MASEK })).toEqual({ possible: [] });
+  });
+
+  it('skips the default supplier', async () => {
+    wordIndex({ masek: [masek] });
+
+    expect(await findSupplierByDistinctiveWord(db, { printedName: MASEK, excludeWorkdayIds: ['wid-masek'] })).toEqual({ possible: [] });
+  });
+
+  it('matches the word in an alternate name', async () => {
+    wordIndex({ masek: [supplierRow('wid-parent', 'ROCKY MOUNTAIN CART GROUP', 'S-030008', ['MASEK GOLF CARS'])] });
+
+    expect((await findSupplierByDistinctiveWord(db, { printedName: MASEK })).match?.workdayId).toBe('wid-parent');
+  });
+
+  it('does not apply a cached supplier to a new supplier that only shares a city word', async () => {
+    wordIndex({ albuquerque: [masek] });
+
+    const { match, possible } = await findSupplierByDistinctiveWord(db, { printedName: 'Albuquerque Turf Supply' });
+
+    expect(match).toBeUndefined();
+    expect(possible.map((item) => item.workdayId)).toEqual(['wid-masek']);
+  });
+
+  it.each([
+    ['trade word', 'Aeration Plus Solutions', 'aeration', supplierRow('wid-acme', 'ACME AERATION', 'S-030009')],
+    ['surname', 'Brightwater Irrigation', 'brightwater', supplierRow('wid-smith', 'JOHN BRIGHTWATER', 'S-030010')],
+  ])('does not apply a supplier whose only shared %s does not lead both names', async (_label, printed, word, record) => {
+    wordIndex({ [word]: [record] });
+
+    const { match } = await findSupplierByDistinctiveWord(db, { printedName: printed });
+
+    expect(match).toBeUndefined();
+  });
+
+  it('does not apply a supplier when the shared word leads the record but not the printed name', async () => {
+    wordIndex({ masek: [masek] });
+
+    expect((await findSupplierByDistinctiveWord(db, { printedName: 'Rocky Mountain Masek Golf Cars' })).match).toBeUndefined();
+  });
+
+  it('applies a supplier on a unique word when the printed phone is on the record', async () => {
+    const withPhone = { ...masek, metadata: { ...masek.metadata, phones: ['+1 (505) 452-2222'] } };
+    wordIndex({ albuquerque: [withPhone] });
+
+    const { match } = await findSupplierByDistinctiveWord(db, { printedName: 'Albuquerque Turf Supply', phone: '505-452-2222' });
+
+    expect(match?.workdayId).toBe('wid-masek');
+    expect(match?.evidence[0]).toContain('printed phone');
+  });
+
+  it('does not treat a different phone as a signal', async () => {
+    const withPhone = { ...masek, metadata: { ...masek.metadata, phones: ['+1 (505) 111-0000'] } };
+    wordIndex({ albuquerque: [withPhone] });
+
+    expect((await findSupplierByDistinctiveWord(db, { printedName: 'Albuquerque Turf Supply', phone: '505-452-2222' })).match).toBeUndefined();
+  });
+
+  it('searches only the first distinctive words of a long printed name', async () => {
+    await findSupplierByDistinctiveWord(db, { printedName: 'Alpha Bravo Charlie Delta Foxtrot Hotel Juliet' });
+
+    expect(findByWord).toHaveBeenCalledTimes(MAX_DISTINCTIVE_WORDS);
+    expect(findByWord.mock.calls.map(([, word]) => word)).toEqual(['alpha', 'bravo', 'charlie', 'delta']);
+  });
+
+  it('names only the leading word in the evidence when several unique words match', async () => {
+    const both = supplierRow('wid-both', 'MASEK BRIGHTWATER ALBUQUERQUE', 'S-030011');
+    wordIndex({ masek: [both], brightwater: [both] });
+
+    const { match } = await findSupplierByDistinctiveWord(db, { printedName: 'Masek Brightwater Carts' });
+
+    expect(match?.evidence[0]).toContain('leads with the distinctive word "MASEK"');
+    expect(match?.evidence[0]).not.toContain('BRIGHTWATER');
   });
 });

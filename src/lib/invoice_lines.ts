@@ -387,7 +387,7 @@ export function chargeAmount(value: ChargeAmount): number | undefined {
 }
 
 // Reads the sign from the same field lineAmount took the amount from.
-function signedChargeLineAmount(line: ChargeLine): number | undefined {
+export function signedChargeLineAmount(line: ChargeLine): number | undefined {
   const amount = lineAmount(line);
   if (amount == null) return undefined;
   const credit = (printed: string) => (isPrintedCredit(printed) ? -Math.abs(amount) : amount);

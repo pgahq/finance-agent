@@ -236,7 +236,7 @@ export const findSuppliersTool = tool({
 
     debug(`Find Suppliers Tool: Found ${results.length} suppliers`);
     const records = results.map(result => supplierRecordFromDocument(result));
-    debug('Find Suppliers Tool top results:', records.slice(0, 3).map((record, index) => ({
+    debug('Find Suppliers Tool results:', records.map((record, index) => ({
       workdayId: results[index].workday_id,
       supplierId: record.supplierId,
       supplierName: record.supplierName,

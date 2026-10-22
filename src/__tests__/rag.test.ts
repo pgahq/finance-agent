@@ -460,9 +460,25 @@ Primary Address: 100 PGA Tour Blvd`);
       });
       expect(results[0]).not.toHaveProperty('metadata');
       expect(results[0]).not.toHaveProperty('content');
-      expect(mockDebug).toHaveBeenCalledWith('Find Suppliers Tool top results:', [
+      expect(mockDebug).toHaveBeenCalledWith('Find Suppliers Tool results:', [
         expect.objectContaining({ supplierId: 'S-021845', alternateNames }),
       ]);
+    });
+
+    it('logs every supplier candidate, not only the top three', async () => {
+      mockGetDatabaseConnection.mockResolvedValue({ close: jest.fn() });
+      mockSearchDocuments.mockResolvedValue(Array.from({ length: 6 }, (_, index) => ({
+        workday_id: `wid-${index}`,
+        type: 'supplier',
+        content: `Company Name: SUPPLIER ${index}\nSupplier ID: S-${index}`,
+        metadata: { supplierName: `SUPPLIER ${index}`, supplierId: `S-${index}` },
+        similarity: String(0.9 - index * 0.05),
+      })));
+
+      await findSuppliersTool.execute({ query: 'Masek' });
+
+      const logged = mockDebug.mock.calls.find(([message]: unknown[]) => message === 'Find Suppliers Tool results:')?.[1] as Array<{ supplierId: string }>;
+      expect(logged.map((candidate) => candidate.supplierId)).toEqual(['S-0', 'S-1', 'S-2', 'S-3', 'S-4', 'S-5']);
     });
 
     it('omits a concatenated bill-to address from the company embedding query', async () => {
