@@ -475,10 +475,10 @@ async function processInvoice(
       relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
     }
-    const settledSummary = settlePlacedSummaryLines(finalLines ?? [], summaryCharges);
+    const settledSummary = settlePlacedSummaryLines(finalLines ?? [], summaryCharges, candidateLines);
     if (finalLines) finalLines = settledSummary.lines;
     if (settledSummary.message) chargeCheck = [...chargeCheck, settledSummary.message];
-    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.codingNote].filter(Boolean).join(' ') || undefined;
+    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.reviewNote].filter(Boolean).join(' ') || undefined;
 
     const memoIdentifiers = memoIdentifiersFromEnrichment(
       result,

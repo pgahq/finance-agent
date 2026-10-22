@@ -151,10 +151,19 @@ interface SummaryCandidate {
   sign: SummarySign;
 }
 
+interface SettlementRow {
+  label: string;
+  cents?: number;
+  printedCredit: boolean;
+}
+
 const SUMMARY_ROW_WORDS = new Set([
   'due', 'balance', 'paid', 'payment', 'payments', 'deposit', 'deposits', 'prepayment', 'prepaid', 'prepay',
   'previous', 'remaining', 'owing',
 ]);
+// A credit memo, retainer, or refund applied to the bill settles it; it does not lower the cost of the goods,
+// and the credit may already be its own document in Workday.
+const SETTLEMENT_WORDS = new Set(['credit', 'credits', 'memo', 'memos', 'retainer', 'retainers', 'refund', 'refunds']);
 const TOTAL_WORDS = new Set(['total', 'totals', 'subtotal', 'subtotals']);
 const GENERIC_SUMMARY_WORDS = new Set([
   'sub', 'grand', 'invoice', 'order', 'merchandise', 'goods', 'product', 'products', 'item', 'items',
@@ -162,7 +171,7 @@ const GENERIC_SUMMARY_WORDS = new Set([
 ]);
 const DISCOUNT_WORDS = new Set([
   'discount', 'discounts', 'disc', 'allowance', 'allowances', 'promo', 'promotion', 'promotional',
-  'rebate', 'rebates', 'credit', 'credits', 'coupon', 'coupons', 'markdown', 'markdowns', 'less',
+  'rebate', 'rebates', 'coupon', 'coupons', 'markdown', 'markdowns',
 ]);
 const FEE_WORDS = new Set(['fee', 'fees', 'charge', 'charges', 'surcharge', 'surcharges']);
 
@@ -176,8 +185,17 @@ function isShippingAbbreviation(tokens: string[]): boolean {
   return body === 'sh' || body === 's h';
 }
 
+function hasFeeWord(tokens: string[]): boolean {
+  return tokens.some(token => FEE_WORDS.has(token));
+}
+
 function isDiscountLabel(tokens: string[]): boolean {
-  return tokens.some(token => DISCOUNT_WORDS.has(token)) && !tokens.some(token => FEE_WORDS.has(token));
+  return tokens.some(token => DISCOUNT_WORDS.has(token)) && !hasFeeWord(tokens);
+}
+
+// `Credit Card Fee` is a fee, not an applied credit.
+function isSettlementLabel(tokens: string[]): boolean {
+  return tokens.some(token => SETTLEMENT_WORDS.has(token)) && !hasFeeWord(tokens);
 }
 
 // Subtotals, totals, and payments restate or settle the lines; they are never a charge of their own.
@@ -224,6 +242,16 @@ function describeSummaryCandidates(candidates: SummaryCandidate[]): string {
     .join(' and ');
 }
 
+function describeSettlementRows(rows: SettlementRow[]): string {
+  return rows
+    .map(row => `"${printable(row.label)}"${row.cents == null ? '' : ` ${centsDollars(row.printedCredit ? -row.cents : row.cents)}`}`)
+    .join(' and ');
+}
+
+function describeExtractedLines(lines: ExtractedInvoiceLine[]): string {
+  return lines.map(line => `"${printable(line.description)}" ${formatChargeDollars(chargeAmount(line.totalPrice) ?? 0)}`).join(' and ');
+}
+
 // Merchandise rows that print a unit price, a quantity, and a lower net total already carry this much discount.
 function lineDiscountCents(lines: ExtractedInvoiceLine[]): number {
   return lines.reduce((total, line) => {
@@ -236,11 +264,39 @@ function lineDiscountCents(lines: ExtractedInvoiceLine[]): number {
   }, 0);
 }
 
+function notAddedNotes(rows: {
+  unexplained: SummaryCandidate[];
+  withoutAmount: string[];
+  settlements: SettlementRow[];
+  /** Set when nothing was added, to say what difference the rows fail to explain. */
+  gap?: { gapCents: number; submittedCents: number; amountDueCents: number };
+}): string[] {
+  const notes: string[] = [];
+  const { unexplained, withoutAmount, settlements, gap } = rows;
+  if (unexplained.length) {
+    const plural = unexplained.length > 1;
+    const reason = gap
+      ? `${plural ? 'they do' : 'it does'} not explain the ${centsDollars(Math.abs(gap.gapCents))} difference between lines, freight, and tax (${centsDollars(gap.submittedCents)}) and the amount due (${centsDollars(gap.amountDueCents)})`
+      : `lines, freight, and tax equal the amount due without ${plural ? 'them' : 'it'}`;
+    notes.push(`${describeSummaryCandidates(unexplained)} ${plural ? 'were' : 'was'} printed in the invoice totals but not added: ${reason}.`);
+  }
+  if (settlements.length) {
+    const plural = settlements.length > 1;
+    notes.push(`${describeSettlementRows(settlements)} in the invoice totals ${plural ? 'look' : 'looks'} like an applied credit, credit memo, retainer, or refund, so ${plural ? 'they were' : 'it was'} not added as ${plural ? 'lines' : 'a line'}. Check whether the credit is already in Workday before approving.`);
+  }
+  if (withoutAmount.length) {
+    const plural = withoutAmount.length > 1;
+    notes.push(`${withoutAmount.map(label => `"${printable(label)}"`).join(' and ')} ${plural ? 'were' : 'was'} printed in the invoice totals without an amount, so ${plural ? 'they were' : 'it was'} not added.`);
+  }
+  return notes;
+}
+
 /**
  * Adds priced totals-block rows (a decoration fee, a merchandise discount) as invoice lines, but only when
  * lines + freight + tax miss the amount due by exactly those rows. An unsigned discount is a credit only when
  * the credit makes the invoice add up; when only the charge reading does, nothing is added and the review note
- * gives both readings. Rows already on a line, subtotals, payments, freight, tax, and rates are never added.
+ * gives both readings. Rows already on a line, subtotals, payments, applied credits, freight, tax, and rates are
+ * never added; rows that were read but not added are named in the review note.
  */
 export function placeSummaryCharges(input: {
   charges?: PrintedSummaryCharge[] | null;
@@ -262,7 +318,8 @@ export function placeSummaryCharges(input: {
   const freightCents = input.freightCleared ? 0 : toCents(chargeAmount(input.freight) ?? 0);
   const taxCents = input.taxCleared ? 0 : toCents(chargeAmount(input.tax) ?? 0);
   const submittedCents = lineCents + freightCents + taxCents;
-  const gapCents = toCents(amountDue) - submittedCents;
+  const amountDueCents = toCents(amountDue);
+  const gapCents = amountDueCents - submittedCents;
   if (gapCents === 0) return none;
 
   const discountInLines = lineDiscountCents(input.lines);
@@ -273,11 +330,16 @@ export function placeSummaryCharges(input: {
   const seen = new Set<string>();
   const candidates: SummaryCandidate[] = [];
   const withoutAmount: string[] = [];
+  const settlements: SettlementRow[] = [];
   for (const charge of input.charges) {
     const tokens = labelTokens(charge.label);
     if (tokens.length === 0 || isSummaryLabel(tokens)) continue;
     if (labelMatchesFreight(charge.label) || isShippingAbbreviation(tokens) || isTaxLikeChargeLabel(charge.label)) continue;
     const parsed = parseSummaryAmount(charge.amount);
+    if (isSettlementLabel(tokens)) {
+      if (parsed?.cents !== 0) settlements.push({ label: charge.label, cents: parsed?.cents, printedCredit: Boolean(parsed?.printedCredit) });
+      continue;
+    }
     if (!parsed) {
       withoutAmount.push(charge.label);
       continue;
@@ -297,13 +359,18 @@ export function placeSummaryCharges(input: {
     seen.add(key);
     candidates.push({ label: charge.label, cents: parsed.cents, sign });
   }
-  if (candidates.length === 0 && withoutAmount.length === 0) return none;
+  if (candidates.length === 0 && withoutAmount.length === 0 && settlements.length === 0) return none;
 
   const allCents = sumSignedCents(candidates);
   const singles = candidates.filter(candidate => signedCents(candidate) === gapCents);
   const matched = candidates.length && allCents === gapCents ? candidates : singles.length === 1 ? singles : [];
   const placed = lineCents + sumSignedCents(matched) > 0 ? matched : [];
   if (placed.length) {
+    const notes = notAddedNotes({
+      unexplained: candidates.filter(candidate => !placed.includes(candidate)),
+      withoutAmount,
+      settlements,
+    });
     return {
       lines: placed.map(candidate => {
         const cents = signedCents(candidate);
@@ -316,6 +383,7 @@ export function placeSummaryCharges(input: {
         };
       }),
       message: `Added ${placed.map(candidate => `"${printable(candidate.label)}" ${centsDollars(signedCents(candidate))}`).join(' and ')} from the invoice totals as ${placed.length > 1 ? 'invoice lines' : 'an invoice line'} so lines, freight, and tax equal the amount due.`,
+      ...(notes.length && { reviewNote: notes.join(' ') }),
     };
   }
 
@@ -328,47 +396,58 @@ export function placeSummaryCharges(input: {
   if (ambiguous) {
     const others = chargeWithOthers ? candidates.filter(candidate => candidate !== ambiguous) : [];
     const creditCents = submittedCents - ambiguous.cents + sumSignedCents(others);
-    notes.push(`"${printable(ambiguous.label)}" ${centsDollars(ambiguous.cents)} was not added: as a credit, lines, freight, and tax would total ${centsDollars(creditCents)}; as a charge${others.length ? ` with ${describeSummaryCandidates(others)}` : ''}, ${centsDollars(toCents(amountDue))}, which matches the amount due. Check which it is before approving.`);
+    notes.push(`"${printable(ambiguous.label)}" ${centsDollars(ambiguous.cents)} was not added: as a credit, lines, freight, and tax would total ${centsDollars(creditCents)}; as a charge${others.length ? ` with ${describeSummaryCandidates(others)}` : ''}, ${centsDollars(amountDueCents)}, which matches the amount due. Check which it is before approving.`);
     unexplained = candidates.filter(candidate => candidate !== ambiguous && !others.includes(candidate));
   }
-  if (unexplained.length) {
-    const plural = unexplained.length > 1;
-    notes.push(`${describeSummaryCandidates(unexplained)} ${plural ? 'were' : 'was'} printed in the invoice totals but not added: ${plural ? 'they do' : 'it does'} not explain the ${centsDollars(Math.abs(gapCents))} difference between lines, freight, and tax (${centsDollars(submittedCents)}) and the amount due (${centsDollars(toCents(amountDue))}).`);
-  }
-  if (withoutAmount.length) {
-    const plural = withoutAmount.length > 1;
-    notes.push(`${withoutAmount.map(label => `"${printable(label)}"`).join(' and ')} ${plural ? 'were' : 'was'} printed in the invoice totals without an amount, so ${plural ? 'they were' : 'it was'} not added.`);
-  }
+  notes.push(...notAddedNotes({ unexplained, withoutAmount, settlements, gap: { gapCents, submittedCents, amountDueCents } }));
   return { lines: [], reviewNote: notes.join(' ') };
 }
 
 export interface SettledSummaryLines {
   lines: FinalInvoiceLine[];
-  /** Amount-check sentence, set only when every placed row is still a submitted line. */
+  /** Amount-check sentence for the rows added from the totals. */
   message?: string;
-  /** Review sentence when a placed discount sits beside lines coded to more than one cost center. */
-  codingNote?: string;
+  /** Review sentences: a placed row the submitted lines do not show, or a discount beside several cost centers. */
+  reviewNote?: string;
+}
+
+function finalLineAmount(line: FinalInvoiceLine): number | undefined {
+  if (line.extendedAmount != null) return line.extendedAmount;
+  if (line.unitCost != null) return line.unitCost * (line.quantity ?? 1);
+  return undefined;
+}
+
+function sumCentsOrUndefined(amounts: Array<number | undefined>): number | undefined {
+  return amounts.some(amount => amount == null)
+    ? undefined
+    : amounts.reduce<number>((total, amount) => total + toCents(amount ?? 0), 0);
 }
 
 /**
  * After the line merge, finds the lines placeSummaryCharges added and drops any PO line link from them: a fee
  * or discount read from the totals is not a PO line's goods, so it keeps the matched coding without invoicing
- * PO quantity. The Amount-check sentence is kept only when every placed row is still a submitted line.
+ * PO quantity. A placed row the merge or an email budget split folded into other lines is still named: as
+ * included when the submitted lines total what was read, otherwise as a review item.
  */
-export function settlePlacedSummaryLines(finalLines: FinalInvoiceLine[], placed: PlacedSummaryCharges): SettledSummaryLines {
+export function settlePlacedSummaryLines(
+  finalLines: FinalInvoiceLine[],
+  placed: PlacedSummaryCharges,
+  candidateLines: ExtractedInvoiceLine[]
+): SettledSummaryLines {
   if (placed.lines.length === 0 || !placed.message) return { lines: finalLines };
   const claimed: number[] = [];
+  const missing: ExtractedInvoiceLine[] = [];
   for (const line of placed.lines) {
     const cents = toCents(chargeAmount(line.totalPrice) ?? 0);
     const index = finalLines.findIndex((final, i) => {
       const amount = final.extendedAmount ?? final.unitCost;
       return !claimed.includes(i) && final.description === line.description && amount != null && toCents(amount) === cents;
     });
-    if (index < 0) return { lines: finalLines };
-    claimed.push(index);
+    if (index < 0) missing.push(line);
+    else claimed.push(index);
   }
 
-  const linked = claimed.some(index => finalLines[index].purchaseOrderLineId);
+  const unlinked = claimed.filter(index => finalLines[index].purchaseOrderLineId).map(index => finalLines[index]);
   const lines = finalLines.map((line, index) => (claimed.includes(index)
     ? {
       ...line,
@@ -379,16 +458,34 @@ export function settlePlacedSummaryLines(finalLines: FinalInvoiceLine[], placed:
       omitPurchaseOrderLineReference: undefined,
     }
     : line));
-  const plural = placed.lines.length > 1;
+  const unlinkedSentence = unlinked.length === 0
+    ? ''
+    : missing.length === 0 && unlinked.length === claimed.length
+      ? ` ${claimed.length > 1 ? 'They are' : 'It is'} not linked to a PO line.`
+      : ` ${unlinked.map(line => `"${printable(line.description)}"`).join(' and ')} ${unlinked.length > 1 ? 'are' : 'is'} not linked to a PO line.`;
+
   const costCenters = new Set(lines.filter((_, index) => !claimed.includes(index)).map(line => line.costCenterId ?? ''));
   const discounts = claimed.map(index => lines[index]).filter(line => (line.extendedAmount ?? line.unitCost ?? 0) < 0);
   const codingNote = discounts.length && costCenters.size > 1
     ? discounts.map(line => `"${printable(line.description)}" ${formatChargeDollars(line.extendedAmount ?? line.unitCost ?? 0)}`).join(' and ')
       + ` ${discounts.length > 1 ? 'are single lines' : 'is a single line'}, but the invoice lines use more than one cost center. Check how the discount should be coded before approving.`
     : undefined;
-  return {
-    lines,
-    message: placed.message + (linked ? ` ${plural ? 'They are' : 'It is'} not linked to a PO line.` : ''),
-    ...(codingNote && { codingNote }),
-  };
+
+  if (missing.length === 0) {
+    return { lines, message: placed.message + unlinkedSentence, ...(codingNote && { reviewNote: codingNote }) };
+  }
+
+  const plural = missing.length > 1;
+  const submittedCents = sumCentsOrUndefined(finalLines.map(finalLineAmount));
+  const readCents = sumCentsOrUndefined(candidateLines.map(line => signedChargeLineAmount(line)));
+  const included = submittedCents != null && submittedCents === readCents;
+  const described = describeExtractedLines(placed.lines);
+  const message = included
+    ? `Added ${described} from the invoice totals so lines, freight, and tax equal the amount due. ${describeExtractedLines(missing)} ${plural ? 'are' : 'is'} included in the submitted lines but not as ${plural ? 'separate lines' : 'a separate line'}.${unlinkedSentence}`
+    : undefined;
+  const missingNote = included
+    ? undefined
+    : `${describeExtractedLines(missing)} from the invoice totals ${plural ? 'were' : 'was'} added before line coding, but the submitted lines do not show ${plural ? 'them' : 'it'}. Check the lines before approving.${unlinkedSentence}`;
+  const reviewNote = [missingNote, codingNote].filter(Boolean).join(' ') || undefined;
+  return { lines, ...(message && { message }), ...(reviewNote && { reviewNote }) };
 }

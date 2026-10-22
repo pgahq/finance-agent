@@ -441,7 +441,7 @@ describe('invoice OCR pass', () => {
 
     it('asks the model for additional tax rows with the SUPIN-467011 example', () => {
       expect(invoiceOcrPrompt).toContain('extractedOtherCharges [{ label: "5% EnvChg Tax", amount: "$17.00" }]');
-      expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5, 5.7, and 9 put them');
+      expect(invoiceOcrPrompt).toContain('fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them');
       expect(invoiceOcrPrompt).toContain('Never compute an amount from a rate');
     });
   });
@@ -464,6 +464,7 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('extractedSummaryCharges [{ label: "Decoration", amount: "$5.00" }]');
       expect(invoiceOcrPrompt).toContain('A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal');
       expect(invoiceOcrPrompt).toContain('Do not add a minus sign that is not printed');
+      expect(invoiceOcrPrompt).toContain('payments, deposits, applied credits, credit memos, retainers, or refunds');
       expect(InvoiceOcrSchema.shape.extractedSummaryCharges).toBeDefined();
     });
   });

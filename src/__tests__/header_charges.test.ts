@@ -331,6 +331,44 @@ describe('placeSummaryCharges', () => {
     expect(placed.lines).toEqual([expect.objectContaining({ description: 'Decoration' })]);
   });
 
+  it.each([['Credit Applied'], ['Less Credit Memo 4411'], ['Prior Credit'], ['Account Credit'], ['Less Retainer'], ['Refund']])(
+    'never adds the applied credit %s as a line and names it for review',
+    (label) => {
+      const placed = placeSummaryCharges({
+        lines: [{ description: 'Consulting', quantity: null, unitCost: null, totalPrice: '100.00', hasDiscount: null }],
+        amountDue: '$60.00',
+        freightCleared: false,
+        taxCleared: false,
+        charges: [{ label, amount: '$40.00' }],
+      });
+
+      expect(placed.lines).toEqual([]);
+      expect(placed.reviewNote).toBe(`"${label}" $40.00 in the invoice totals looks like an applied credit, credit memo, retainer, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.`);
+    }
+  );
+
+  it('still names the rows it did not add when another row closes the gap', () => {
+    const placed = placeSummaryCharges({
+      lines: [{ description: 'Polo - Navy', quantity: null, unitCost: null, totalPrice: '100.00', hasDiscount: null }],
+      amountDue: '$105.00',
+      freightCleared: false,
+      taxCleared: false,
+      charges: [
+        { label: 'Decoration', amount: '$5.00' },
+        { label: 'Setup Charge', amount: '$25.00' },
+        { label: 'Discount 10%', amount: null },
+        { label: 'Credit Memo 88', amount: '$10.00' },
+      ],
+    });
+
+    expect(placed.lines).toEqual([expect.objectContaining({ description: 'Decoration', totalPrice: '5.00' })]);
+    expect(placed.reviewNote).toBe(
+      '"Setup Charge" $25.00 was printed in the invoice totals but not added: lines, freight, and tax equal the amount due without it.'
+      + ' "Credit Memo 88" $10.00 in the invoice totals looks like an applied credit, credit memo, retainer, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.'
+      + ' "Discount 10%" was printed in the invoice totals without an amount, so it was not added.'
+    );
+  });
+
   it.each([['Decoration Total'], ['Credit Card Fee'], ['Setup Charge']])('treats %s as a charge', (label) => {
     expect(placeSummaryCharges({ ...summit, charges: [{ label, amount: '$5.00' }] }).lines)
       .toEqual([expect.objectContaining({ description: label, totalPrice: '5.00' })]);
@@ -371,10 +409,12 @@ describe('placeSummaryCharges', () => {
 });
 
 describe('settlePlacedSummaryLines', () => {
+  const placedDiscount = { description: 'Merchandise Discount', quantity: null, unitCost: null, totalPrice: '-13.80', hasDiscount: true };
   const placed = {
-    lines: [{ description: 'Merchandise Discount', quantity: null, unitCost: null, totalPrice: '-13.80', hasDiscount: true }],
+    lines: [placedDiscount],
     message: 'Added "Merchandise Discount" -$13.80 from the invoice totals as an invoice line so lines, freight, and tax equal the amount due.',
   };
+  const read = [{ description: 'Towel - Tri-fold', quantity: null, unitCost: null, totalPrice: '74.00', hasDiscount: null }, placedDiscount];
   const merchandise: FinalInvoiceLine = {
     lineOrder: 1,
     description: 'Towel - Tri-fold',
@@ -394,32 +434,55 @@ describe('settlePlacedSummaryLines', () => {
   };
 
   it('keeps the coding but drops the PO line link from a placed row and says so', () => {
-    const settled = settlePlacedSummaryLines([merchandise, discount], placed);
+    const settled = settlePlacedSummaryLines([merchandise, discount], placed, read);
 
     expect(settled.lines[0]).toBe(merchandise);
     expect(settled.lines[1]).toMatchObject({ costCenterId: 'CC-100', purchaseOrderLineId: null, purchaseOrderLineQuantity: null });
     expect(settled.message).toBe(`${placed.message} It is not linked to a PO line.`);
-    expect(settled.codingNote).toBeUndefined();
+    expect(settled.reviewNote).toBeUndefined();
   });
 
-  it('drops the Amount-check sentence when the placed row is not a submitted line', () => {
-    const settled = settlePlacedSummaryLines([merchandise], placed);
+  it('says a placed row is included when the merge folded it into another line of the same total', () => {
+    const folded = { ...merchandise, extendedAmount: 60.2 };
+    const settled = settlePlacedSummaryLines([folded], placed, read);
 
-    expect(settled).toEqual({ lines: [merchandise] });
+    expect(settled.lines).toEqual([folded]);
+    expect(settled.message).toBe('Added "Merchandise Discount" -$13.80 from the invoice totals so lines, freight, and tax equal the amount due. "Merchandise Discount" -$13.80 is included in the submitted lines but not as a separate line.');
+    expect(settled.reviewNote).toBeUndefined();
+  });
+
+  it('asks AP to check the lines when a placed row is missing and the submitted total differs', () => {
+    const settled = settlePlacedSummaryLines([merchandise], placed, read);
+
+    expect(settled.message).toBeUndefined();
+    expect(settled.reviewNote).toBe('"Merchandise Discount" -$13.80 from the invoice totals was added before line coding, but the submitted lines do not show it. Check the lines before approving.');
+  });
+
+  it('unlinks the rows it finds even when another placed row is missing', () => {
+    const decoration = { description: 'Decoration', quantity: null, unitCost: null, totalPrice: '5.00', hasDiscount: null };
+    const settled = settlePlacedSummaryLines(
+      [{ ...merchandise, extendedAmount: 60.2 }, { ...merchandise, lineOrder: 2, description: 'Decoration', extendedAmount: 5 }],
+      { lines: [decoration, placedDiscount], message: 'Added two rows.' },
+      [...read, decoration]
+    );
+
+    expect(settled.lines[1]).toMatchObject({ description: 'Decoration', costCenterId: 'CC-100', purchaseOrderLineId: null });
+    expect(settled.message).toBe('Added "Decoration" $5.00 and "Merchandise Discount" -$13.80 from the invoice totals so lines, freight, and tax equal the amount due. "Merchandise Discount" -$13.80 is included in the submitted lines but not as a separate line. "Decoration" is not linked to a PO line.');
   });
 
   it('flags a placed discount beside lines on more than one cost center', () => {
     const settled = settlePlacedSummaryLines(
       [merchandise, { ...merchandise, lineOrder: 2, costCenterId: 'CC-200' }, { ...discount, lineOrder: 3, purchaseOrderLineId: null }],
-      placed
+      placed,
+      read
     );
 
     expect(settled.message).toBe(placed.message);
-    expect(settled.codingNote).toBe('"Merchandise Discount" -$13.80 is a single line, but the invoice lines use more than one cost center. Check how the discount should be coded before approving.');
+    expect(settled.reviewNote).toBe('"Merchandise Discount" -$13.80 is a single line, but the invoice lines use more than one cost center. Check how the discount should be coded before approving.');
   });
 
   it('leaves lines unchanged when nothing was placed', () => {
     const lines = [merchandise];
-    expect(settlePlacedSummaryLines(lines, { lines: [], reviewNote: 'note' })).toEqual({ lines });
+    expect(settlePlacedSummaryLines(lines, { lines: [], reviewNote: 'note' }, read)).toEqual({ lines });
   });
 });

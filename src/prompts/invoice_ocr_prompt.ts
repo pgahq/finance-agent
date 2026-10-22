@@ -256,7 +256,7 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
 
-- Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5, 5.7, and 9 put them (freight in the freight fields, a row printed only in the totals block in \`extractedSummaryCharges\`, everything else as a line item).
+- Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
 - Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
 - Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
 - Do not list subtotals, totals, amount due, balance, payments, deposits, discounts, or credits.
@@ -269,8 +269,8 @@ An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5
 
 Many invoices print priced rows in the totals block (next to Sub Total and Total) that are not in the line table, for example "Decoration $5.00", "Setup Charge $25.00", or "Merchandise Discount $13.80". List every such row in \`extractedSummaryCharges\` with its exact printed label and printed amount.
 
-- Include fees and charges (decoration, setup, screen, digitizing, service fees) and reductions (discounts, allowances, rebates, promotions, coupons, credits).
-- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, or deposits. Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
+- Include fees and charges (decoration, setup, screen, digitizing, service fees) and price reductions (discounts, allowances, rebates, promotions, coupons).
+- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds. Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
 - Copy the label exactly as printed.
 - Copy the amount exactly as printed, keeping a minus sign or parentheses when they are printed ("-$13.80", "($13.80)"). Do not add a minus sign that is not printed.
 - If only a rate is printed (for example "Discount 10%") and no amount, list the row with an empty amount. Never compute an amount from a rate.
@@ -330,8 +330,6 @@ Extract the individual line items from the invoice document:
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
 Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
-
-Rows printed only in the totals block go in \`extractedSummaryCharges\` (Part 5.7), not here.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

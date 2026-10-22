@@ -1264,10 +1264,10 @@ async function processInvoiceCluster(
         : undefined;
     }
 
-    const settledSummary = settlePlacedSummaryLines(finalLines, summaryCharges);
+    const settledSummary = settlePlacedSummaryLines(finalLines, summaryCharges, candidateLines);
     finalLines = settledSummary.lines;
     if (settledSummary.message) chargeCheck = [...chargeCheck, settledSummary.message];
-    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.codingNote].filter(Boolean).join(' ') || undefined;
+    const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.reviewNote].filter(Boolean).join(' ') || undefined;
 
     // Email budgets that total the amount due carry the header tax and freight in their lines, so the header
     // submits none; the notes above still show what the document printed.
