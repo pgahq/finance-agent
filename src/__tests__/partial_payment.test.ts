@@ -4,6 +4,7 @@ import {
   lineSubtotalReviewNote,
   lineSubtotalShortfallCents,
   planPartialPayment,
+  secondReadRowsNote,
   selectDepositPoLine,
   sumExtractedLineCents,
   type PartialPaymentInput,
@@ -82,6 +83,15 @@ describe('lineSubtotalShortfallCents and lineSubtotalReviewNote', () => {
     expect(lineSubtotalReviewNote([], subtotal)).toBeUndefined();
   });
 
+  it('tells AP which rows only a second read found', () => {
+    expect(secondReadRowsNote(null)).toBeUndefined();
+    expect(secondReadRowsNote([])).toBeUndefined();
+    expect(secondReadRowsNote([{ description: 'Fresh Cut Floral Centerpieces', totalPrice: '$4,050.00' }]))
+      .toBe('A second read of the document added a row the first read missed: "Fresh Cut Floral Centerpieces" $4,050.00. Check it against the PDF.');
+    const many = Array.from({ length: 7 }, (_, index) => ({ description: `Row ${index + 1}`, totalPrice: null }));
+    expect(secondReadRowsNote(many)).toBe('A second read of the document added 7 rows the first read missed: "Row 1", "Row 2", "Row 3", "Row 4", "Row 5", and 2 more. Check them against the PDF.');
+  });
+
   it('formats the Workday note', () => {
     expect(formatLineSubtotalNotes(undefined)).toBe('');
     expect(formatLineSubtotalNotes('x')).toBe('\n\nLine subtotal review: x');
@@ -92,12 +102,12 @@ describe('lineSubtotalShortfallCents and lineSubtotalReviewNote', () => {
 
 describe('selectDepositPoLine', () => {
   it('picks the one PO line that is the deposit amount', () => {
-    expect(selectDepositPoLine(poLines, 3442950)).toEqual({ status: 'matched', line: poLines[0] });
+    expect(selectDepositPoLine(poLines, 3442950)).toEqual({ status: 'matched', line: poLines[0], consumed: false });
   });
 
   it('reads a service line from its extended amount', () => {
     const service = [{ lineOrder: 1, purchaseOrderLineId: 'S1', extendedAmount: '34429.50' }] as any[];
-    expect(selectDepositPoLine(service, 3442950)).toEqual({ status: 'matched', line: service[0] });
+    expect(selectDepositPoLine(service, 3442950)).toEqual({ status: 'matched', line: service[0], consumed: false });
   });
 
   it('has no PO to pin when the PO has no lines', () => {
@@ -113,12 +123,12 @@ describe('selectDepositPoLine', () => {
 
   it('prefers the open line over a consumed one with the same amount', () => {
     const consumed = { ...poLines[0], purchaseOrderLineId: 'USED', lineOrder: 3, availableForInvoicing: false };
-    expect(selectDepositPoLine([consumed, poLines[0]], 3442950)).toEqual({ status: 'matched', line: poLines[0] });
+    expect(selectDepositPoLine([consumed, poLines[0]], 3442950)).toEqual({ status: 'matched', line: poLines[0], consumed: false });
   });
 
   it('keeps a lone consumed line so the link is dropped downstream', () => {
     const consumed = { ...poLines[0], availableForInvoicing: false };
-    expect(selectDepositPoLine([consumed, poLines[1]], 3442950)).toEqual({ status: 'matched', line: consumed });
+    expect(selectDepositPoLine([consumed, poLines[1]], 3442950)).toEqual({ status: 'matched', line: consumed, consumed: true });
   });
 });
 
@@ -150,6 +160,18 @@ describe('planPartialPayment', () => {
     expect(plan.applied).toBe(true);
     expect(plan.line?.totalPrice).toBe('$34,429.50');
     expect(plan.note).toContain('(27 printed lines)');
+  });
+
+  it('applies the deposit but tells AP when the only PO line with that amount is already fully invoiced', () => {
+    const consumed = [{ ...poLines[0], availableForInvoicing: false }, poLines[1]];
+    const plan = planPartialPayment(input({ poLines: consumed }))!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toEqual([consumed[0]]);
+    const warning = 'The PO line for this amount is already fully invoiced or closed; check whether this deposit was billed before approving.';
+    expect(plan.note).toContain(warning);
+    expect(plan.slackLines).toContain(warning);
+    expect(planPartialPayment(input())!.note).not.toContain('already fully invoiced');
   });
 
   it('applies a deposit with no PO and leaves the PO lines out', () => {

@@ -10,7 +10,7 @@ import {
   type ResolvedSupplierHint,
 } from './supplier_note_hints.js';
 import { invoiceMatchingPrompt, InvoiceMatchingSchema, type InvoiceEnrichmentResult, type InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
-import { extractInvoiceDocuments, mergeInvoiceEnrichment, type InvoiceAttachmentRole } from './invoice_ocr.js';
+import { extractInvoiceDocuments, mergeInvoiceEnrichment, type ExtractInvoiceDocumentsOptions, type InvoiceAttachmentRole } from './invoice_ocr.js';
 import { normalizePrintedDate } from '../prompts/invoice_ocr_prompt.js';
 import { dayMonthYearReading } from './due_date.js';
 import { withComposedLineDescriptions, type EmailBudgetSplitOutcome } from './invoice_lines.js';
@@ -62,12 +62,13 @@ export async function enrichInvoiceFromAttachments(
   emailContext?: InvoiceData['emailContext'],
   purchaseOrder?: PurchaseOrderEnrichmentContext,
   attachmentRoles?: InvoiceAttachmentRole[],
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  ocrOptions?: ExtractInvoiceDocumentsOptions
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
   try {
-    const ocr = await extractInvoiceDocuments(processedAttachments, attachmentRoles, abortSignal);
+    const ocr = await extractInvoiceDocuments(processedAttachments, attachmentRoles, abortSignal, ocrOptions);
 
     const company = existingCompany
       ? { name: existingCompany.descriptor, id: existingCompany.id }

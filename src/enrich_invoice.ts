@@ -62,7 +62,7 @@ import {
   type LineFallbacks,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment } from './lib/partial_payment.js';
+import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -203,7 +203,9 @@ async function processInvoice(
       invoiceData.emailContext,
       undefined,
       undefined,
-      abortSignal
+      abortSignal,
+      // An annotate-only run never submits lines, so a second read for missing rows would be wasted.
+      { retryMissingRows: canModifyInvoice }
     );
     debug('Enrichment result:', result);
 
@@ -397,7 +399,9 @@ async function processInvoice(
     const depositApplied = Boolean(depositPlan?.applied);
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
     if (depositApplied) chargeCheck = [];
-    const lineSubtotalNote = submitsLines ? lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal) : undefined;
+    const lineSubtotalNote = submitsLines
+      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal)].filter(Boolean).join(' ') || undefined
+      : undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
     const summaryCharges: PlacedSummaryCharges = !submitsLines || depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length

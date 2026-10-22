@@ -44,7 +44,11 @@ carry the Intercom conversation and S3 attachments, because enrich starts from
 Workday OCR email.
 
 `extractScoredFields` is the scored-field whitelist and `diffScoredFields` the
-line pairing (a reorder alone is not a change). Notes, assignee, tags,
+line pairing (a reorder alone is not a change). A deposit invoice (see
+`integrations-and-external-contracts`) is submitted as one deposit line instead
+of the printed rows, so a run of line-count or line-amount differences on
+invoices whose notes say `Deposit invoice:` reflects that choice, not an
+extraction miss; AP's booking method for deposits is still unconfirmed. Notes, assignee, tags,
 attachments, and Workday-computed tax are left out on purpose. `dueDate` is
 `Due_Date_Override`, set from the printed due date; it is absent when Workday
 derives the due date from payment terms, and it is a material field. On an

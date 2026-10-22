@@ -100,6 +100,8 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
 export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment'> & {
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
+  /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
+  extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;

@@ -293,7 +293,7 @@ describe('invoice OCR pass', () => {
       const subtotal = { label: 'Total Cost of Contracted Services', amount: '$38,255.00' };
       const fullRows = supin470584Rows.map(row => ({ ...row, descriptionCells: [] as string[] }));
       const productionRows = supin470584ProductionRows.map(row => ({ ...row, descriptionCells: [] as string[] }));
-      const responseWith = (rows: typeof fullRows): InvoiceOcrResponse => ({
+      const responseWith = (rows: Array<Omit<(typeof fullRows)[number], 'hasDiscount'> & { hasDiscount: boolean | null }>): InvoiceOcrResponse => ({
         ...ocrResponse,
         extractedLineSubtotal: subtotal,
         extractedPartialPayment: { label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' },
@@ -309,6 +309,12 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedInvoiceLines).toHaveLength(28);
         expect(result?.extractedLineSubtotal).toEqual(subtotal);
         expect(result?.extractedPartialPayment).toEqual({ label: 'Advance Deposit Due', percent: '90%', amount: '$34,429.50' });
+        expect(result?.extractedRowsAddedOnSecondRead).toEqual([{ description: 'Fresh Cut Floral Centerpieces', totalPrice: '$4,050.00' }]);
+        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', {
+          outcome: 'accepted',
+          firstRows: 27,
+          durationMs: expect.any(Number),
+        });
         const retryText = mockGetAiResponse.mock.calls[1][0].messages[0].content[0].text;
         expect(retryText).toContain('A first read returned 27 rows totaling $34,205.00');
         expect(retryText).toContain('"Total Cost of Contracted Services"');
@@ -323,6 +329,45 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+      });
+
+      it('keeps the first read when the second read changes a row to reach the printed total', async () => {
+        const tampered = productionRows.map((row, index) => (index === 0 ? { ...row, totalPrice: '$4,800.00' } : row));
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(tampered));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+        expect(result?.extractedInvoiceLines?.[0].totalPrice).toBe('$750.00');
+        expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
+        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+      });
+
+      it('keeps the first read when the second read drops a first-read row and adds others to reach the total', async () => {
+        const swapped = [...fullRows.slice(1), { ...fullRows[0], description: 'Something else', totalPrice: '$750.00' }];
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(swapped));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+      });
+
+      it('does not read again when a row prints a net-of-discount total', async () => {
+        const discounted = productionRows.map((row, index) => (index === 0 ? { ...row, hasDiscount: true } : row));
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(discounted));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not read again when the caller will not submit lines', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows));
+
+        const result = await extractInvoiceDocuments([pdf], undefined, undefined, { retryMissingRows: false });
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
         expect(result?.extractedInvoiceLines).toHaveLength(27);
       });
 
@@ -513,7 +558,7 @@ describe('invoice OCR pass', () => {
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
       });
-      expect(Object.keys(merged).sort()).toEqual(Object.keys({ ...InvoiceMatchingSchema.shape, ...ocrResult }).filter((key) => !key.startsWith('printed')).sort());
+      expect(Object.keys(merged).sort()).toEqual(Object.keys({ ...InvoiceMatchingSchema.shape, ...ocrResult, extractedRowsAddedOnSecondRead: null }).filter((key) => !key.startsWith('printed')).sort());
     });
 
     it('keeps the OCR payment terms name and drops terms the document does not print', () => {

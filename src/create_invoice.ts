@@ -81,7 +81,7 @@ import {
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment } from './lib/partial_payment.js';
+import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1098,7 +1098,7 @@ async function processInvoiceCluster(
         freightAmount: extractedFreightAmount,
         taxAmount: extractedTaxAmount,
         lines: extractedCandidateLines,
-        poLines: poClosedForInvoicing ? matchedPoLines : poLines,
+        poLines,
       });
     const depositApplied = Boolean(depositPlan?.applied);
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
@@ -1119,7 +1119,10 @@ async function processInvoiceCluster(
     if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
     // Rows are compared as read, before freight, tax, and repeated tables are taken out; a removed repeated table
     // would otherwise look like rows read twice.
-    const lineSubtotalNote = repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal);
+    const lineSubtotalNote = [
+      secondReadRowsNote(result.extractedRowsAddedOnSecondRead),
+      repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal),
+    ].filter(Boolean).join(' ') || undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
     const summaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length

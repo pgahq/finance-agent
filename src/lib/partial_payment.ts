@@ -128,7 +128,7 @@ function poLineAmountCents(line: PurchaseOrderLine): number | undefined {
 
 type DepositPoSelection =
   | { status: 'no_po' }
-  | { status: 'matched'; line: PurchaseOrderLine }
+  | { status: 'matched'; line: PurchaseOrderLine; consumed: boolean }
   | { status: 'unmatched'; reason: string };
 
 /** The one PO line whose amount is the deposit. An open line wins over a consumed one with the same amount. */
@@ -136,8 +136,8 @@ export function selectDepositPoLine(poLines: PurchaseOrderLine[] | undefined, de
   if (!poLines?.length) return { status: 'no_po' };
   const matching = poLines.filter(line => poLineAmountCents(line) === depositCents);
   const open = matching.filter(line => line.availableForInvoicing !== false);
-  if (open.length === 1) return { status: 'matched', line: open[0] };
-  if (matching.length === 1) return { status: 'matched', line: matching[0] };
+  if (open.length === 1) return { status: 'matched', line: open[0], consumed: false };
+  if (matching.length === 1) return { status: 'matched', line: matching[0], consumed: matching[0].availableForInvoicing === false };
   if (matching.length === 0) return { status: 'unmatched', reason: `no PO line is for ${centsDollars(depositCents)}` };
   return { status: 'unmatched', reason: `several PO lines are for ${centsDollars(depositCents)}` };
 }
@@ -206,18 +206,39 @@ export function planPartialPayment(input: PartialPaymentInput): PartialPaymentPl
   const share = percent != null ? `${formatPercent(percent)} of ${baseText}` : `part of ${baseText}`;
   const description = `${label} (${share})`;
   const lineCount = input.lines.length;
+  const consumedNote = selection.status === 'matched' && selection.consumed
+    ? ` The PO line for this amount is already fully invoiced or closed; check whether this deposit was billed before approving.`
+    : '';
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
   const amount = formatChargeDollars(depositCents / 100);
   return {
     applied: true,
     line: { description, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
     ...(selection.status === 'matched' ? { poLines: [selection.line] } : {}),
-    note: `"${label}" ${depositText} is ${share} for the contract total${lineText}. The invoice bills the deposit, so it was submitted as one ${depositText} line instead of the printed lines. The full line list is below and on the attached PDF.`,
+    note: `"${label}" ${depositText} is ${share} for the contract total${lineText}. The invoice bills the deposit, so it was submitted as one ${depositText} line instead of the printed lines. The full line list is below and on the attached PDF.${consumedNote}`,
     amountDueNote: `${percent != null ? `${formatPercent(percent)} deposit` : 'deposit'} of ${baseText}`,
     slackLines: [
       `${label}: ${depositText} is ${share}. Submitted as one deposit line, not the printed lines.`,
+      ...(consumedNote ? [`The PO line for this amount is already fully invoiced or closed; check whether this deposit was billed before approving.`] : []),
     ],
   };
+}
+
+export interface SecondReadRow {
+  description: string;
+  totalPrice: string | null;
+}
+
+const SECOND_READ_ROWS_LISTED = 5;
+
+/** Tells AP that rows came from a second read of the document, so the lines are checked against the PDF. */
+export function secondReadRowsNote(rows: SecondReadRow[] | null | undefined): string | undefined {
+  if (!rows?.length) return undefined;
+  const listed = rows.slice(0, SECOND_READ_ROWS_LISTED)
+    .map(row => `"${printable(row.description)}"${row.totalPrice ? ` ${printable(row.totalPrice)}` : ''}`)
+    .join(', ');
+  const more = rows.length > SECOND_READ_ROWS_LISTED ? `, and ${rows.length - SECOND_READ_ROWS_LISTED} more` : '';
+  return `A second read of the document added ${rows.length === 1 ? 'a row' : `${rows.length} rows`} the first read missed: ${listed}${more}. Check ${rows.length === 1 ? 'it' : 'them'} against the PDF.`;
 }
 
 export function formatPartialPaymentNotes(note: string | undefined): string {

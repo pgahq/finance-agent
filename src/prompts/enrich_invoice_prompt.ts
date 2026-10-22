@@ -134,6 +134,11 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
   }).nullable().optional().describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Null when the invoice bills its full total.'),
 
+  extractedRowsAddedOnSecondRead: z.array(z.object({
+    description: z.string(),
+    totalPrice: z.string().nullable(),
+  })).nullable().optional().describe('Rows that only a second read of the document found, set by code and never by a model. Null when the first read was used.'),
+
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
   extractedAccountNumber: z.string().nullable().describe('PGA\'s customer/sold-to account number at this supplier. Labels include "Account Number", "Account #", "Acct #", "AC #", "Customer Account", and "Sold To Number" when that sold-to value is the billed-account id. Null if not visible. Do NOT use bank, routing, ABA, ACH, or wire remittance account numbers (for example an Account Number next to an ABA Number in a FOR ELECTRONIC PAYMENTS block). Do not use GL, cost center, company code, or the supplier invoice number.'),

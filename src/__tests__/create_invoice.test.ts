@@ -2112,6 +2112,24 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([`Line subtotal review: ${review}`]);
     });
 
+    it('tells AP which rows a second OCR read added', async () => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(parsedPo());
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...depositEnrichment(supin470584Rows),
+        extractedPartialPayment: null,
+        extractedAmountDue: '$38,255.00',
+        extractedRowsAddedOnSecondRead: [{ description: 'Fresh Cut Floral Centerpieces', totalPrice: '$4,050.00' }],
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-second-read/invoice.pdf')] } as any);
+
+      const note = 'A second read of the document added a row the first read missed: "Fresh Cut Floral Centerpieces" $4,050.00. Check it against the PDF.';
+      expect(mocks.workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(`Line subtotal review: ${note}`);
+      expect(mocks.slack.notifyResult.mock.calls[0][3].lineReview).toEqual([`Line subtotal review: ${note}`]);
+    });
+
     it('submits the printed lines unchanged and says why when no PO line is the deposit', async () => {
       const { workday, invoiceLines, slack } = await run(supin470584Rows, parsedPo([supin470584PoLines[1]]));
 
