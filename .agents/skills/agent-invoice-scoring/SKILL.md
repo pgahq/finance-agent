@@ -242,11 +242,21 @@ also recorded as lost to the refresh, so judge accuracy from production scores.
 
 ## Eval cases
 
-`npm run export:eval-cases -- --out cases.jsonl [--since YYYY-MM-DD] [--include-messages]`
-writes each `submitted_edited` invoice as a JSON Lines case (`src/lib/eval_cases.ts`).
-The file is created owner-only and never overwritten; delete it after the eval
-run. `--include-messages` adds the Intercom conversation and needs
-`INTERCOM_ACCESS_TOKEN`. It needs a route to the Aurora cluster.
+`npm run export:eval-cases -- --out cases.jsonl [selectors]` writes AP's before/after corrections as JSON Lines cases
+(`src/lib/eval_cases.ts`, `src/eval/export_case.ts`), and `npm run eval:replay` re-runs the current pipeline on them and scores
+the result with this scorer. The runbook is `evals/README.md`; read it before changing either.
+
+- Cases include `submitted_clean` invoices (`--include-clean`) and carry `entryDiff` and `lateDiff`. Selecting by
+  `--invoice-number`, `--wid`, or `--suppliers-invoice-number` skips the outcome filter.
+- Documents are recorded as `{bucket, key, versionId, etag}` and read in place. Create keys come from the snapshot's `s3Keys`.
+  The enrich snapshot records none, so the exporter lists `attachments/{wid}/` versions and takes the newest at or before the
+  agent write.
+- The exporter and replay use `src/eval/readonly_db.ts`, not `getDatabaseConnection`: no schema setup, read-only session.
+- The replay scores `diffScoredFields(replay, expected)` with `scoreChanges` and `touchCount`, unchanged. Coding touches exclude
+  `memo`, `line.memo`, and `line.itemDescription` (`FORMATTING_FIELDS` in `src/eval/scoring.ts`); digest-style touches include
+  them. If you change which fields are material or convention here, check that file.
+- The file is created owner-only and never overwritten; keep it out of git and delete it after the run. It needs a route to
+  Aurora (SSM tunnel) and the read-only eval role.
 
 ## Gotchas
 

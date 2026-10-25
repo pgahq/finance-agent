@@ -8,6 +8,8 @@ This agent never submits an invoice for approval or payment. `buildSubmitInvoice
 
 A change that sets `Submit: true` or adds another submit path changes this and should be called out in its PR.
 
+The eval replay (`src/eval/`, `evals/README.md`) builds the same payload through `buildSubmitInvoiceData` but never sends it: a replay hook in `src/lib/workday.ts` records the request and blocks every other Workday call. It is installed only by `eval:replay`.
+
 ### Limits of the draft guarantee
 
 - Nothing in this code makes AP review a draft before AP submits it. Review is a team process, not something the agent enforces.
@@ -23,6 +25,7 @@ Detailed behavior (amount alignment, PO line matching, repair retries, Workday c
 - `data-and-state-changes`: Postgres schema, documents table, cached Workday reference IDs
 - `invoice-attachment-clustering`: attachment classification and resend dedupe
 - `infra-and-runtime`: `template.yml`, Lambda retries and timeouts
+- `evals/README.md`: exporting AP-corrected cases, replaying them, baselines, and the data-handling rules for real invoice data
 - `agent-invoice-scoring`: scoring finance-agent invoices against what AP saved
 
 ## Checks

@@ -46,6 +46,19 @@ Do not change these when the ask is "stop Lambda retries":
 
 Those run inside a single invocation.
 
+## Eval role and tunnel
+
+`EvalReadOnlyRole` (created only when `EvalRoleTrustedPrincipalArns` is set) is read-only access for the eval harness:
+`s3:GetObject` and `GetObjectVersion` on `new-invoices/*` and `attachments/*`, `s3:ListBucketVersions` for prefix
+`attachments/*`, `secretsmanager:GetSecretValue` on the database secret, and `ssm:StartSession` on one instance
+(`AuroraTunnelInstanceId`) and on `EvalAuroraPortForwardDocument`, a Session document that can forward only to the Aurora
+endpoint on 5432. The trust policy lists role ARNs from the parameter, never the account root. Keep it free of write, delete,
+put, Lambda invoke, and SSM parameter actions (`src/__tests__/template.test.ts` asserts this), and add no `Deny` statements or
+bucket policy: they could cut off the Lambda roles. `AuroraTunnelSecurityGroupId` adds one ingress rule on the database security
+group. All three parameters default to empty, so a deploy that does not pass them creates nothing. The role is not wired
+into `.circleci/config.yml`; passing the parameters there is a separate, deliberate change. The bucket has `DeletionPolicy` and
+`UpdateReplacePolicy: Retain`.
+
 ## Change checklist
 
 - Edit `Globals.Function` for settings that should apply to every function

@@ -242,6 +242,11 @@ npm test                    # Run all tests
 npm run test:coverage      # Run with coverage
 ```
 
+### Evals
+
+Manual evals (never in CI) live in `evals/`: `npm run export:eval-cases`, `npm run eval:replay`, and `npm run eval:suites`.
+See [evals/README.md](evals/README.md) for access, the data-handling rules, and how to compare against a baseline.
+
 ### Test Coverage
 
 - Jest coverage includes:

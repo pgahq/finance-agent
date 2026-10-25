@@ -280,6 +280,20 @@ containing only the original name/message.
 For attachment submissions, log redacted outbound headers and only the SOAP
 envelope `Header` element.
 
+## Eval replay (no Workday writes)
+
+`src/eval/` re-runs the create and enrich pipelines against saved cases (`evals/README.md`). `setWorkdayReplayHook` in
+`src/lib/workday.ts` is how it stays read-only: while a hook is set, `getAccessToken` throws, so no WQL, REST, or SOAP request
+leaves the process, and `buildResourceManagementClient` returns the hook's fake client. The fake answers `Get_Supplier_Invoices`
+and `Get_Purchase_Orders` from the case, records `Submit_Supplier_Invoice` requests instead of sending them, and refuses every
+other operation. `getSupplierInvoiceWithAttachments` returns the hook's attachments instead of reading Workday and uploading to
+S3, and `blockS3Writes` in `src/lib/s3.ts` makes `putBinaryToS3` and `putJsonToS3` throw. Deployed code never sets either.
+
+`buildSubmitInvoiceData` is still the only place `Submit` is set, always `false`. The replay maps the recorded request with
+`extractScoredFields`; a new request field that the scorer reads must keep the same name on the request and the read-back, or
+`src/eval/replay_payload.ts` needs a mapping and a test. Any new Workday call the pipeline makes during a run must be handled by
+`src/eval/replay_workday.ts` or the replay will report it as blocked.
+
 ## Attachment bytes
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
