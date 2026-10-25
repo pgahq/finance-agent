@@ -130,4 +130,75 @@ describe('SAM template', () => {
     expect(circleci).toMatch(/WORKDAY_UI_BASE_URL:\s*https:\/\/www\.myworkday\.com/);
   });
 
+  describe('eval harness access', () => {
+    const template = readFileSync(join(process.cwd(), 'template.yml'), 'utf8');
+    const block = (name: string) => template.split(`\n  ${name}:`)[1]?.split(/\n {2}(?:# |[A-Z][A-Za-z]+:)/)[0] ?? '';
+    const role = block('EvalReadOnlyRole');
+    const actions = [...role.matchAll(/^\s+- ([a-z0-9]+:[A-Za-z*]+)$/gm)].map((match) => match[1]);
+
+    it('creates the role only when trusted principals are given', () => {
+      expect(template).toMatch(/CreateEvalRole: !Not \[!Equals \[!Join \["", !Ref EvalRoleTrustedPrincipalArns\], ""\]\]/);
+      expect(role).toMatch(/Condition: CreateEvalRole/);
+      expect(globals).toMatch(/EvalRoleTrustedPrincipalArns:[\s\S]*?Default: ""/);
+    });
+
+    it('trusts only the listed role ARNs, never the account root', () => {
+      expect(role).toMatch(/Principal:\n\s+AWS: !Ref EvalRoleTrustedPrincipalArns\n\s+Action: sts:AssumeRole/);
+      expect(role).not.toMatch(/:root|Service:|AWS: "\*"/);
+      expect(role).toMatch(/MaxSessionDuration: 3600/);
+    });
+
+    it('grants only the reads the exporter and replay need', () => {
+      expect(actions.sort()).toEqual([
+        's3:GetObject',
+        's3:GetObjectVersion',
+        's3:ListBucketVersions',
+        'secretsmanager:GetSecretValue',
+        'ssm:ResumeSession',
+        'ssm:StartSession',
+        'ssm:TerminateSession',
+      ]);
+      expect(actions.filter((action) => /Put|Delete|Create|Update|Invoke|Write|Get(Parameter|Secret(?!Value))|^(dynamodb|lambda|ec2|iam|sts|kms):|\*/.test(action))).toEqual([]);
+      expect(role).not.toMatch(/dynamodb:|lambda:|ssm:GetParameter|Action:\s*"?\*/);
+    });
+
+    it('scopes objects to the two document prefixes and listing to the attachments prefix', () => {
+      expect(role).toContain('arn:aws:s3:::${FinanceAgentBucket}/new-invoices/*');
+      expect(role).toContain('arn:aws:s3:::${FinanceAgentBucket}/attachments/*');
+      expect(role).not.toMatch(/\$\{FinanceAgentBucket\}\/\*/);
+      expect(role).toMatch(/s3:prefix:\n\s+- "attachments\/\*"/);
+      expect(role).toMatch(/Resource: !Ref DatabaseSecret/);
+    });
+
+    it('opens a tunnel only to the Aurora endpoint through its own document, on one instance', () => {
+      expect(role).toContain('instance/${AuroraTunnelInstanceId}');
+      expect(role).toContain('document/${EvalAuroraPortForwardDocument}');
+      expect(role).not.toContain('AWS-StartPortForwardingSession');
+      const document = block('EvalAuroraPortForwardDocument');
+      expect(document).toMatch(/Condition: CreateEvalTunnelDocument/);
+      expect(document).toMatch(/host: !GetAtt FinanceAgentDatabase\.Endpoint\.Address/);
+      expect(document).toMatch(/portNumber: "5432"/);
+      expect(block('EvalTunnelDatabaseIngress')).toMatch(/SourceSecurityGroupId: !Ref AuroraTunnelSecurityGroupId/);
+      expect(block('EvalTunnelDatabaseIngress')).toMatch(/Condition: CreateEvalTunnelIngress/);
+    });
+
+    it('adds no Deny statement and no bucket policy, so the Lambda roles are unaffected', () => {
+      expect(template).not.toMatch(/Effect: Deny/);
+      expect(template).not.toContain('AWS::S3::BucketPolicy');
+    });
+
+    it('retains the document bucket on stack delete and replacement', () => {
+      const bucket = block('FinanceAgentBucket');
+      expect(bucket).toMatch(/DeletionPolicy: Retain/);
+      expect(bucket).toMatch(/UpdateReplacePolicy: Retain/);
+    });
+
+    it('deploys only from the development and main branches, so other branch pushes only run the build job', () => {
+      const workflow = circleci.split('workflows:')[1] ?? '';
+      expect(workflow.match(/only: (development|main)/g)).toEqual(['only: development', 'only: main']);
+      expect(workflow).not.toMatch(/ignore:|only: \/\.\*/);
+      expect(circleci).not.toMatch(/Eval|eval/);
+    });
+  });
+
 });

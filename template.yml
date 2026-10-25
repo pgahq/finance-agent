@@ -56,6 +56,29 @@ Parameters:
       UTC weekday (0-6, 6 = Saturday) when this Workday tenant is overwritten with production data, or
       "none". Scoring skips that day and closes invoices the refresh removed instead of treating them as deletions.
     Default: "none"
+  EvalRoleTrustedPrincipalArns:
+    Type: CommaDelimitedList
+    Description: >-
+      Role ARNs allowed to assume the read-only eval role, for example the IAM Identity Center permission-set roles
+      (arn:aws:iam::<account>:role/aws-reserved/sso.amazonaws.com/<region>/AWSReservedSSO_<PermissionSet>_<id>) of the
+      people who run the eval harness. Empty creates no eval role, which is the default.
+    Default: ""
+  AuroraTunnelInstanceId:
+    Type: String
+    Description: >-
+      EC2 instance ID of an existing SSM-managed host in the pgagent VPC that the eval role may open an SSM port-forward
+      session to. Empty gives the eval role no tunnel access.
+    Default: ""
+    AllowedPattern: "^(i-[0-9a-f]{8,17})?$"
+    ConstraintDescription: must be an EC2 instance ID such as i-0123456789abcdef0, or empty
+  AuroraTunnelSecurityGroupId:
+    Type: String
+    Description: >-
+      Security group of that tunnel host. When set, the database security group accepts port 5432 from it. Leave empty
+      if the host already reaches the database.
+    Default: ""
+    AllowedPattern: "^(sg-[0-9a-f]{8,17})?$"
+    ConstraintDescription: must be a security group ID such as sg-0123456789abcdef0, or empty
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -64,6 +87,12 @@ Parameters:
     Description: Slack channel ID the ScoreDigest audit posts go to (#notify-finance-agent-audit, or -dev)
     AllowedPattern: "^[CG][A-Z0-9]{8,}$"
     ConstraintDescription: must be a Slack channel ID such as C0C5W6B0G4V
+Conditions:
+  CreateEvalRole: !Not [!Equals [!Join ["", !Ref EvalRoleTrustedPrincipalArns], ""]]
+  HasTunnelInstance: !Not [!Equals [!Ref AuroraTunnelInstanceId, ""]]
+  HasTunnelSecurityGroup: !Not [!Equals [!Ref AuroraTunnelSecurityGroupId, ""]]
+  CreateEvalTunnelDocument: !And [!Condition CreateEvalRole, !Condition HasTunnelInstance]
+  CreateEvalTunnelIngress: !And [!Condition CreateEvalRole, !Condition HasTunnelSecurityGroup]
 Globals:
   Function:
     Runtime: nodejs24.x
@@ -108,6 +137,11 @@ Globals:
 Resources:
   FinanceAgentBucket:
     Type: AWS::S3::Bucket
+    # The bucket holds the supplier invoice PDFs that scoring and eval cases read in place. A stack delete or a
+    # replacement (a BucketName change) must not remove them; the fixed name means an orphaned bucket has to be
+    # deleted or imported by hand before the stack can be recreated.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub finance-agent-${AWS::AccountId}
       VersioningConfiguration:
@@ -318,6 +352,113 @@ Resources:
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
                 Resource: "*"
+
+  # Read-only role for the eval harness (npm run export:eval-cases, eval:replay). Created only when
+  # EvalRoleTrustedPrincipalArns is set. It reads source documents and the database credentials and, through one SSM
+  # port-forward document, reaches Aurora. It has no write, delete, or put action, no Lambda invoke, and no access to
+  # SSM parameters, so it cannot reach Workday or its credentials. The database secret holds the master user's
+  # password, so database writes are prevented by the harness's read-only connection, not by IAM; see evals/README.md.
+  EvalReadOnlyRole:
+    Type: AWS::IAM::Role
+    Condition: CreateEvalRole
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-eval-readonly"
+      Description: Read-only access for finance-agent eval runs. Assumed by named people only.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref EvalRoleTrustedPrincipalArns
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EvalReadOnlyPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadSourceDocuments
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}/new-invoices/*
+                  - !Sub arn:aws:s3:::${FinanceAgentBucket}/attachments/*
+              - Sid: ListEnrichAttachmentVersions
+                Effect: Allow
+                Action:
+                  - s3:ListBucketVersions
+                Resource: !Sub arn:aws:s3:::${FinanceAgentBucket}
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - "attachments/*"
+              - Sid: ReadDatabaseSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DatabaseSecret
+              - !If
+                - HasTunnelInstance
+                - Sid: OpenAuroraPortForward
+                  Effect: Allow
+                  Action:
+                    - ssm:StartSession
+                  Resource:
+                    - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${AuroraTunnelInstanceId}
+                    - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/${EvalAuroraPortForwardDocument}
+                - !Ref AWS::NoValue
+              - !If
+                - HasTunnelInstance
+                - Sid: EndOwnTunnelSession
+                  Effect: Allow
+                  Action:
+                    - ssm:TerminateSession
+                    - ssm:ResumeSession
+                  Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:session/*
+                  Condition:
+                    StringLike:
+                      ssm:resourceTag/aws:ssmmessages:session-id:
+                        - "${aws:userid}"
+                - !Ref AWS::NoValue
+
+  # A Session Manager document that can forward only to this stack's Aurora endpoint on 5432. The eval role may start
+  # this document and not AWS-StartPortForwardingSessionToRemoteHost, which would forward to any host the tunnel
+  # instance can reach.
+  EvalAuroraPortForwardDocument:
+    Type: AWS::SSM::Document
+    Condition: CreateEvalTunnelDocument
+    Properties:
+      DocumentType: Session
+      DocumentFormat: JSON
+      Name: !Sub "${AWS::StackName}-eval-aurora-port-forward"
+      Content:
+        schemaVersion: "1.0"
+        description: Port-forward to the finance-agent Aurora cluster for read-only eval runs.
+        sessionType: Port
+        parameters:
+          localPortNumber:
+            type: String
+            description: Local port to listen on.
+            default: "15432"
+            allowedPattern: "^[0-9]{4,5}$"
+        properties:
+          type: LocalPortForward
+          host: !GetAtt FinanceAgentDatabase.Endpoint.Address
+          portNumber: "5432"
+          localPortNumber: "{{ localPortNumber }}"
+
+  EvalTunnelDatabaseIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateEvalTunnelIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref AuroraTunnelSecurityGroupId
+      Description: Eval tunnel host to Aurora
 
   # RAG Documents - Query Retrieval
   RetrievalFunction:
@@ -859,6 +1000,22 @@ Resources:
             Input: '{"mode":"daily"}'
 
 Outputs:
+  EvalReadOnlyRoleArn:
+    Condition: CreateEvalRole
+    Description: Role the eval harness assumes (read-only; see evals/README.md)
+    Value: !GetAtt EvalReadOnlyRole.Arn
+  EvalDatabaseSecretArn:
+    Condition: CreateEvalRole
+    Description: ARN to put in DATABASE_SECRET_ARN for eval runs (the ARN is not a secret)
+    Value: !Ref DatabaseSecret
+  EvalBucketName:
+    Condition: CreateEvalRole
+    Description: Value for S3_BUCKET_NAME for eval runs
+    Value: !Ref FinanceAgentBucket
+  EvalAuroraPortForwardDocumentName:
+    Condition: CreateEvalTunnelDocument
+    Description: SSM document that forwards a local port to Aurora for eval runs
+    Value: !Ref EvalAuroraPortForwardDocument
   EnrichInvoiceApiUrl:
     Description: POST endpoint to trigger invoice enrichment
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/enrich-invoice"
