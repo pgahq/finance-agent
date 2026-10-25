@@ -388,6 +388,46 @@ export async function fetchConversationMessages(
   return messages;
 }
 
+/** The conversation as it stood at `asOfUnixSeconds`: parts written later are dropped. */
+export function conversationAsOf(conversation: IntercomConversationResponse, asOfUnixSeconds: number): IntercomConversationResponse {
+  return {
+    ...conversation,
+    conversation_parts: {
+      conversation_parts: (conversation.conversation_parts?.conversation_parts ?? [])
+        .filter((part) => part.created_at == null || part.created_at <= asOfUnixSeconds),
+    },
+  };
+}
+
+/**
+ * The email context the agent read for one document, rebuilt from the conversation as of the agent's write so that
+ * messages sent afterwards (AP's corrections, supplier replies) cannot leak into an eval replay.
+ * `fileName` picks the message that carried that attachment; without a match the source email's context is used.
+ */
+export async function fetchEmailContextAsOf(
+  config: IntercomConfig,
+  conversationId: string,
+  asOfUnixSeconds: number,
+  fileName?: string,
+): Promise<{ emailContext: EmailContext; conversationCreatedAt?: string }> {
+  const conversation = conversationAsOf(await fetchConversation(config, conversationId), asOfUnixSeconds);
+  const attachments = collectAttachments(conversation);
+  const chosen = (fileName ? attachments.find((attachment) => sanitizeFileName(attachment.name) === fileName) : undefined) ?? attachments[0];
+  const conversationParts = buildIntercomConversationPartsText(conversation);
+  const adminConversationParts = buildIntercomAdminPartsText(conversation);
+  const emailContext: EmailContext = chosen?.emailContext ?? {
+    emailFrom: conversation.source?.author?.email || undefined,
+    subject: conversation.source?.subject || undefined,
+    plainTextBody: buildIntercomPlainTextBody(conversation),
+    ...(conversationParts ? { conversationParts } : {}),
+    ...(adminConversationParts ? { adminConversationParts } : {}),
+  };
+  const conversationCreatedAt = conversation.created_at != null
+    ? intercomConversationCreatedAtToIsoDate(conversation.created_at)
+    : undefined;
+  return { emailContext, ...(conversationCreatedAt ? { conversationCreatedAt } : {}) };
+}
+
 export async function fetchConversationInvoiceData(
   config: IntercomConfig,
   conversationId: string,

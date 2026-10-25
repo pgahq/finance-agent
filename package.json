@@ -14,7 +14,9 @@
     "prebuild": "npm run clean",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "export:eval-cases": "npm run build && node dist/export-eval-cases.js"
+    "export:eval-cases": "npm run build && node dist/export-eval-cases.js",
+    "eval:suites": "npm run build && node dist/eval/suites.js",
+    "eval:replay": "npm run build && node dist/eval/replay.js"
   },
   "keywords": [
     "finance",

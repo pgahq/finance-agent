@@ -44,3 +44,10 @@ coverage/
 tmp/
 temp/
 
+
+# Eval harness: real cases, baselines, and reports hold supplier invoice data and must never be committed.
+# Keep them in eval-local/ or a private S3 prefix. See evals/README.md.
+eval-local/
+evals/.env.local
+evals/baselines/
+*.cases.jsonl
