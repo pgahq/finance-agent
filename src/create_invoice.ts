@@ -737,7 +737,7 @@ async function processNewInvoice(
   }, abortSignal);
 }
 
-interface ClusterInvoiceInput {
+export interface ClusterInvoiceInput {
   files: CreateInvoiceAttachment[];
   unrelated: ClassifiedAttachment[];
   emailContext?: InvoiceData['emailContext'];
@@ -760,7 +760,7 @@ interface ClusterInvoiceInput {
 }
 
 /** Set while processing a cluster so the wrapper can finish the plan row and release the invoice claim. */
-interface ClusterRunState {
+export interface ClusterRunState {
   invoiceClaim?: { conversationId: string; supplierInvoiceNumber: string; claimToken: string };
   /** Another run held the invoice claim, so this run did no Workday or registry work. */
   invoiceClaimContended?: boolean;
@@ -848,7 +848,7 @@ async function markInvoiceClusterDone(
   }
 }
 
-async function processInvoiceCluster(
+export async function processInvoiceCluster(
   context: ProcessingContext,
   input: ClusterInvoiceInput,
   run: ClusterRunState,

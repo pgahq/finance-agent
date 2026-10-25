@@ -65,11 +65,32 @@ export const getWorkdayConfig = (env: NodeJS.ProcessEnv): WorkdayConfig => ({
   refreshToken: env.WORKDAY_REFRESH_TOKEN!,
 });
 
+/**
+ * Offline replay hook for the eval harness (`src/eval/`). While one is installed no Workday request leaves the
+ * process: `getAccessToken` refuses, so WQL, REST, and every SOAP client fail closed, and the Resource Management
+ * client is the hook's fake, which serves reads from a saved case and records `Submit_Supplier_Invoice`
+ * requests instead of sending them. Deployed code never installs one.
+ */
+export interface WorkdayReplayHook {
+  /** Stands in for the Resource Management SOAP client. */
+  client: unknown;
+  /** Stands in for the Workday read plus S3 upload that `getSupplierInvoiceWithAttachments` does. */
+  loadInvoiceWithAttachments: (workdayID: string) => Promise<{ invoice: WorkdayInvoice; presignedAttachments: PresignedAttachment[] }>;
+}
+
+let replayHook: WorkdayReplayHook | undefined;
+
+export function setWorkdayReplayHook(hook: WorkdayReplayHook | undefined): void {
+  replayHook = hook;
+}
+
 const generateAuthToken = ({ clientId, clientSecret }: { clientId: string; clientSecret: string }): string => {
   return Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 };
 
 const getAccessToken = async (config: WorkdayConfig): Promise<string> => {
+  if (replayHook) throw new Error('Workday access is blocked while an eval replay is running');
+
   const authToken = generateAuthToken({ clientId: config.clientId, clientSecret: config.clientSecret });
   const headers = { Authorization: `Basic ${authToken}` };
 
@@ -438,6 +459,7 @@ const getResourceManagementEndpoint = (config: WorkdayConfig): string =>
 async function buildResourceManagementClient(
   context: { workdayConfig: WorkdayConfig }
 ): Promise<any> {
+  if (replayHook) return replayHook.client;
   const wsdlPath = path.join(process.cwd(), 'dist', 'soap', 'Resource_Management.wsdl');
 
   // Get OAuth access token
@@ -2455,6 +2477,7 @@ export async function getSupplierInvoiceWithAttachments(
   invoice: WorkdayInvoice;
   presignedAttachments: PresignedAttachment[];
 }> {
+  if (replayHook) return replayHook.loadInvoiceWithAttachments(workdayID);
   debug('Creating Workday SOAP client for invoice retrieval');
   debug(`WorkdayID: ${workdayID}`);
   debug(`Domain: ${context.workdayConfig.domain}`);

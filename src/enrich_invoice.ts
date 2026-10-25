@@ -161,7 +161,7 @@ export const processor = withProcessorHandler(async (context, invoices, _event, 
     await processInvoice(context, invoice as InvoiceData, abortSignal);
   }
 });
-async function processInvoice(
+export async function processInvoice(
   context: ProcessingContext,
   invoiceData: InvoiceData,
   abortSignal?: AbortSignal

@@ -5,6 +5,17 @@ import type { DownloadedAttachment, PresignedAttachment } from './types.js';
 
 const s3Client = new S3Client({});
 
+let writesBlocked = false;
+
+/** Makes every S3 write in this module throw; the eval replay sets it so a replay can only read. */
+export function blockS3Writes(): void {
+  writesBlocked = true;
+}
+
+function assertS3WritesAllowed(operation: string): void {
+  if (writesBlocked) throw new Error(`S3 writes are blocked in this process (${operation})`);
+}
+
 export interface S3Config {
   bucketName: string;
 }
@@ -28,6 +39,7 @@ export async function putBinaryToS3(
   contentType: string,
   metadata?: Record<string, string>
 ): Promise<void> {
+  assertS3WritesAllowed('putBinaryToS3');
   try {
     const command = new PutObjectCommand({
       Bucket: config.bucketName,
@@ -65,6 +77,7 @@ export async function getPresignedUrl(
 }
 
 export async function putJsonToS3(config: S3Config, key: string, data: unknown): Promise<void> {
+  assertS3WritesAllowed('putJsonToS3');
   const command = new PutObjectCommand({
     Bucket: config.bucketName,
     Key: key,
