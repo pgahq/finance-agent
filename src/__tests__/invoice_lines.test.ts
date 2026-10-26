@@ -2686,6 +2686,18 @@ describe('removeRepeatedLineTables', () => {
       expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Fees', amount: 'see attached' } }).removed).toEqual([]);
     });
 
+    it('removes nothing from dated tables when the printed line total disagrees with the tables', () => {
+      const rows = [...summaryRows, ...datedEntries];
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Total', amount: '$4,805.40' } })).toEqual({ lines: rows, removed: [] });
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Total', amount: 'see attached' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal }).keepReason).toBe('service_period');
+    });
+
+    it('removes nothing from LevelBlue-style tables when the printed line total disagrees', () => {
+      expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines, { lineSubtotal: { label: 'Total', amount: '$11,000.00' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines, { lineSubtotal: { label: 'Total', amount: '$5,500.00' } }).keepReason).toBe('purchase_order');
+    });
+
     it('removes nothing when the hours at a rate differ, even though both tables total the amount due', () => {
       const lines = [
         { description: 'Partner time', quantity: 2, unitCost: '100.00', totalPrice: null, tableNumber: 1 },
@@ -2701,13 +2713,49 @@ describe('removeRepeatedLineTables', () => {
       expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
     });
 
-    it.each([
-      ['a row has no hours', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, quantity: null, totalPrice: '$731.20' } : row))],
-      ['a row has no printed rate', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, unitCost: null, totalPrice: '$731.20' } : row))],
-      ['a printed total disagrees with hours times rate', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, totalPrice: '$731.20', quantity: 0.8, unitCost: '914.00' } : row))],
-    ])('removes nothing when %s', (_label, change) => {
-      const lines = [...summaryRows, ...change(undatedEntries)];
-      expect(removeRepeatedLineTables(lines, lawFirmCharges).removed).toEqual([]);
+    // Each table gets rows the per-row checks reject. Both tables then score the same share of clean rows, so the
+    // older tie-breaks stay tied and only hours_by_rate decides; the totals still match the amount due.
+    const withBadRows = (summaryBad: ExtractedInvoiceLine[], entryBad: ExtractedInvoiceLine[], amountDue: string) => ({
+      lines: [...summaryRows, ...summaryBad.map(row => ({ ...row, tableNumber: 1 })), ...undatedEntries, ...entryBad.map(row => ({ ...row, tableNumber: 2 }))],
+      charges: { amountDue },
+    });
+    const bad = (description: string, quantity: number | null, unitCost: string | null, totalPrice: string): ExtractedInvoiceLine =>
+      ({ description, quantity, unitCost, totalPrice, hasDiscount: false, tableNumber: 1 });
+
+    it('removes nothing when each table has a row with no hours', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Flat fee', null, '$10.00', '$11.00'), bad('Flat fee 2', null, '$10.00', '$11.00')],
+        [bad('Flat fee', null, '$10.00', '$7.00'), bad('Flat fee 2', null, '$10.00', '$7.00'), bad('Flat fee 3', null, '$10.00', '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when each table has a zero-hour row', () => {
+      const { lines, charges } = withBadRows(
+        [bad('No charge', 0, '$10.00', '$0.00'), bad('No charge 2', 0, '$10.00', '$0.00')],
+        [bad('No charge', 0, '$10.00', '$0.00'), bad('No charge 2', 0, '$10.00', '$0.00'), bad('No charge 3', 0, '$10.00', '$0.00')],
+        '$2,402.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when each table has a row with no printed rate', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Disbursement', 1, null, '$11.00'), bad('Disbursement 2', 1, null, '$11.00')],
+        [bad('Disbursement', 1, null, '$7.00'), bad('Disbursement 2', 1, null, '$7.00'), bad('Disbursement 3', 1, null, '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when a printed total is not hours times rate, though the hours at each rate match', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Copies', 1, '$10.00', '$11.00'), bad('Copies 2', 1, '$10.00', '$11.00')],
+        [bad('Copies', 0.5, '$10.00', '$7.00'), bad('Copies 2', 0.5, '$10.00', '$7.00'), bad('Copies 3', 1, '$10.00', '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
     });
 
     it('removes nothing when a rate is worked back from the total instead of printed', () => {
@@ -2722,9 +2770,10 @@ describe('removeRepeatedLineTables', () => {
       expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
     });
 
-    it('keeps the summary when the time entries carry no prices', () => {
-      const pricedOnly = summaryRows.map(row => ({ ...row, totalPrice: '$1.00' }));
-      expect(removeRepeatedLineTables(pricedOnly, lawFirmCharges)).toEqual({ lines: pricedOnly, removed: [] });
+    it('removes nothing when the time entries carry no prices, leaving the table total unknown', () => {
+      const unpriced = datedEntries.map(row => ({ ...row, unitCost: null }));
+      const lines = [...summaryRows, ...unpriced];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
     });
   });
 });

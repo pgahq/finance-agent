@@ -2110,7 +2110,7 @@ function hoursByRateSignature<T extends ExtractedInvoiceLine>(table: TableCandid
     const { quantity, unitCost: printedRate } = table.lines[index];
     const rate = printedRate ? parseExtractedUnitCost(printedRate) : undefined;
     if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return undefined;
-    if (rate == null || rate <= 0 || roundToDecimals(rate, AMOUNT_DECIMALS) !== rate) return undefined;
+    if (rate == null || roundToDecimals(rate, AMOUNT_DECIMALS) !== rate) return undefined;
     if (toCents(quantity * rate) !== table.lineCents[index]) return undefined;
     const key = rate.toFixed(AMOUNT_DECIMALS);
     hoursByRate.set(key, (hoursByRate.get(key) ?? 0) + Math.round(quantity * 1e6));
@@ -2119,14 +2119,11 @@ function hoursByRateSignature<T extends ExtractedInvoiceLine>(table: TableCandid
 }
 
 // A summary of timekeepers beside the dated time entries bills the same hours twice. Only when every table
-// itemizes identical hours at identical rates (and a printed line total agrees with them) does the table with
-// the most rows stand for the work; two real charges would not repeat each other's hours at each rate.
+// itemizes identical hours at identical rates does the table with the most rows stand for the work; two real charges would not repeat each other's hours at each rate.
 function keepItemizedTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
-  candidates: TableCandidate<T>[],
-  printedSubtotalAgrees: boolean
+  candidates: TableCandidate<T>[]
 ): TableCandidate<T> | undefined {
-  if (!printedSubtotalAgrees) return undefined;
   const signatures = tables.map(hoursByRateSignature);
   if (!signatures[0] || signatures.some(signature => signature !== signatures[0])) return undefined;
   const mostRows = Math.max(...candidates.map(table => table.lines.length));
@@ -2136,8 +2133,7 @@ function keepItemizedTable<T extends ExtractedInvoiceLine>(
 
 function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
-  purchaseOrderLines: PurchaseOrderLine[],
-  printedSubtotalAgrees: boolean
+  purchaseOrderLines: PurchaseOrderLine[]
 ): { table: TableCandidate<T>; reason: RepeatedTableKeepReason } | undefined {
   const openPoLines = purchaseOrderLines.filter(line => line.availableForInvoicing !== false && line.extendedAmount != null);
   const share = (table: TableCandidate<T>, matches: (line: T, cents: number) => boolean) =>
@@ -2163,7 +2159,7 @@ function keepTable<T extends ExtractedInvoiceLine>(
   }
   // When nothing else tells the tables apart, a misread amount due could make two real charges look
   // like a repeat, so a table is removed only on proof that the tables bill the same hours at the same rates.
-  const itemized = keepItemizedTable(tables, remaining, printedSubtotalAgrees);
+  const itemized = keepItemizedTable(tables, remaining);
   return itemized ? { table: itemized, reason: 'hours_by_rate' } : undefined;
 }
 
@@ -2205,6 +2201,13 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
   const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
   if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+  // A printed line total that is not the tables' total says the amount due or the tables were misread, or that
+  // both tables are real charges, so nothing is removed.
+  const printedSubtotalText = options.lineSubtotal?.amount?.trim();
+  if (printedSubtotalText) {
+    const printedSubtotal = parseCanonicalChargeAmount(printedSubtotalText);
+    if (printedSubtotal == null || toCents(printedSubtotal) !== expected.expectedCents) return unchanged;
+  }
   // Tables that state different months (a prior month's balance beside this month's charge) are
   // separate charges, not a restatement. A table that states no month, like an hourly table, can
   // still restate one that does.
@@ -2214,11 +2217,7 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
     .filter(months => months.length > 0);
   if (new Set(tableMonths).size > 1) return unchanged;
 
-  const printedSubtotalText = options.lineSubtotal?.amount?.trim();
-  const printedSubtotal = printedSubtotalText ? parseCanonicalChargeAmount(printedSubtotalText) : undefined;
-  const printedSubtotalAgrees = !printedSubtotalText
-    || (printedSubtotal != null && toCents(printedSubtotal) === expected.expectedCents);
-  const choice = keepTable(tables, purchaseOrderLines, printedSubtotalAgrees);
+  const choice = keepTable(tables, purchaseOrderLines);
   if (!choice) return unchanged;
   const { table: kept, reason } = choice;
   const keptLines = lines.filter(line => line.tableNumber === kept.tableNumber);

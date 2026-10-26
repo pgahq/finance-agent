@@ -942,11 +942,14 @@ describe('create_invoice', () => {
       );
     });
 
-    it('keeps every line and warns AP when the printed line total disagrees with the hours', async () => {
-      const undated = entryRows.map(row => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') }));
+    it.each([
+      ['dated', (row: { description: string }) => row],
+      ['undated', (row: { description: string }) => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') })],
+    ])('keeps every line and warns AP when the printed line total disagrees with %s time entries', async (_label, toEntry) => {
+      const entries = entryRows.map(toEntry);
       const { processor, workday, invoiceLines } = arrange(
-        [...summaryRows, ...undated],
-        { label: 'Total Legal Fees', amount: '$3,000.00' }
+        [...summaryRows, ...entries],
+        { label: 'Total Legal Fees', amount: '$4,805.40' }
       );
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
         lines: [...mergedEntries, { lineOrder: 4, description: 'Deutsch, Ben', quantity: 0.9, unitCost: 1828, extendedAmount: 1645.2 }],
@@ -956,7 +959,7 @@ describe('create_invoice', () => {
 
       await processor({ data: [attachmentRequest('new-invoices/req-law-firm-subtotal/invoice.pdf')] } as any);
 
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([...summaryRows, ...undated]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([...summaryRows, ...entries]);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
       expect(notes).not.toContain('Repeated line review');
       expect(notes).toContain('Line total review:');
