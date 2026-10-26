@@ -239,10 +239,36 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(rows).toHaveLength(90);
     const day = rows[rows.length - 1];
     expect(day).toMatchObject({
-      invoices: 6, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 1,
-      uncovered_manual: 1, uncovered_integration: 1, canceled: 1, coverage_share: '0.5000', coverage_share_without_integrations: '0.6000',
+      invoices: 5, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 1,
+      uncovered_manual: 1, automated: 1, canceled: 1, coverage_share: '0.6000',
     });
+    expect(day).not.toHaveProperty('coverage_share_without_integrations');
     expect(rows[0]).toMatchObject({ invoices: 0, coverage_share: null });
+  });
+
+  it('migrates coverage days stored before automated invoices left the share, once', async () => {
+    await pool.query('DROP TABLE IF EXISTS agent_invoice_coverage_daily');
+    await pool.query(`
+      CREATE TABLE agent_invoice_coverage_daily (
+        created_day DATE PRIMARY KEY, invoices INTEGER NOT NULL, agent_created INTEGER NOT NULL,
+        agent_enriched INTEGER NOT NULL, agent_notes_only INTEGER NOT NULL, uncovered_ocr INTEGER NOT NULL,
+        uncovered_manual INTEGER NOT NULL, uncovered_integration INTEGER NOT NULL, canceled INTEGER NOT NULL,
+        coverage_share NUMERIC(5, 4), coverage_share_without_integrations NUMERIC(5, 4),
+        computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+    await pool.query(`INSERT INTO agent_invoice_coverage_daily VALUES
+      ('2026-10-20', 312, 54, 0, 0, 0, 139, 119, 4, 0.1731, 0.2798, CURRENT_TIMESTAMP),
+      ('2026-10-21', 3, 0, 0, 0, 0, 0, 3, 0, 0, NULL, CURRENT_TIMESTAMP)`);
+
+    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
+    await Promise.all([ensureCoverageReporting(run), ensureCoverageReporting(run)]);
+    await ensureCoverageReporting(run);
+
+    const { rows } = await pool.query('SELECT * FROM agent_invoice_coverage_daily ORDER BY created_day');
+    expect(rows[0]).toMatchObject({ invoices: 193, automated: 119, uncovered_manual: 139, coverage_share: '0.2798' });
+    expect(rows[1]).toMatchObject({ invoices: 0, automated: 3, coverage_share: null });
+    expect(rows[0]).not.toHaveProperty('uncovered_integration');
+    expect(rows[0]).not.toHaveProperty('coverage_share_without_integrations');
   });
 
   it('stores when the daily audit post last went out', async () => {

@@ -57,7 +57,7 @@ export const CREATE_AGENT_INVOICE_TOUCH_DAILY_TABLE = `
 
 /**
  * Agent coverage, one row per Central day an invoice was created in Workday (see `invoice_coverage.ts`).
- * `invoices` is the share's denominator: PGA Corp invoices that were not canceled.
+ * `invoices` is the share's denominator: PGA Corp invoices that were not canceled and not `automated`.
  */
 export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_invoice_coverage_daily (
@@ -68,18 +68,45 @@ export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
     agent_notes_only INTEGER NOT NULL,
     uncovered_ocr INTEGER NOT NULL,
     uncovered_manual INTEGER NOT NULL,
-    uncovered_integration INTEGER NOT NULL,
+    automated INTEGER NOT NULL,
     canceled INTEGER NOT NULL,
     coverage_share NUMERIC(5, 4),
-    coverage_share_without_integrations NUMERIC(5, 4),
     computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+`;
+
+/**
+ * Rows written before integration invoices left the share counted them as `uncovered_integration` in the
+ * denominator. Their own counts give the new values (the old share without integrations is the new share), so old
+ * days are rewritten in place. The check runs first so a migrated table takes no lock; a concurrent cold start that
+ * loses the race skips it.
+ */
+export const MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED = `
+  DO $$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'agent_invoice_coverage_daily'
+         AND column_name = 'uncovered_integration'
+    ) THEN
+      UPDATE agent_invoice_coverage_daily
+         SET invoices = invoices - uncovered_integration,
+             coverage_share = coverage_share_without_integrations;
+      ALTER TABLE agent_invoice_coverage_daily RENAME COLUMN uncovered_integration TO automated;
+      ALTER TABLE agent_invoice_coverage_daily DROP COLUMN coverage_share_without_integrations;
+    END IF;
+  EXCEPTION WHEN undefined_column OR duplicate_column THEN
+    NULL;
+  END
+  $$;
 `;
 
 export async function ensureCoverageReporting(
   query: (sql: string, params?: unknown[]) => Promise<unknown>
 ): Promise<void> {
   await query(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE);
+  await query(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED);
 }
 
 /**
