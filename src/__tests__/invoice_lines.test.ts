@@ -2598,6 +2598,16 @@ describe('removeRepeatedLineTables', () => {
     ['Invoice 1234 Dec services', false],
     ['Retainer 03/01/2026 - 03/31/2026', true],
     ['Retainer 02/30/2026', false],
+    ['09/09/26 - Deutsch, Ben - Update meeting.', true],
+    ['9/9/26 call', true],
+    ['12/31/26 filing', true],
+    ['02/29/28 filing', true],
+    ['02/30/26 filing', false],
+    ['02/29/26 filing', false],
+    ['13/01/26 filing', false],
+    ['1/2 inch pipe', false],
+    ['Size 3/26', false],
+    ['Part 09/09/261', false],
     [`may${' '.repeat(40000)}x`, false],
   ])('reads "%s" as a stated month: %p', (description, states) => {
     const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
@@ -2623,6 +2633,99 @@ describe('removeRepeatedLineTables', () => {
       { description: 'Services Sep 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
     ];
     expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  describe('a timekeeper summary beside the time entries (SUPIN-471364)', () => {
+    const summaryRows = [
+      { description: 'Deutsch, Ben', quantity: 0.9, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+      { description: 'Oram, Jon', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+    ];
+    const datedEntries = [
+      { description: '09/09/26 - Deutsch, Ben - Update meeting.', quantity: 0.4, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/09/26 - Oram, Jon - Conf call with working group', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/15/26 - Deutsch, Ben - Review of partner add-on deck.', quantity: 0.5, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+    ];
+    const undatedEntries = datedEntries.map(row => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') }));
+    const lawFirmCharges = { amountDue: '$2,402.70' };
+    const lawFirmSubtotal = { label: 'Total Legal Fees', amount: '$2,402.70' };
+
+    it('keeps the dated time entries and drops the summary, as logged', () => {
+      const result = removeRepeatedLineTables([...summaryRows, ...datedEntries], lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal });
+      expect(result.lines).toEqual(datedEntries);
+      expect(result.removed).toEqual(summaryRows);
+      expect(result.keptTable).toBe(2);
+      expect(result.keepReason).toBe('service_period');
+      expect(result.note).toBe(
+        'Removed lines "Deutsch, Ben" ($1,645.20), "Oram, Jon" ($757.50) because table 1 repeats the charges in table 2: each table totals $2,402.70, the amount due less freight and tax. Kept table 2 because its lines state the service period.'
+      );
+    });
+
+    it('keeps the time entries when they carry no dates but itemize the same hours at the same rates', () => {
+      const result = removeRepeatedLineTables([...summaryRows, ...undatedEntries], lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal });
+      expect(result.lines).toEqual(undatedEntries);
+      expect(result.removed).toEqual(summaryRows);
+      expect(result.keepReason).toBe('hours_by_rate');
+      expect(result.note).toBe(
+        'Removed lines "Deutsch, Ben" ($1,645.20), "Oram, Jon" ($757.50) because table 1 repeats the charges in table 2: each table totals $2,402.70, the amount due less freight and tax. Kept table 2 because its rows itemize the same hours at the same rates as table 1.'
+      );
+    });
+
+    it('keeps the most itemized table whichever number it has', () => {
+      const entries = undatedEntries.map(row => ({ ...row, tableNumber: 1 }));
+      const summary = summaryRows.map(row => ({ ...row, tableNumber: 2 }));
+      const result = removeRepeatedLineTables([...entries, ...summary], lawFirmCharges);
+      expect(result.lines).toEqual(entries);
+      expect(result.keepReason).toBe('hours_by_rate');
+    });
+
+    it('needs no printed line total, but never overrides one that disagrees or cannot be read', () => {
+      const rows = [...summaryRows, ...undatedEntries];
+      expect(removeRepeatedLineTables(rows, lawFirmCharges).keepReason).toBe('hours_by_rate');
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: '', amount: '' } }).keepReason).toBe('hours_by_rate');
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Fees', amount: '$3,000.00' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Fees', amount: 'see attached' } }).removed).toEqual([]);
+    });
+
+    it('removes nothing when the hours at a rate differ, even though both tables total the amount due', () => {
+      const lines = [
+        { description: 'Partner time', quantity: 2, unitCost: '100.00', totalPrice: null, tableNumber: 1 },
+        { description: 'Associate time A', quantity: 0.5, unitCost: '200.00', totalPrice: null, tableNumber: 2 },
+        { description: 'Associate time B', quantity: 0.5, unitCost: '200.00', totalPrice: null, tableNumber: 2 },
+      ];
+      expect(removeRepeatedLineTables(lines, { amountDue: '$200.00' })).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when the tables have the same number of rows', () => {
+      const other = undatedEntries.slice(0, 2).map((row, index) => ({ ...row, quantity: [0.9, 0.3][index], tableNumber: 2 }));
+      const lines = [...summaryRows, ...other];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    it.each([
+      ['a row has no hours', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, quantity: null, totalPrice: '$731.20' } : row))],
+      ['a row has no printed rate', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, unitCost: null, totalPrice: '$731.20' } : row))],
+      ['a printed total disagrees with hours times rate', (rows: ExtractedInvoiceLine[]) => rows.map((row, index) => (index === 2 ? { ...row, totalPrice: '$731.20', quantity: 0.8, unitCost: '914.00' } : row))],
+    ])('removes nothing when %s', (_label, change) => {
+      const lines = [...summaryRows, ...change(undatedEntries)];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges).removed).toEqual([]);
+    });
+
+    it('removes nothing when a rate is worked back from the total instead of printed', () => {
+      const backComputed = (row: ExtractedInvoiceLine) => ({ ...row, unitCost: row.unitCost!.replace('.00', '.004') });
+      const lines = [...summaryRows, ...undatedEntries].map(backComputed);
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when the tables bill different months', () => {
+      const august = summaryRows.map(row => ({ ...row, description: `${row.description} - 08/14/26` }));
+      const lines = [...august, ...datedEntries];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    it('keeps the summary when the time entries carry no prices', () => {
+      const pricedOnly = summaryRows.map(row => ({ ...row, totalPrice: '$1.00' }));
+      expect(removeRepeatedLineTables(pricedOnly, lawFirmCharges)).toEqual({ lines: pricedOnly, removed: [] });
+    });
   });
 });
 
