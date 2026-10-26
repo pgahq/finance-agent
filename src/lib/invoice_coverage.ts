@@ -304,8 +304,8 @@ export interface CoverageSummary {
   totals: CoverageTotals;
   previous?: CoverageTotals;
   topSuppliers: Array<{ name: string; count: number }>;
-  /** Suppliers of the automated invoices, so AP can check that only integration feeds land there. */
-  automatedSuppliers: Array<{ name: string; count: number }>;
+  /** Suppliers of the automated invoices, each with one invoice to open, so AP can check only integration feeds land there. */
+  automatedSuppliers: Array<{ name: string; count: number; sample?: CoverageLink }>;
   /** AP teammates who keyed invoices by hand, with how many of their invoices went through the agent. */
   creators: CoverageCreator[];
   links: CoverageLink[];
@@ -315,6 +315,16 @@ export interface CoverageSummary {
 
 const byCountThenName = <T extends { name: string }>(count: (item: T) => number) => (a: T, b: T) =>
   count(b) - count(a) || a.name.localeCompare(b.name);
+
+function linkTo(invoice: ClassifiedInvoice): CoverageLink {
+  return {
+    workdayInvoiceWid: invoice.workdayInvoiceWid,
+    ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
+    ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
+    ...(invoice.creator ? { creator: invoice.creator } : {}),
+    category: invoice.category,
+  };
+}
 
 /** One invoice per creator in turn, biggest groups first, so a single teammate's batch does not fill the list. */
 function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): CoverageLink[] {
@@ -330,13 +340,7 @@ function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): Coverag
       if (links.length >= limit) break;
       const invoice = group[round];
       if (!invoice) continue;
-      links.push({
-        workdayInvoiceWid: invoice.workdayInvoiceWid,
-        ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
-        ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
-        ...(invoice.creator ? { creator: invoice.creator } : {}),
-        category: invoice.category,
-      });
+      links.push(linkTo(invoice));
     }
   }
   return links;
@@ -351,15 +355,14 @@ export function summarizeCoverage(
   const top = limits.top ?? COVERAGE_TOP_LIMIT;
   const uncovered = current.filter((invoice) => UNCOVERED_CATEGORIES.includes(invoice.category));
   const topBySupplier = (invoices: ClassifiedInvoice[]) => {
-    const suppliers = new Map<string, number>();
+    const suppliers = new Map<string, { name: string; count: number; first: ClassifiedInvoice }>();
     for (const invoice of invoices) {
       const name = invoice.supplier ?? '(no supplier)';
-      suppliers.set(name, (suppliers.get(name) ?? 0) + 1);
+      const entry = suppliers.get(name) ?? { name, count: 0, first: invoice };
+      entry.count += 1;
+      suppliers.set(name, entry);
     }
-    return [...suppliers.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort(byCountThenName((item) => item.count))
-      .slice(0, top);
+    return [...suppliers.values()].sort(byCountThenName((item) => item.count)).slice(0, top);
   };
 
   const creators = new Map<string, CoverageCreator>();
@@ -374,8 +377,9 @@ export function summarizeCoverage(
   return {
     totals: coverageTotals(current),
     ...(previous ? { previous: coverageTotals(previous) } : {}),
-    topSuppliers: topBySupplier(uncovered),
-    automatedSuppliers: topBySupplier(current.filter((invoice) => invoice.category === 'automated')),
+    topSuppliers: topBySupplier(uncovered).map(({ name, count }) => ({ name, count })),
+    automatedSuppliers: topBySupplier(current.filter((invoice) => invoice.category === 'automated'))
+      .map(({ name, count, first }) => ({ name, count, sample: linkTo(first) })),
     creators: [...creators.values()]
       .filter((creator) => creator.byHand > 0)
       .sort(byCountThenName((item) => item.byHand))

@@ -801,7 +801,8 @@ describe('agent coverage in the weekly digest', () => {
     expect(text).toContain('• 2 tagged by the agent (notes only)');
     expect(text).toContain('• 1 keyed by hand');
     expect(text).toContain('*1* automated invoice left out of the share (no person keyed them, such as supplier XML)');
-    expect(text).toContain('_Automated, by supplier_\n• `Amazon`: 1');
+    expect(text).toContain('_Automated, by supplier_\n• `Amazon`: 1, such as ');
+    expect(text.slice(text.indexOf('_Automated, by supplier_'))).toMatch(/• `Amazon`: 1, such as (<[^|]+\|i1>|`i1`)/);
     expect(text).not.toContain('Without integration invoices');
     expect(text).toContain('_1 canceled invoice not counted · 1612 invoices for other companies left out_');
     expect(text).toContain('*Where the agent was not used*');

@@ -227,7 +227,16 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   `ensureCoverageReporting` migrates them once, in place, from their own
   counts: `invoices` drops the integration count, `coverage_share` takes the
   old without-integrations share, and the columns become `automated` and are
-  dropped. A migrated table takes no lock at cold start.
+  dropped. A migrated table takes no lock at cold start; the migration locks
+  the table before rewriting it, so concurrent cold starts wait instead of
+  deadlocking.
+- Rolling back past that migration: the old code writes `uncovered_integration`
+  and `coverage_share_without_integrations`, which a migrated table no longer
+  has, so every weekly coverage refresh would fail. After the revert deploys,
+  run `DROP TABLE agent_invoice_coverage_daily` in each account, let a cold
+  start recreate it, and invoke `ScoreDigest` with `{"coverageBackfill":true}`
+  (an empty table rebuilds 90 days). Nothing in this repo reads the table
+  besides the refresh.
 - Rows older than 15 days keep the scope they were computed with. After
   changing `COVERAGE_COMPANY_WIDS`, invoke `ScoreDigest` with
   `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate

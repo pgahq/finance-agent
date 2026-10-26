@@ -89,6 +89,9 @@ describe('ensureCoverageReporting', () => {
 
   it('migrates a table from before automated invoices left the share only when the old column is there', () => {
     expect(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED).toContain("column_name = 'uncovered_integration'");
+    const sql = MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED;
+    expect(sql.indexOf('LOCK TABLE agent_invoice_coverage_daily IN ACCESS EXCLUSIVE MODE')).toBeGreaterThan(sql.indexOf('THEN'));
+    expect(sql.indexOf('LOCK TABLE')).toBeLessThan(sql.indexOf('UPDATE agent_invoice_coverage_daily'));
     expect(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED).toContain('SET invoices = invoices - uncovered_integration');
     expect(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED).toContain('coverage_share = coverage_share_without_integrations');
     expect(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED).toContain('RENAME COLUMN uncovered_integration TO automated');

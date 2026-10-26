@@ -259,14 +259,22 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     await pool.query(`INSERT INTO agent_invoice_coverage_daily VALUES
       ('2026-10-20', 312, 54, 0, 0, 0, 139, 119, 4, 0.1731, 0.2798, CURRENT_TIMESTAMP),
       ('2026-10-21', 3, 0, 0, 0, 0, 0, 3, 0, 0, NULL, CURRENT_TIMESTAMP)`);
+    await pool.query(`INSERT INTO agent_invoice_coverage_daily
+      SELECT DATE '2026-11-01' + n, 4, 1, 0, 0, 0, 1, 2, 0, 0.25, 0.5, CURRENT_TIMESTAMP FROM generate_series(0, 399) AS n`);
 
-    const run = (sql: string, params?: unknown[]) => pool.query(sql, params);
-    await Promise.all([ensureCoverageReporting(run), ensureCoverageReporting(run)]);
-    await ensureCoverageReporting(run);
+    const coldStarts = [await pool.connect(), await pool.connect()];
+    try {
+      await Promise.all(coldStarts.map((client) => ensureCoverageReporting((sql, params) => client.query(sql, params))));
+    } finally {
+      for (const client of coldStarts) client.release();
+    }
+    await ensureCoverageReporting((sql, params) => pool.query(sql, params));
 
     const { rows } = await pool.query('SELECT * FROM agent_invoice_coverage_daily ORDER BY created_day');
     expect(rows[0]).toMatchObject({ invoices: 193, automated: 119, uncovered_manual: 139, coverage_share: '0.2798' });
     expect(rows[1]).toMatchObject({ invoices: 0, automated: 3, coverage_share: null });
+    expect(rows).toHaveLength(402);
+    expect(rows[401]).toMatchObject({ invoices: 2, automated: 2, coverage_share: '0.5000' });
     expect(rows[0]).not.toHaveProperty('uncovered_integration');
     expect(rows[0]).not.toHaveProperty('coverage_share_without_integrations');
   });

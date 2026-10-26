@@ -194,7 +194,7 @@ describe('summarizeCoverage', () => {
     const onlyAutomated = summarizeCoverage(classifyCoverage([row({ workdayInvoiceWid: 'xml', supplier: 'Amazon' })], new Map()));
     expect(onlyAutomated.totals).toMatchObject({ invoices: 0, counts: expect.objectContaining({ automated: 1 }) });
     expect(onlyAutomated.totals.share).toBeUndefined();
-    expect(onlyAutomated.automatedSuppliers).toEqual([{ name: 'Amazon', count: 1 }]);
+    expect(onlyAutomated.automatedSuppliers).toMatchObject([{ name: 'Amazon', count: 1, sample: { workdayInvoiceWid: 'xml' } }]);
   });
 
   it('includes the previous period for comparison', () => {
@@ -207,7 +207,10 @@ describe('summarizeCoverage', () => {
     const summary = summarizeCoverage(invoices());
     expect(summary.topSuppliers.slice(0, 2)).toEqual([{ name: 'UPS', count: 2 }, { name: 'Payee 0', count: 1 }]);
     expect(summary.topSuppliers.map((supplier) => supplier.name)).not.toContain('Amazon');
-    expect(summary.automatedSuppliers).toEqual([{ name: 'Amazon', count: 2 }]);
+    expect(summary.automatedSuppliers).toEqual([{
+      name: 'Amazon', count: 2, sample: { workdayInvoiceWid: 'amazon-1', workdayInvoiceNumber: 'SUPIN-A1', supplier: 'Amazon', category: 'automated' },
+    }]);
+    expect(summary.topSuppliers[0]).not.toHaveProperty('sample');
     expect(summary.creators).toEqual([
       { name: 'Tiffany Mead [C]', agent: 0, byHand: 4 },
       { name: 'Lauren Schilling', agent: 0, byHand: 1 },

@@ -78,8 +78,8 @@ export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
 /**
  * Rows written before integration invoices left the share counted them as `uncovered_integration` in the
  * denominator. Their own counts give the new values (the old share without integrations is the new share), so old
- * days are rewritten in place. The check runs first so a migrated table takes no lock; a concurrent cold start that
- * loses the race skips it.
+ * days are rewritten in place. The check runs first so a migrated table takes no lock. The table lock comes before the
+ * rewrite so two cold starts cannot deadlock: the one that waits then finds the column gone and skips the migration.
  */
 export const MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED = `
   DO $$
@@ -90,6 +90,7 @@ export const MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED = `
          AND table_name = 'agent_invoice_coverage_daily'
          AND column_name = 'uncovered_integration'
     ) THEN
+      LOCK TABLE agent_invoice_coverage_daily IN ACCESS EXCLUSIVE MODE;
       UPDATE agent_invoice_coverage_daily
          SET invoices = invoices - uncovered_integration,
              coverage_share = coverage_share_without_integrations;

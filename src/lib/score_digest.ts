@@ -313,7 +313,8 @@ function coverageBlocks(coverage: CoverageSummary): SlackBlock[] {
     ? [
       `*${automated}* automated ${automated === 1 ? 'invoice' : 'invoices'} left out of the share (no person keyed them, such as supplier XML)`,
       ...(coverage.automatedSuppliers.length
-        ? ['_Automated, by supplier_', ...coverage.automatedSuppliers.map((supplier) => `• ${quote(supplier.name)}: ${supplier.count}`)]
+        ? ['_Automated, by supplier_', ...coverage.automatedSuppliers.map((supplier) =>
+          `• ${quote(supplier.name)}: ${supplier.count}${supplier.sample ? `, such as ${invoiceLink(supplier.sample)}` : ''}`)]
         : []),
     ]
     : [];
