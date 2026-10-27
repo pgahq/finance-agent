@@ -154,39 +154,50 @@ export function clusterMaxReceivedAt(files: Array<{ receivedAt?: number }>): num
   return max;
 }
 
-function normalizeFileNameForDedupe(fileName: string): string {
-  return fileName.trim().toLowerCase();
+function isSameBytes(file: ClassifiedAttachment, other: ClassifiedAttachment): boolean {
+  return Boolean(file.contentHash && file.contentHash === other.contentHash);
 }
 
-function isDuplicateDocument(file: ClassifiedAttachment, other: ClassifiedAttachment): boolean {
-  if (file.contentHash && file.contentHash === other.contentHash) return true;
-  return file.kind === other.kind
-    && normalizeFileNameForDedupe(file.fileName) === normalizeFileNameForDedupe(other.fileName);
+type ConversationOrder = Map<ClassifiedAttachment, number>;
+
+/** Latest means highest `receivedAt` (missing counts as oldest); a tie goes to the later conversation position. */
+function isLater(candidate: ClassifiedAttachment, file: ClassifiedAttachment, order: ConversationOrder): boolean {
+  const candidateAt = candidate.receivedAt ?? Number.NEGATIVE_INFINITY;
+  const fileAt = file.receivedAt ?? Number.NEGATIVE_INFINITY;
+  if (candidateAt !== fileAt) return candidateAt > fileAt;
+  return (order.get(candidate) ?? 0) > (order.get(file) ?? 0);
+}
+
+function splitLatestCopies(
+  files: ClassifiedAttachment[],
+  order: ConversationOrder
+): { kept: ClassifiedAttachment[]; superseded: ClassifiedAttachment[] } {
+  const kept: ClassifiedAttachment[] = [];
+  const superseded: ClassifiedAttachment[] = [];
+  for (const file of files) {
+    const hasLaterCopy = files.some((other) => other !== file && isSameBytes(file, other) && isLater(other, file, order));
+    (hasLaterCopy ? superseded : kept).push(file);
+  }
+  return { kept, superseded };
 }
 
 /**
  * Splits a cluster's non-primary files into those to keep and older copies of a document that also
- * appears later in the cluster. The primary is never dropped. Latest means highest `receivedAt`
- * (missing counts as oldest), ties going to the later position in the conversation.
+ * appears later in the cluster. The primary is never dropped. A file is superseded when:
+ * - it is an invoice PDF strictly older than the primary (same-message PDFs are pages, not versions), or
+ * - a later file in the cluster has identical bytes.
  */
-function dedupeClusterFiles(
-  cluster: InvoiceAttachmentCluster,
-  conversationOrder: Map<ClassifiedAttachment, number>
-): InvoiceAttachmentCluster {
-  const isLater = (candidate: ClassifiedAttachment, file: ClassifiedAttachment): boolean => {
-    const candidateAt = candidate.receivedAt ?? Number.NEGATIVE_INFINITY;
-    const fileAt = file.receivedAt ?? Number.NEGATIVE_INFINITY;
-    if (candidateAt !== fileAt) return candidateAt > fileAt;
-    return (conversationOrder.get(candidate) ?? 0) > (conversationOrder.get(file) ?? 0);
-  };
+function dedupeClusterFiles(cluster: InvoiceAttachmentCluster, order: ConversationOrder): InvoiceAttachmentCluster {
+  const primaryAt = cluster.primary.receivedAt ?? Number.NEGATIVE_INFINITY;
   const members = [cluster.primary, ...cluster.supporting];
   const supporting: ClassifiedAttachment[] = [];
   const superseded: ClassifiedAttachment[] = [];
   for (const file of cluster.supporting) {
-    // Older versions of the primary invoice are grouped into `supporting` by `clusterClassifiedAttachments`.
-    const olderInvoiceVersion = !cluster.fallback && file.kind === 'supplier_invoice';
+    const olderInvoiceVersion = !cluster.fallback
+      && file.kind === 'supplier_invoice'
+      && (file.receivedAt ?? Number.NEGATIVE_INFINITY) < primaryAt;
     const hasLaterCopy = members.some(
-      (other) => other !== file && isDuplicateDocument(file, other) && (other === cluster.primary || isLater(other, file))
+      (other) => other !== file && isSameBytes(file, other) && (other === cluster.primary || isLater(other, file, order))
     );
     (olderInvoiceVersion || hasLaterCopy ? superseded : supporting).push(file);
   }
@@ -202,7 +213,9 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
   if (invoices.length === 0) {
     if (classified.length === 0) return { clusters: [], unrelated: [] };
     // Confidence is confidence in the kind, so a confident "unrelated" file must not outrank a supporting one.
-    const ranked = [...classified].sort((a, b) => {
+    // Older byte-identical copies are set aside first so the primary is never an older copy.
+    const { kept, superseded } = splitLatestCopies(classified, conversationOrder);
+    const ranked = [...kept].sort((a, b) => {
       const aSupporting = a.kind === 'supporting' ? 0 : 1;
       const bSupporting = b.kind === 'supporting' ? 0 : 1;
       if (aSupporting !== bSupporting) return aSupporting - bSupporting;
@@ -210,7 +223,7 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     });
     const [primary, ...rest] = ranked;
     return {
-      clusters: [dedupeClusterFiles({ primary, supporting: rest, fallback: true }, conversationOrder)],
+      clusters: [{ primary, supporting: rest, ...(superseded.length ? { superseded } : {}), fallback: true }],
       unrelated: [],
     };
   }

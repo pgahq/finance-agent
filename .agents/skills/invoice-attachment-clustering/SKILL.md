@@ -124,17 +124,23 @@ so a dropped classification never creates an extra supplier invoice.
   assigned): when a document appears more than once in a cluster, only the
   latest copy is kept in `[primary, ...supporting]`; older copies go to
   `cluster.superseded` and are never loaded, enriched, or sent to Workday.
-  Two files are the same document when they are an older version of the
-  primary invoice (same invoice number and supplier), have identical bytes
-  (`contentHash`, SHA-256 computed in `parseAndClusterInvoiceAttachments`), or
-  share a case-insensitive file name and the same `kind`. Latest means highest
-  `receivedAt`, a missing time counts as oldest, and a tie goes to the later
-  conversation position. The primary is never dropped, and nothing is deduped
-  across clusters. Classification still sees every file, and the conversation
-  transcript still records the history. Because the dropped files are older
-  than a kept file, the cluster's max `receivedAt` and the resend watermark are
-  unchanged. The processor passes the dropped names as `supersededFileNames`
-  (also on fan-out records) for Slack and shadow output only.
+  A file is superseded when it is an invoice PDF of the primary's invoice
+  that is **strictly older** than the primary (same-message PDFs, or PDFs
+  with no `receivedAt`, are pages of one invoice and are all kept), or when a
+  later file in the cluster has identical bytes (`contentHash`, SHA-256
+  computed in `parseAndClusterInvoiceAttachments`). File names are never
+  used, since scanners and phones reuse names such as `scan.pdf`. Latest means
+  highest `receivedAt`, a missing time counts as oldest, and a tie goes to the
+  later conversation position. In a cluster with a primary invoice the
+  primary is never dropped; in the fallback cluster (no invoice found)
+  byte-identical copies are set aside first, so the fallback primary is
+  chosen from the latest copies only. Nothing is deduped across clusters.
+  Classification still sees every file, and the conversation transcript
+  still records the history. Dropped files are never newer than a kept
+  copy of the same document, so the cluster's max `receivedAt` and the resend
+  watermark are unchanged. The processor passes the dropped names as
+  `supersededFileNames` (also on fan-out records) for Slack and shadow output
+  only.
 - `supporting` joins by invoice number, else PO
   (`normalizePurchaseOrderNumber`), else supplier; with exactly one invoice
   cluster it attaches there. With several clusters and no key match it falls
