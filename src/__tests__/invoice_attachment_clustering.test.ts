@@ -94,6 +94,7 @@ describe('clusterClassifiedAttachments', () => {
     expect(clustering.clusters).toHaveLength(1);
     expect(clustering.clusters[0].primary.fileName).toBe('invoice-p1.pdf');
     expect(clustering.clusters[0].supporting.map((doc) => doc.fileName)).toEqual(['invoice-p2.pdf']);
+    expect(clustering.clusters[0].superseded).toBeUndefined();
     expect(clustering.clusters[0].fallback).toBe(false);
     expect(clustering.unrelated).toHaveLength(0);
   });
@@ -212,7 +213,8 @@ describe('clusterClassifiedAttachments', () => {
 
     expect(clustering.clusters).toHaveLength(1);
     expect(clustering.clusters[0].primary.fileName).toBe('v2.pdf');
-    expect(clustering.clusters[0].supporting.map((doc) => doc.fileName)).toEqual(['v1.pdf']);
+    expect(clustering.clusters[0].supporting).toEqual([]);
+    expect(clustering.clusters[0].superseded?.map((doc) => doc.fileName)).toEqual(['v1.pdf']);
   });
 
   it('treats files without receivedAt as older than timestamped versions', () => {
@@ -222,6 +224,98 @@ describe('clusterClassifiedAttachments', () => {
     ]);
 
     expect(clustering.clusters[0].primary.fileName).toBe('new.pdf');
+  });
+});
+
+describe('clusterClassifiedAttachments superseded copies', () => {
+  const names = (files?: ClassifiedAttachment[]) => (files ?? []).map((doc) => doc.fileName);
+
+  it('keeps same-message PDFs for one invoice, since they are pages and not versions', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'p1.pdf', invoiceNumber: 'INV-100', receivedAt: 200, contentHash: 'a' }),
+      classified({ fileName: 'p2.pdf', invoiceNumber: 'INV-100', receivedAt: 200, contentHash: 'b' }),
+      classified({ fileName: 'p3.pdf', invoiceNumber: 'INV-100', contentHash: 'c' }),
+      classified({ fileName: 'p4.pdf', invoiceNumber: 'INV-100', contentHash: 'd' }),
+    ]);
+
+    const [cluster] = clustering.clusters;
+    expect(cluster.primary.fileName).toBe('p1.pdf');
+    expect(names(cluster.supporting)).toEqual(['p2.pdf']);
+    expect(names(cluster.superseded)).toEqual(['p3.pdf', 'p4.pdf']);
+  });
+
+  it('keeps same-message PDFs when no file has a receivedAt', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'p1.pdf', invoiceNumber: 'INV-100', contentHash: 'a' }),
+      classified({ fileName: 'p2.pdf', invoiceNumber: 'INV-100', contentHash: 'b' }),
+    ]);
+
+    expect(names(clustering.clusters[0].supporting)).toEqual(['p2.pdf']);
+    expect(clustering.clusters[0].superseded).toBeUndefined();
+  });
+
+  it('drops older byte-identical supporting files, keeping the latest', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'invoice.pdf', invoiceNumber: 'INV-100' }),
+      classified({ fileName: 'slip-a.pdf', kind: 'supporting', receivedAt: 100, contentHash: 'abc' }),
+      classified({ fileName: 'slip-b.pdf', kind: 'supporting', receivedAt: 200, contentHash: 'abc' }),
+    ]);
+
+    const [cluster] = clustering.clusters;
+    expect(names(cluster.supporting)).toEqual(['slip-b.pdf']);
+    expect(names(cluster.superseded)).toEqual(['slip-a.pdf']);
+  });
+
+  it('keeps different files that reuse a generic name', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'invoice.pdf', invoiceNumber: 'INV-100' }),
+      classified({ fileName: 'scan.pdf', kind: 'supporting', receivedAt: 100, contentHash: 'a' }),
+      classified({ fileName: 'scan.pdf', kind: 'supporting', receivedAt: 200, contentHash: 'b' }),
+    ]);
+
+    const [cluster] = clustering.clusters;
+    expect(names(cluster.supporting)).toEqual(['scan.pdf', 'scan.pdf']);
+    expect(cluster.superseded).toBeUndefined();
+  });
+
+  it('lets the later position win a tie and treats a missing receivedAt as oldest', () => {
+    const tie = clusterClassifiedAttachments([
+      classified({ fileName: 'invoice.pdf', invoiceNumber: 'INV-100' }),
+      classified({ fileName: 'w9.pdf', kind: 'supporting', receivedAt: 100, s3Key: 'k/first', contentHash: 'w' }),
+      classified({ fileName: 'w9.pdf', kind: 'supporting', receivedAt: 100, s3Key: 'k/second', contentHash: 'w' }),
+    ]);
+    expect(tie.clusters[0].supporting.map((doc) => doc.s3Key)).toEqual(['k/second']);
+
+    const missing = clusterClassifiedAttachments([
+      classified({ fileName: 'invoice.pdf', invoiceNumber: 'INV-100' }),
+      classified({ fileName: 'w9.pdf', kind: 'supporting', receivedAt: 100, s3Key: 'k/timed', contentHash: 'w' }),
+      classified({ fileName: 'w9.pdf', kind: 'supporting', s3Key: 'k/untimed', contentHash: 'w' }),
+    ]);
+    expect(missing.clusters[0].supporting.map((doc) => doc.s3Key)).toEqual(['k/timed']);
+  });
+
+  it('does not dedupe across different invoice clusters', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'Invoice.pdf', invoiceNumber: 'INV-100', supplierName: 'Acme', s3Key: 'k/a', contentHash: 'same' }),
+      classified({ fileName: 'Invoice.pdf', invoiceNumber: 'INV-200', supplierName: 'Acme', s3Key: 'k/b', contentHash: 'same' }),
+    ]);
+
+    expect(clustering.clusters.map((cluster) => cluster.primary.s3Key)).toEqual(['k/a', 'k/b']);
+    expect(clustering.clusters.every((cluster) => cluster.superseded === undefined)).toBe(true);
+  });
+
+  it('picks the fallback primary from the latest copies, never an older duplicate', () => {
+    const clustering = clusterClassifiedAttachments([
+      classified({ fileName: 'w9.pdf', kind: 'supporting', confidence: 0.9, receivedAt: 100, s3Key: 'k/old', contentHash: 'w' }),
+      classified({ fileName: 'w9.pdf', kind: 'supporting', confidence: 0.5, receivedAt: 200, s3Key: 'k/new', contentHash: 'w' }),
+      classified({ fileName: 'other.pdf', kind: 'supporting', confidence: 0.6, receivedAt: 150, s3Key: 'k/other', contentHash: 'o' }),
+    ]);
+
+    const [cluster] = clustering.clusters;
+    expect(cluster.fallback).toBe(true);
+    expect(cluster.primary.s3Key).toBe('k/other');
+    expect(cluster.supporting.map((doc) => doc.s3Key)).toEqual(['k/new']);
+    expect(cluster.superseded?.map((doc) => doc.s3Key)).toEqual(['k/old']);
   });
 });
 
@@ -426,5 +520,41 @@ describe('parseAndClusterInvoiceAttachments', () => {
     expect(classified[0]).toMatchObject({ fileName: 'Invoice 1042.docx', kind: 'supporting', reason: 'Document could not be opened' });
     expect(classified[1]).toMatchObject({ fileName: 'invoice.pdf', kind: 'supplier_invoice' });
     expect(clustering.clusters.map((cluster) => cluster.primary.fileName)).toEqual(['invoice.pdf']);
+  });
+
+  it('hashes file bytes so identical resends under different names are superseded', async () => {
+    const doc = (fileNumber: number, fileName: string, kind: 'supplier_invoice' | 'supporting') => ({
+      fileNumber,
+      fileName,
+      kind,
+      supportingKind: null,
+      supplierName: 'Acme',
+      invoiceNumber: 'INV-100',
+      purchaseOrderNumber: null,
+      invoiceDate: null,
+      amountDue: null,
+      confidence: 0.9,
+      reason: 'test',
+    });
+    mockGetAiResponse.mockResolvedValueOnce({
+      documents: [doc(1, '1-invoice.pdf', 'supplier_invoice'), doc(2, '2-slip.pdf', 'supporting'), doc(3, '3-slip-copy.pdf', 'supporting')],
+    } as any);
+    const buffers: Record<string, Buffer> = {
+      'k/1': Buffer.from('invoice'),
+      'k/2': Buffer.from('slip'),
+      'k/3': Buffer.from('slip'),
+    };
+
+    const { clustering } = await parseAndClusterInvoiceAttachments(
+      [
+        { s3Key: 'k/1', fileName: 'invoice.pdf', contentType: 'application/pdf', receivedAt: 100 },
+        { s3Key: 'k/2', fileName: 'slip.pdf', contentType: 'application/pdf', receivedAt: 110 },
+        { s3Key: 'k/3', fileName: 'slip-copy.pdf', contentType: 'application/pdf', receivedAt: 120 },
+      ] as any,
+      async (key) => buffers[key]
+    );
+
+    expect(clustering.clusters[0].supporting.map((file) => file.fileName)).toEqual(['slip-copy.pdf']);
+    expect(clustering.clusters[0].superseded?.map((file) => file.fileName)).toEqual(['slip.pdf']);
   });
 });

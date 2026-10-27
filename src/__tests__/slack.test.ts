@@ -482,6 +482,18 @@ describe('notifyResult', () => {
     expect(texts).toContain('"unrelatedAttachments"');
   });
 
+  it('names older copies of a document that were not attached', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      supersededAttachments: ['invoice-old.pdf'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"supersededAttachments"');
+    expect(texts).toContain('invoice-old.pdf');
+  });
+
   it('names attached files the agent could not open', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

@@ -355,12 +355,16 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   const unrelatedFiles = Array.isArray(details.unrelatedAttachments)
     ? (details.unrelatedAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
     : [];
+  const supersededFiles = Array.isArray(details.supersededAttachments)
+    ? (details.supersededAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
+    : [];
   const slackDetails: Record<string, unknown> = {
     ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
     ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
+    ...(supersededFiles.length ? { supersededAttachments: supersededFiles } : {}),
     ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
       ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
       : {}),
