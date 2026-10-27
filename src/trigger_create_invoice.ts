@@ -143,10 +143,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       });
     }
     if (error instanceof IntercomNoAttachmentError) {
-      debug('No PDF Intercom attachment', { conversationId });
+      debug('No PDF, DOCX, or XLSX Intercom attachment', { conversationId });
       return jsonResponse(400, {
         status: 'error',
-        message: 'No PDF attachment found on conversation',
+        message: 'No PDF, DOCX, or XLSX attachment found on conversation',
         conversationId,
       });
     }

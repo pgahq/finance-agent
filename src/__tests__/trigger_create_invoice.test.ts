@@ -243,7 +243,7 @@ describe('trigger_create_invoice handler', () => {
     });
   });
 
-  it('returns 400 when the conversation has no PDF attachment', async () => {
+  it('returns 400 when the conversation has no PDF, DOCX, or XLSX attachment', async () => {
     mockFetchConversationInvoiceData.mockRejectedValue(new IntercomNoAttachmentError('1234567890'));
 
     const response = await handler(buildEvent());
@@ -253,7 +253,7 @@ describe('trigger_create_invoice handler', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         status: 'error',
-        message: 'No PDF attachment found on conversation',
+        message: 'No PDF, DOCX, or XLSX attachment found on conversation',
         conversationId: '1234567890',
       }),
     });
@@ -349,6 +349,38 @@ describe('trigger_create_invoice handler', () => {
         message: 'Failed to download conversation attachment',
         conversationId: '1234567890',
       }),
+    });
+  });
+
+  it('uploads Word and Excel attachments unchanged with their original names and content types', async () => {
+    const xlsxType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    mockFetchConversationInvoiceData.mockResolvedValue({
+      ...conversationInvoiceData,
+      attachments: [{
+        name: 'Timesheet.xlsx',
+        url: 'https://downloads.intercomcdn.com/timesheet.xlsx',
+        contentType: xlsxType,
+        emailContext: invoiceEmailContext,
+      }],
+    });
+    mockDownloadAttachment.mockResolvedValue(Buffer.from('xlsx-bytes'));
+
+    const response = await handler(buildEvent());
+
+    expect(response).toMatchObject({ statusCode: 202 });
+    expect(mockPutBinaryToS3).toHaveBeenNthCalledWith(
+      1,
+      { bucketName: 'test-bucket' },
+      'new-invoices/fixed-request-id/1-Timesheet.xlsx',
+      Buffer.from('xlsx-bytes'),
+      xlsxType,
+      expect.objectContaining({ 'original-filename': 'Timesheet.xlsx' }),
+    );
+    const payload = JSON.parse((InvokeCommand as unknown as jest.Mock).mock.calls[0][0].Payload);
+    expect(payload.data[0]).toMatchObject({
+      s3Key: 'new-invoices/fixed-request-id/1-Timesheet.xlsx',
+      fileName: 'Timesheet.xlsx',
+      contentType: xlsxType,
     });
   });
 

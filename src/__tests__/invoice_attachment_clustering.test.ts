@@ -9,6 +9,7 @@ import {
   supplierNamesAgree,
   type ClassifiedAttachment,
 } from '../lib/invoice_attachment_clustering.js';
+import ExcelJS from 'exceljs';
 import { getAiResponse } from '../lib/ai.js';
 
 jest.mock('../lib/ai.js', () => ({
@@ -354,5 +355,76 @@ describe('parseAndClusterInvoiceAttachments', () => {
     )).rejects.toThrow('stop after the AI call');
 
     expect(mockGetAiResponse.mock.calls[0][0].abortSignal).toBe(signal);
+  });
+
+  it('shows Word and Excel files to the classifier as PDFs and keeps numbering for unreadable ones', async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet('Hours').addRow(['Golfer', 'Hours']);
+    const buffers: Record<string, Buffer> = {
+      'new-invoices/req-1/1-invoice.pdf': Buffer.from('pdf'),
+      'new-invoices/req-1/2-hours.xlsx': Buffer.from(await workbook.xlsx.writeBuffer()),
+      'new-invoices/req-1/3-broken.docx': Buffer.from('not a docx'),
+    };
+    mockGetAiResponse.mockRejectedValueOnce(new Error('stop after the AI call'));
+
+    await expect(parseAndClusterInvoiceAttachments(
+      [
+        { s3Key: 'new-invoices/req-1/1-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+        { s3Key: 'new-invoices/req-1/2-hours.xlsx', fileName: 'hours.xlsx', contentType: 'application/octet-stream' },
+        {
+          s3Key: 'new-invoices/req-1/3-broken.docx',
+          fileName: 'broken.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+      ] as any,
+      async (key) => buffers[key]
+    )).rejects.toThrow('stop after the AI call');
+
+    const content = (mockGetAiResponse.mock.calls[mockGetAiResponse.mock.calls.length - 1][0].messages[0] as any).content.slice(1);
+    expect(content).toEqual([
+      { type: 'file', data: Buffer.from('pdf'), mediaType: 'application/pdf', filename: '1-invoice.pdf' },
+      { type: 'file', data: expect.any(Buffer), mediaType: 'application/pdf', filename: '2-hours.xlsx' },
+      { type: 'text', text: '3-broken.docx: unreadable document (could not be opened)' },
+    ]);
+    expect(content[1].data.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  it('never lets an unreadable Word file be the invoice, whatever the model guessed from its name', async () => {
+    const doc = (fileNumber: number, fileName: string, kind: 'supplier_invoice' | 'supporting') => ({
+      fileNumber,
+      fileName,
+      kind,
+      supportingKind: null,
+      supplierName: null,
+      invoiceNumber: null,
+      purchaseOrderNumber: null,
+      invoiceDate: null,
+      amountDue: null,
+      confidence: 0.9,
+      reason: 'guess',
+    });
+    mockGetAiResponse.mockResolvedValueOnce({
+      documents: [doc(1, '1-Invoice 1042.docx', 'supplier_invoice'), doc(2, '2-invoice.pdf', 'supplier_invoice')],
+    } as any);
+    const buffers: Record<string, Buffer> = {
+      'new-invoices/req-1/1-Invoice 1042.docx': Buffer.from('not a docx'),
+      'new-invoices/req-1/2-invoice.pdf': Buffer.from('pdf'),
+    };
+
+    const { clustering, classified } = await parseAndClusterInvoiceAttachments(
+      [
+        {
+          s3Key: 'new-invoices/req-1/1-Invoice 1042.docx',
+          fileName: 'Invoice 1042.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+        { s3Key: 'new-invoices/req-1/2-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+      ] as any,
+      async (key) => buffers[key]
+    );
+
+    expect(classified[0]).toMatchObject({ fileName: 'Invoice 1042.docx', kind: 'supporting', reason: 'Document could not be opened' });
+    expect(classified[1]).toMatchObject({ fileName: 'invoice.pdf', kind: 'supplier_invoice' });
+    expect(clustering.clusters.map((cluster) => cluster.primary.fileName)).toEqual(['invoice.pdf']);
   });
 });
