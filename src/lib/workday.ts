@@ -2031,8 +2031,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
       }],
     }),
 
+    // Workday lists attachments newest-first, so send them in reverse to show the vendor invoice first.
     ...(attachments?.length ? {
-      Attachment_Data: attachments.map((file) => ({
+      Attachment_Data: [...attachments].reverse().map((file) => ({
         $attributes: { Content_Type: file.contentType, Filename: file.fileName },
         File_Content: file.base64Content,
       })),
