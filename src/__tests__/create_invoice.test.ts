@@ -4123,6 +4123,43 @@ describe('create_invoice', () => {
         .toEqual(['second.pdf']);
     });
 
+    it('attaches only the latest copy of a repeated document and reports the older copies', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, clustering, lambda, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true', AWS_STACK_NAME: 'finance-agent' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const olderInvoice = { ...invoiceFile, s3Key: 'new-invoices/req-1/0-invoice-old.pdf', fileName: 'invoice-old.pdf', receivedAt: 100 };
+      const latestInvoice = { ...invoiceFile, receivedAt: 200 };
+      const secondInvoice = { s3Key: 'new-invoices/req-1/3-second.pdf', fileName: 'second.pdf', contentType: 'application/pdf', kind: 'supplier_invoice', confidence: 0.9 };
+      const olderSecond = { ...secondInvoice, s3Key: 'new-invoices/req-1/4-second-old.pdf', fileName: 'second-old.pdf' };
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [olderInvoice, latestInvoice, supportFile, secondInvoice, olderSecond],
+        clustering: {
+          clusters: [
+            { primary: latestInvoice, supporting: [supportFile], superseded: [olderInvoice], fallback: false },
+            { primary: secondInvoice, supporting: [], superseded: [olderSecond], fallback: false },
+          ],
+          unrelated: [],
+        },
+      });
+
+      await processor({
+        data: [{ conversationId: '1234567890', attachments: [olderInvoice, latestInvoice, supportFile, secondInvoice, olderSecond] }],
+      } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.attachments.map((att: { fileName: string }) => att.fileName)).toEqual(['invoice.pdf', 'support.pdf']);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ supersededAttachments: ['invoice-old.pdf'] }),
+      );
+      const fanOutPayload = JSON.parse(lambda.InvokeCommand.mock.calls[0][0].Payload);
+      expect(fanOutPayload.data[0].attachments.map((att: { fileName: string }) => att.fileName)).toEqual(['second.pdf']);
+      expect(fanOutPayload.data[0].supersededFileNames).toEqual(['second-old.pdf']);
+    });
+
     it('tells each cluster when another cluster got the newer file, so an unrelated reply skips the existing invoice', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, clustering, registry, lambda, loadEnv } = freshRequire();
       loadEnv.mockResolvedValue({
@@ -5098,6 +5135,35 @@ describe('create_invoice', () => {
         'success',
         expect.any(Number),
         expect.objectContaining({ updated: true, newAttachments: ['v2.pdf'] }),
+      );
+    });
+
+    it('replaces the attachments on update with the latest copy only and reports the superseded one', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice({ lastProcessedReceivedAt: 100 }));
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          conversationPdf: transcriptPdf,
+          supersededFileNames: ['v1.pdf'],
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.attachments.map((att: { fileName: string }) => att.fileName))
+        .toEqual(['v2.pdf', transcriptPdf.fileName]);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ updated: true, supersededAttachments: ['v1.pdf'] }),
       );
     });
 

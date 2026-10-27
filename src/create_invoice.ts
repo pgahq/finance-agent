@@ -412,6 +412,8 @@ export interface CreateInvoiceRequest {
   latestMessageAt?: number;
   /** Newest `receivedAt` among files grouped into the conversation's other invoice clusters. */
   otherClustersLatestReceivedAt?: number;
+  /** File names of older copies of a document left out of this cluster; reported in Slack only. */
+  supersededFileNames?: string[];
   /** Cluster plan row this fanned-out record processes (`invoice_cluster_plans`). */
   planId?: string;
   clusterIndex?: number;
@@ -461,7 +463,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'planId' | 'clusterIndex'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'supersededFileNames' | 'planId' | 'clusterIndex'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -501,6 +503,7 @@ async function reportShadowClustering(
       clusters: clustering.clusters.map((cluster) => ({
         invoice: describe(cluster.primary),
         ...(cluster.supporting.length ? { supporting: cluster.supporting.map(describe) } : {}),
+        ...(cluster.superseded?.length ? { superseded: cluster.superseded.map(describe) } : {}),
         ...(cluster.fallback ? { fallback: true } : {}),
       })),
       ...(clustering.unrelated.length ? { unrelated: clustering.unrelated.map(describe) } : {}),
@@ -544,6 +547,7 @@ async function processNewInvoice(
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    supersededFileNames,
     planId: requestPlanId,
     clusterIndex: requestClusterIndex,
   } = request;
@@ -569,6 +573,7 @@ async function processNewInvoice(
   if (clusteringEnabled && attachments?.length && !clustered) {
     let firstClusterFiles: CreateInvoiceAttachment[] = [];
     let firstOtherClustersLatestReceivedAt: number | undefined;
+    let firstSupersededFileNames: string[] = [];
     let unrelated: ClassifiedAttachment[] = [];
     const preloadedBuffers = new Map<string, Buffer>();
     const planId = randomUUID();
@@ -590,7 +595,9 @@ async function processNewInvoice(
       const clusterFiles = clustering.clusters.map((cluster) => [cluster.primary, ...cluster.supporting]);
       const othersLatest = (index: number) =>
         clusterMaxReceivedAt(clusterFiles.filter((_, other) => other !== index).flat());
+      const supersededNames = (index: number) => (clustering.clusters[index].superseded ?? []).map((file) => file.fileName);
       firstClusterFiles = clusterFiles[0];
+      firstSupersededFileNames = supersededNames(0);
       firstOtherClustersLatestReceivedAt = othersLatest(0);
       unrelated = clustering.unrelated;
       clusterCount = clusterFiles.length;
@@ -610,6 +617,7 @@ async function processNewInvoice(
             ...shared,
             planId,
             clusterIndex: offset + 1,
+            ...(supersededNames(offset + 1).length ? { supersededFileNames: supersededNames(offset + 1) } : {}),
             ...(otherLatest != null ? { otherClustersLatestReceivedAt: otherLatest } : {}),
           });
         })
@@ -650,6 +658,7 @@ async function processNewInvoice(
         conversationPdf,
         latestMessageAt,
         otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
+        supersededFileNames: firstSupersededFileNames,
         preloadedBuffers,
         plan: { planId, clusterIndex: 0 },
         startTime,
@@ -689,6 +698,7 @@ async function processNewInvoice(
       conversationPdf,
       latestMessageAt,
       otherClustersLatestReceivedAt,
+      supersededFileNames,
       ...(clustered && requestPlanId && requestClusterIndex != null
         ? { plan: { planId: requestPlanId, clusterIndex: requestClusterIndex } }
         : {}),
@@ -752,6 +762,7 @@ interface ClusterInvoiceInput {
   };
   latestMessageAt?: number;
   otherClustersLatestReceivedAt?: number;
+  supersededFileNames?: string[];
   /** Buffers already downloaded for classification in this invocation, keyed by S3 key. */
   preloadedBuffers?: Map<string, Buffer>;
   /** Cluster plan row this run owns; claimed before any work so a duplicate delivery does nothing. */
@@ -866,6 +877,7 @@ async function processInvoiceCluster(
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    supersededFileNames,
     preloadedBuffers,
     startTime,
     clustered,
@@ -1440,6 +1452,7 @@ async function processInvoiceCluster(
       },
       ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      ...(supersededFileNames?.length ? { supersededAttachments: supersededFileNames } : {}),
       ...(unreadableAttachments.length ? { unreadableAttachments } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
