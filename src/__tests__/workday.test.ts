@@ -871,12 +871,12 @@ describe('Workday utilities', () => {
       });
       expect(data.Attachment_Data).toEqual([
         {
-          $attributes: { Content_Type: 'application/pdf', Filename: 'v2.pdf' },
-          File_Content: 'djI=',
-        },
-        {
           $attributes: { Content_Type: 'application/pdf', Filename: 'w9.pdf' },
           File_Content: 'dzk=',
+        },
+        {
+          $attributes: { Content_Type: 'application/pdf', Filename: 'v2.pdf' },
+          File_Content: 'djI=',
         },
       ]);
     });
@@ -6381,7 +6381,7 @@ describe('Workday utilities', () => {
 
         expect(parsed?.documentNumber).toBe('PO-414007');
         expect(debug).toHaveBeenCalledWith(
-          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]],"splitQuantities":[null],"splitAmounts":[100]}]'
+          'PO PO-414007 line worktags: [{"line":"POL-1","worktags":["WID=wid-fund|Fund_ID=FUND-Championships"],"description":"Gas - 2 pass","splits":[["WID=wid-ops|Cost_Center_Reference_ID=CC-Operations"]],"splitQuantities":[null],"splitAmounts":[100]}]'
         );
         expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('PO response for PO-414007'));
       });
@@ -7121,7 +7121,7 @@ describe('Workday utilities', () => {
       expect(JSON.stringify(jest.mocked(debug).mock.calls)).not.toContain('base64-secret');
     });
 
-    it('embeds the vendor PDF, supporting docs, and conversation transcript as Attachment_Data', async () => {
+    it('sends Attachment_Data in reverse so Workday shows the vendor PDF first and the transcript last', async () => {
       const mockClient = mockSoapClient();
 
       let capturedRequest: any;
@@ -7144,19 +7144,19 @@ describe('Workday utilities', () => {
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Attachment_Data).toEqual([
         {
-          $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
-          File_Content: 'aW52b2ljZQ==',
+          $attributes: {
+            Content_Type: 'application/pdf',
+            Filename: 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
+          },
+          File_Content: 'dHJhbnNjcmlwdA==',
         },
         {
           $attributes: { Content_Type: 'application/pdf', Filename: 'packing-slip.pdf' },
           File_Content: 'cGFja2luZw==',
         },
         {
-          $attributes: {
-            Content_Type: 'application/pdf',
-            Filename: 'pga_corp_accounts_payable_2026_09_21_215476033237026.pdf',
-          },
-          File_Content: 'dHJhbnNjcmlwdA==',
+          $attributes: { Content_Type: 'application/pdf', Filename: 'invoice.pdf' },
+          File_Content: 'aW52b2ljZQ==',
         },
       ]);
     });

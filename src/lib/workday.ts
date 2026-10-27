@@ -2031,8 +2031,9 @@ function buildSubmitInvoiceData(options: buildSubmitInvoiceDataOptions, diagnost
       }],
     }),
 
+    // Workday lists attachments newest-first, so send them in reverse to show the vendor invoice first.
     ...(attachments?.length ? {
-      Attachment_Data: attachments.map((file) => ({
+      Attachment_Data: [...attachments].reverse().map((file) => ({
         $attributes: { Content_Type: file.contentType, Filename: file.fileName },
         File_Content: file.base64Content,
       })),
@@ -3327,6 +3328,8 @@ function summarizePurchaseOrderLineWorktags(lines: PurchaseOrderLine[]): unknown
   return lines.map(line => ({
     line: line.purchaseOrderLineId,
     worktags: ([] as any[]).concat(line.lineLevelWorktagsReference ?? line.worktagsReference ?? []).map(formatWorktagForLog),
+    ...(line.description ? { description: line.description.slice(0, 80) } : {}),
+    ...(line.extendedAmount !== undefined && { extendedAmount: line.extendedAmount }),
     ...(line.quantity !== undefined && { quantity: line.quantity }),
     ...(line.unitCost !== undefined && { unitCost: line.unitCost }),
     ...(line.shipToAddressId ? { shipTo: line.shipToAddressId } : {}),

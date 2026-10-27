@@ -20,6 +20,7 @@ export interface ExtractedInvoiceLine {
   totalPrice?: string | null;
   hasDiscount?: boolean | null;
   tableNumber?: number | null;
+  sectionLabel?: string | null;
 }
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';

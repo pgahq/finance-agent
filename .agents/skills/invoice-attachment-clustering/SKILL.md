@@ -84,6 +84,8 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
    (invoice first), with the Intercom conversation transcript appended last.
+   `buildSubmitInvoiceData` reverses the list in `Attachment_Data` because Workday
+   lists attachments newest-first, so the invoice is shown first.
    Slack success lists cluster filenames plus kinds; errors list filenames.
 
 ## Taxonomy (per file)
