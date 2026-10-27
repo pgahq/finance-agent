@@ -38,7 +38,7 @@ This is a new Intercom-only contract. Direct-upload bodies
 Flow:
 
 1. `GET {INTERCOM_API_BASE_URL}/conversations/{id}?display_as=plaintext` with `INTERCOM_ACCESS_TOKEN` and `Intercom-Version: 2.14`
-2. Collect every `application/pdf` attachment from `source` + conversation parts (non-PDF only → 400)
+2. Collect every `application/pdf`, `.docx`, and `.xlsx` attachment from `source` + conversation parts (a Word or Excel file is detected by its OOXML MIME type, or by extension when Intercom sends `application/octet-stream`; legacy `.doc`/`.xls`, images, and other types are ignored, and a conversation with none of the accepted types → 400)
 3. Download signed CDN URLs as **raw binary** immediately (URLs expire ~30 minutes; host allowlisted to Intercom CDN; combined max 20MB)
 4. Upload each file to S3 (`new-invoices/{requestId}/{index}-{sanitizedFileName}`)
 5. Build a text transcript PDF of the same conversation and upload it once under `new-invoices/{requestId}/`. The file name is `pga_corp_accounts_payable_<YYYY>_<MM>_<DD>_<conversationId>.pdf`, using `created_at` in America/Chicago (current Central date if `created_at` is missing). The PDF includes the source email (subject with HTML stripped, then body) and `conversation_parts` whose `part_type` is `comment` or `note` and whose body is non-empty, in API order. Omit Intercom **Message delivery failed** bounce notes (body contains that phrase, or an SMTP diagnostic such as `smtp;550 5.7.129`). Assignments, attribute updates, custom actions, and close events are omitted. Notes are labeled `Note`. The header is one title: `Conversation with {custom_attributes.Brand}` when Brand is set, otherwise the conversation `title`, otherwise `Conversation`. If rendering or this upload fails, return 500 and do not invoke processors.
@@ -284,7 +284,8 @@ envelope `Header` element.
 
 - Intercom CDN → binary `Buffer` → `putBinaryToS3`
 - Download URL must be `https` on `intercomcdn.com` / `*.intercomcdn.com` or `intercom-attachments-<n>.com` / `*.intercom-attachments-<n>.com` (SSRF allowlist); `fetch` uses `redirect: 'error'` so redirects cannot leave that host
-- Only `application/pdf` attachments are accepted; missing PDF → 400
+- Only `application/pdf`, `.docx`, and `.xlsx` attachments are accepted; none of those → 400 `No PDF, DOCX, or XLSX attachment found on conversation`
+- **Word and Excel files are stored and attached to Workday as the original file** (same name and content type; `Attachment_Data` carries the original bytes). They are converted to PDF in memory only where the AI model reads documents: `extractInvoiceDocuments` (`src/lib/invoice_ocr.ts`) and `classifyInvoiceAttachments` (`src/lib/invoice_attachment_clustering.ts`), both through `toModelDocument` in `src/lib/office_to_pdf.ts`. The converted PDF is never stored. `convertOfficeToPdf` is a text-and-table rendering (mammoth for docx, exceljs for xlsx, pdfkit for output; hidden sheets skipped, long sheets paginated with repeated headers, wide sheets split into column groups, row caps logged), not a faithful print. A file that cannot be opened (corrupt or password-protected) is skipped for model input with a log line: OCR ignores it, and classification receives `N-name: unreadable document` in its place so file numbers stay stable. It is still attached to Workday
 - Max individual and combined download size is 20MB; downloads use at most four
   concurrent requests; trigger Lambda timeout is 30s with 1024 MB memory
 - Attachment names are sanitized to a basename before the S3 key

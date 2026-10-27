@@ -166,6 +166,7 @@ src/
 - Saves original attachments to S3 for audit/debug access
 - Sends PDF attachments to the AI model as `application/pdf` file inputs
 - Sends image attachments to the AI model as image inputs
+- Reads Word (`.docx`) and Excel (`.xlsx`) attachments from Intercom by converting them to PDF in memory for the AI model only; the original file is stored in S3 and attached to the Workday invoice unchanged
 - Generates presigned URLs for document access
 
 ### RAG (Retrieval-Augmented Generation)
@@ -492,6 +493,9 @@ sequenceDiagram
 
     alt PDF Attachment
         Processor->>AI: Send PDF buffer as file input<br/>(application/pdf)
+    else Word or Excel Attachment
+        Processor->>Processor: Convert to PDF in memory
+        Processor->>AI: Send converted PDF as file input<br/>(original stays in S3 and Workday)
     else Image Attachment
         Processor->>AI: Send image URL as image input
     else Other Attachment

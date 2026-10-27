@@ -571,6 +571,26 @@ describe('create_invoice', () => {
     db.query.mockResolvedValue([]);
   });
 
+  it('attaches an Excel upload to Workday as the original file and hands enrichment the same bytes', async () => {
+    const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+    invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+    const xlsxType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    await processor({
+      data: [{ s3Key: 'new-invoices/req-xlsx/1-Timesheet.xlsx', fileName: 'Timesheet.xlsx', contentType: xlsxType }],
+    } as any);
+
+    const enrichmentAttachments = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1];
+    expect(enrichmentAttachments[0]).toMatchObject({ fileName: 'Timesheet.xlsx', contentType: xlsxType });
+    const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+    expect(submitArgs.attachments).toEqual([{
+      fileName: 'Timesheet.xlsx',
+      contentType: xlsxType,
+      base64Content: Buffer.from('fake-pdf-content').toString('base64'),
+    }]);
+  });
+
   it('attaches the conversation transcript without sending it to enrichment', async () => {
     const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);

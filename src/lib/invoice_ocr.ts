@@ -3,6 +3,7 @@ import { getAiResponse } from './ai.js';
 import { getOcrModel } from './models.js';
 import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type InvoiceOcrResponse, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
+import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
 import { lineSubtotalShortfallCents, sumExtractedLineCents } from './partial_payment.js';
 import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
@@ -41,6 +42,17 @@ export function attachmentContentParts(processedAttachments: PresignedAttachment
   return parts;
 }
 
+// Word and Excel attachments are read as PDFs converted in memory; the stored original is unchanged.
+// One that cannot be converted is skipped so the rest of the invoice can still be read.
+async function convertOfficeAttachmentsForModel(attachments: PresignedAttachment[]): Promise<PresignedAttachment[]> {
+  const converted = await Promise.all(attachments.map(async (att) => {
+    if (!att.buffer || !officeKind(att.fileName, att.contentType)) return att;
+    const doc = await toModelDocument({ fileName: att.fileName, contentType: att.contentType, buffer: att.buffer });
+    return doc ? { ...att, contentType: doc.contentType, buffer: doc.buffer } : undefined;
+  }));
+  return converted.filter((att): att is PresignedAttachment => att !== undefined);
+}
+
 export interface ExtractInvoiceDocumentsOptions {
   /** False when the caller will not submit lines, so a second read to find missing rows would be wasted. Default true. */
   retryMissingRows?: boolean;
@@ -53,7 +65,8 @@ export async function extractInvoiceDocuments(
   abortSignal?: AbortSignal,
   options: ExtractInvoiceDocumentsOptions = {}
 ): Promise<InvoiceOcrResult | undefined> {
-  const parts = attachmentContentParts(processedAttachments);
+  const readable = await convertOfficeAttachmentsForModel(processedAttachments);
+  const parts = attachmentContentParts(readable);
   if (parts.length === 0) {
     debug('Invoice OCR skipped: no PDF or image attachments');
     return undefined;

@@ -1,3 +1,4 @@
+import ExcelJS from 'exceljs';
 import { enrichInvoiceFromAttachments } from '../lib/invoice_enrichment.js';
 import { extractInvoiceDocuments, mergeInvoiceEnrichment } from '../lib/invoice_ocr.js';
 import { DEFAULT_OCR_MODEL_ID, getOcrModel } from '../lib/models.js';
@@ -280,6 +281,59 @@ describe('invoice OCR pass', () => {
         documentCount: 2,
         documentBytes: pdfBuffer.byteLength * 2,
       });
+    });
+
+    it('reads Word and Excel attachments as PDFs converted in memory and leaves the stored attachment alone', async () => {
+      mockGetAiResponse.mockResolvedValueOnce(ocrResponse);
+      const xlsxType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('Hours').addRow(['Golfer', 'Hours']);
+      const xlsxBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
+      const sheet: PresignedAttachment = {
+        ...pdf,
+        id: 'xlsx-1',
+        fileName: 'timesheet.xlsx',
+        contentType: xlsxType,
+        buffer: xlsxBuffer,
+      };
+
+      await extractInvoiceDocuments([pdf, sheet]);
+
+      const [call] = mockGetAiResponse.mock.calls[0];
+      const files = call.messages[0].content.filter((part: { type: string }) => part.type === 'file');
+      expect(files).toEqual([
+        { type: 'file', data: pdfBuffer, mediaType: 'application/pdf', filename: 'invoice.pdf' },
+        { type: 'file', data: expect.any(Buffer), mediaType: 'application/pdf', filename: 'timesheet.xlsx' },
+      ]);
+      expect(files[1].data.subarray(0, 5).toString()).toBe('%PDF-');
+      expect(call.messages[0].content[0].text).toContain('timesheet.xlsx');
+      expect(sheet.contentType).toBe(xlsxType);
+      expect(sheet.buffer).toBe(xlsxBuffer);
+    });
+
+    it('skips a Word file that cannot be opened and still reads the other documents', async () => {
+      mockGetAiResponse.mockResolvedValueOnce(ocrResponse);
+      const broken: PresignedAttachment = {
+        ...pdf,
+        id: 'docx-1',
+        fileName: 'broken.docx',
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        buffer: Buffer.from('not a docx'),
+      };
+
+      await extractInvoiceDocuments([pdf, broken]);
+
+      const [call] = mockGetAiResponse.mock.calls[0];
+      expect(call.messages[0].content.filter((part: { type: string }) => part.type === 'file')).toEqual([
+        { type: 'file', data: pdfBuffer, mediaType: 'application/pdf', filename: 'invoice.pdf' },
+      ]);
+    });
+
+    it('returns nothing when the only attachment is an unreadable Excel file', async () => {
+      const broken: PresignedAttachment = { ...pdf, fileName: 'broken.xlsx', contentType: 'application/octet-stream', buffer: Buffer.from('nope') };
+
+      expect(await extractInvoiceDocuments([broken])).toBeUndefined();
+      expect(mockGetAiResponse).not.toHaveBeenCalled();
     });
 
     it('skips the model when there is no PDF or image to read', async () => {

@@ -202,7 +202,8 @@ function isWinAnsi(code: number): boolean {
   return WIN_ANSI_EXTRA.has(code);
 }
 
-function pdfText(value: string): string {
+/** Replaces characters the built-in Helvetica (WinAnsi) font cannot draw with `?`. */
+export function pdfText(value: string): string {
   let out = '';
   for (const char of value) {
     const code = char.codePointAt(0) ?? 0;

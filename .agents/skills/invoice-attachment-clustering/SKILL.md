@@ -80,7 +80,8 @@ Shadow exists to prove the classifier on real traffic with no write risk:
      `failed` only if it is still `pending`, the first cluster still runs, and Slack posts one error naming
      the clusters that were not processed so a re-trigger picks them up
      (clusters already created are deduped by the registry).
-4. Enrichment receives every PDF in the cluster with document roles (invoice vs
+4. Word and Excel attachments (`.docx`, `.xlsx`) cluster like PDFs. Classification and enrichment see them as PDFs converted in memory (`toModelDocument`); the stored original is what `Attachment_Data` sends. An unreadable one reaches classification as a text placeholder and is treated as supporting.
+   Enrichment receives every PDF in the cluster with document roles (invoice vs
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
    (invoice first), with the Intercom conversation transcript appended last.

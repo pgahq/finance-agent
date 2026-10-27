@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
+import { toModelDocument } from './office_to_pdf.js';
 import type { InvoiceData } from './types.js';
 import {
   InvoiceAttachmentParseSchema,
@@ -197,12 +198,21 @@ export interface ClassifiableDocument {
   buffer: Buffer;
 }
 
-function classificationFileParts(documents: ClassifiableDocument[]) {
-  return documents.map((doc, index) => ({
-    type: 'file' as const,
-    data: doc.buffer,
-    mediaType: doc.contentType,
-    filename: `${index + 1}-${doc.fileName}`,
+// Word and Excel files are shown to the model as PDFs converted in memory; the stored original is unchanged.
+// A file that cannot be converted becomes a text part so every later file keeps its number.
+async function classificationFileParts(documents: ClassifiableDocument[]) {
+  return Promise.all(documents.map(async (original, index) => {
+    const filename = `${index + 1}-${original.fileName}`;
+    const doc = await toModelDocument(original);
+    if (!doc) {
+      return { type: 'text' as const, text: `${filename}: unreadable document (could not be opened)` };
+    }
+    return {
+      type: 'file' as const,
+      data: doc.buffer,
+      mediaType: doc.contentType,
+      filename,
+    };
   }));
 }
 
@@ -228,7 +238,7 @@ export async function classifyInvoiceAttachments(
             type: 'text',
             text: `Classify these ${documents.length} attachment(s) for AP invoice clustering:\n${fileList}${emailText}`,
           },
-          ...classificationFileParts(documents),
+          ...(await classificationFileParts(documents)),
         ],
       },
     ],
