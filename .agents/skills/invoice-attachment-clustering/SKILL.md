@@ -88,6 +88,8 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    `buildSubmitInvoiceData` reverses the list in `Attachment_Data` because Workday
    lists attachments newest-first, so the invoice is shown first.
    Slack success lists cluster filenames plus kinds; errors list filenames.
+   Older copies of a repeated document are not attached (see "Superseded
+   copies" under the clustering rules); Slack lists them as `supersededAttachments`.
 
 ## Taxonomy (per file)
 
@@ -118,6 +120,21 @@ so a dropped classification never creates an extra supplier invoice.
   (`receivedAt` from the Intercom part `created_at`, source falls back to
   conversation `created_at`; missing counts as oldest, ties keep conversation
   order). Extraction, PO matching, and submit all key off the primary.
+- **Superseded copies** (`dedupeClusterFiles`, after supporting files are
+  assigned): when a document appears more than once in a cluster, only the
+  latest copy is kept in `[primary, ...supporting]`; older copies go to
+  `cluster.superseded` and are never loaded, enriched, or sent to Workday.
+  Two files are the same document when they are an older version of the
+  primary invoice (same invoice number and supplier), have identical bytes
+  (`contentHash`, SHA-256 computed in `parseAndClusterInvoiceAttachments`), or
+  share a case-insensitive file name and the same `kind`. Latest means highest
+  `receivedAt`, a missing time counts as oldest, and a tie goes to the later
+  conversation position. The primary is never dropped, and nothing is deduped
+  across clusters. Classification still sees every file, and the conversation
+  transcript still records the history. Because the dropped files are older
+  than a kept file, the cluster's max `receivedAt` and the resend watermark are
+  unchanged. The processor passes the dropped names as `supersededFileNames`
+  (also on fan-out records) for Slack and shadow output only.
 - `supporting` joins by invoice number, else PO
   (`normalizePurchaseOrderNumber`), else supplier; with exactly one invoice
   cluster it attaches there. With several clusters and no key match it falls
@@ -190,7 +207,8 @@ invoice number, and concurrent double-fires.
   with the latest cluster (lines, memo, company; assignee is left untouched)
   and bump the watermark. Each `Submit_Supplier_Invoice` call sets the
   invoice's full `Attachment_Data` — anything left out is dropped — so the
-  update resends every cluster PDF (latest invoice version first) plus a fresh
+  update resends the latest copy of every cluster document (superseded older
+  copies are dropped, so they leave the draft) plus a fresh
   conversation transcript that records the back-and-forth with the supplier.
   Never send only the new files on an update. Work queue notes and Slack
   (`newAttachments`) name the files received since the last processing. Not

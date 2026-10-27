@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { isUnreadableOffice, toModelDocument } from './office_to_pdf.js';
@@ -30,6 +31,8 @@ export interface ClusterableAttachment {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  /** SHA-256 of the file bytes; lets a byte-identical resend be recognized as the same document. */
+  contentHash?: string;
 }
 
 export interface ClassifiedAttachment extends ClusterableAttachment {
@@ -47,6 +50,8 @@ export interface ClassifiedAttachment extends ClusterableAttachment {
 export interface InvoiceAttachmentCluster {
   primary: ClassifiedAttachment;
   supporting: ClassifiedAttachment[];
+  /** Older copies of a document that also appears later in this cluster; never loaded or sent to Workday. */
+  superseded?: ClassifiedAttachment[];
   fallback: boolean;
 }
 
@@ -149,7 +154,47 @@ export function clusterMaxReceivedAt(files: Array<{ receivedAt?: number }>): num
   return max;
 }
 
+function normalizeFileNameForDedupe(fileName: string): string {
+  return fileName.trim().toLowerCase();
+}
+
+function isDuplicateDocument(file: ClassifiedAttachment, other: ClassifiedAttachment): boolean {
+  if (file.contentHash && file.contentHash === other.contentHash) return true;
+  return file.kind === other.kind
+    && normalizeFileNameForDedupe(file.fileName) === normalizeFileNameForDedupe(other.fileName);
+}
+
+/**
+ * Splits a cluster's non-primary files into those to keep and older copies of a document that also
+ * appears later in the cluster. The primary is never dropped. Latest means highest `receivedAt`
+ * (missing counts as oldest), ties going to the later position in the conversation.
+ */
+function dedupeClusterFiles(
+  cluster: InvoiceAttachmentCluster,
+  conversationOrder: Map<ClassifiedAttachment, number>
+): InvoiceAttachmentCluster {
+  const isLater = (candidate: ClassifiedAttachment, file: ClassifiedAttachment): boolean => {
+    const candidateAt = candidate.receivedAt ?? Number.NEGATIVE_INFINITY;
+    const fileAt = file.receivedAt ?? Number.NEGATIVE_INFINITY;
+    if (candidateAt !== fileAt) return candidateAt > fileAt;
+    return (conversationOrder.get(candidate) ?? 0) > (conversationOrder.get(file) ?? 0);
+  };
+  const members = [cluster.primary, ...cluster.supporting];
+  const supporting: ClassifiedAttachment[] = [];
+  const superseded: ClassifiedAttachment[] = [];
+  for (const file of cluster.supporting) {
+    // Older versions of the primary invoice are grouped into `supporting` by `clusterClassifiedAttachments`.
+    const olderInvoiceVersion = !cluster.fallback && file.kind === 'supplier_invoice';
+    const hasLaterCopy = members.some(
+      (other) => other !== file && isDuplicateDocument(file, other) && (other === cluster.primary || isLater(other, file))
+    );
+    (olderInvoiceVersion || hasLaterCopy ? superseded : supporting).push(file);
+  }
+  return superseded.length ? { ...cluster, supporting, superseded } : cluster;
+}
+
 export function clusterClassifiedAttachments(classified: ClassifiedAttachment[]): InvoiceAttachmentClustering {
+  const conversationOrder = new Map(classified.map((attachment, index) => [attachment, index]));
   const invoices = classified.filter((attachment) => attachment.kind === 'supplier_invoice');
   const supporting = classified.filter((attachment) => attachment.kind === 'supporting');
   const unrelated = classified.filter((attachment) => attachment.kind === 'unrelated');
@@ -165,7 +210,7 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     });
     const [primary, ...rest] = ranked;
     return {
-      clusters: [{ primary, supporting: rest, fallback: true }],
+      clusters: [dedupeClusterFiles({ primary, supporting: rest, fallback: true }, conversationOrder)],
       unrelated: [],
     };
   }
@@ -189,7 +234,7 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     if (target) target.supporting.push(doc);
   }
 
-  return { clusters, unrelated };
+  return { clusters: clusters.map((cluster) => dedupeClusterFiles(cluster, conversationOrder)), unrelated };
 }
 
 export interface ClassifiableDocument {
@@ -312,7 +357,11 @@ export async function parseAndClusterInvoiceAttachments(
   const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext, options?.abortSignal);
   // The model never saw an unreadable Word or Excel file, so whatever it guessed from the name is not evidence.
   const unreadable = await Promise.all(documents.map((doc) => isUnreadableOffice(doc)));
-  const classified = joinClassifications(attachments, classifications.documents).map((file, index) => (
+  const hashed = attachments.map((attachment, index) => ({
+    ...attachment,
+    contentHash: createHash('sha256').update(buffers[index]).digest('hex'),
+  }));
+  const classified = joinClassifications(hashed, classifications.documents).map((file, index) => (
     unreadable[index]
       ? {
         ...file,
@@ -336,6 +385,7 @@ export async function parseAndClusterInvoiceAttachments(
     clusters: clustering.clusters.map((cluster) => ({
       primary: cluster.primary.fileName,
       supporting: cluster.supporting.map((doc) => doc.fileName),
+      superseded: (cluster.superseded ?? []).map((doc) => doc.fileName),
       fallback: cluster.fallback,
     })),
   });
