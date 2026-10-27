@@ -1830,7 +1830,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(params.finalLines[0].memo).toBe(
-      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
+      'PO-413898 Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
   });
 
