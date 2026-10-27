@@ -51,7 +51,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "monthly software subscription", "legal consulting"). No ending period, and do not name PGA, the venue, or the location the service is for. Leave it empty when it would only repeat the supplier name or an identifier. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.')
+      memo: z.string().nullable().describe('A few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "monthly software subscription", "legal consulting"). No ending period, and do not name PGA, the venue, or the location the service is for. Leave it empty when it would only repeat the supplier name or an identifier. Do not prepend account, customer ID, order, job, PO, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({

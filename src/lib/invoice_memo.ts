@@ -13,7 +13,7 @@ const SERVICE_PERIOD_TOKEN_LABEL = 'Svc Prd';
 const UNKNOWN_REFERENCE_TOKEN_LABEL = 'Ref';
 
 export interface InvoiceMemoIdentifierFields {
-  /** Never printed; only used to drop a supplier reference that is really the PGA PO. */
+  /** Printed as `PO-######` when it normalizes to a PGA PO; also drops a supplier reference that is that PO. */
   po?: string | null;
   accountNumber?: string | null;
   customerId?: string | null;
@@ -331,11 +331,12 @@ function identifierParts(fields: InvoiceMemoIdentifierFields): IdentifierParts {
 }
 
 function identifierTokens(fields: InvoiceMemoIdentifierFields): string[] {
-  const { accountNumber, customerId, referenceLabel, reference, servicePeriod } = identifierParts(fields);
+  const { po, accountNumber, customerId, referenceLabel, reference, servicePeriod } = identifierParts(fields);
   const tokens: string[] = [];
   if (accountNumber) tokens.push(`${ACCOUNT_TOKEN_LABEL} ${accountNumber}`);
   else if (customerId) tokens.push(`${CUSTOMER_TOKEN_LABEL} ${customerId}`);
   if (reference) tokens.push(`${referenceLabel} ${reference}`);
+  if (po) tokens.push(po);
   if (servicePeriod) tokens.push(`${SERVICE_PERIOD_TOKEN_LABEL} ${servicePeriod}`);
   return tokens;
 }
@@ -348,10 +349,11 @@ export function hasMemoIdentifiers(fields: InvoiceMemoIdentifierFields): boolean
 function descriptionTokensToStrip(fields: InvoiceMemoIdentifierFields, tokens: string[]): string[] {
   const { po, accountNumber, customerId, reference, servicePeriodText, servicePeriod } = identifierParts(fields);
   const legacy: string[] = [];
+  // The model may write the PO as printed on the invoice rather than as the normalized token.
+  if (po) legacy.push(`PO ${po.slice(3)}`, `PO#${po.slice(3)}`, `PO #${po.slice(3)}`);
   if (accountNumber) legacy.push(`AC ${accountNumber}`);
   if (customerId) legacy.push(`Customer ID ${customerId}`, `${CUSTOMER_TOKEN_LABEL} ${customerId}`);
   if (reference) legacy.push(`Job ${reference}`);
-  if (po) legacy.push(po);
   const periods = [servicePeriodText, servicePeriod].filter((period): period is string => Boolean(period));
   for (const period of periods) {
     for (const label of [...PERIOD_LABELS, SERVICE_PERIOD_TOKEN_LABEL]) legacy.push(`${label} ${period}`);

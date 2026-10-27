@@ -101,16 +101,27 @@ describe('composeInvoiceMemo', () => {
     expect(composeInvoiceMemo({ supplierReference: 'Matter 2026-14', supplierReferenceKind: 'file' })).toBe('File 2026-14');
   });
 
-  it('drops the PGA PO from the memo and drops a supplier reference that is that PO', () => {
-    expect(composeInvoiceMemo({ po: '414498', description: 'Summit ENG' })).toBe('summit ENG');
-    expect(composeInvoiceMemo({ po: 'PO-414498', accountNumber: '12345', description: 'Summit ENG' })).toBe('Acct 12345 summit ENG');
+  it('prints the PGA PO once as PO-######, and drops a supplier reference that is that PO', () => {
+    expect(composeInvoiceMemo({ po: '414498', description: 'Summit ENG' })).toBe('PO-414498 summit ENG');
+    expect(composeInvoiceMemo({ po: 'PO-414498', accountNumber: '12345', description: 'Summit ENG' })).toBe('Acct 12345 PO-414498 summit ENG');
     expect(composeInvoiceMemo({
       po: 'PO-414498',
       supplierReference: 'Order #414498',
       supplierReferenceKind: 'order',
       description: 'Summit ENG',
-    })).toBe('summit ENG');
+    })).toBe('PO-414498 summit ENG');
     expect(composeInvoiceMemo({ po: 'PGA COACHING', description: 'License fee' })).toBe('license fee');
+  });
+
+  it('puts the PO after the supplier reference and before the service dates', () => {
+    expect(composeInvoiceMemo({
+      po: 'PO-414498',
+      accountNumber: '1033562',
+      supplierReference: '5914196',
+      supplierReferenceKind: 'order',
+      servicePeriod: '2026 - September',
+      description: 'Monthly software subscription',
+    })).toBe('Acct 1033562 Ord 5914196 PO-414498 Svc Prd 09/01/26 - 09/30/26 monthly software subscription');
   });
 
   it('strips redundant labels from extracted values', () => {
@@ -137,26 +148,35 @@ describe('composeInvoiceMemo', () => {
   });
 
   it('uses identifier text alone when there is no descriptive sentence', () => {
-    expect(composeInvoiceMemo({ po: 'PO-404770', accountNumber: '12345' })).toBe('Acct 12345');
+    expect(composeInvoiceMemo({ po: 'PO-404770', accountNumber: '12345' })).toBe('Acct 12345 PO-404770');
   });
 
   it('does not duplicate identifiers the model copied into the description', () => {
     expect(composeInvoiceMemo({
       po: 'PO-404770',
       description: 'PO-404770 | Office supplies',
-    })).toBe('office supplies');
+    })).toBe('PO-404770 office supplies');
 
     expect(composeInvoiceMemo({
       po: 'PO-404770',
       accountNumber: '1033562',
       description: 'Acct 1033562 Office supplies',
-    })).toBe('Acct 1033562 office supplies');
+    })).toBe('Acct 1033562 PO-404770 office supplies');
 
     expect(composeInvoiceMemo({
       po: 'PO-404770',
       accountNumber: '1033562',
       description: 'AC 1033562. PO-404770. Office supplies',
-    })).toBe('Acct 1033562 office supplies');
+    })).toBe('Acct 1033562 PO-404770 office supplies');
+  });
+
+  it('strips the usual printed forms of the PO from the description', () => {
+    for (const printed of ['PO 404770', 'PO#404770', 'PO #404770', 'PO-404770']) {
+      expect(composeInvoiceMemo({ po: 'PO-404770', description: `${printed} office supplies` }))
+        .toBe('PO-404770 office supplies');
+      expect(composeInvoiceMemo({ po: 'PO-404770', description: `office supplies ${printed}` }))
+        .toBe('PO-404770 office supplies');
+    }
   });
 
   it('strips old-style and current identifier tokens from the description even when they are not a leading prefix', () => {
@@ -273,7 +293,7 @@ describe('composeInvoiceMemo', () => {
       supplierReference: 'Order # 123456',
       supplierReferenceKind: 'order',
       accountNumber: '12345',
-    })).toBe('Acct 12345');
+    })).toBe('Acct 12345 PO-123456');
     expect(composeInvoiceMemo({ po: null, supplierReference: '123456', supplierReferenceKind: 'order' })).toBe('Ord 123456');
   });
 
@@ -454,17 +474,17 @@ describe('hasMemoIdentifiers', () => {
   it('is true only when at least one identifier token would be emitted', () => {
     expect(hasMemoIdentifiers({})).toBe(false);
     expect(hasMemoIdentifiers({ po: 'PGA COACHING' })).toBe(false);
-    expect(hasMemoIdentifiers({ po: 'PO-414498' })).toBe(false);
+    expect(hasMemoIdentifiers({ po: 'PO-414498' })).toBe(true);
     expect(hasMemoIdentifiers({ accountNumber: '1033562' })).toBe(true);
     expect(hasMemoIdentifiers({ customerId: 'CU0122145' })).toBe(true);
     expect(hasMemoIdentifiers({ supplierReference: '5914196', supplierReferenceKind: 'order' })).toBe(true);
     expect(hasMemoIdentifiers({ servicePeriod: 'Q4 2026' })).toBe(true);
-    expect(hasMemoIdentifiers({ po: 'PO-414498', supplierReference: 'PO-414498' })).toBe(false);
+    expect(hasMemoIdentifiers({ po: 'PO-414498', supplierReference: 'PO-414498' })).toBe(true);
   });
 });
 
 describe('memoIdentifiersFromEnrichment', () => {
-  it('reads the document identifiers and the extracted PO used only to drop a duplicate reference', () => {
+  it('reads the document identifiers and the extracted PO', () => {
     expect(memoIdentifiersFromEnrichment({
       extractedPurchaseOrderNumber: 'PO-111111',
       extractedAccountNumber: '1033562',
@@ -492,7 +512,7 @@ describe('memoIdentifiersFromEnrichment', () => {
       extractedServicePeriod: null,
     }, 'PO-123456');
     expect(identifiers.po).toBe('PO-123456');
-    expect(composeInvoiceMemo(identifiers)).toBeUndefined();
+    expect(composeInvoiceMemo(identifiers)).toBe('PO-123456');
   });
 });
 
