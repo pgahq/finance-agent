@@ -170,6 +170,15 @@ describe('composeInvoiceMemo', () => {
     })).toBe('Acct 1033562 PO-404770 office supplies');
   });
 
+  it('strips the usual printed forms of the PO from the description', () => {
+    for (const printed of ['PO 404770', 'PO#404770', 'PO #404770', 'PO-404770']) {
+      expect(composeInvoiceMemo({ po: 'PO-404770', description: `${printed} office supplies` }))
+        .toBe('PO-404770 office supplies');
+      expect(composeInvoiceMemo({ po: 'PO-404770', description: `office supplies ${printed}` }))
+        .toBe('PO-404770 office supplies');
+    }
+  });
+
   it('strips old-style and current identifier tokens from the description even when they are not a leading prefix', () => {
     expect(composeInvoiceMemo({
       accountNumber: '12345',

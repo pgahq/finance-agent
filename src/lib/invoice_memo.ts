@@ -347,8 +347,10 @@ export function hasMemoIdentifiers(fields: InvoiceMemoIdentifierFields): boolean
 
 // Tokens the model may still copy into the description: the current labels and the earlier "AC 123. Job 456." form.
 function descriptionTokensToStrip(fields: InvoiceMemoIdentifierFields, tokens: string[]): string[] {
-  const { accountNumber, customerId, reference, servicePeriodText, servicePeriod } = identifierParts(fields);
+  const { po, accountNumber, customerId, reference, servicePeriodText, servicePeriod } = identifierParts(fields);
   const legacy: string[] = [];
+  // The model may write the PO as printed on the invoice rather than as the normalized token.
+  if (po) legacy.push(`PO ${po.slice(3)}`, `PO#${po.slice(3)}`, `PO #${po.slice(3)}`);
   if (accountNumber) legacy.push(`AC ${accountNumber}`);
   if (customerId) legacy.push(`Customer ID ${customerId}`, `${CUSTOMER_TOKEN_LABEL} ${customerId}`);
   if (reference) legacy.push(`Job ${reference}`);
