@@ -668,7 +668,7 @@ describe('create_invoice', () => {
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
     expect(submitArgs.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(submitArgs.finalLines[0].memo).toBe(
-      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
+      'PO-413898 Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
     expect(submitArgs.finalLines[0].description).not.toContain('PO-413898');
   });
@@ -3815,12 +3815,12 @@ describe('create_invoice', () => {
     } as any);
 
     const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-    expect(submitArgs.memo).toBe('Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 office supplies');
+    expect(submitArgs.memo).toBe('Acct 1033562 Ord 5914196 PO-414498 Svc Prd 09/01/26 - 09/30/26 office supplies');
     expect(submitArgs.suppliersInvoiceNumber).toBe('INV-001');
     expect(submitArgs.finalLines).toEqual([
       expect.objectContaining({
         description: 'Widgets',
-        memo: 'Acct 1033562 Ord 5914196 Svc Prd 09/01/26 - 09/30/26 widget purchase',
+        memo: 'Acct 1033562 Ord 5914196 PO-414498 Svc Prd 09/01/26 - 09/30/26 widget purchase',
       }),
     ]);
     expect(submitArgs.buildNotes([])).toContain('Account Number (from document): 1033562');

@@ -1830,7 +1830,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(params.finalLines[0].memo).toBe(
-      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
+      'PO-413898 Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
   });
 
@@ -2571,6 +2571,61 @@ describe('enrich_invoice', () => {
     expect(params.memo).toBeUndefined();
     expect(params.finalLines).toEqual([
       expect.objectContaining({ memo: 'widget purchase' }),
+    ]);
+  });
+
+  it('passes a composed header memo and line memos when the only identifier is the PO', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.memo).toBe('PO-414498 test invoice');
+    expect(params.finalLines).toEqual([
+      expect.objectContaining({ memo: 'PO-414498 widget purchase' }),
     ]);
   });
 });
