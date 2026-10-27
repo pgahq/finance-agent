@@ -136,9 +136,11 @@ so a dropped classification never creates an extra supplier invoice.
   byte-identical copies are set aside first, so the fallback primary is
   chosen from the latest copies only. Nothing is deduped across clusters.
   Classification still sees every file, and the conversation transcript
-  still records the history. Dropped files are never newer than a kept
-  copy of the same document, so the cluster's max `receivedAt` and the resend
-  watermark are unchanged. The processor passes the dropped names as
+  still records the history. Dropped files are older than a kept copy of
+  the same document, so the cluster's max `receivedAt` and the resend
+  watermark are unchanged. The one exception is a byte-identical copy of the
+  primary that the classifier called `supporting`: it is dropped even when
+  newer, so an identical resend does not count as a newer file. The processor passes the dropped names as
   `supersededFileNames` (also on fan-out records) for Slack and shadow output
   only.
 - `supporting` joins by invoice number, else PO
