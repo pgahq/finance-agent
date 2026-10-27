@@ -482,6 +482,19 @@ describe('notifyResult', () => {
     expect(texts).toContain('"unrelatedAttachments"');
   });
 
+  it('names attached files the agent could not open', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      unreadableAttachments: ['backup.xlsx'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Not read*');
+    expect(texts).toContain('backup.xlsx could not be opened; nothing was read from it');
+  });
+
   it('announces resend updates with an updated headline', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

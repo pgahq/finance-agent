@@ -93,6 +93,7 @@ import {
   type NotePurchaseOrder,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
+import { isUnreadableOffice } from './lib/office_to_pdf.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
@@ -889,6 +890,14 @@ async function processInvoiceCluster(
       ]);
       return { ...file, buffer, presignedUrl };
     }));
+    // A Word or Excel file that cannot be opened is never read by the model. Without its invoice file the
+    // agent would draft from the email text alone, so stop and let AP handle it; unreadable backup files are
+    // still attached and are named in the Slack post.
+    const unreadableFlags = await Promise.all(loaded.map((file) => isUnreadableOffice(file)));
+    if (unreadableFlags[0]) {
+      throw new Error(`${loaded[0].fileName} could not be opened (it may be corrupt or password-protected); nothing was read from it, so no invoice was created`);
+    }
+    const unreadableAttachments = loaded.filter((_, index) => unreadableFlags[index]).map((file) => file.fileName);
     const conversationPdfBuffer = conversationPdf
       ? await getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
       : undefined;
@@ -1431,6 +1440,7 @@ async function processInvoiceCluster(
       },
       ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      ...(unreadableAttachments.length ? { unreadableAttachments } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
         status: 'po',

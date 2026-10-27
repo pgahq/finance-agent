@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
+import { isUnreadableOffice, toModelDocument } from './office_to_pdf.js';
 import type { InvoiceData } from './types.js';
 import {
   InvoiceAttachmentParseSchema,
@@ -197,12 +198,21 @@ export interface ClassifiableDocument {
   buffer: Buffer;
 }
 
-function classificationFileParts(documents: ClassifiableDocument[]) {
-  return documents.map((doc, index) => ({
-    type: 'file' as const,
-    data: doc.buffer,
-    mediaType: doc.contentType,
-    filename: `${index + 1}-${doc.fileName}`,
+// Word and Excel files are shown to the model as PDFs converted in memory; the stored original is unchanged.
+// A file that cannot be converted becomes a text part so every later file keeps its number.
+async function classificationFileParts(documents: ClassifiableDocument[]) {
+  return Promise.all(documents.map(async (original, index) => {
+    const filename = `${index + 1}-${original.fileName}`;
+    const doc = await toModelDocument(original);
+    if (!doc) {
+      return { type: 'text' as const, text: `${filename}: unreadable document (could not be opened)` };
+    }
+    return {
+      type: 'file' as const,
+      data: doc.buffer,
+      mediaType: doc.contentType,
+      filename,
+    };
   }));
 }
 
@@ -228,7 +238,7 @@ export async function classifyInvoiceAttachments(
             type: 'text',
             text: `Classify these ${documents.length} attachment(s) for AP invoice clustering:\n${fileList}${emailText}`,
           },
-          ...classificationFileParts(documents),
+          ...(await classificationFileParts(documents)),
         ],
       },
     ],
@@ -300,7 +310,24 @@ export async function parseAndClusterInvoiceAttachments(
     buffer: buffers[index],
   }));
   const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext, options?.abortSignal);
-  const classified = joinClassifications(attachments, classifications.documents);
+  // The model never saw an unreadable Word or Excel file, so whatever it guessed from the name is not evidence.
+  const unreadable = await Promise.all(documents.map((doc) => isUnreadableOffice(doc)));
+  const classified = joinClassifications(attachments, classifications.documents).map((file, index) => (
+    unreadable[index]
+      ? {
+        ...file,
+        kind: 'supporting' as const,
+        supportingKind: 'other' as const,
+        supplierName: null,
+        invoiceNumber: null,
+        purchaseOrderNumber: null,
+        invoiceDate: null,
+        amountDue: null,
+        confidence: 0,
+        reason: 'Document could not be opened',
+      }
+      : file
+  ));
   const clustering = clusterClassifiedAttachments(classified);
   debug('Clustered invoice attachments', {
     attachmentCount: attachments.length,

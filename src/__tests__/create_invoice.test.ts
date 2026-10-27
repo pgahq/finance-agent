@@ -1,3 +1,4 @@
+import ExcelJS from 'exceljs';
 // create_invoice.ts reads WORKDAY_DEFAULT_COMPANY_NAME / WORKDAY_DEFAULT_SUPPLIER_WID /
 // INVOICE_MOD_ENABLED as module-level constants at import time. Each test sets the env
 // vars it needs, resets the module registry, and re-requires the module (and its mocked
@@ -569,6 +570,85 @@ describe('create_invoice', () => {
     );
     db.query.mockReset();
     db.query.mockResolvedValue([]);
+  });
+
+  describe('Word and Excel attachments', () => {
+    const xlsxType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const docxType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    async function workbookBuffer(): Promise<Buffer> {
+      const workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('Hours').addRow(['Golfer', 'Hours']);
+      return Buffer.from(await workbook.xlsx.writeBuffer());
+    }
+
+    it('attaches an Excel upload to Workday as the original file and hands enrichment the same bytes', async () => {
+      const { processor, workday, s3, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const original = await workbookBuffer();
+      s3.getBinaryFromS3.mockResolvedValue(original);
+
+      await processor({
+        data: [{ s3Key: 'new-invoices/req-xlsx/1-Timesheet.xlsx', fileName: 'Timesheet.xlsx', contentType: xlsxType }],
+      } as any);
+
+      const enrichmentAttachments = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][1];
+      expect(enrichmentAttachments[0]).toMatchObject({ fileName: 'Timesheet.xlsx', contentType: xlsxType });
+      expect(enrichmentAttachments[0].buffer).toBe(original);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.attachments).toEqual([{
+        fileName: 'Timesheet.xlsx',
+        contentType: xlsxType,
+        base64Content: original.toString('base64'),
+      }]);
+    });
+
+    it('stops with an error and creates nothing when the invoice file cannot be opened', async () => {
+      const { processor, workday, slack, invoiceEnrichment } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+
+      await expect(processor({
+        data: [{ s3Key: 'new-invoices/req-docx/1-Invoice.docx', fileName: 'Invoice.docx', contentType: docxType }],
+      } as any)).rejects.toThrow('Invoice.docx could not be opened');
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'error',
+        expect.any(Number),
+        expect.anything(),
+        expect.objectContaining({ message: expect.stringContaining('Invoice.docx could not be opened') }),
+      );
+    });
+
+    it('still creates the invoice when only a backup file cannot be opened and names it in Slack', async () => {
+      const { processor, workday, slack, s3, clustering, invoiceEnrichment, invoiceLines, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      s3.getBinaryFromS3.mockImplementation(async (_config: unknown, key: string) =>
+        key.endsWith('.docx') ? Buffer.from('not a docx') : Buffer.from('fake-pdf-content')
+      );
+      const invoice = { s3Key: 'new-invoices/req-1/1-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf', kind: 'supplier_invoice', confidence: 0.9 };
+      const backup = { s3Key: 'new-invoices/req-1/2-backup.docx', fileName: 'backup.docx', contentType: docxType, kind: 'supporting', confidence: 0 };
+      clustering.parseAndClusterInvoiceAttachments.mockResolvedValue({
+        classified: [invoice, backup],
+        clustering: { clusters: [{ primary: invoice, supporting: [backup], fallback: false }], unrelated: [] },
+      });
+
+      await processor({ data: [{ conversationId: '1234567890', attachments: [invoice, backup] }] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.attachments.map((att: { fileName: string }) => att.fileName)).toEqual(['invoice.pdf', 'backup.docx']);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ unreadableAttachments: ['backup.docx'] }),
+      );
+    });
   });
 
   it('attaches the conversation transcript without sending it to enrichment', async () => {

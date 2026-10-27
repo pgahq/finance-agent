@@ -5,6 +5,7 @@ import {
   isIntercomMessageDeliveryFailedBody,
   type ConversationTranscript,
 } from './conversation_transcript.js';
+import { officeKind } from './office_kind.js';
 import type { InvoiceData } from './types.js';
 
 const DEFAULT_API_BASE_URL = 'https://api.intercom.io';
@@ -43,7 +44,7 @@ export class IntercomNotFoundError extends Error {
 
 export class IntercomNoAttachmentError extends Error {
   constructor(conversationId: string) {
-    super(`No PDF attachment found on conversation: ${conversationId}`);
+    super(`No PDF, DOCX, or XLSX attachment found on conversation: ${conversationId}`);
     this.name = 'IntercomNoAttachmentError';
   }
 }
@@ -396,7 +397,7 @@ export async function fetchConversationInvoiceData(
   const conversation = await fetchConversation(config, conversationId);
   const attachments = collectAttachments(conversation);
   const invoiceAttachments = attachments.filter(
-    (attachment) => attachment.contentType === 'application/pdf'
+    (attachment) => attachment.contentType === 'application/pdf' || officeKind(attachment.name, attachment.contentType) !== undefined
   );
   if (invoiceAttachments.length === 0) {
     throw new IntercomNoAttachmentError(conversationId);

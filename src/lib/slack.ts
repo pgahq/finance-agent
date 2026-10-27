@@ -334,6 +334,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const unreadableFiles = Array.isArray(details.unreadableAttachments)
+    ? (details.unreadableAttachments as unknown[]).filter((name): name is string => typeof name === 'string' && name.length > 0)
+    : [];
+  if (unreadableFiles.length && details.skipped !== true) {
+    const lines = unreadableFiles.map((name) => `• ${escapeSlackText(name)} could not be opened; nothing was read from it`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Not read*\n${lines.join('\n')}`) }
+    });
+  }
+
   const attachment = details.attachment as { fileName?: string } | undefined;
   const clusterFiles = Array.isArray(details.attachments)
     ? (details.attachments as Array<{ fileName?: string; kind?: string }>)
