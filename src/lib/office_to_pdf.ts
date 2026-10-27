@@ -20,6 +20,10 @@ const MAX_SHEET_COLUMNS = 60;
 const MAX_TABLE_ROWS = 3000;
 const MAX_CELL_CHARS = 2000;
 const MAX_COLUMN_CHARS = 60;
+// Stays under the per-request PDF page limits of the OCR and classification models.
+const MAX_PDF_PAGES = 60;
+
+class PageBudgetReached extends Error {}
 
 type Block =
   | { type: 'heading'; level: number; text: string }
@@ -103,6 +107,12 @@ export function htmlToBlocks(html: string): Block[] {
       continue;
     }
     if (table) {
+      if (tableDepth > 1) {
+        if (!table.inCell) continue;
+        if (closing && (name === 'td' || name === 'th')) table.cell += ' ';
+        else if (name === 'br' || (closing && (name === 'tr' || name === 'p'))) table.cell += '\n';
+        continue;
+      }
       if (name === 'tr') {
         if (!closing) table.row = [];
         else if (table.row.length) table.rows.push(table.row);
@@ -165,7 +175,7 @@ function columnWidths(rows: string[][], columns: number): number[] {
   });
 }
 
-function renderTable(doc: PDFKit.PDFDocument, rows: string[][], repeatHeader: boolean): void {
+function renderTable(doc: PDFKit.PDFDocument, rows: string[][], repeatHeader: boolean, addPage: () => void): void {
   const left = doc.page.margins.left;
   const available = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
@@ -190,7 +200,7 @@ function renderTable(doc: PDFKit.PDFDocument, rows: string[][], repeatHeader: bo
   const bodyBottom = () => doc.page.height - doc.page.margins.bottom;
 
   chunks.forEach(([from, to], chunkIndex) => {
-    if (chunkIndex > 0 || doc.y > bodyBottom() - 40) doc.addPage();
+    if (chunkIndex > 0 || doc.y > bodyBottom() - 40) addPage();
     if (chunks.length > 1) {
       doc.font('Helvetica-Oblique').fontSize(8).fillColor('#666666')
         .text(`Columns ${from + 1}-${to} of ${columns}`, left, doc.y, { width: available });
@@ -205,7 +215,7 @@ function renderTable(doc: PDFKit.PDFDocument, rows: string[][], repeatHeader: bo
       const maxHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
       const rowHeight = Math.min(maxHeight, Math.max(...heights, fontSize) + pad * 2);
       if (doc.y + rowHeight > bodyBottom()) {
-        doc.addPage();
+        addPage();
         if (repeatHeader && row !== rows[0]) drawRow(rows[0], true);
       }
       const top = doc.y;
@@ -244,15 +254,22 @@ function renderBlocks(blocks: Block[], options: RenderOptions): Promise<Buffer> 
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
+    let pages = 1;
+    doc.on('pageAdded', () => { pages += 1; });
+    const addPage = () => {
+      if (pages >= MAX_PDF_PAGES) throw new PageBudgetReached();
+      doc.addPage();
+    };
+
     try {
       const width = () => doc.page.width - doc.page.margins.left - doc.page.margins.right;
       const left = doc.page.margins.left;
       if (blocks.length === 0) {
         doc.font('Helvetica-Oblique').fontSize(10).fillColor('#666666').text('(no readable content)', left, doc.y, { width: width() });
       }
-      for (const block of blocks) {
+      const drawBlock = (block: Block) => {
         if (block.type === 'pageBreak') {
-          doc.addPage();
+          addPage();
         } else if (block.type === 'heading') {
           const size = Math.max(11, 20 - block.level * 2);
           doc.font('Helvetica-Bold').fontSize(size).fillColor('#111111').text(pdfText(block.text), left, doc.y, { width: width() });
@@ -261,9 +278,9 @@ function renderBlocks(blocks: Block[], options: RenderOptions): Promise<Buffer> 
           doc.font('Helvetica').fontSize(10).fillColor('#111111').text(pdfText(block.text), left, doc.y, { width: width() });
           doc.moveDown(0.5);
         } else if (block.type === 'image') {
+          const maxHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+          if (doc.y > doc.page.margins.top + maxHeight / 2) addPage();
           try {
-            const maxHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-            if (doc.y > doc.page.margins.top + maxHeight / 2) doc.addPage();
             doc.image(block.data, left, doc.y, { fit: [width(), maxHeight / 2] });
             doc.y += maxHeight / 2 + 6;
             doc.x = left;
@@ -271,8 +288,28 @@ function renderBlocks(blocks: Block[], options: RenderOptions): Promise<Buffer> 
             debug('Skipped an embedded image that could not be drawn', { error: error instanceof Error ? error.message : String(error) });
           }
         } else {
-          renderTable(doc, block.rows, block.repeatHeader);
+          renderTable(doc, block.rows, block.repeatHeader, addPage);
         }
+      };
+
+      let truncated = false;
+      for (const block of blocks) {
+        if (pages >= MAX_PDF_PAGES) {
+          truncated = true;
+          break;
+        }
+        try {
+          drawBlock(block);
+        } catch (error) {
+          if (!(error instanceof PageBudgetReached)) throw error;
+          truncated = true;
+          break;
+        }
+      }
+      if (truncated) {
+        debug('Truncated a converted Office PDF at the page limit', { maxPages: MAX_PDF_PAGES });
+        doc.font('Helvetica-Oblique').fontSize(9).fillColor('#666666')
+          .text(`[Output truncated after ${MAX_PDF_PAGES} pages]`, doc.page.margins.left, doc.y, { width: width() });
       }
       doc.end();
     } catch (error) {
@@ -295,15 +332,113 @@ async function docxBlocks(buffer: Buffer): Promise<Block[]> {
   });
 }
 
-function cellText(cell: ExcelJS.Cell): string {
-  const value = cell.value;
-  let text: string;
-  if (value instanceof Date) {
-    const iso = value.toISOString();
-    text = iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.replace('T', ' ').slice(0, 16);
-  } else {
-    text = cell.text ?? '';
+function generalNumber(value: number): string {
+  return String(Number(value.toPrecision(12)));
+}
+
+function splitFormatSections(numFmt: string): string[] {
+  const sections: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < numFmt.length; i += 1) {
+    const char = numFmt[i];
+    if (char === '"') quoted = !quoted;
+    if (char === '\\' && i + 1 < numFmt.length) {
+      current += char + numFmt[i + 1];
+      i += 1;
+    } else if (char === ';' && !quoted) {
+      sections.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
   }
+  sections.push(current);
+  return sections;
+}
+
+/**
+ * Renders a number the way Excel's number format shows it: currency symbols, percent, fixed decimals, thousands
+ * separators, and parentheses for negatives. Dates, fractions, scientific, and scaled formats fall back to a plain number.
+ */
+export function formatNumberCell(value: number, numFmt: string | undefined): string {
+  if (!numFmt || /^general$/i.test(numFmt.trim()) || !Number.isFinite(value)) return generalNumber(value);
+  try {
+    const sections = splitFormatSections(numFmt);
+    const useNegativeSection = value < 0 && sections.length > 1;
+    const section = value === 0 && sections.length > 2 ? sections[2] : useNegativeSection ? sections[1] : sections[0];
+
+    let prefix = '';
+    let suffix = '';
+    let pattern = '';
+    let percents = 0;
+    let state = 'before' as 'before' | 'in' | 'after';
+    const addLiteral = (text: string) => {
+      if (state === 'in') state = 'after';
+      if (state === 'before') prefix += text;
+      else suffix += text;
+    };
+    for (let i = 0; i < section.length; i += 1) {
+      const char = section[i];
+      if (char === '"') {
+        const end = section.indexOf('"', i + 1);
+        addLiteral(section.slice(i + 1, end === -1 ? undefined : end));
+        i = end === -1 ? section.length : end;
+      } else if (char === '\\' || char === '_' || char === '*') {
+        if (char === '\\' && i + 1 < section.length) addLiteral(section[i + 1]);
+        i += 1;
+      } else if (char === '[') {
+        const end = section.indexOf(']', i);
+        const content = section.slice(i + 1, end === -1 ? undefined : end);
+        if (content.startsWith('$')) addLiteral(content.slice(1).split('-')[0]);
+        i = end === -1 ? section.length : end;
+      } else if ('0#?'.includes(char) || ((char === '.' || char === ',') && state !== 'after')) {
+        if (state === 'after') return generalNumber(value);
+        state = 'in';
+        pattern += char;
+      } else if (char === '%') {
+        percents += 1;
+        addLiteral('%');
+      } else if (/[eE]/.test(char) && state === 'in') {
+        return generalNumber(value);
+      } else if (/[ymdhsgYMDHSG/]/.test(char) && state !== 'after' && pattern === '') {
+        return generalNumber(value);
+      } else {
+        addLiteral(char);
+      }
+    }
+    if (pattern === '' || pattern.endsWith(',') || /\?\//.test(section) || /[?]/.test(pattern)) return generalNumber(value);
+
+    const [integerPattern, fractionPattern = ''] = pattern.split('.');
+    const scaled = Math.abs(value) * 100 ** percents;
+    const formatted = scaled.toLocaleString('en-US', {
+      minimumIntegerDigits: Math.min(21, Math.max(1, (integerPattern.match(/0/g) ?? []).length)),
+      minimumFractionDigits: (fractionPattern.match(/0/g) ?? []).length,
+      maximumFractionDigits: fractionPattern.replace(/,/g, '').length,
+      useGrouping: integerPattern.includes(','),
+    });
+    const isZero = Number(formatted.replace(/,/g, '')) === 0;
+    const sign = value < 0 && !useNegativeSection && !isZero ? '-' : '';
+    return `${sign}${prefix}${formatted}${suffix}`.trim();
+  } catch {
+    return generalNumber(value);
+  }
+}
+
+function dateText(value: Date): string {
+  const iso = value.toISOString();
+  return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.replace('T', ' ').slice(0, 16);
+}
+
+function cellText(cell: ExcelJS.Cell): string {
+  let raw: unknown = cell.value;
+  if (raw && typeof raw === 'object' && !(raw instanceof Date) && 'result' in raw) {
+    raw = (raw as { result?: unknown }).result;
+  }
+  let text: string;
+  if (raw instanceof Date) text = dateText(raw);
+  else if (typeof raw === 'number') text = formatNumberCell(raw, cell.numFmt);
+  else text = cell.text ?? '';
   return text.length > MAX_CELL_CHARS ? text.slice(0, MAX_CELL_CHARS) : text;
 }
 
@@ -364,14 +499,10 @@ export interface ModelDocument {
   buffer: Buffer;
 }
 
-/**
- * The bytes to show the AI model for a stored attachment. PDFs and images pass through unchanged;
- * a docx or xlsx is converted to PDF in memory (the stored original is never replaced). Returns
- * undefined when an Office file cannot be converted, so callers can skip it without losing the rest.
- */
-export async function toModelDocument<T extends ModelDocument>(doc: T): Promise<T | undefined> {
-  const kind = officeKind(doc.fileName, doc.contentType);
-  if (!kind) return doc;
+// Classification and OCR read the same stored buffer in one run, so each file is converted once.
+const conversions = new WeakMap<Buffer, Promise<Buffer | undefined>>();
+
+async function convertForModel(doc: ModelDocument, kind: OfficeKind): Promise<Buffer | undefined> {
   try {
     const buffer = await convertOfficeToPdf(doc.buffer, kind);
     debug('Converted Office attachment to PDF for the model', {
@@ -380,7 +511,7 @@ export async function toModelDocument<T extends ModelDocument>(doc: T): Promise<
       originalBytes: doc.buffer.length,
       pdfBytes: buffer.length,
     });
-    return { ...doc, contentType: 'application/pdf', buffer };
+    return buffer;
   } catch (error) {
     debug('Office attachment could not be converted for the model; skipping it', {
       fileName: doc.fileName,
@@ -388,4 +519,26 @@ export async function toModelDocument<T extends ModelDocument>(doc: T): Promise<
     });
     return undefined;
   }
+}
+
+/**
+ * The bytes to show the AI model for a stored attachment. PDFs and images pass through unchanged;
+ * a docx or xlsx is converted to PDF in memory (the stored original is never replaced). Returns
+ * undefined when an Office file cannot be converted, so callers can skip it without losing the rest.
+ */
+export async function toModelDocument<T extends ModelDocument>(doc: T): Promise<T | undefined> {
+  const kind = officeKind(doc.fileName, doc.contentType);
+  if (!kind) return doc;
+  let pending = conversions.get(doc.buffer);
+  if (!pending) {
+    pending = convertForModel(doc, kind);
+    conversions.set(doc.buffer, pending);
+  }
+  const buffer = await pending;
+  return buffer ? { ...doc, contentType: 'application/pdf', buffer } : undefined;
+}
+
+/** True for a Word or Excel file the model cannot be shown because it could not be opened. */
+export async function isUnreadableOffice(doc: ModelDocument): Promise<boolean> {
+  return officeKind(doc.fileName, doc.contentType) !== undefined && (await toModelDocument(doc)) === undefined;
 }

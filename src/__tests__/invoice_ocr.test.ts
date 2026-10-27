@@ -329,6 +329,28 @@ describe('invoice OCR pass', () => {
       ]);
     });
 
+    it('leaves an unreadable file out of the document list and roles the model sees', async () => {
+      mockGetAiResponse.mockResolvedValueOnce(ocrResponse);
+      const broken: PresignedAttachment = {
+        ...pdf,
+        id: 'docx-2',
+        fileName: 'broken.docx',
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        buffer: Buffer.from('not a docx'),
+      };
+
+      await extractInvoiceDocuments(
+        [pdf, broken],
+        [{ fileName: 'invoice.pdf', role: 'invoice' }, { fileName: 'broken.docx', role: 'supporting' }]
+      );
+
+      const [call] = mockGetAiResponse.mock.calls[0];
+      const text = call.messages[0].content[0].text as string;
+      expect(text).toContain('Documents: invoice.pdf (application/pdf)');
+      expect(text).toContain('invoice.pdf is the supplier invoice');
+      expect(text).not.toContain('broken.docx');
+    });
+
     it('returns nothing when the only attachment is an unreadable Excel file', async () => {
       const broken: PresignedAttachment = { ...pdf, fileName: 'broken.xlsx', contentType: 'application/octet-stream', buffer: Buffer.from('nope') };
 

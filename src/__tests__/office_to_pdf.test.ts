@@ -3,7 +3,9 @@ import { Document, Packer, Paragraph, Table, TableCell, TableRow, HeadingLevel, 
 import {
   OfficeConversionError,
   convertOfficeToPdf,
+  formatNumberCell,
   htmlToBlocks,
+  isUnreadableOffice,
   officeKind,
   toModelDocument,
 } from '../lib/office_to_pdf.js';
@@ -86,6 +88,41 @@ describe('htmlToBlocks', () => {
   });
 });
 
+describe('htmlToBlocks nested tables', () => {
+  it('flattens an inner table into its outer cell instead of repeating rows', () => {
+    const blocks = htmlToBlocks(
+      '<table><tr><td><p>Bill To: Acme</p></td><td><table><tr><td>Invoice #</td><td>123</td></tr>'
+      + '<tr><td>Total</td><td>$500.00</td></tr></table></td></tr><tr><td>Item</td><td>Qty</td></tr></table>'
+    );
+
+    expect(blocks).toEqual([
+      { type: 'table', rows: [['Bill To: Acme', 'Invoice # 123\nTotal $500.00'], ['Item', 'Qty']], repeatHeader: false },
+    ]);
+  });
+});
+
+describe('formatNumberCell', () => {
+  it.each([
+    [1234.5, '$#,##0.00', '$1,234.50'],
+    [1234.5, '"$"#,##0.00_);("$"#,##0.00)', '$1,234.50'],
+    [-1234.5, '"$"#,##0.00_);("$"#,##0.00)', '($1,234.50)'],
+    [-1234.5, '$#,##0.00', '-$1,234.50'],
+    [1234.5, '[$$-409]#,##0.00', '$1,234.50'],
+    [0.075, '0.0%', '7.5%'],
+    [0.075, '0%', '8%'],
+    [1234.5599999999999, '0.00', '1234.56'],
+    [1234567.891, '#,##0', '1,234,568'],
+    [42, '00000', '00042'],
+    [12.5, '#,##0.00 "USD"', '12.50 USD'],
+    [1234.5599999999999, 'General', '1234.56'],
+    [0.1 + 0.2, undefined, '0.3'],
+    [0.5, '# ?/?', '0.5'],
+    [1234.5, '0.00E+00', '1234.5'],
+  ])('shows %p with format %p as %p', (value, format, expected) => {
+    expect(formatNumberCell(value, format)).toBe(expected);
+  });
+});
+
 describe('convertOfficeToPdf', () => {
   it('renders a docx with its paragraphs and table text', async () => {
     const pdf = await convertOfficeToPdf(await sampleDocx(), 'docx', { compress: false });
@@ -115,6 +152,38 @@ describe('convertOfficeToPdf', () => {
     expect(text).toContain('2026-09-30');
     expect(text).not.toContain('secret');
     expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows currency, percent, and formula date cells the way Excel displays them', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Totals');
+    sheet.addRow(['Amount', 'Tax rate', 'Computed', 'Due']);
+    sheet.addRow([1234.5, 0.075, 0, 0]);
+    sheet.getCell('A2').numFmt = '$#,##0.00';
+    sheet.getCell('B2').numFmt = '0.0%';
+    sheet.getCell('C2').value = { formula: 'A2*0.9958', result: 1229.3099999999999 } as ExcelJS.CellFormulaValue;
+    sheet.getCell('C2').numFmt = '0.00';
+    sheet.getCell('D2').value = { formula: 'DATE(2026,9,30)', result: new Date('2026-09-30T00:00:00Z') } as ExcelJS.CellFormulaValue;
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
+
+    expect(text).toContain('$1,234.50');
+    expect(text).toContain('7.5%');
+    expect(text).toContain('1229.31');
+    expect(text).not.toContain('1229.3099');
+    expect(text).toContain('2026-09-30');
+  });
+
+  it('stops at the page limit and says so instead of producing an oversized PDF', async () => {
+    const rows: Array<Array<string | number>> = [['Line', 'Description']];
+    for (let i = 1; i <= 3000; i += 1) rows.push([i, `Row number ${i}`]);
+
+    const pdf = await convertOfficeToPdf(await sampleXlsx([{ name: 'Big', rows }]), 'xlsx', { compress: false });
+
+    expect(pageCount(pdf)).toBeLessThanOrEqual(61);
+    expect(pdfText(pdf)).toContain('Output truncated after 60 pages');
+    expect(pdfText(pdf)).not.toContain('Row number 3000');
   });
 
   it('paginates long sheets and repeats the header row', async () => {
@@ -172,5 +241,23 @@ describe('toModelDocument', () => {
 
   it('returns undefined for an Office file that cannot be opened', async () => {
     expect(await toModelDocument({ fileName: 'bad.docx', contentType: DOCX_MIME, buffer: Buffer.from('nope') })).toBeUndefined();
+  });
+
+  it('converts the same stored buffer once for classification and OCR', async () => {
+    const buffer = await sampleXlsx([{ name: 'S', rows: [['a']] }]);
+    const doc = { fileName: 'Timesheet.xlsx', contentType: XLSX_MIME, buffer };
+
+    const first = await toModelDocument(doc);
+    const second = await toModelDocument({ ...doc });
+
+    expect(second?.buffer).toBe(first?.buffer);
+  });
+});
+
+describe('isUnreadableOffice', () => {
+  it('is true only for an Office file that cannot be opened', async () => {
+    expect(await isUnreadableOffice({ fileName: 'bad.docx', contentType: DOCX_MIME, buffer: Buffer.from('nope') })).toBe(true);
+    expect(await isUnreadableOffice({ fileName: 'ok.xlsx', contentType: XLSX_MIME, buffer: await sampleXlsx([{ name: 'S', rows: [['a']] }]) })).toBe(false);
+    expect(await isUnreadableOffice({ fileName: 'a.pdf', contentType: 'application/pdf', buffer: Buffer.from('pdf') })).toBe(false);
   });
 });

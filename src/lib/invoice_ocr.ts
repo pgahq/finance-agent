@@ -72,9 +72,11 @@ export async function extractInvoiceDocuments(
     return undefined;
   }
 
-  const fileList = processedAttachments.map((att) => `${att.fileName} (${att.contentType})`).join('; ');
-  const documentRolesText = attachmentRoles?.length
-    ? `\n\nDocument roles: ${attachmentRoles.map((role) => `${role.fileName} is ${role.role === 'invoice' ? 'the supplier invoice' : 'supporting backup'}`).join('; ')}. Extract header, lines, and amounts from the supplier invoice. Use supporting files only as backup context — do not extract a separate invoice from them.`
+  const readableNames = new Set(readable.map((att) => att.fileName));
+  const fileList = readable.map((att) => `${att.fileName} (${att.contentType})`).join('; ');
+  const readableRoles = attachmentRoles?.filter((role) => readableNames.has(role.fileName));
+  const documentRolesText = readableRoles?.length
+    ? `\n\nDocument roles: ${readableRoles.map((role) => `${role.fileName} is ${role.role === 'invoice' ? 'the supplier invoice' : 'supporting backup'}`).join('; ')}. Extract header, lines, and amounts from the supplier invoice. Use supporting files only as backup context — do not extract a separate invoice from them.`
     : '';
 
   const documentBytes = processedAttachments.reduce((total, att) => total + (att.buffer?.byteLength ?? 0), 0);

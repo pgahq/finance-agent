@@ -1,6 +1,6 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
-import { toModelDocument } from './office_to_pdf.js';
+import { isUnreadableOffice, toModelDocument } from './office_to_pdf.js';
 import type { InvoiceData } from './types.js';
 import {
   InvoiceAttachmentParseSchema,
@@ -310,7 +310,24 @@ export async function parseAndClusterInvoiceAttachments(
     buffer: buffers[index],
   }));
   const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext, options?.abortSignal);
-  const classified = joinClassifications(attachments, classifications.documents);
+  // The model never saw an unreadable Word or Excel file, so whatever it guessed from the name is not evidence.
+  const unreadable = await Promise.all(documents.map((doc) => isUnreadableOffice(doc)));
+  const classified = joinClassifications(attachments, classifications.documents).map((file, index) => (
+    unreadable[index]
+      ? {
+        ...file,
+        kind: 'supporting' as const,
+        supportingKind: 'other' as const,
+        supplierName: null,
+        invoiceNumber: null,
+        purchaseOrderNumber: null,
+        invoiceDate: null,
+        amountDue: null,
+        confidence: 0,
+        reason: 'Document could not be opened',
+      }
+      : file
+  ));
   const clustering = clusterClassifiedAttachments(classified);
   debug('Clustered invoice attachments', {
     attachmentCount: attachments.length,

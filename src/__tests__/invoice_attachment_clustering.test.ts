@@ -388,4 +388,43 @@ describe('parseAndClusterInvoiceAttachments', () => {
     ]);
     expect(content[1].data.subarray(0, 5).toString()).toBe('%PDF-');
   });
+
+  it('never lets an unreadable Word file be the invoice, whatever the model guessed from its name', async () => {
+    const doc = (fileNumber: number, fileName: string, kind: 'supplier_invoice' | 'supporting') => ({
+      fileNumber,
+      fileName,
+      kind,
+      supportingKind: null,
+      supplierName: null,
+      invoiceNumber: null,
+      purchaseOrderNumber: null,
+      invoiceDate: null,
+      amountDue: null,
+      confidence: 0.9,
+      reason: 'guess',
+    });
+    mockGetAiResponse.mockResolvedValueOnce({
+      documents: [doc(1, '1-Invoice 1042.docx', 'supplier_invoice'), doc(2, '2-invoice.pdf', 'supplier_invoice')],
+    } as any);
+    const buffers: Record<string, Buffer> = {
+      'new-invoices/req-1/1-Invoice 1042.docx': Buffer.from('not a docx'),
+      'new-invoices/req-1/2-invoice.pdf': Buffer.from('pdf'),
+    };
+
+    const { clustering, classified } = await parseAndClusterInvoiceAttachments(
+      [
+        {
+          s3Key: 'new-invoices/req-1/1-Invoice 1042.docx',
+          fileName: 'Invoice 1042.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+        { s3Key: 'new-invoices/req-1/2-invoice.pdf', fileName: 'invoice.pdf', contentType: 'application/pdf' },
+      ] as any,
+      async (key) => buffers[key]
+    );
+
+    expect(classified[0]).toMatchObject({ fileName: 'Invoice 1042.docx', kind: 'supporting', reason: 'Document could not be opened' });
+    expect(classified[1]).toMatchObject({ fileName: 'invoice.pdf', kind: 'supplier_invoice' });
+    expect(clustering.clusters.map((cluster) => cluster.primary.fileName)).toEqual(['invoice.pdf']);
+  });
 });
