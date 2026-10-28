@@ -317,7 +317,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
   const basis = paymentsExplainGap
     ? `"${label}" is ${contractText}, and ${centsDollars(paidCents as number)} was already paid, which leaves the ${dueText} amount due${lineText}.`
-    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints payments totaling ${centsDollars(paidCents)}, which do not account for the difference.` : 'The document prints no payments that account for the difference.'}`;
+    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints ${centsDollars(paidCents)} in payments, which leaves ${centsDollars(contractCents - paidCents)}, not the amount due; check the payments against the PDF.` : 'The document prints no payments that account for the difference.'}`;
   const consumedNote = selection.status === 'matched' && selection.consumed
     ? ' The PO line for this amount is already fully invoiced or closed; check whether this balance was billed before approving.'
     : '';
@@ -330,7 +330,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     note: `${basis} The invoice bills the balance due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${consumedNote}`,
     amountDueNote: `remaining balance of ${contractText}`,
     slackLines: [
-      `${label}: ${contractText} contract total, ${dueText} due${paymentsExplainGap ? ` after ${centsDollars(paidCents as number)} paid` : ' (remaining balance per the email)'}. Submitted as one balance line, not the printed lines.`,
+      `${label}: ${contractText} contract total, ${dueText} due${paymentsExplainGap ? ` after ${centsDollars(paidCents as number)} paid` : paidCents != null ? ` (remaining balance per the email; the PDF prints ${centsDollars(paidCents)} in payments, which does not match, so check them)` : ' (remaining balance per the email)'}. Submitted as one balance line, not the printed lines.`,
       ...(consumedNote ? ['The PO line for this amount is already fully invoiced or closed; check whether this balance was billed before approving.'] : []),
     ],
   };

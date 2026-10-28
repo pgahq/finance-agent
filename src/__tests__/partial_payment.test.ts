@@ -316,7 +316,8 @@ describe('planBalanceInvoice', () => {
   it('says so when printed payments disagree with the amount due but the email matches', () => {
     const plan = planBalanceInvoice(balanceInput({ priorPayments: [{ label: 'Payments Received', amount: '$10,000.00' }] }))!;
     expect(plan.applied).toBe(true);
-    expect(plan.note).toContain('The document prints payments totaling $10,000.00, which do not account for the difference.');
+    expect(plan.note).toContain('The document prints $10,000.00 in payments, which leaves $13,887.00, not the amount due; check the payments against the PDF.');
+    expect(plan.slackLines[0]).toContain('the PDF prints $10,000.00 in payments, which does not match, so check them');
     expect(plan.note).not.toContain('prints no payments');
   });
 
