@@ -60,6 +60,10 @@ export const InvoiceOcrSchema = z.object({
     percent: z.string().describe('The percentage printed for the deposit (e.g. "90%"). Empty string when none is printed.'),
     amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
   }).describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Use empty strings when the invoice bills its full total.'),
+  extractedPriorPayments: z.array(z.object({
+    label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
+    amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
+  })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -87,6 +91,10 @@ export interface InvoiceOcrPartialPayment {
   percent: string | null;
   amount: string;
 }
+export interface InvoiceOcrPriorPayment {
+  label: string;
+  amount: string;
+}
 export interface InvoiceOcrSummaryCharge {
   label: string;
   /** Null when the row prints only a rate. */
@@ -98,11 +106,12 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
   /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
   extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
+  extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
@@ -179,7 +188,7 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
-    extractedLineSubtotal, extractedPartialPayment,
+    extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
     ...headerFields
   } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -192,6 +201,9 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
   const lineSubtotal = textOrNull(extractedLineSubtotal?.amount)
     ? { label: (extractedLineSubtotal?.label ?? '').trim(), amount: (extractedLineSubtotal?.amount ?? '').trim() }
     : null;
+  const priorPayments = (extractedPriorPayments ?? [])
+    .filter(payment => payment.amount.trim())
+    .map(payment => ({ label: payment.label.trim(), amount: payment.amount.trim() }));
   const partialPayment = textOrNull(extractedPartialPayment?.amount)
     ? {
       label: (extractedPartialPayment?.label ?? '').trim(),
@@ -203,6 +215,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
     ...nullableTextFields(headerFields),
     extractedLineSubtotal: lineSubtotal,
     extractedPartialPayment: partialPayment,
+    extractedPriorPayments: priorPayments.length ? priorPayments : null,
     extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     extractedSummaryCharges: summaryCharges.length ? summaryCharges : null,
@@ -275,6 +288,8 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total.
 
 When the invoice bills a deposit, advance, or partial payment instead of the full contract total, populate \`extractedPartialPayment\` with the printed label of the deposit row, the percentage when one is printed (for example "90%"), and the deposit amount as printed. For example, an invoice with Total Cost of Contracted Services $38,255.00, Deposit Required Upon Signing 90%, and Advance Deposit Due $34,429.50 must return extractedLineSubtotal { label: "Total Cost of Contracted Services", amount: "$38,255.00" }, extractedPartialPayment { label: "Advance Deposit Due", percent: "90%", amount: "$34,429.50" }, and extractedAmountDue "$34,429.50". Never compute an amount from a percentage. Leave extractedPartialPayment empty for a final invoice that only shows a deposit already paid ("Less deposit paid"), for retainers, and for ordinary invoices.
+
+When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
 
 ---
 
