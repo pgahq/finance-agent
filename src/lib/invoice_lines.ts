@@ -363,7 +363,7 @@ function isTaxChargeLine(description: string | undefined): boolean {
 }
 
 // Tax rows often print the rate (`Sales Tax 6%`, `VAT 20.00%`, `Tax 0.0825`); the rate is not a goods word.
-function isTaxChargeDescription(description: string | undefined): boolean {
+export function isTaxChargeDescription(description: string | undefined): boolean {
   return isTaxChargeLine(description?.replace(/\d+(?:\.\d+)?\s*%?/g, ' '));
 }
 

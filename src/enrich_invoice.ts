@@ -18,6 +18,7 @@ import {
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
   formatTotalsChargeReviewNotes,
   formatPositivePoQuantityNotes,
@@ -61,7 +62,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -323,7 +324,7 @@ async function processInvoice(
     });
 
     const extractedRows = result.extractedInvoiceLines ?? [];
-    const extractedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
+    const printedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -338,8 +339,22 @@ async function processInvoice(
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
-      freightAmountFromLines: canModifyInvoice ? splitFreightLines(extractedLines).freightAmountFromLines : undefined,
+      freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
+    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
+    // when that is what makes the lines match the amount due.
+    const { lines: extractedLines, note: linePriceNote } = reinterpretSinglePriceLinesForCharges(printedLines, {
+      amountDue: extractedAmountDue,
+      freight: resolvedFreightAmount,
+      tax: resolvedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      freightCleared: headerFreightCleared,
+      taxCleared: headerTaxCleared,
+      chargeWithheld,
+      printedTaxCharges: result.extractedOtherCharges,
+      printedSummaryCharges: result.extractedSummaryCharges,
+    });
+    if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.
     const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && submitSupplierWID ? extractedLines : [], {
       amountDue: extractedAmountDue,
@@ -543,7 +558,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(depositPlan?.note) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(depositPlan?.note) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks

@@ -899,6 +899,77 @@ describe('create_invoice', () => {
     );
   });
 
+  describe('SUPIN-471803 single price beside a quantity', () => {
+    const participants = {
+      description: 'Bank of America x Golf with Us/First Tee Programming Participant Fees',
+      quantity: 9,
+      unitCost: null,
+      totalPrice: '$75.00',
+      hasDiscount: false
+    };
+    const built = {
+      lines: [{ lineOrder: 1, description: participants.description, quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    };
+
+    it('books the price as the unit cost when quantity x price is the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$675.00',
+        extractedInvoiceLines: [participants]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-single-price/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+        { ...participants, unitCost: '$75.00', totalPrice: '$675.00' }
+      ]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines[0]).toMatchObject({ quantity: 9, unitCost: 75, extendedAmount: 675 });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Line price review: "Bank of America x Golf with Us/First Tee Programming Part..." prints quantity 9 and one price of $75.00.');
+      expect(notes).toContain('Qty: 9 | Total: $75.00');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([expect.stringContaining('Line price review:')]);
+      expect(slackDetails.chargeCheck).toBeUndefined();
+    });
+
+    it('keeps the line total when it is the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$75.00',
+        extractedInvoiceLines: [participants]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-single-price-total/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([participants]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+
+    it('keeps the amount mismatch when neither reading reconciles', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$700.00',
+        extractedInvoiceLines: [participants]
+      });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-single-price-neither/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([participants]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+  });
+
   it('should not add a line total review note when lines match the amount due', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
