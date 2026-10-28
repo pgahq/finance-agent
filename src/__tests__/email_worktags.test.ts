@@ -163,6 +163,10 @@ describe('budgetSplitOptions', () => {
       .toEqual({ budgetSplitBaseCents: 92450, budgetSplitGrossCents: 100000 });
   });
 
+  it('bases the split on the printed amount due of a remaining-balance invoice, not the contract total', () => {
+    expect(budgetSplitOptions({ charges: { amountDue: '$5,909.50' } })).toEqual({ budgetSplitBaseCents: 590950, budgetSplitGrossCents: 590950 });
+  });
+
   it('blocks splits for all-freight invoices, withheld charges, and unreadable amounts due', () => {
     expect(budgetSplitOptions({ charges, freightAsLines: true }).budgetSplitBlockedReason).toContain('all-freight');
     expect(budgetSplitOptions({ charges, chargeWithheld: true }).budgetSplitBlockedReason).toContain('could not be read');

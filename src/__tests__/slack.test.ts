@@ -389,6 +389,20 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Deposit*\n• Deposit or partial payment not applied: no PO line is for $34,429.50.');
   });
 
+  it('shows a remaining-balance invoice under Amount Due and in its own section', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-471692',
+      extracted: { amountDue: '$5,909.50', amountDueNote: 'remaining balance of $23,887.00' },
+      balanceInvoice: ['Remaining-balance invoice not applied: no PO line is for $5,909.50.'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Amount Due* → $5,909.50 (remaining balance of $23,887.00)');
+    expect(texts).toContain('*Balance invoice*\n• Remaining-balance invoice not applied: no PO line is for $5,909.50.');
+    expect(texts).not.toContain('"balanceInvoice"');
+  });
+
   it('lists each budget the invoice was split into on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

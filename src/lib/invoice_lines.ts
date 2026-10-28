@@ -1976,6 +1976,8 @@ const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d
 const YEAR_THEN_MONTH = new RegExp(String.raw`\b(20\d{2})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
 // US dates (MM/DD/YYYY) are read before MM/YYYY, which must not start inside a date ("03/01/2026").
 const NUMERIC_DATE = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(20\d{2})(?![\d/])/;
+// A two-digit year ("09/09/26") needs all three parts, so a fraction or size ("1/2", "3/26") is never a date.
+const NUMERIC_DATE_SHORT_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(\d{2})(?![\d/])/;
 const NUMERIC_MONTH_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(20\d{2})(?![\d/])/;
 
 interface StatedMonth {
@@ -2003,6 +2005,11 @@ function statedMonth(raw: string | null | undefined): StatedMonth | undefined {
   const date = text.match(NUMERIC_DATE);
   if (date) {
     const [year, month, day] = [Number(date[3]), Number(date[1]), Number(date[2])];
+    return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
+  }
+  const shortYearDate = text.match(NUMERIC_DATE_SHORT_YEAR);
+  if (shortYearDate) {
+    const [year, month, day] = [2000 + Number(shortYearDate[3]), Number(shortYearDate[1]), Number(shortYearDate[2])];
     return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
   }
   const numeric = text.match(NUMERIC_MONTH_YEAR);
@@ -2035,7 +2042,7 @@ function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
   return unitCost == null ? undefined : toCents(unitCost * line.quantity);
 }
 
-export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost';
+export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost' | 'hours_by_rate';
 
 export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
   lines: T[];
@@ -2045,11 +2052,21 @@ export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
   note?: string;
 }
 
-const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
+const KEEP_REASON_TEXT: Record<Exclude<RepeatedTableKeepReason, 'hours_by_rate'>, string> = {
   purchase_order: 'its lines match open PO lines by amount and service period',
   service_period: 'its lines state the service period',
   unit_cost: 'its quantities and unit costs reproduce the line totals to the cent',
 };
+
+function keepReasonText(reason: RepeatedTableKeepReason, removedTables: number[]): string {
+  if (reason !== 'hours_by_rate') return KEEP_REASON_TEXT[reason];
+  return `its rows itemize the same hours at the same rates as ${removedTables.length === 1 ? 'table' : 'tables'} ${removedTables.join(', ')}`;
+}
+
+export interface RepeatedTableOptions {
+  /** The line-table total the document prints (`extractedLineSubtotal`), when it prints one. */
+  lineSubtotal?: { label?: string | null; amount?: string | null } | null;
+}
 
 interface TableCandidate<T> {
   tableNumber: number;
@@ -2084,6 +2101,36 @@ function maxPoLineMatches<T extends ExtractedInvoiceLine>(table: TableCandidate<
   return candidates.reduce((matches, _, row) => matches + (assign(row, new Set()) ? 1 : 0), 0);
 }
 
+// The hours a table bills at each printed rate, as one comparable string. Undefined unless every row has
+// a positive quantity and a rate with no more than two decimals whose product is the row's total to the
+// cent, so a back-computed rate or a row with no hours never counts as an itemization.
+function hoursByRateSignature<T extends ExtractedInvoiceLine>(table: TableCandidate<T>): string | undefined {
+  const hoursByRate = new Map<string, number>();
+  for (let index = 0; index < table.lines.length; index += 1) {
+    const { quantity, unitCost: printedRate } = table.lines[index];
+    const rate = printedRate ? parseExtractedUnitCost(printedRate) : undefined;
+    if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return undefined;
+    if (rate == null || roundToDecimals(rate, AMOUNT_DECIMALS) !== rate) return undefined;
+    if (toCents(quantity * rate) !== table.lineCents[index]) return undefined;
+    const key = rate.toFixed(AMOUNT_DECIMALS);
+    hoursByRate.set(key, (hoursByRate.get(key) ?? 0) + Math.round(quantity * 1e6));
+  }
+  return [...hoursByRate.entries()].sort(([a], [b]) => Number(a) - Number(b)).map(([rate, hours]) => `${rate}:${hours}`).join('|');
+}
+
+// A summary of timekeepers beside the dated time entries bills the same hours twice. Only when every table
+// itemizes identical hours at identical rates does the table with the most rows stand for the work; two real charges would not repeat each other's hours at each rate.
+function keepItemizedTable<T extends ExtractedInvoiceLine>(
+  tables: TableCandidate<T>[],
+  candidates: TableCandidate<T>[]
+): TableCandidate<T> | undefined {
+  const signatures = tables.map(hoursByRateSignature);
+  if (!signatures[0] || signatures.some(signature => signature !== signatures[0])) return undefined;
+  const mostRows = Math.max(...candidates.map(table => table.lines.length));
+  const itemized = candidates.filter(table => table.lines.length === mostRows);
+  return itemized.length === 1 ? itemized[0] : undefined;
+}
+
 function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
   purchaseOrderLines: PurchaseOrderLine[]
@@ -2110,9 +2157,10 @@ function keepTable<T extends ExtractedInvoiceLine>(
     remaining = remaining.filter((_, index) => scores[index] === best);
     if (remaining.length === 1) return { table: remaining[0], reason };
   }
-  // When nothing tells the tables apart, a misread amount due could make two real charges look
-  // like a repeat, so no table is removed.
-  return undefined;
+  // When nothing else tells the tables apart, a misread amount due could make two real charges look
+  // like a repeat, so a table is removed only on proof that the tables bill the same hours at the same rates.
+  const itemized = keepItemizedTable(tables, remaining);
+  return itemized ? { table: itemized, reason: 'hours_by_rate' } : undefined;
 }
 
 // Some invoices print the same charges twice, for example an hourly line-item table plus a monthly
@@ -2122,7 +2170,8 @@ function keepTable<T extends ExtractedInvoiceLine>(
 export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   lines: T[],
   charges: LineTotalCharges,
-  purchaseOrderLines: PurchaseOrderLine[] = []
+  purchaseOrderLines: PurchaseOrderLine[] = [],
+  options: RepeatedTableOptions = {}
 ): RepeatedLineTables<T> {
   const unchanged: RepeatedLineTables<T> = { lines, removed: [] };
   if (lines.length < 2) return unchanged;
@@ -2152,6 +2201,13 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
   const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
   if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+  // A printed line total that is not the tables' total says the amount due or the tables were misread, or that
+  // both tables are real charges, so nothing is removed.
+  const printedSubtotalText = options.lineSubtotal?.amount?.trim();
+  if (printedSubtotalText) {
+    const printedSubtotal = parseCanonicalChargeAmount(printedSubtotalText);
+    if (printedSubtotal == null || toCents(printedSubtotal) !== expected.expectedCents) return unchanged;
+  }
   // Tables that state different months (a prior month's balance beside this month's charge) are
   // separate charges, not a restatement. A table that states no month, like an hourly table, can
   // still restate one that does.
@@ -2179,7 +2235,7 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${listed.join(', ')} because`
     + ` ${removedTables.length === 1 ? `table ${removedTables[0]} repeats` : `tables ${removedTables.join(', ')} repeat`}`
     + ` the charges in table ${kept.tableNumber}: each table totals ${formatCents(expected.expectedCents)},`
-    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${KEEP_REASON_TEXT[reason]}.`;
+    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${keepReasonText(reason, removedTables)}.`;
 
   return { lines: keptLines, removed, keptTable: kept.tableNumber, keepReason: reason, note };
 }

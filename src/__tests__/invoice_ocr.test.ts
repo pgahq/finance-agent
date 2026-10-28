@@ -72,6 +72,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }, { label: 'Discount 10%', amount: null }],
   extractedLineSubtotal: null,
   extractedPartialPayment: null,
+  extractedPriorPayments: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: null,
@@ -124,6 +125,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedSummaryCharges: [{ label: ' Decoration ', amount: ' $5.00 ' }, { label: '', amount: '$2.00' }, { label: 'Discount 10%', amount: '' }],
   extractedLineSubtotal: { label: '', amount: '' },
   extractedPartialPayment: { label: '', percent: '', amount: '' },
+  extractedPriorPayments: [],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
   extractedSupplierReference: '',
@@ -185,6 +187,7 @@ const matchingResult: InvoiceMatchingResult = {
   extractedPaymentTerms: { name: 'Due on receipt', workdayId: 'Immediate' },
   emailWorktags: null,
   emailBudgetSplits: null,
+  emailBalanceDue: null,
 };
 
 describe('invoice OCR pass', () => {
@@ -533,6 +536,28 @@ describe('invoice OCR pass', () => {
         extractedLineSubtotal: { label: 'Sub Total', amount: '' },
         extractedPartialPayment: { label: '', percent: '', amount: '' },
       }))).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
+    });
+
+    it('normalizes printed prior payments, dropping rows without an amount, and tolerates an older response', () => {
+      const normalized = normalizeInvoiceOcrResult(response({
+        extractedPriorPayments: [
+          { label: ' Payments Received ', amount: ' $17,977.50 ' },
+          { label: 'Blank', amount: '' },
+        ],
+      }));
+      expect(normalized.extractedPriorPayments).toEqual([{ label: 'Payments Received', amount: '$17,977.50' }]);
+      expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [] })).extractedPriorPayments).toBeNull();
+      const { extractedPriorPayments: _payments, ...older } = ocrResponse;
+      expect(normalizeInvoiceOcrResult(older as InvoiceOcrResponse).extractedPriorPayments).toBeNull();
+    });
+
+    it('carries prior payments and the email balance through the merge, and is empty without OCR', () => {
+      const payments = [{ label: 'Payments Received', amount: '$17,977.50' }];
+      const emailBalanceDue = { amount: '$5,909.50', phrase: 'remaining balance' };
+      const merged = mergeInvoiceEnrichment({ ...matchingResult, emailBalanceDue }, { ...ocrResult, extractedPriorPayments: payments });
+      expect(merged.extractedPriorPayments).toEqual(payments);
+      expect(merged.emailBalanceDue).toEqual(emailBalanceDue);
+      expect(mergeInvoiceEnrichment({ ...matchingResult, emailBalanceDue }, undefined)).toMatchObject({ extractedPriorPayments: null, emailBalanceDue });
     });
 
     it('tolerates an older response without the new fields', () => {

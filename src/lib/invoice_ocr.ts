@@ -189,6 +189,7 @@ export function mergeInvoiceEnrichment(
       extractedLineSubtotal: null,
       extractedRowsAddedOnSecondRead: null,
       extractedPartialPayment: null,
+      extractedPriorPayments: null,
       extractedPurchaseOrderNumber: null,
       extractedAccountNumber: null,
       extractedSupplierReference: null,
@@ -231,6 +232,7 @@ export function mergeInvoiceEnrichment(
     extractedLineSubtotal: ocr.extractedLineSubtotal,
     extractedRowsAddedOnSecondRead: ocr.extractedRowsAddedOnSecondRead ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
+    extractedPriorPayments: ocr.extractedPriorPayments,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
     extractedAccountNumber: ocr.extractedAccountNumber,
     extractedSupplierReference: ocr.extractedSupplierReference,
@@ -244,5 +246,6 @@ export function mergeInvoiceEnrichment(
     extractedInvoiceLines: ocr.extractedInvoiceLines,
     emailWorktags: matching.emailWorktags,
     emailBudgetSplits: matching.emailBudgetSplits ?? null,
+    emailBalanceDue: matching.emailBalanceDue ?? null,
   };
 }
