@@ -202,8 +202,9 @@ describe('invoice numbers read from a PDF with several invoices', () => {
   it('asks the reader for every separate invoice number and for header values from the first invoice only', () => {
     expect(invoiceOcrPrompt).toContain('`invoiceNumbersInDocument`');
     expect(invoiceOcrPrompt).toContain('one invoice per month, one per page');
-    expect(invoiceOcrPrompt).toContain('extract Parts 3 through 9 from the first invoice only');
+    expect(invoiceOcrPrompt).toContain('extract Parts 1 through 9 from the first invoice only');
     expect(invoiceOcrPrompt).toContain('Do not list a number that an invoice only mentions');
+    expect(invoiceOcrPrompt).toContain('List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, or delivery ticket');
     expect(Object.keys(InvoiceOcrSchema.shape)).toContain('invoiceNumbersInDocument');
   });
 
