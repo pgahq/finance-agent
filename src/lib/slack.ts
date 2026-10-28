@@ -317,6 +317,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const balanceInvoice = Array.isArray(details.balanceInvoice)
+    ? details.balanceInvoice.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : [];
+  if (balanceInvoice.length && details.skipped !== true) {
+    const lines = balanceInvoice.map((line) => `• ${escapeSlackText(line)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Balance invoice*\n${lines.join('\n')}`) }
+    });
+  }
+
   const budgetSplit = Array.isArray(details.budgetSplit)
     ? details.budgetSplit.filter((line): line is string => typeof line === 'string' && line.length > 0)
     : [];

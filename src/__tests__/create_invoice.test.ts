@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 // vars it needs, resets the module registry, and re-requires the module (and its mocked
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
+import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
 jest.mock('@pga/lambda-env', () => ({
@@ -2247,6 +2248,108 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Deposit invoice');
       expect(notes).not.toContain('Line subtotal review');
       expect(mocks.slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('deposit');
+    });
+  });
+
+  describe('remaining-balance invoice (SUPIN-471692)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const balanceEnrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...supin471692Header,
+      extractedInvoiceLines: supin471692Rows,
+      ...overrides,
+    });
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')),
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+      })),
+      appliedFallbacks,
+    });
+    const run = async (enrichment: Record<string, unknown>, po?: any) => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(po);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment);
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-balance/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('submits one $5,909.50 line as a draft instead of the $23,887.00 contract lines', async () => {
+      const { workday, invoiceLines, slack } = await run(balanceEnrichment());
+
+      const [candidates, , , , , , quantityDisplayed] = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+      expect(candidates).toEqual([expect.objectContaining({
+        description: 'Total Contract Price (balance due of $23,887.00)',
+        quantity: 1,
+        totalPrice: '$5,909.50',
+      })]);
+      expect(quantityDisplayed).toBe(true);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 5909.5 })]);
+      expect(submitArgs.extractedAmountDue).toBe('$5,909.50');
+
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Balance invoice: "Total Contract Price" is $23,887.00 but the amount due is $5,909.50, and the email calls $5,909.50 the remaining balance (3 printed lines).');
+      expect(notes).toContain('Invoice Lines (from document)');
+      expect(notes).not.toContain('Deposit invoice');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.balanceInvoice).toEqual(['Total Contract Price: $23,887.00 contract total, $5,909.50 due (remaining balance per the email). Submitted as one balance line, not the printed lines.']);
+      expect(slackDetails.extracted.amountDueNote).toBe('remaining balance of $23,887.00');
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails.lineCount).toBe(1);
+    });
+
+    it('applies from printed payments that account for the gap, with no email signal', async () => {
+      const { workday, invoiceLines } = await run(balanceEnrichment({ emailBalanceDue: null, extractedPriorPayments: supin471692Payments }));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain('Balance invoice: "Total Contract Price" is $23,887.00, and $17,977.50 was already paid');
+    });
+
+    it('leaves the printed lines alone with no payment or email signal', async () => {
+      const { workday, invoiceLines, slack } = await run(balanceEnrichment({ emailBalanceDue: null }));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(3);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).not.toContain('Balance invoice');
+      expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('balanceInvoice');
+    });
+
+    it('submits the printed lines and says why when the PO has no line for the balance', async () => {
+      const po = {
+        documentNumber: 'PO-472750',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'L1', purchaseOrderDocumentNumber: 'PO-472750', quantity: 1, unitCost: 23887 }],
+      };
+      const { workday, invoiceLines, slack } = await run(balanceEnrichment({ extractedPurchaseOrderNumber: 'PO-472750' }), po);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(3);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain('Balance invoice: This looks like a remaining-balance invoice, but no PO line is for $5,909.50, so the printed lines were submitted unchanged.');
+      expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual(['Remaining-balance invoice not applied: no PO line is for $5,909.50.']);
+    });
+
+    it('still books the balance when the PO could not be loaded', async () => {
+      const { invoiceLines } = await run(balanceEnrichment({ extractedPurchaseOrderNumber: 'PO-472750' }), undefined);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ totalPrice: '$5,909.50' })]);
+    });
+
+    it('does not apply to a deposit invoice, which keeps its own plan', async () => {
+      const { workday } = await run(balanceEnrichment({
+        extractedAmountDue: '$21,498.30',
+        extractedPartialPayment: { label: 'Deposit Due', percent: '90%', amount: '$21,498.30' },
+        emailBalanceDue: { amount: '$21,498.30', phrase: 'remaining balance' },
+      }));
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Deposit invoice:');
+      expect(notes).not.toContain('Balance invoice');
     });
   });
 
@@ -4604,6 +4707,41 @@ describe('create_invoice', () => {
         expect.any(Number),
         expect.objectContaining({ updated: true, invoiceNumber: 'SUPIN-1' }),
       );
+    });
+
+    it('builds a remaining-balance line on a resend update the same way as on create (SUPIN-471692)', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockImplementation((lines: any[]) => Promise.resolve({
+        lines: lines.map((line, index) => ({
+          lineOrder: index + 1,
+          description: line.description,
+          quantity: line.quantity,
+          unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')),
+          extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        })),
+        appliedFallbacks: {},
+      }));
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin471692Header,
+        extractedInvoiceLines: supin471692Rows,
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 5909.5 })]);
+      expect(updateArgs.buildNotes([])).toContain('Balance invoice: "Total Contract Price" is $23,887.00 but the amount due is $5,909.50');
     });
 
     it('sends the printed due date on a resend update', async () => {
