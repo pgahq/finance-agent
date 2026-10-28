@@ -1136,7 +1136,7 @@ async function processInvoiceCluster(
         taxAmount: extractedTaxAmount,
         freightCleared,
         taxCleared,
-      }, poClosedForInvoicing ? undefined : poLines);
+      }, poClosedForInvoicing ? undefined : poLines, { lineSubtotal: result.extractedLineSubtotal });
     if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
     // Rows are compared as read, before freight, tax, and repeated tables are taken out; a removed repeated table
     // would otherwise look like rows read twice.

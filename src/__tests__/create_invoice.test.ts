@@ -924,7 +924,7 @@ describe('create_invoice', () => {
     expect(submitArgs.buildNotes([])).not.toContain('Line total review');
   });
 
-  it('should drop the LevelBlue table that repeats the charge and keep the Sep\'26 row', async () => {
+  it('should drop the LevelBlue table that repeats the charge and keep the Sep\'26 row (SUPIN-465991)', async () => {
     const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
     const monthly = { description: "PSO-RISK-ADVISORY - Sep'26 - 5,500 per month", quantity: 1, unitCost: '5,500.00', totalPrice: '5,500.00', hasDiscount: null, tableNumber: 2 };
     invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
@@ -959,6 +959,112 @@ describe('create_invoice', () => {
     expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
       expect.stringMatching(/^Repeated line review: Removed line "PSO-RISK-ADVISORY - Consultant"/),
     ]);
+  });
+
+  describe('SUPIN-471364 timekeeper summary beside the time entries', () => {
+    const summaryRows = [
+      { description: 'Deutsch, Ben', quantity: 0.9, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+      { description: 'Oram, Jon', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+    ];
+    const entryRows = [
+      { description: '09/09/26 - Deutsch, Ben - Update meeting.', quantity: 0.4, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/09/26 - Oram, Jon - Conf call with working group', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/15/26 - Deutsch, Ben - Review of partner add-on deck.', quantity: 0.5, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+    ];
+    const mergedEntries = [
+      { lineOrder: 1, description: entryRows[0].description, quantity: 0.4, unitCost: 1828, extendedAmount: 731.2 },
+      { lineOrder: 2, description: entryRows[1].description, quantity: 0.3, unitCost: 2525, extendedAmount: 757.5 },
+      { lineOrder: 3, description: entryRows[2].description, quantity: 0.5, unitCost: 1828, extendedAmount: 914 },
+    ];
+
+    function arrange(extractedInvoiceLines: unknown[], extractedLineSubtotal = { label: 'Total Legal Fees', amount: '$2,402.70' }) {
+      const mocks = freshRequire();
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        extractedAmountDue: '$2,402.70',
+        extractedLineSubtotal,
+        invoiceLineQuantityDisplayed: true,
+        extractedInvoiceLines,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: mergedEntries,
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+      return mocks;
+    }
+
+    it('submits only the dated time entries and explains the removed summary rows', async () => {
+      const { processor, workday, invoiceLines, slack } = arrange([...summaryRows, ...entryRows]);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-law-firm/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(entryRows);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(
+        'Repeated line review: Removed lines "Deutsch, Ben" ($1,645.20), "Oram, Jon" ($757.50) because table 1 repeats the charges in table 2: each table totals $2,402.70, the amount due less freight and tax. Kept table 2 because its lines state the service period.'
+      );
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+      expect(slack.notifyResult.mock.calls[0][3].lineReview).toEqual([
+        expect.stringMatching(/^Repeated line review: Removed lines "Deutsch, Ben"/),
+      ]);
+    });
+
+    it('keeps the undated time entries on the same hours at the same rates', async () => {
+      const undated = entryRows.map(row => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') }));
+      const { processor, workday, invoiceLines } = arrange([...summaryRows, ...undated]);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-law-firm-undated/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(undated);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+        'Kept table 2 because its rows itemize the same hours at the same rates as table 1.'
+      );
+    });
+
+    it.each([
+      ['dated', (row: { description: string }) => row],
+      ['undated', (row: { description: string }) => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') })],
+    ])('keeps every line and warns AP when the printed line total disagrees with %s time entries', async (_label, toEntry) => {
+      const entries = entryRows.map(toEntry);
+      const { processor, workday, invoiceLines } = arrange(
+        [...summaryRows, ...entries],
+        { label: 'Total Legal Fees', amount: '$4,805.40' }
+      );
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [...mergedEntries, { lineOrder: 4, description: 'Deutsch, Ben', quantity: 0.9, unitCost: 1828, extendedAmount: 1645.2 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-law-firm-subtotal/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([...summaryRows, ...entries]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).not.toContain('Repeated line review');
+      expect(notes).toContain('Line total review:');
+    });
+
+    it('submits only the priced summary when the time entries print no rate or amount', async () => {
+      const unpriced = entryRows.map(row => ({ ...row, unitCost: null, totalPrice: null }));
+      const { processor, workday, invoiceLines } = arrange([...summaryRows, ...unpriced]);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [
+          { lineOrder: 1, description: 'Deutsch, Ben', quantity: 0.9, unitCost: 1828, extendedAmount: 1645.2 },
+          { lineOrder: 2, description: 'Oram, Jon', quantity: 0.3, unitCost: 2525, extendedAmount: 757.5 },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map()
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-law-firm-unpriced/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual(summaryRows);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Repeated line review');
+    });
   });
 
   it('should keep both LevelBlue tables when extraction dropped a row without an amount', async () => {
