@@ -1089,6 +1089,7 @@ async function processInvoiceCluster(
       freightCleared: headerFreightCleared,
       taxCleared: headerTaxCleared,
       chargeWithheld,
+      summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
     });

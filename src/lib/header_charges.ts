@@ -580,6 +580,8 @@ export interface SinglePriceChargeContext {
   freightCleared: boolean;
   taxCleared: boolean;
   chargeWithheld?: boolean;
+  /** False when the caller will not place totals-block charges (a printed row was dropped), so one cannot close the gap. */
+  summaryChargesPlaceable: boolean;
   printedTaxCharges?: PrintedCharge[] | null;
   printedSummaryCharges?: PrintedSummaryCharge[] | null;
 }
@@ -617,6 +619,8 @@ export function reinterpretSinglePriceLinesForCharges(
       { allowSingleLineFreight: true, removeDuplicates: true }
     );
     if (!reconciliation.unreconciled) return true;
+    // Freight sent as lines is not placed with totals-block charges either.
+    if (!context.summaryChargesPlaceable || reconciliation.freightLineTotal != null) return false;
     return placeSummaryCharges({
       charges: context.printedSummaryCharges,
       amountDue: context.amountDue,

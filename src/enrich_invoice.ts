@@ -342,8 +342,9 @@ async function processInvoice(
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
     // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due.
-    const { lines: extractedLines, note: linePriceNote } = reinterpretSinglePriceLinesForCharges(printedLines, {
+    // when that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
+    // printed ones and the Amount check.
+    const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,
       freight: resolvedFreightAmount,
       tax: resolvedTaxAmount,
@@ -351,9 +352,10 @@ async function processInvoice(
       freightCleared: headerFreightCleared,
       taxCleared: headerTaxCleared,
       chargeWithheld,
+      summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
-    });
+    }) : { lines: printedLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.
     const restoredFreight = restoreClearedFreightFromRows(canModifyInvoice && submitSupplierWID ? extractedLines : [], {

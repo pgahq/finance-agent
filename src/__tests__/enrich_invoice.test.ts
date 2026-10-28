@@ -541,6 +541,55 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([mismatch]);
   });
 
+  it('keeps the printed single price and the Amount check when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Participant fees', quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Participant fees' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$675.00',
+      extractedInvoiceLines: [
+        { description: 'Participant fees', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false }
+      ]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    const notes = annotateSupplierInvoice.mock.calls.at(-1)[1].notes;
+    expect(notes).not.toContain('Line price review');
+    expect(notes).toContain('Amount check:');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toHaveLength(1);
+  });
+
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

@@ -511,7 +511,7 @@ describe('reinterpretSinglePriceLinesForCharges', () => {
     totalPrice: '$75.00',
     hasDiscount: false,
   };
-  const context = { amountDue: '$675.00', freightCleared: false, taxCleared: false };
+  const context = { amountDue: '$675.00', freightCleared: false, taxCleared: false, summaryChargesPlaceable: true };
 
   it('reads the single price as the unit price when quantity x price is the amount due', () => {
     const result = reinterpretSinglePriceLinesForCharges([participants], context);
@@ -576,6 +576,26 @@ describe('reinterpretSinglePriceLinesForCharges', () => {
       [{ ...participants, quantity: 3, totalPrice: '$25.00' }],
       { ...context, amountDue: '$30.00', printedSummaryCharges: [{ label: 'Decoration', amount: '$5.00' }] }
     );
+    expect(result.note).toBeUndefined();
+  });
+
+  it('reads the price as a unit price when a totals-block charge closes the gap and the caller places it', () => {
+    const result = reinterpretSinglePriceLinesForCharges([participants], {
+      ...context,
+      amountDue: '$725.00',
+      printedSummaryCharges: [{ label: 'Service Fee', amount: '$50.00' }],
+    });
+    expect(result.lines[0]).toMatchObject({ unitCost: '$75.00', totalPrice: '$675.00' });
+  });
+
+  it('does not count a totals-block charge the caller will not place', () => {
+    const result = reinterpretSinglePriceLinesForCharges([participants], {
+      ...context,
+      amountDue: '$725.00',
+      summaryChargesPlaceable: false,
+      printedSummaryCharges: [{ label: 'Service Fee', amount: '$50.00' }],
+    });
+    expect(result.lines).toEqual([participants]);
     expect(result.note).toBeUndefined();
   });
 
