@@ -1,6 +1,8 @@
 import {
   chargeAmount,
   formatChargeDollars,
+  isFreightOrHandlingLine,
+  isTaxChargeDescription,
   labelMatchesFreight,
   labelMatchesTax,
   normalizeLabel,
@@ -9,6 +11,7 @@ import {
   parseExtractedUnitCost,
   printable,
   reconcileSubmittedCharges,
+  restoreClearedFreightFromRows,
   signedChargeLineAmount,
   splitFreightLines,
   TAX_CORE_WORDS,
@@ -491,4 +494,141 @@ export function settlePlacedSummaryLines(
     : `${describeExtractedLines(missing)} from the invoice totals ${plural ? 'were' : 'was'} added before line coding, but the submitted lines do not show ${plural ? 'them' : 'it'}. Check the lines before approving.${unlinkedSentence}`;
   const reviewNote = [missingNote, codingNote].filter(Boolean).join(' ') || undefined;
   return { lines, ...(message && { message }), ...(reviewNote && { reviewNote }) };
+}
+
+export interface SinglePriceReinterpretation {
+  lines: ExtractedInvoiceLine[];
+  /** Review sentence naming the lines whose single price was read as a unit price. */
+  note?: string;
+}
+
+// Eligible lines are searched as subsets, so the cap bounds the work (2^8 candidates).
+const SINGLE_PRICE_MAX_ELIGIBLE_LINES = 8;
+
+function wholeCents(amount: number): number | undefined {
+  const cents = amount * 100;
+  return Math.abs(cents - Math.round(cents)) < 1e-6 ? Math.round(cents) : undefined;
+}
+
+// Quantity above 1, no unit price, one positive price printed as the total, and a product that is a whole-cent amount.
+function singlePriceLineTotalCents(line: ExtractedInvoiceLine): number | undefined {
+  const quantity = line.quantity;
+  if (quantity == null || !Number.isFinite(quantity) || quantity <= 1) return undefined;
+  if (line.unitCost?.trim() || line.hasDiscount === true) return undefined;
+  if (isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return undefined;
+  const price = line.totalPrice ? chargeAmount(line.totalPrice) : undefined;
+  if (price == null || price <= 0) return undefined;
+  return wholeCents(quantity * price);
+}
+
+function describeSinglePriceLines(lines: ExtractedInvoiceLine[]): string {
+  return lines
+    .map(line => {
+      const price = chargeAmount(line.totalPrice) ?? 0;
+      return `"${printable(line.description)}" prints quantity ${line.quantity} and one price of ${formatChargeDollars(price)}`;
+    })
+    .join('; ');
+}
+
+/**
+ * A line that prints a quantity and one price may print that price per unit, with the line total
+ * left off. OCR then reads it as the line total (unit cost null), and the line submits amount-only
+ * at the unit price. When the lines as read do not reconcile with the amount due but reading the
+ * price as a unit price does, the line total becomes quantity x price. `reconciles` is the caller's
+ * check against the amount due; the search takes a reading only when exactly one set of lines
+ * reconciles, so an ambiguous or unreconcilable invoice keeps its mismatch flag.
+ */
+export function reinterpretSinglePriceLines(
+  lines: ExtractedInvoiceLine[],
+  reconciles: (candidate: ExtractedInvoiceLine[]) => boolean
+): SinglePriceReinterpretation {
+  const unchanged: SinglePriceReinterpretation = { lines };
+  const eligible = lines.flatMap((line, index) => {
+    const cents = singlePriceLineTotalCents(line);
+    return cents == null ? [] : [{ index, cents }];
+  });
+  if (eligible.length === 0 || eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES) return unchanged;
+  if (reconciles(lines)) return unchanged;
+
+  const apply = (mask: number): ExtractedInvoiceLine[] => {
+    const chosen = new Map(eligible.filter((_, bit) => mask & (1 << bit)).map(entry => [entry.index, entry.cents]));
+    return lines.map((line, index) => {
+      const cents = chosen.get(index);
+      return cents == null ? line : { ...line, unitCost: line.totalPrice, totalPrice: formatChargeDollars(cents / 100) };
+    });
+  };
+  const matches: number[] = [];
+  for (let mask = 1; mask < 1 << eligible.length; mask += 1) {
+    if (reconciles(apply(mask))) matches.push(mask);
+  }
+  if (matches.length !== 1) return unchanged;
+
+  const reinterpreted = apply(matches[0]);
+  const changed = lines.filter((_, index) => reinterpreted[index] !== lines[index]);
+  return {
+    lines: reinterpreted,
+    note: `${describeSinglePriceLines(changed)}. Read as ${changed.length > 1 ? 'line totals' : 'a line total'}, the lines do not add up to the amount due, but reading ${changed.length > 1 ? 'those prices' : 'that price'} as ${changed.length > 1 ? 'unit prices' : 'a unit price'} does, so the line ${changed.length > 1 ? 'totals were' : 'total was'} set to quantity x price.`,
+  };
+}
+
+export interface SinglePriceChargeContext {
+  amountDue?: string | null;
+  /** Header freight and tax as resolveHeaderChargeAmounts returned them, before any restore or added charge. */
+  freight?: string;
+  tax?: string;
+  taxLabel?: string | null;
+  freightCleared: boolean;
+  taxCleared: boolean;
+  chargeWithheld?: boolean;
+  /** False when the caller will not place totals-block charges (a printed row was dropped), so one cannot close the gap. */
+  summaryChargesPlaceable: boolean;
+  printedTaxCharges?: PrintedCharge[] | null;
+  printedSummaryCharges?: PrintedSummaryCharge[] | null;
+}
+
+/**
+ * reinterpretSinglePriceLines against the same gap-closing steps create and enrich run next:
+ * restored freight, duplicate freight and tax lines, printed tax-like charges, and totals-block
+ * charges. A reading counts as reconciled only when none of those is still needed.
+ */
+export function reinterpretSinglePriceLinesForCharges(
+  lines: ExtractedInvoiceLine[],
+  context: SinglePriceChargeContext
+): SinglePriceReinterpretation {
+  if (context.chargeWithheld || chargeAmount(context.amountDue) == null) return { lines };
+  const reconciles = (candidate: ExtractedInvoiceLine[]): boolean => {
+    const restored = restoreClearedFreightFromRows(candidate, {
+      amountDue: context.amountDue ?? undefined,
+      tax: context.tax,
+      freightCleared: context.freightCleared,
+    });
+    const freight = restored.freight ?? context.freight;
+    const taxCharges = applyPrintedTaxCharges({
+      charges: context.printedTaxCharges,
+      amountDue: context.amountDue,
+      lines: candidate,
+      freight,
+      tax: context.tax,
+      taxLabel: context.taxLabel,
+      taxCleared: context.taxCleared,
+    });
+    const { merchandiseLines } = splitFreightLines(candidate);
+    const reconciliation = reconcileSubmittedCharges(
+      merchandiseLines,
+      { amountDue: context.amountDue, freight, tax: taxCharges.taxAmount },
+      { allowSingleLineFreight: true, removeDuplicates: true }
+    );
+    if (!reconciliation.unreconciled) return true;
+    if (!context.summaryChargesPlaceable) return false;
+    return placeSummaryCharges({
+      charges: context.printedSummaryCharges,
+      amountDue: context.amountDue,
+      lines: reconciliation.lines,
+      freight,
+      tax: taxCharges.taxAmount,
+      freightCleared: context.freightCleared && restored.freight == null,
+      taxCleared: taxCharges.taxCleared,
+    }).lines.length > 0;
+  };
+  return reinterpretSinglePriceLines(lines, reconciles);
 }

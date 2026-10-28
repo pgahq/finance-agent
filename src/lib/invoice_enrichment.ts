@@ -372,6 +372,10 @@ export function formatChargeReviewNotes(reviewNote: string | undefined): string 
   return reviewNote ? `\n\nFreight/Tax review: ${reviewNote}` : '';
 }
 
+export function formatLinePriceReviewNotes(note: string | undefined): string {
+  return note ? `\n\nLine price review: ${note}` : '';
+}
+
 export function formatLineTotalReviewNotes(reviewNote: string | undefined): string {
   return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
 }

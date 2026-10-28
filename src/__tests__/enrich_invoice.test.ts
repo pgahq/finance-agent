@@ -541,6 +541,55 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([mismatch]);
   });
 
+  it('keeps the printed single price and the Amount check when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Participant fees', quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Participant fees' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$675.00',
+      extractedInvoiceLines: [
+        { description: 'Participant fees', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false }
+      ]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    const notes = annotateSupplierInvoice.mock.calls.at(-1)[1].notes;
+    expect(notes).not.toContain('Line price review');
+    expect(notes).toContain('Amount check:');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toHaveLength(1);
+  });
+
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -1445,6 +1494,63 @@ describe('enrich_invoice', () => {
     expect(params.buildNotes([])).toContain(`Amount check: ${note}`);
     expect(params.buildNotes([])).not.toContain('Line total review');
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
+  });
+
+  it('reads the SUPIN-471803 single price as the unit price on update when quantity x price is the amount due', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const description = 'Bank of America x Golf with Us/First Tee Programming Participant Fees';
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'First Tee - Greater Detroit', memo: 'golf programming participant fees' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$675.00',
+      extractedFreightAmount: null,
+      extractedTaxAmount: null,
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description, quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description, quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ description, quantity: 9, unitCost: '$75.00', totalPrice: '$675.00' })
+    ]);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Line price review: "Bank of America x Golf with Us/First Tee Programming Part..." prints quantity 9 and one price of $75.00.');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
   });
 
   it('adds the SUPIN-470485 totals-block Decoration $5.00 as a line on update', async () => {
