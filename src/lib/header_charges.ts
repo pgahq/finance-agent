@@ -619,8 +619,7 @@ export function reinterpretSinglePriceLinesForCharges(
       { allowSingleLineFreight: true, removeDuplicates: true }
     );
     if (!reconciliation.unreconciled) return true;
-    // Freight sent as lines is not placed with totals-block charges either.
-    if (!context.summaryChargesPlaceable || reconciliation.freightLineTotal != null) return false;
+    if (!context.summaryChargesPlaceable) return false;
     return placeSummaryCharges({
       charges: context.printedSummaryCharges,
       amountDue: context.amountDue,
