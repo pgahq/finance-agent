@@ -3,10 +3,12 @@ import {
   formatPartialPaymentNotes,
   lineSubtotalReviewNote,
   lineSubtotalShortfallCents,
+  planBalanceInvoice,
   planPartialPayment,
   secondReadRowsNote,
   selectDepositPoLine,
   sumExtractedLineCents,
+  type BalanceInvoiceInput,
   type PartialPaymentInput,
 } from '../lib/partial_payment.js';
 import {
@@ -15,6 +17,8 @@ import {
   supin470584ProductionRows,
   supin470584Rows,
 } from './fixtures/supin_470584.js';
+
+import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
 
 const poLines = supin470584PoLines as any[];
 
@@ -248,5 +252,136 @@ describe('planPartialPayment', () => {
     }))!;
     expect(plan.applied).toBe(true);
     expect(plan.line?.description).toBe('Advance Deposit Due (part of $38,255.00)');
+  });
+});
+
+describe('planBalanceInvoice', () => {
+  const balanceInput = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
+    priorPayments: null,
+    emailBalanceDue: supin471692Header.emailBalanceDue,
+    lineSubtotal: supin471692Header.extractedLineSubtotal,
+    amountDue: supin471692Header.extractedAmountDue,
+    lines: supin471692Rows,
+    poLines: undefined,
+    ...overrides,
+  });
+
+  it('replaces the SUPIN-471692 lines with one balance line when the email calls the amount due the remaining balance', () => {
+    const plan = planBalanceInvoice(balanceInput())!;
+
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.line).toEqual({
+      description: 'Total Contract Price (balance due of $23,887.00)',
+      quantity: 1,
+      unitCost: '$5,909.50',
+      totalPrice: '$5,909.50',
+      hasDiscount: null,
+      tableNumber: 1,
+    });
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.amountDueNote).toBe('remaining balance of $23,887.00');
+    expect(plan.note).toContain('"Total Contract Price" is $23,887.00 but the amount due is $5,909.50, and the email calls $5,909.50 the remaining balance (3 printed lines).');
+    expect(plan.note).toContain('The document prints no payments that account for the difference.');
+    expect(plan.note).toContain('submitted as one $5,909.50 line instead of the printed lines');
+    expect(plan.slackLines).toEqual(['Total Contract Price: $23,887.00 contract total, $5,909.50 due (remaining balance per the email). Submitted as one balance line, not the printed lines.']);
+  });
+
+  it('applies on printed payments alone when they account for the gap to the cent', () => {
+    const plan = planBalanceInvoice(balanceInput({ emailBalanceDue: null, priorPayments: supin471692Payments }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('"Total Contract Price" is $23,887.00, and $17,977.50 was already paid, which leaves the $5,909.50 amount due (3 printed lines).');
+    expect(plan.slackLines[0]).toContain('after $17,977.50 paid');
+  });
+
+  it('adds several printed payment rows together', () => {
+    const plan = planBalanceInvoice(balanceInput({
+      emailBalanceDue: null,
+      priorPayments: [{ label: 'Deposit', amount: '$10,000.00' }, { label: 'Second payment', amount: '($7,977.50)' }],
+    }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('$17,977.50 was already paid');
+  });
+
+  it('uses the extracted rows as the contract total when no line total is printed', () => {
+    const plan = planBalanceInvoice(balanceInput({ lineSubtotal: null }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.description).toBe('Motorcoach transportation - event shuttles (balance due of $23,887.00)');
+  });
+
+  it('does not apply when printed payments do not reconcile and the email does not match', () => {
+    const plan = planBalanceInvoice(balanceInput({
+      emailBalanceDue: null,
+      priorPayments: [{ label: 'Payments Received', amount: '$10,000.00' }],
+    }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.line).toBeUndefined();
+    expect(plan.note).toContain('the printed payments total $10,000.00, which leaves $13,887.00 of the $23,887.00 contract total, not the amount due $5,909.50');
+    expect(plan.note).toContain('so the printed lines were submitted unchanged');
+  });
+
+  it('lets an exact email balance win over payments that do not reconcile', () => {
+    const plan = planBalanceInvoice(balanceInput({ priorPayments: [{ label: 'Payments Received', amount: '$10,000.00' }] }))!;
+    expect(plan.applied).toBe(true);
+  });
+
+  it('is silent with no signal', () => {
+    expect(planBalanceInvoice(balanceInput({ emailBalanceDue: null }))).toBeUndefined();
+    expect(planBalanceInvoice(balanceInput({ emailBalanceDue: { amount: '$5,909.50', phrase: '  ' } }))).toBeUndefined();
+  });
+
+  it('ignores an email balance that is not the printed amount due to the cent', () => {
+    expect(planBalanceInvoice(balanceInput({ emailBalanceDue: { amount: '$5,909.51', phrase: 'remaining balance' } }))).toBeUndefined();
+    expect(planBalanceInvoice(balanceInput({ emailBalanceDue: { amount: 'about $5,900', phrase: 'remaining balance' } }))).toBeUndefined();
+  });
+
+  it('is silent when the lines or contract total do not exceed the amount due', () => {
+    expect(planBalanceInvoice(balanceInput({ amountDue: '$23,887.00' }))).toBeUndefined();
+    expect(planBalanceInvoice(balanceInput({ amountDue: '$30,000.00', emailBalanceDue: { amount: '$30,000.00', phrase: 'balance' } }))).toBeUndefined();
+    expect(planBalanceInvoice(balanceInput({ lines: [supin471692Rows[2]] }))).toBeUndefined();
+    expect(planBalanceInvoice(balanceInput({ amountDue: null }))).toBeUndefined();
+  });
+
+  it('does not apply when tax or freight is also printed', () => {
+    for (const charges of [{ taxAmount: '$100.00' }, { freightAmount: '$50.00' }]) {
+      const plan = planBalanceInvoice(balanceInput(charges))!;
+      expect(plan.applied).toBe(false);
+      expect(plan.note).toContain('tax or freight is also printed');
+      expect(plan.slackLines).toEqual(['Remaining-balance invoice not applied: tax or freight is also printed, and balance invoices with header charges are not booked automatically.']);
+    }
+  });
+
+  describe('with a PO', () => {
+    const balancePo = [
+      { lineOrder: 1, purchaseOrderLineId: 'L1', quantity: 1, unitCost: 17977.5 },
+      { lineOrder: 2, purchaseOrderLineId: 'L2', quantity: 1, unitCost: 5909.5 },
+    ] as any[];
+
+    it('pins the balance line to the PO line with that amount', () => {
+      const plan = planBalanceInvoice(balanceInput({ poLines: balancePo }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([balancePo[1]]);
+    });
+
+    it('does not apply when the PO has lines but none is the balance', () => {
+      const plan = planBalanceInvoice(balanceInput({ poLines: [balancePo[0]] }))!;
+      expect(plan.applied).toBe(false);
+      expect(plan.note).toContain('no PO line is for $5,909.50');
+    });
+
+    it('applies but warns when the only matching PO line is already invoiced', () => {
+      const plan = planBalanceInvoice(balanceInput({ poLines: [balancePo[0], { ...balancePo[1], availableForInvoicing: false }] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.note).toContain('check whether this balance was billed before approving');
+      expect(plan.slackLines).toHaveLength(2);
+    });
+  });
+});
+
+describe('formatPartialPaymentNotes label', () => {
+  it('defaults to the deposit label and takes a balance label', () => {
+    expect(formatPartialPaymentNotes('Text.')).toContain('Deposit invoice: Text.');
+    expect(formatPartialPaymentNotes('Text.', 'Balance invoice')).toContain('Balance invoice: Text.');
+    expect(formatPartialPaymentNotes(undefined, 'Balance invoice')).toBe('');
   });
 });

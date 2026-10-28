@@ -1095,6 +1095,21 @@ describe('applyEmailBudgetSplits', () => {
     });
   });
 
+  it('splits a remaining-balance line into the two budget amounts and rejects the full contract line (SUPIN-471692)', () => {
+    const first: EmailBudgetSplit = { ...recruitment, label: 'First budget', amount: '$5,279.50' };
+    const second: EmailBudgetSplit = { ...brand, label: 'Second budget', amount: '$630.00' };
+    const balanceLine = { ...sponsorshipLine, extendedAmount: 5909.5 };
+    const options = withSplits([first, second], { budgetSplitBaseCents: 590950 });
+
+    const applied = applyEmailBudgetSplits([balanceLine], options, false);
+    expect(applied.lines.map((line) => line.extendedAmount)).toEqual([5279.5, 630]);
+    expect(applied.outcome?.applied).toBe(true);
+
+    const rejected = applyEmailBudgetSplits([{ ...sponsorshipLine, extendedAmount: 23887 }], options, false);
+    expect(rejected.lines).toHaveLength(1);
+    expect(rejected.outcome?.applied).toBe(false);
+  });
+
   it('lets a shared email fund or spend category fill a budget that has none of its own', () => {
     const sharedLine = { ...sponsorshipLine, fundId: 'FUND-Shared', spendCategoryId: 'SC-Shared' };
     const { lines } = applyEmailBudgetSplits(
