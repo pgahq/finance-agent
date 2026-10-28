@@ -156,6 +156,10 @@ so a dropped classification never creates an extra supplier invoice.
 - Parser throw: Slack-then-throw like other processor failures. Async retries
   stay off (`MaximumRetryAttempts: 0`).
 
+## One PDF, several invoices
+
+Clustering works per file: a PDF that bundles several supplier invoices (one per page) is one `supplier_invoice`, so one SUPIN is created from its first invoice and the rest are not entered. The classifier does not look inside the file. Instead OCR lists every invoice number in the primary file and `create_invoice` adds a review note to the Workday note and Slack telling AP to enter the rest manually (see `integrations-and-external-contracts`, "Several invoices in one PDF"). Splitting such a file into one SUPIN per invoice is not implemented.
+
 ## Resends: update instead of duplicating
 
 A conversation can be triggered again after the supplier sends corrected or

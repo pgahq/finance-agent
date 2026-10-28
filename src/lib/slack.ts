@@ -158,6 +158,11 @@ function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): vo
   });
 }
 
+function multipleInvoicesMessage(value: unknown): string | undefined {
+  const message = (value as { message?: unknown } | undefined)?.message;
+  return typeof message === 'string' && message.trim() ? message : undefined;
+}
+
 function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
   const changeLines: string[] = [];
   const fallbackLines: string[] = [];
@@ -271,6 +276,13 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: truncateSlackText(`*Changes*\n${changeLines.map((line) => `• ${line}`).join('\n')}`) }
+    });
+  }
+  const multipleInvoices = multipleInvoicesMessage(details.multipleInvoices);
+  if (multipleInvoices) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Multiple invoices in one PDF*\n${escapeSlackText(multipleInvoices)}`) }
     });
   }
   if (fallbackLines.length) {
@@ -717,7 +729,9 @@ export async function notifyResult(
         : createdInvoiceNumber
           ? ((details as { amountMismatch?: unknown } | undefined)?.amountMismatch === true
             ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` with an amount mismatch (review before approving) in ${timeText}`
-            : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
+            : multipleInvoicesMessage((details as { multipleInvoices?: unknown } | undefined)?.multipleInvoices)
+              ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` from a PDF with more than one invoice (enter the rest manually) in ${timeText}`
+              : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {

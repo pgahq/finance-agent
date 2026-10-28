@@ -139,6 +139,8 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The amount as printed (e.g. "$17,977.50").'),
   })).nullable().optional().describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Null when none is printed.'),
 
+  invoiceNumbersInDocument: z.array(z.string()).nullable().optional().describe('Every separate invoice number the document reader found in the supplier invoice document, set by code from the document read and never by a model. Null when none was printed.'),
+
   extractedRowsAddedOnSecondRead: z.array(z.object({
     description: z.string(),
     totalPrice: z.string().nullable(),

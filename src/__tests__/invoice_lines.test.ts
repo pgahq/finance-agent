@@ -3989,3 +3989,17 @@ describe('positivePoQuantityNote', () => {
     expect(positivePoQuantityNote(plain, normalizeSupplierInvoiceLineAmounts(plain, true))).toBeUndefined();
   });
 });
+
+describe('single price read as a unit price (SUPIN-471803)', () => {
+  const base = { lineOrder: 1, description: 'Bank of America x Golf with Us/First Tee Programming Participant Fees' };
+
+  it('submits quantity 9 at $75.00 once the line total is $675.00', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, quantity: 9, unitCost: 75, extendedAmount: 675 }], true);
+    expect(line).toMatchObject({ quantity: 9, unitCost: 75, extendedAmount: 675 });
+  });
+
+  it('still goes amount-only when only the single price was read', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, quantity: 9, unitCost: null, extendedAmount: 75 }], true);
+    expect(line).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 75 });
+  });
+});
