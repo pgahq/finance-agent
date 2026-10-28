@@ -96,6 +96,7 @@ import {
 import { isUnreadableOffice } from './lib/office_to_pdf.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
+import { formatMultiInvoiceNotes, multiInvoiceReview } from './lib/multi_invoice_pdf.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
@@ -973,6 +974,13 @@ async function processInvoiceCluster(
       throw new Error(`Invoice enrichment returned error status: ${result.supplier.reason}`);
     }
 
+    const multiInvoice = multiInvoiceReview({
+      fileName,
+      enteredInvoiceNumber: result.extractedSuppliersInvoiceNumber,
+      invoiceNumbersInDocument: result.invoiceNumbersInDocument,
+    });
+    if (multiInvoice) debug(`Multiple invoices in one PDF: ${multiInvoice.message}`);
+
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
     const extractedDueDate = normalizePrintedDate(result.extractedDueDate) ?? undefined;
 
@@ -1397,7 +1405,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1474,6 +1482,7 @@ async function processInvoiceCluster(
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
       ...(supersededFileNames?.length ? { supersededAttachments: supersededFileNames } : {}),
       ...(unreadableAttachments.length ? { unreadableAttachments } : {}),
+      ...(multiInvoice ? { multipleInvoices: { fileName: multiInvoice.fileName, invoiceNumbers: multiInvoice.invoiceNumbers, message: multiInvoice.message } } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
         status: 'po',

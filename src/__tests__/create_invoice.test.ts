@@ -5602,4 +5602,127 @@ describe('create_invoice', () => {
       );
     });
   });
+
+  // KNIGHT JV LLC (LevelBlue), Intercom conversation 215476370619232: each PDF bundles seven monthly invoices,
+  // one per page. Only page 1 was read, so the other six invoices in each PDF were silently dropped.
+  describe('one PDF holding several supplier invoices', () => {
+    const po412640Numbers = ['LBL20428245', 'LBL20453710', 'LBL20475512', 'LBL20488608', 'LBL20499004', 'LBL20508800', 'LBL20518206'];
+    const po412641Numbers = ['LBL20428246', 'LBL20453711', 'LBL20475513', 'LBL20488609', 'LBL20499005', 'LBL20508801', 'LBL20518207'];
+    const bundledEnrichment = (numbers: string[]) => ({
+      ...baseEnrichmentResult,
+      extractedSuppliersInvoiceNumber: numbers[0],
+      invoiceNumbersInDocument: numbers,
+    });
+
+    it('adds a review note to the Workday note and the Slack post and still enters only the first invoice', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(bundledEnrichment(po412640Numbers));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/1-PO-412640.pdf', 'PO-412640.pdf')] } as any);
+
+      const expected = `PO-412640.pdf appears to contain 7 invoices (${po412640Numbers.join(', ')}); only LBL20428245 was entered. Enter the rest manually.`;
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.suppliersInvoiceNumber).toBe('LBL20428245');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes.startsWith(`Multiple invoices in one PDF: ${expected}\n\nSupplier: `)).toBe(true);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          invoiceNumber: 'SUPIN-412727',
+          multipleInvoices: { fileName: 'PO-412640.pdf', invoiceNumbers: po412640Numbers, message: expected },
+        }),
+      );
+    });
+
+    it('reviews each PDF of the conversation on its own', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments
+        .mockResolvedValueOnce(bundledEnrichment(po412640Numbers))
+        .mockResolvedValueOnce(bundledEnrichment(po412641Numbers));
+
+      await processor({
+        data: [
+          attachmentRequest('new-invoices/req-1/1-PO-412640.pdf', 'PO-412640.pdf'),
+          attachmentRequest('new-invoices/req-1/2-PO-412641.pdf', 'PO-412641.pdf'),
+        ],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(2);
+      expect(workday.submitNewSupplierInvoice.mock.calls[1][1].buildNotes([]))
+        .toContain(`PO-412641.pdf appears to contain 7 invoices (${po412641Numbers.join(', ')}); only LBL20428246 was entered.`);
+      expect(slack.notifyResult.mock.calls.map((call: unknown[]) => (call[3] as any).multipleInvoices.fileName))
+        .toEqual(['PO-412640.pdf', 'PO-412641.pdf']);
+    });
+
+    it('adds nothing for a PDF with one invoice, with or without the reader listing its number', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments
+        .mockResolvedValueOnce({ ...baseEnrichmentResult, invoiceNumbersInDocument: ['INV-001'] })
+        .mockResolvedValueOnce({ ...baseEnrichmentResult, invoiceNumbersInDocument: null })
+        .mockResolvedValueOnce(baseEnrichmentResult);
+
+      await processor({
+        data: ['a', 'b', 'c'].map((name) => attachmentRequest(`new-invoices/req-1/${name}.pdf`, `${name}.pdf`)),
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(3);
+      for (const [, submitArgs] of workday.submitNewSupplierInvoice.mock.calls) {
+        expect(submitArgs.buildNotes([])).not.toContain('Multiple invoices');
+        expect(submitArgs.buildNotes([])).not.toContain('appears to contain');
+      }
+      for (const call of slack.notifyResult.mock.calls) {
+        expect(call[3]).not.toHaveProperty('multipleInvoices');
+      }
+    });
+
+    it('keeps the note on a resend update and names the PDF in the skipped post when the invoice is already approved', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      loadEnv.mockResolvedValue({ INVOICE_ATTACHMENT_CLUSTERING_ENABLED: 'true' });
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(bundledEnrichment(po412640Numbers));
+      registry.getConversationSupplierInvoice.mockResolvedValue({
+        conversationId: '215476370619232',
+        supplierInvoiceNumber: 'LBL20428245',
+        supplierWid: 'supplier-wid-1',
+        workdayInvoiceWid: 'wid-467351',
+        workdayInvoiceNumber: 'SUPIN-467351',
+        lastProcessedReceivedAt: 100,
+      });
+      const resend = {
+        data: [{
+          conversationId: '215476370619232',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/3-PO-412640.pdf', 'PO-412640.pdf'), receivedAt: 200 }],
+        }],
+      } as any;
+
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+      await processor(resend);
+      expect(workday.submitSupplierInvoiceUpdate.mock.calls[0][1].buildNotes([]))
+        .toContain('Multiple invoices in one PDF: PO-412640.pdf appears to contain 7 invoices');
+
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: false, status: 'Approved', isPaid: true });
+      await processor(resend);
+      expect(workday.submitSupplierInvoiceUpdate).toHaveBeenCalledTimes(1);
+      expect(slack.notifyResult).toHaveBeenLastCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          skipped: true,
+          needsManualReview: true,
+          multipleInvoices: expect.objectContaining({ fileName: 'PO-412640.pdf', invoiceNumbers: po412640Numbers }),
+        }),
+      );
+    });
+  });
 });

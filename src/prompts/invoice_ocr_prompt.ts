@@ -39,6 +39,7 @@ export const InvoiceOcrSchema = z.object({
   extractedDueDate: printedText(enrichment.extractedDueDate),
   extractedAmountDue: printedText(enrichment.extractedAmountDue),
   extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
+  invoiceNumbersInDocument: z.array(z.string()).describe('The supplier invoice number of every separate invoice printed in the supplier invoice document, in document order, including the one in extractedSuppliersInvoiceNumber. Not numbers that an invoice only references (prior invoices, credited invoices, statement aging rows). Return an empty array when no invoice number is printed.'),
   extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
   extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
   extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
@@ -106,7 +107,9 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
+  /** Every separate invoice number the model saw in the supplier invoice document; null when none. */
+  invoiceNumbersInDocument?: string[] | null;
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
   /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
   extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
@@ -188,7 +191,7 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
-    extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
+    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
     ...headerFields
   } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -211,8 +214,10 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
       amount: (extractedPartialPayment?.amount ?? '').trim(),
     }
     : null;
+  const invoiceNumbers = (invoiceNumbersInDocument ?? []).map(number => number.trim()).filter(Boolean);
   return {
     ...nullableTextFields(headerFields),
+    invoiceNumbersInDocument: invoiceNumbers.length ? invoiceNumbers : null,
     extractedLineSubtotal: lineSubtotal,
     extractedPartialPayment: partialPayment,
     extractedPriorPayments: priorPayments.length ? priorPayments : null,
@@ -342,6 +347,18 @@ Many invoices print priced rows in the totals block (next to Sub Total and Total
 ## Part 6: Supplier's Invoice Number
 
 Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
+
+---
+
+## Part 6.5: Invoices in the document
+
+Populate \`invoiceNumbersInDocument\` with the supplier invoice number of every separate invoice printed in the supplier invoice document, in document order, including the one in \`extractedSuppliersInvoiceNumber\`. A separate invoice has its own invoice number, invoice date, and amount due, for example a PDF that bundles one invoice per month, one per page, or one per order.
+
+- A multi-page invoice, or an invoice with its own remittance slip or payment stub, is one invoice.
+- Do not list a number that an invoice only mentions: a prior or original invoice, an invoice a credit memo applies to, rows of a statement or aging table, or a number printed on supporting files.
+- The same invoice number printed more than once is listed once.
+- Return an empty array when no invoice number is printed.
+- When the document holds several separate invoices, extract Parts 3 through 9 from the first invoice only. Do not combine header values or rows from different invoices.
 
 ---
 
