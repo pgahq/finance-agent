@@ -81,7 +81,7 @@ import {
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1146,7 +1146,7 @@ async function processInvoiceCluster(
     ].filter(Boolean).join(' ') || undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
-    const summaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+    const placedSummaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
       ? { lines: [] }
       : placeSummaryCharges({
         charges: result.extractedSummaryCharges,
@@ -1157,13 +1157,33 @@ async function processInvoiceCluster(
         freightCleared,
         taxCleared,
       });
+    // A remaining-balance invoice prints the full contract but bills only what is still unpaid, so one balance line replaces the lines.
+    // It runs after repeated tables and totals charges so their explanations of the gap win.
+    const balancePlan = depositPlan || chargeWithheld || freightAsLines
+      ? undefined
+      : planBalanceInvoice({
+        priorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+        lineSubtotal: result.extractedLineSubtotal,
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        lines: [...repeatedLines.lines, ...placedSummaryCharges.lines],
+        poLines,
+      });
+    const balanceApplied = Boolean(balancePlan?.applied);
+    if (balancePlan) debug(`Balance invoice: ${balancePlan.note}`);
+    if (balanceApplied) chargeCheck = [];
+    const summaryCharges: PlacedSummaryCharges = balanceApplied ? { lines: [] } : placedSummaryCharges;
+    const billedPlan = depositPlan ?? balancePlan;
+    const billedPlanApplied = depositApplied || balanceApplied;
     if (summaryCharges.lines.length || summaryCharges.reviewNote) {
       debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
     }
-    const candidateLines = depositPlan?.line ? [depositPlan.line] : [...repeatedLines.lines, ...summaryCharges.lines];
+    const candidateLines = billedPlan?.line ? [billedPlan.line] : [...repeatedLines.lines, ...summaryCharges.lines];
 
-    // The deposit line is a quantity 1 line at the deposit amount, so it counts as one unit on its PO line.
-    const invoiceLineQuantityDisplayed = depositApplied
+    // The deposit or balance line is a quantity 1 line at the billed amount, so it counts as one unit on its PO line.
+    const invoiceLineQuantityDisplayed = billedPlanApplied
       ? true
       : resolveInvoiceLineQuantityDisplayed(result.invoiceLineQuantityDisplayed, candidateLines);
 
@@ -1204,7 +1224,7 @@ async function processInvoiceCluster(
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
     const merged = await buildFinalInvoiceLines(
       candidateLines,
-      depositPlan?.poLines ?? poLines,
+      billedPlan?.poLines ?? poLines,
       emailContext?.plainTextBody,
       fallbackIds,
       emailWorktags,
@@ -1377,7 +1397,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(depositPlan?.note) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1471,7 +1491,7 @@ async function processInvoiceCluster(
         invoiceDate: extractedInvoiceDate,
         dueDate: extractedDueDate,
         amountDue: extractedAmountDue,
-        ...(depositPlan?.amountDueNote && depositApplied ? { amountDueNote: depositPlan.amountDueNote } : {}),
+        ...(billedPlan?.amountDueNote && billedPlanApplied ? { amountDueNote: billedPlan.amountDueNote } : {}),
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         taxAmount: extractedTaxAmount,
@@ -1497,6 +1517,7 @@ async function processInvoiceCluster(
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),
       ...(depositPlan?.slackLines.length ? { deposit: depositPlan.slackLines } : {}),
+      ...(balancePlan?.slackLines.length ? { balanceInvoice: balancePlan.slackLines } : {}),
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 

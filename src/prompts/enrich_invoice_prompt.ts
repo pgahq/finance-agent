@@ -134,6 +134,11 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
   }).nullable().optional().describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Null when the invoice bills its full total.'),
 
+  extractedPriorPayments: z.array(z.object({
+    label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
+    amount: z.string().describe('The amount as printed (e.g. "$17,977.50").'),
+  })).nullable().optional().describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Null when none is printed.'),
+
   extractedRowsAddedOnSecondRead: z.array(z.object({
     description: z.string(),
     totalPrice: z.string().nullable(),
@@ -188,6 +193,11 @@ export const InvoiceEnrichmentSchema = z.object({
     company: emailBudgetCompanySchema.nullable().describe('The company this budget\'s own coding block names, only when it differs from the company that applies to the whole invoice (which goes in emailWorktags.company). Null otherwise.'),
   })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding.'),
 
+  emailBalanceDue: z.object({
+    amount: z.string().describe('The amount the email asks AP to pay as the remaining balance, exactly as written (e.g. "$5,909.50"). Never compute it.'),
+    phrase: z.string().describe('The short phrase from the email that calls the amount a remaining balance (e.g. "pay the remaining $5,909.50").'),
+  }).nullable().describe('Set only when the email explicitly says the amount to pay is the remaining balance, balance due, or final payment of a larger contract or project. Null otherwise.'),
+
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
@@ -200,6 +210,7 @@ export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
   extractedPaymentTerms: true,
   emailWorktags: true,
   emailBudgetSplits: true,
+  emailBalanceDue: true,
 });
 
 export type InvoiceMatchingResult = z.infer<typeof InvoiceMatchingSchema>;
@@ -387,7 +398,9 @@ If email context is provided, scan the email body for any contextual mentions of
    - The amounts the email states may include the invoice's tax, so do not adjust them; copy each exactly as written.
    - Return null for emailBudgetSplits when the email codes the whole invoice to one budget or does not divide the cost.
 
-8. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
+8. **Remaining balance**: When the email explicitly says the amount to pay is the remaining balance, balance due, or final payment of a larger contract or project (for example "please pay the remaining $5,909.50"), set emailBalanceDue.amount to that dollar amount exactly as written and emailBalanceDue.phrase to the short phrase that says so. Never calculate the amount, and return null when the email only asks to pay the invoice, names no amount, or gives the amount without calling it a remaining balance. A dollar amount that an email assigns to a budget is a budget split, not a remaining balance.
+
+9. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
 
 ---
 
