@@ -356,7 +356,8 @@ Populate \`invoiceNumbersInDocument\` with the supplier invoice number of every 
 
 - A multi-page invoice, or an invoice with its own remittance slip or payment stub, is one invoice.
 - Do not list a number that an invoice only mentions: a prior or original invoice, an invoice a credit memo applies to, rows of a statement or aging table, or a number printed on supporting files.
-- List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, or delivery ticket, even when it has its own date and amount.
+- List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, delivery ticket, or receipt, even when it has its own date and amount.
+- A statement or invoice that includes receipts, charge slips, or other backup pages, each with its own reference number, is one invoice. Do not list those reference numbers.
 - The same invoice number printed more than once is listed once.
 - Return an empty array when no invoice number is printed.
 - When the document holds several separate invoices, extract Parts 1 through 9 from the first invoice only. Do not combine header values or rows from different invoices.

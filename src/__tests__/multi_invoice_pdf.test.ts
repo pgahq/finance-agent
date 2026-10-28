@@ -204,7 +204,8 @@ describe('invoice numbers read from a PDF with several invoices', () => {
     expect(invoiceOcrPrompt).toContain('one invoice per month, one per page');
     expect(invoiceOcrPrompt).toContain('extract Parts 1 through 9 from the first invoice only');
     expect(invoiceOcrPrompt).toContain('Do not list a number that an invoice only mentions');
-    expect(invoiceOcrPrompt).toContain('List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, or delivery ticket');
+    expect(invoiceOcrPrompt).toContain('List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, delivery ticket, or receipt');
+    expect(invoiceOcrPrompt).toContain('includes receipts, charge slips, or other backup pages, each with its own reference number, is one invoice');
     expect(Object.keys(InvoiceOcrSchema.shape)).toContain('invoiceNumbersInDocument');
   });
 
