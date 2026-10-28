@@ -208,6 +208,73 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Amount Check*');
   });
 
+  describe('multiple invoices in one PDF', () => {
+    const message = 'PO-412640.pdf appears to contain 7 invoices (LBL20428245, LBL20453710, LBL20475512, LBL20488608, LBL20499004, LBL20508800, LBL20518206); only LBL20428245 was entered. Enter the rest manually.';
+    const multipleInvoices = { fileName: 'PO-412640.pdf', invoiceNumbers: ['LBL20428245', 'LBL20453710'], message };
+
+    it('flags a created invoice and shows the review note after Changes', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('⚠️ *create_invoice* created `SUPIN-467351` from a PDF with more than one invoice (enter the rest manually)');
+      expect(texts).not.toContain('✅');
+      expect(texts).toContain(`*Multiple invoices in one PDF*\n${message}`);
+      expect(texts.indexOf('*Changes*')).toBeLessThan(texts.indexOf('*Multiple invoices in one PDF*'));
+    });
+
+    it('keeps the amount mismatch headline and still shows the note', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        amountMismatch: true,
+        chargeCheck: ['Lines $1.00 + freight $0.00 + tax $0.00 = $1.00, but the amount due is $2.00. Review lines and header charges.'],
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('with an amount mismatch (review before approving)');
+      expect(texts).toContain('*Multiple invoices in one PDF*');
+    });
+
+    it('shows the note on a resend that was skipped for manual review', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        skipped: true,
+        needsManualReview: true,
+        skipReason: 'Invoice SUPIN-467351 is Approved (paid); re-sent documents need manual review.',
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('needs manual review for `SUPIN-467351` (resend not applied)');
+      expect(texts).toContain(`*Multiple invoices in one PDF*\n${message}`);
+    });
+
+    it('escapes supplier-controlled text and shows nothing without a message', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-1',
+        multipleInvoices: { message: 'a<b>&c.pdf appears to contain 2 invoices (<1>, <2>); only <1> was entered. Enter the rest manually.' },
+      });
+      expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('a&lt;b&gt;&amp;c.pdf appears to contain 2 invoices (&lt;1&gt;, &lt;2&gt;)');
+
+      (global.fetch as jest.Mock).mockClear();
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-2',
+        multipleInvoices: { message: ' ' },
+      });
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).not.toContain('Multiple invoices in one PDF');
+      expect(texts).toContain('✅ *create_invoice* created `SUPIN-2`');
+    });
+  });
+
   it('renders create success as Changes, not a JSON dump', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
