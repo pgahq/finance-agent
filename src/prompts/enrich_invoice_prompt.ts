@@ -196,7 +196,7 @@ export const InvoiceEnrichmentSchema = z.object({
   emailBalanceDue: z.object({
     amount: z.string().describe('The amount the email asks AP to pay as the remaining balance, exactly as written (e.g. "$5,909.50"). Never compute it.'),
     phrase: z.string().describe('The short phrase from the email that calls the amount a remaining balance (e.g. "pay the remaining $5,909.50").'),
-  }).nullable().describe('Set only when the email explicitly says the amount to pay is the remaining balance, balance due, or final payment of a larger contract or project. Null otherwise.'),
+  }).nullable().describe('Set only when the email explicitly says the amount to pay is the remaining balance or the final payment of a larger contract or project. A bare "balance due" does not count. Null otherwise.'),
 
 });
 
@@ -398,7 +398,7 @@ If email context is provided, scan the email body for any contextual mentions of
    - The amounts the email states may include the invoice's tax, so do not adjust them; copy each exactly as written.
    - Return null for emailBudgetSplits when the email codes the whole invoice to one budget or does not divide the cost.
 
-8. **Remaining balance**: When the email explicitly says the amount to pay is the remaining balance, balance due, or final payment of a larger contract or project (for example "please pay the remaining $5,909.50"), set emailBalanceDue.amount to that dollar amount exactly as written and emailBalanceDue.phrase to the short phrase that says so. Never calculate the amount, and return null when the email only asks to pay the invoice, names no amount, or gives the amount without calling it a remaining balance. A dollar amount that an email assigns to a budget is a budget split, not a remaining balance.
+8. **Remaining balance**: When the email explicitly says the amount to pay is the remaining balance or the final payment of a larger contract or project; a bare "balance due" or "amount due" does not count (for example "please pay the remaining $5,909.50"), set emailBalanceDue.amount to that dollar amount exactly as written and emailBalanceDue.phrase to the short phrase that says so. Never calculate the amount, and return null when the email only asks to pay the invoice, names no amount, or gives the amount without calling it a remaining balance. A dollar amount that an email assigns to a budget is a budget split, not a remaining balance.
 
 9. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
 

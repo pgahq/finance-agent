@@ -294,7 +294,8 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const paidCents = priorPaymentCents(input.priorPayments);
   const paymentsExplainGap = paidCents != null && contractCents - paidCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
-  const emailSaysBalance = Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
+  // The email alone must sit beside a printed contract total; a line sum can read high for other reasons.
+  const emailSaysBalance = printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
     if (paidCents == null) return undefined;
     return balanceNotApplied(`the printed payments total ${centsDollars(paidCents)}, which leaves ${centsDollars(contractCents - paidCents)} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`);
@@ -316,7 +317,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const lineText = lineCount > 0 ? ` (${lineCount} printed line${lineCount === 1 ? '' : 's'})` : '';
   const basis = paymentsExplainGap
     ? `"${label}" is ${contractText}, and ${centsDollars(paidCents as number)} was already paid, which leaves the ${dueText} amount due${lineText}.`
-    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. The document prints no payments that account for the difference.`;
+    : `"${label}" is ${contractText} but the amount due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. ${paidCents != null ? `The document prints payments totaling ${centsDollars(paidCents)}, which do not account for the difference.` : 'The document prints no payments that account for the difference.'}`;
   const consumedNote = selection.status === 'matched' && selection.consumed
     ? ' The PO line for this amount is already fully invoiced or closed; check whether this balance was billed before approving.'
     : '';

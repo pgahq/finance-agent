@@ -303,10 +303,21 @@ describe('planBalanceInvoice', () => {
     expect(plan.note).toContain('$17,977.50 was already paid');
   });
 
-  it('uses the extracted rows as the contract total when no line total is printed', () => {
-    const plan = planBalanceInvoice(balanceInput({ lineSubtotal: null }))!;
+  it('uses the extracted rows as the contract total only when printed payments account for the gap', () => {
+    const plan = planBalanceInvoice(balanceInput({ lineSubtotal: null, emailBalanceDue: null, priorPayments: supin471692Payments }))!;
     expect(plan.applied).toBe(true);
     expect(plan.line?.description).toBe('Motorcoach transportation - event shuttles (balance due of $23,887.00)');
+  });
+
+  it('does not trust the email alone without a printed contract total', () => {
+    expect(planBalanceInvoice(balanceInput({ lineSubtotal: null }))).toBeUndefined();
+  });
+
+  it('says so when printed payments disagree with the amount due but the email matches', () => {
+    const plan = planBalanceInvoice(balanceInput({ priorPayments: [{ label: 'Payments Received', amount: '$10,000.00' }] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('The document prints payments totaling $10,000.00, which do not account for the difference.');
+    expect(plan.note).not.toContain('prints no payments');
   });
 
   it('does not apply when printed payments do not reconcile and the email does not match', () => {
