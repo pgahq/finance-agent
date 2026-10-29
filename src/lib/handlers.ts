@@ -25,8 +25,6 @@ export interface ProcessingContext {
 
 export interface ProcessorOptions {
   abortSignal?: AbortSignal;
-  /** Milliseconds left before the Lambda hard limit; absent outside Lambda. */
-  getRemainingTimeMs?: () => number;
 }
 
 async function setupContext(): Promise<ProcessingContext> {
@@ -136,12 +134,12 @@ function createDeadlineAbortSignal(context: Context): { signal: AbortSignal; dis
   const controller = new AbortController();
   const budgetMs = context.getRemainingTimeInMillis();
   if (budgetMs <= PROCESSOR_DEADLINE_BUFFER_MS) {
-    controller.abort(new ProcessorDeadlineError('lambda', 'Lambda invocation entered the deadline buffer; aborting AI calls'));
+    controller.abort(new ProcessorDeadlineError('Lambda invocation entered the deadline buffer; aborting AI calls'));
     return { signal: controller.signal, dispose: () => {} };
   }
   const timer = setTimeout(() => {
     debug(`Lambda deadline approaching (${context.getRemainingTimeInMillis()}ms remaining of the ${budgetMs}ms budget); aborting AI calls`);
-    controller.abort(new ProcessorDeadlineError('lambda', 'Processor deadline reached; aborting AI calls'));
+    controller.abort(new ProcessorDeadlineError('Processor deadline reached; aborting AI calls'));
   }, budgetMs - PROCESSOR_DEADLINE_BUFFER_MS);
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
@@ -180,9 +178,7 @@ export const withProcessorHandler = <T = unknown>(
 ) => async (event: any = {}, lambdaContext?: Context) => {
   // Start the deadline before setup so environment and database setup count against it.
   const deadline = lambdaContext ? createDeadlineAbortSignal(lambdaContext) : undefined;
-  const processorOptions: ProcessorOptions | undefined = deadline && lambdaContext
-    ? { abortSignal: deadline.signal, getRemainingTimeMs: () => lambdaContext.getRemainingTimeInMillis() }
-    : undefined;
+  const processorOptions: ProcessorOptions | undefined = deadline ? { abortSignal: deadline.signal } : undefined;
 
   try {
     process.env = await loadEnv();

@@ -148,7 +148,6 @@ export async function enrichInvoiceFromAttachments(
       schema: InvoiceMatchingSchema,
       model: defaultModel,
       abortSignal,
-      stage: 'matching',
       messages: [
         {
           role: 'user',

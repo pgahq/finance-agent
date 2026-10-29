@@ -89,7 +89,6 @@ export async function extractInvoiceDocuments(
       tools: {},
       temperature: null,
       abortSignal,
-      stage: extraInstruction ? 'ocr_second_read' : 'ocr',
       messages: [
         {
           role: 'user',

@@ -2,8 +2,6 @@ import type { LanguageModel } from 'ai';
 import { getAiResponse } from '../lib/ai.js';
 import { ProcessorDeadlineError } from '../lib/deadline.js';
 
-jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
-
 // Mock the AI SDK
 jest.mock('ai', () => ({
   generateText: jest.fn(),
@@ -76,7 +74,6 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        maxRetries: 1,
         abortSignal: undefined,
       });
 
@@ -146,7 +143,6 @@ describe('AI utilities', () => {
         system: 'System prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        maxRetries: 1,
         abortSignal: undefined,
       });
     });
@@ -187,7 +183,6 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        maxRetries: 1,
         abortSignal: undefined,
         output: 'mocked-output-object',
       });
@@ -242,7 +237,6 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         stopWhen: 'mocked-step-count-is',
         temperature: 0.2,
-        maxRetries: 1,
         abortSignal: undefined,
         tools: expect.objectContaining({
           findSuppliers: expect.any(Object),
@@ -260,7 +254,6 @@ describe('AI utilities', () => {
         system: 'Test prompt',
         output: 'mocked-output-object',
         temperature: 0.1,
-        maxRetries: 1,
         abortSignal: undefined,
       });
       expect(mockOutputObject).toHaveBeenCalledWith({ schema: mockSchema });
@@ -303,30 +296,9 @@ describe('AI utilities', () => {
       expect(mockGenerateText.mock.calls[2][0].abortSignal).toBe(signal);
     });
 
-    it('passes a combined signal and the retry cap when a stage is named', async () => {
+    it('rethrows the deadline signal reason instead of the SDK AbortError', async () => {
       const controller = new AbortController();
-      mockGenerateText.mockResolvedValueOnce({ text: '', output: { ok: true } });
-
-      await getAiResponse({
-        prompt: 'Test prompt',
-        schema: { _def: {} } as any,
-        messages: [{ role: 'user', content: 'Test message' }],
-        tools: {},
-        abortSignal: controller.signal,
-        stage: 'line_merge',
-      });
-
-      const call = mockGenerateText.mock.calls[0][0];
-      expect(call.maxRetries).toBe(1);
-      expect(call.abortSignal).not.toBe(controller.signal);
-      expect(call.abortSignal.aborted).toBe(false);
-      controller.abort(new Error('deadline'));
-      expect(call.abortSignal.aborted).toBe(true);
-    });
-
-    it('rethrows the deadline signal reason, tagged with the stage, instead of the SDK AbortError', async () => {
-      const controller = new AbortController();
-      const reason = new ProcessorDeadlineError('lambda', 'Processor deadline reached; aborting AI calls');
+      const reason = new ProcessorDeadlineError('Processor deadline reached; aborting AI calls');
       mockGenerateText.mockImplementationOnce(async () => {
         controller.abort(reason);
         throw Object.assign(new Error('Delay was aborted'), { name: 'AbortError' });
@@ -338,42 +310,7 @@ describe('AI utilities', () => {
         messages: [{ role: 'user', content: 'Test message' }],
         tools: {},
         abortSignal: controller.signal,
-        stage: 'ocr',
-      })).rejects.toMatchObject({ name: 'ProcessorDeadlineError', kind: 'lambda', stage: 'ocr', message: reason.message });
-      expect(reason.stage).toBeUndefined();
-    });
-
-    it('wraps a stage cap that fired in a stage_timeout deadline error and logs it', async () => {
-      const { debug } = require('@pga/logger');
-      mockGenerateText.mockImplementationOnce(async (options: { abortSignal: AbortSignal }) => {
-        await new Promise<void>((_resolve, reject) => {
-          options.abortSignal.addEventListener('abort', () => reject(new Error('Delay was aborted')), { once: true });
-        });
-      });
-
-      const error = await getAiResponse({
-        prompt: 'Test prompt',
-        schema: undefined,
-        messages: [{ role: 'user', content: 'Test message' }],
-        tools: {},
-        stage: 'line_merge',
-        timeoutMs: 20,
-      }).catch((caught: unknown) => caught);
-
-      expect(error).toBeInstanceOf(ProcessorDeadlineError);
-      expect(error).toMatchObject({ kind: 'stage_timeout', stage: 'line_merge', timeoutMs: 20 });
-      expect(debug).toHaveBeenCalledWith(expect.stringContaining('AI stage cap fired: line_merge'), expect.any(Object));
-    });
-
-    it('keeps non-timeout failures as they were', async () => {
-      mockGenerateText.mockRejectedValueOnce(new Error('Gateway error: 500'));
-      await expect(getAiResponse({
-        prompt: 'Test prompt',
-        schema: undefined,
-        messages: [{ role: 'user', content: 'Test message' }],
-        tools: {},
-        stage: 'line_merge',
-      })).rejects.toThrow('Gateway error: 500');
+      })).rejects.toBe(reason);
     });
 
     it('should handle API errors', async () => {

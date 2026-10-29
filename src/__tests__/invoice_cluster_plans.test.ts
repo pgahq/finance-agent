@@ -30,7 +30,7 @@ describe('invoice cluster plans', () => {
     const [sql, params] = claimed.query.mock.calls[0];
     expect(sql).toContain("status IN ('pending', 'failed')");
     expect(sql).toContain("status = 'processing' AND claimed_at < CURRENT_TIMESTAMP - make_interval(mins => $3)");
-    expect(params).toEqual(['plan-1', 1, 20]);
+    expect(params).toEqual(['plan-1', 1, 15]);
 
     const done = mockDb([]);
     await expect(claimInvoiceCluster(done.db, 'plan-1', 1)).resolves.toBe(false);

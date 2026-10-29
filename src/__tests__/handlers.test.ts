@@ -341,24 +341,13 @@ describe('handlers', () => {
       jest.advanceTimersByTime(399_966);
 
       const error = await settled;
-      expect(error).toMatchObject({ name: 'ProcessorDeadlineError', kind: 'lambda' });
+      expect(error).toMatchObject({ name: 'ProcessorDeadlineError' });
       const logged = debug.mock.calls.map((call: unknown[]) => String(call[0])).find((line: string) => line.includes('Lambda deadline approaching'));
       expect(logged).toContain('20001ms remaining');
       expect(logged).toContain('419966ms budget');
       expect(logged).not.toContain('(419966ms remaining');
 
       jest.useRealTimers();
-    });
-
-    it('passes the remaining-time reader to the processor', async () => {
-      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
-      const processor = withProcessorHandler(mockProcessAction);
-      const getRemainingTimeInMillis = jest.fn().mockReturnValue(120_000);
-
-      await processor({ data: [{ id: '1' }] }, { getRemainingTimeInMillis } as unknown as Context);
-
-      getRemainingTimeInMillis.mockReturnValue(55_000);
-      expect(mockProcessAction.mock.calls[0][3].getRemainingTimeMs()).toBe(55_000);
     });
 
     it('should alert and skip processing when remaining time is inside the buffer', async () => {

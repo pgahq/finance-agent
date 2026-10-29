@@ -42,26 +42,6 @@ describe('rag', () => {
       expect(result).toEqual([0.1, 0.2, 0.3]);
     });
 
-    it('bounds an invoice-run embedding with a call cap, one retry, and the deadline signal', async () => {
-      const controller = new AbortController();
-
-      await createEmbedding('test text', { abortSignal: controller.signal, bounded: true });
-
-      const call = mockEmbed.mock.calls[0][0];
-      expect(call.maxRetries).toBe(1);
-      expect(call.abortSignal.aborted).toBe(false);
-      controller.abort(new Error('deadline'));
-      expect(call.abortSignal.aborted).toBe(true);
-    });
-
-    it('caps a bounded embedding even without a deadline signal', async () => {
-      await createEmbedding('test text', { bounded: true });
-
-      const call = mockEmbed.mock.calls[0][0];
-      expect(call.maxRetries).toBe(1);
-      expect(call.abortSignal).toBeInstanceOf(AbortSignal);
-    });
-
     it('propagates gateway errors', async () => {
       mockEmbed.mockRejectedValue(new Error('Gateway error: 401 Unauthorized'));
 

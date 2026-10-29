@@ -55,36 +55,17 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    records a cluster plan (`invoice_cluster_plans`, one `pending` row per
    cluster, `src/lib/invoice_cluster_plans.ts`), then Event-invokes itself
    (`clustered: true`, `planId`, `clusterIndex`, no re-parse) for each leftover
-   cluster, then processes the first cluster inline, keeping the 840s timeout
+   cluster, then processes the first cluster inline, keeping the 480s timeout
    per invocation. The first cluster reuses the PDFs already downloaded for
    classification; fanned-out clusters download their own.
    - `withProcessorHandler` starts a deadline signal 20s before the Lambda
-     limit (it logs the real remaining time when it fires). Only AI calls take
-     the signal; S3, database, Workday, and Slack calls do not. Each AI stage
-     also has its own cap (`src/lib/ai_budgets.ts`: clustering 120s, OCR 300s,
-     second OCR read 150s, matching 300s, line merge 240s, covering retries;
-     `maxRetries` 1; embeddings 30s) and logs `AI stage cap fired` when it
-     trips. A run that would start inside the reserve posts a Slack error and
-     stops before connecting to the database.
-   - A run that runs out of time (deadline, stage cap, or the submit gate)
-     fails with a `ProcessorDeadlineError` (`src/lib/deadline.ts`). A
-     line-merge cap requeues instead of falling back to fallback-coded lines;
-     other AI errors keep the fallback. `createInvoiceFromCluster` requeues
-     the cluster once (`retryAttempt` 1, an immediate `fanOutCluster` Event
-     invoke, no delay) only when a plan row exists, no Workday write started,
-     the invoice claim was not contended, and the plan row was marked `failed`
-     first. The invoice claim is released before the requeue, so the retry
-     does not skip as "in progress elsewhere". The submit gate
-     (`beforeWorkdayWrite`) refuses to start a Workday write with under 150s
-     left, because Workday writes cannot be aborted. A second timeout posts a
-     Slack message saying nothing was written to Workday and a re-trigger is
-     needed (or, if a write had started, to check Workday first, since a
-     re-trigger could create a second SUPIN). Only this path sets the error's
-     `disposition`; other processors (`enrich_invoice`, `cache_*`) keep the
-     generic deadline text with no claims about Workday.
-     The requeue never sets `Submit: true`; every invoice stays a draft.
+     limit. Only AI calls take the signal; S3, database, Workday, and Slack
+     calls do not. When it fires, the run fails into its error path, and the
+     Slack alert and row `failed` update are best effort within that 20s.
+     A run that would start inside the reserve posts a Slack error and stops
+     before connecting to the database.
    - Every cluster run claims its plan row (`pending`/`failed` → `processing`,
-     or a `processing` row older than 20 minutes) before loading files, and
+     or a `processing` row older than 15 minutes) before loading files, and
      marks it `done` (with the Workday invoice WID) or `failed`. A duplicate
      delivery of the same record finds the row taken and does nothing. Once
      Workday accepted the invoice, a later error still marks the row `done`,
@@ -92,8 +73,8 @@ Shadow exists to prove the classifier on real traffic with no write risk:
      invoice claim returns the row to `pending`. A failure to mark the row
      `done` posts a Slack error, since the row becomes claimable again after
      the TTL.
-   - The 20-minute takeover TTL (claims and plan rows) is longer than the
-     processor timeout (840s; `template.test.ts` guards this), so a row or
+   - The 15-minute takeover TTL (claims and plan rows) is longer than the
+     processor timeout (480s; `template.test.ts` guards this), so a row or
      claim is only taken over after its owner was stopped.
    - Fan-out dispatches settle independently: a failed dispatch marks that row
      `failed` only if it is still `pending`, the first cluster still runs, and Slack posts one error naming
@@ -264,7 +245,7 @@ invoice number, and concurrent double-fires.
 - Claims: after enrichment extracts the invoice number and before reading the
   registry, the run claims conversation plus number in
   `conversation_invoice_claims` (`acquireConversationInvoiceClaim`, insert or
-  take over a claim older than 20 minutes, longer than the processor timeout).
+  take over a claim older than 15 minutes, longer than the processor timeout).
   A run that finds a live claim skips with a Slack `*Skipped*` note
   (`inProgressElsewhere`, headline "another run is processing it") and never
   touches Workday or the registry. The claim is released (only by its token)

@@ -288,7 +288,6 @@ export async function classifyInvoiceAttachments(
     schema: InvoiceAttachmentParseSchema,
     tools: {},
     abortSignal,
-    stage: 'clustering',
     messages: [
       {
         role: 'user',

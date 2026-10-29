@@ -69,7 +69,7 @@ describe('conversation invoice claims', () => {
     const [sql, params] = acquired.query.mock.calls[0];
     expect(sql).toContain('ON CONFLICT (conversation_id, supplier_invoice_number)');
     expect(sql).toContain('WHERE conversation_invoice_claims.claimed_at < CURRENT_TIMESTAMP - make_interval(mins => $4)');
-    expect(params).toEqual(['123', 'INV-100', 'token-1', 20]);
+    expect(params).toEqual(['123', 'INV-100', 'token-1', 15]);
 
     const held = mockDb([]);
     await expect(acquireConversationInvoiceClaim(held.db, '123', 'INV-100', 'token-2')).resolves.toBe(false);

@@ -722,17 +722,8 @@ export async function notifyResult(
   const shadowPdfCount = Array.isArray(shadowDetails?.attachments) ? shadowDetails.attachments.length : 0;
 
   // Build the main message
-  const deadlineError = error && isDeadlineError(error) ? error : undefined;
-  // Only the create-invoice path sets a disposition, so only it says what happened in Workday.
-  const deadlineHeadline = deadlineError?.disposition === undefined
-    ? undefined
-    : deadlineError.disposition === 'retrying'
-      ? `⏱️ *${lambdaName}* ran out of time after ${timeText}; nothing written to Workday yet, retrying automatically`
-      : deadlineError.writeStarted
-        ? `🚨 *${lambdaName}* ran out of time after ${timeText}; a Workday write may have started, check Workday before re-triggering`
-        : `🚨 *${lambdaName}* ran out of time after ${timeText}; nothing was written to Workday, re-trigger needed`;
-  let mainMessage = deadlineHeadline
-    ? deadlineHeadline
+  let mainMessage = error && isDeadlineError(error)
+    ? `⏱️ *${lambdaName}* ran out of time after ${timeText}`
     : shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
     : needsManualReview
