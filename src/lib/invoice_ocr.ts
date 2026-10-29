@@ -5,8 +5,9 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type Inv
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
-import { lineSubtotalShortfallCents, sumExtractedLineCents } from './partial_payment.js';
-import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
+import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
+import { summaryCreditCents } from './header_charges.js';
+import { formatChargeDollars } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
   fileName: string;
@@ -56,7 +57,14 @@ async function convertOfficeAttachmentsForModel(attachments: PresignedAttachment
 export interface ExtractInvoiceDocumentsOptions {
   /** False when the caller will not submit lines, so a second read to find missing rows would be wasted. Default true. */
   retryMissingRows?: boolean;
+  /**
+   * A second read takes several times as long as the first (SUPIN-472322: 51 seconds, then 144), and a timed-out
+   * run loses the whole invoice, so it is skipped when the first read took longer than this. Default 60 seconds.
+   */
+  retryMaxFirstReadMs?: number;
 }
+
+const DEFAULT_RETRY_MAX_FIRST_READ_MS = 60_000;
 
 // Returns undefined when no PDF or image can be read. A model or schema failure throws; there is no fallback model.
 export async function extractInvoiceDocuments(
@@ -106,18 +114,28 @@ export async function extractInvoiceDocuments(
   debug('Invoice OCR finished', { durationMs: Date.now() - startedAt, documentCount: parts.length, documentBytes });
   debug('Invoice OCR result:', result);
 
-  const retryInstruction = options.retryMissingRows === false ? undefined : missingRowsInstruction(result);
-  if (retryInstruction) {
+  const firstReadMs = Date.now() - startedAt;
+  const retryPlan = options.retryMissingRows === false ? undefined : missingRowsPlan(result);
+  if (retryPlan && firstReadMs > (options.retryMaxFirstReadMs ?? DEFAULT_RETRY_MAX_FIRST_READ_MS)) {
+    debug('Invoice OCR missing-row retry', {
+      outcome: 'skipped',
+      reason: 'slow first read',
+      firstRows: result.extractedInvoiceLines?.length ?? 0,
+      durationMs: firstReadMs,
+      checks: retryPlan.checks,
+      amountDueShortfallCents: retryPlan.amountDueShortfall,
+      subtotalShortfallCents: retryPlan.subtotalShortfall,
+    });
+  } else if (retryPlan) {
     const firstRows = result.extractedInvoiceLines ?? [];
     let outcome: 'accepted' | 'rejected' | 'failed' = 'rejected';
     try {
-      const retried = await read(retryInstruction);
+      const retried = await read(retryPlan.instruction);
       const retriedRows = retried.extractedInvoiceLines ?? [];
-      const retriedCents = sumExtractedLineCents(retriedRows);
       const added = rowsAddedBySecondRead(firstRows, retriedRows);
-      // A second read replaces the first only when it keeps every first-read row and closes the gap to the
-      // printed total exactly, so it can only add rows.
-      if (added && retriedCents !== undefined && retriedCents === lineSubtotalCents(result)) {
+      // A second read replaces the first only when it keeps every first-read row and the rows it adds close the
+      // gap to the amount due, or the rows total the printed line total, to the cent, so it can only add rows.
+      if (added && secondReadClosesGap(retryPlan, added, retriedRows)) {
         outcome = 'accepted';
         result = {
           ...result,
@@ -130,7 +148,14 @@ export async function extractInvoiceDocuments(
       outcome = 'failed';
       debug('Invoice OCR second read failed; keeping the first read', error);
     }
-    debug('Invoice OCR missing-row retry', { outcome, firstRows: firstRows.length, durationMs: Date.now() - startedAt });
+    debug('Invoice OCR missing-row retry', {
+      outcome,
+      firstRows: firstRows.length,
+      durationMs: Date.now() - startedAt,
+      checks: retryPlan.checks,
+      amountDueShortfallCents: retryPlan.amountDueShortfall,
+      subtotalShortfallCents: retryPlan.subtotalShortfall,
+    });
   }
   return result;
 }
@@ -152,20 +177,83 @@ function rowsAddedBySecondRead<T extends { description: string; totalPrice?: str
   return added.length > 0 ? added : undefined;
 }
 
-function lineSubtotalCents(result: InvoiceOcrResult): number | undefined {
-  const parsed = parseCanonicalChargeAmount(result.extractedLineSubtotal?.amount);
-  return parsed === undefined ? undefined : Math.round(parsed * 100);
+interface MissingRowsPlan {
+  instruction: string;
+  /** Cents the lines, freight, and tax are short of the amount due, when the document makes that checkable. */
+  amountDueShortfall?: number;
+  /** Set when the rows fall short of the printed line total, so a second read that reaches it exactly is accepted. */
+  subtotalShortfall?: number;
+  /** The rows' total a second read must reach to close the subtotal shortfall: the printed total less any freight inside it. */
+  subtotalRowsCents?: number;
+  /** Which checks fired, for the retry log. */
+  checks: Array<'amountDue' | 'subtotal'>;
 }
 
-function missingRowsInstruction(result: InvoiceOcrResult): string | undefined {
+function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined {
   const lines = result.extractedInvoiceLines ?? [];
-  // A row that prints a net-of-discount total never reaches a subtotal printed before discounts.
-  if (lines.some(line => line.hasDiscount === true)) return undefined;
-  const shortfall = lineSubtotalShortfallCents(lines, result.extractedLineSubtotal);
   const summed = sumExtractedLineCents(lines);
-  if (shortfall === undefined || summed === undefined || !result.extractedLineSubtotal) return undefined;
-  return `A first read returned ${lines.length} rows totaling ${formatChargeDollars(summed / 100)}, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}". `
-    + 'Read the line table again row by row and return every printed row, including a row that is identical to another row but printed under a different date, event, or section heading.';
+  if (summed === undefined) return undefined;
+  const gapInput = {
+    lines,
+    amountDue: result.extractedAmountDue,
+    freight: result.extractedFreightAmount,
+    tax: result.extractedTaxAmount,
+    otherCharges: result.extractedOtherCharges,
+    summaryCharges: result.extractedSummaryCharges,
+    creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
+    partialPayment: result.extractedPartialPayment,
+    priorPayments: result.extractedPriorPayments,
+  };
+  // Rows, freight, and tax that already reach the amount due leave nothing missing, whatever part of the table a
+  // printed subtotal covers (an agreement subtotal can leave a fuel row out).
+  if (amountDueGapCents(gapInput) === 0) return undefined;
+  const amountDueShortfall = amountDueShortfallCents(gapInput);
+  const discountCounted = Boolean(gapInput.creditCents) && (amountDueGapCents({ ...gapInput, creditCents: 0 }) ?? 0) < 0;
+  // A subtotal that already contains the freight is compared with the rows without it.
+  const subtotalFreight = subtotalFreightCents({
+    subtotal: result.extractedLineSubtotal,
+    amountDue: result.extractedAmountDue,
+    freight: result.extractedFreightAmount,
+    tax: result.extractedTaxAmount,
+    otherCharges: result.extractedOtherCharges,
+    creditCents: gapInput.creditCents,
+  }) ?? 0;
+  // A row that prints a net-of-discount total never reaches a subtotal printed before discounts.
+  const subtotalShortfall = lines.some(line => line.hasDiscount === true)
+    ? undefined
+    : lineSubtotalShortfallCents(lines, result.extractedLineSubtotal, subtotalFreight);
+  if (amountDueShortfall === undefined && subtotalShortfall === undefined) return undefined;
+
+  const parts = [`A first read returned ${lines.length} rows totaling ${formatChargeDollars(summed / 100)}`];
+  if (subtotalShortfall !== undefined && result.extractedLineSubtotal) {
+    parts[0] += `, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}"${subtotalFreight > 0 ? `, which includes ${formatChargeDollars(subtotalFreight / 100)} of freight` : ''}.`;
+  } else {
+    parts[0] += '.';
+  }
+  if (amountDueShortfall !== undefined) {
+    parts.push(`With the printed freight and tax${discountCounted ? ' and after the printed discount' : ''}, those rows are ${formatChargeDollars(amountDueShortfall / 100)} short of the amount due ${result.extractedAmountDue}, so printed charges are missing. A section subtotal may cover only some of the rows.`);
+  }
+  parts.push('Read every table and section again row by row (rental or equipment items, sales or miscellaneous items, delivery, pickup, fuel, and other charge rows) and return every printed row, including a row that is identical to another row but printed under a different date, event, or section heading.');
+  return { instruction: parts.join(' '), amountDueShortfall, subtotalShortfall, subtotalRowsCents: subtotalShortfall === undefined ? undefined : subtotalShortfall + summed,
+    checks: [...(amountDueShortfall !== undefined ? ['amountDue' as const] : []), ...(subtotalShortfall !== undefined ? ['subtotal' as const] : [])],
+  };
+}
+
+function secondReadClosesGap(
+  plan: MissingRowsPlan,
+  added: Array<{ description: string; totalPrice?: string | null }>,
+  retriedRows: InvoiceOcrResult['extractedInvoiceLines'] & object
+): boolean {
+  if (plan.amountDueShortfall !== undefined) {
+    const addedRows = retriedRows.filter(row => added.includes(row));
+    const addedCents = sumExtractedLineCents(addedRows);
+    if (addedCents === plan.amountDueShortfall && addedRows.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0)) return true;
+  }
+  if (plan.subtotalShortfall !== undefined) {
+    const retriedCents = sumExtractedLineCents(retriedRows);
+    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents;
+  }
+  return false;
 }
 
 // OCR values win for every document field; the matching pass supplies supplier, company, coding, and the payment terms ID.

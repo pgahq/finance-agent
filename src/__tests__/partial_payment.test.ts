@@ -1,4 +1,6 @@
 import {
+  amountDueGapCents,
+  amountDueShortfallCents,
   formatLineSubtotalNotes,
   formatPartialPaymentNotes,
   lineSubtotalReviewNote,
@@ -6,6 +8,7 @@ import {
   planBalanceInvoice,
   planPartialPayment,
   secondReadRowsNote,
+  subtotalFreightCents,
   selectDepositPoLine,
   sumExtractedLineCents,
   type BalanceInvoiceInput,
@@ -18,6 +21,9 @@ import {
   supin470584Rows,
 } from './fixtures/supin_470584.js';
 
+import { supin472322Header, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
+import { summaryCreditCents } from '../lib/header_charges.js';
+import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
 
 const poLines = supin470584PoLines as any[];
@@ -101,6 +107,111 @@ describe('lineSubtotalShortfallCents and lineSubtotalReviewNote', () => {
     expect(formatLineSubtotalNotes('x')).toBe('\n\nLine subtotal review: x');
     expect(formatPartialPaymentNotes(undefined)).toBe('');
     expect(formatPartialPaymentNotes('x')).toBe('\n\nDeposit invoice: x');
+  });
+});
+
+describe('amount due gap (SUPIN-472108)', () => {
+  const base = {
+    amountDue: supin472108Header.extractedAmountDue,
+    tax: supin472108Header.extractedTaxAmount,
+  };
+  const subtotal = supin472108Header.extractedLineSubtotal;
+
+  it('counts a no-charge row as $0 instead of making the sum unreadable', () => {
+    expect(sumExtractedLineCents([
+      { description: 'Forks', totalPrice: 'N/C' },
+      { description: 'Rental', totalPrice: '$10.00' },
+      { description: 'Standard Fee', totalPrice: 'Included' },
+    ])).toBe(1000);
+    expect(sumExtractedLineCents([{ description: 'Rental', totalPrice: 'TBD' }])).toBeUndefined();
+  });
+
+  it('reports the $417.32 the delivery and pickup rows are worth', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows })).toBe(41732);
+    expect(amountDueShortfallCents({ ...base, lines: supin472108ProductionRows })).toBe(41732);
+  });
+
+  it('reports zero once the rows reconcile, and nothing when they overshoot', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472108Rows })).toBe(0);
+    expect(amountDueShortfallCents({ ...base, lines: supin472108Rows })).toBeUndefined();
+    expect(amountDueGapCents({ ...base, lines: [...supin472108Rows, supin472108Rows[1]] })).toBeLessThan(0);
+  });
+
+  it('subtracts the printed freight and other charges', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, freight: '$208.66' })).toBe(20866);
+    expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, otherCharges: [{ amount: '$417.32' }] })).toBe(0);
+  });
+
+  it('does not check deposit invoices, prior payments, or unreadable amounts', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, partialPayment: { amount: '$1.00' } })).toBeUndefined();
+    expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, priorPayments: [{}] })).toBeUndefined();
+    expect(amountDueGapCents({ ...base, amountDue: null, lines: supin472108ProductionRows })).toBeUndefined();
+    expect(amountDueGapCents({ ...base, lines: [{ description: 'x', totalPrice: null }] })).toBeUndefined();
+  });
+
+  it('leaves a gap that a totals-block row explains to that row', () => {
+    const lines = supin472108ProductionRows;
+    expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$417.32' }] })).toBeUndefined();
+    expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$200.00' }, { amount: '$217.32' }] })).toBeUndefined();
+    expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$5.00' }] })).toBe(41732);
+  });
+
+  it('words the review note from the amount due, not the partial printed subtotal', () => {
+    const production = supin472108ProductionRows;
+    expect(lineSubtotalReviewNote(production, subtotal, 41732)).toBe(
+      'The extracted lines total $3,330.56, but the document prints $3,591.67 as "Agreement Subtotal".'
+      + ' Lines, freight, and tax are $417.32 short of the amount due, so charges that the document prints (for example delivery, pickup, or other rows) were probably not read.'
+    );
+    expect(lineSubtotalReviewNote(production, subtotal, 0)).toBeUndefined();
+    expect(lineSubtotalReviewNote(production, subtotal)).toContain('The $261.11 difference may be a row that was not read.');
+    expect(lineSubtotalReviewNote(production, subtotal, 26111)).toContain('The $261.11 difference may be a row that was not read.');
+  });
+});
+
+describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', () => {
+  const header = supin472322Header;
+  const credit = summaryCreditCents(header.extractedSummaryCharges, supin472322ProductionRows);
+  const base = { amountDue: header.extractedAmountDue, freight: header.extractedFreightAmount, tax: header.extractedTaxAmount, creditCents: credit };
+
+  it('reads the unsigned discount as a $8,866.66 credit', () => {
+    expect(credit).toBe(886666);
+    expect(summaryCreditCents([{ label: 'Service Fee', amount: '8866.66' }], supin472322ProductionRows)).toBe(0);
+    expect(summaryCreditCents([{ label: 'Discount', amount: '-$100.00' }], [])).toBe(10000);
+    expect(summaryCreditCents(null, [])).toBe(0);
+  });
+
+  it('counts the credit when the rows overshoot the amount due, giving the real $1,388.00 gap', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472322ProductionRows })).toBe(138800);
+    expect(amountDueShortfallCents({ ...base, lines: supin472322ProductionRows })).toBe(138800);
+    expect(amountDueGapCents({ ...base, lines: supin472322ProductionRows, creditCents: 0 })).toBe(-747866);
+    expect(amountDueGapCents({ ...base, lines: supin472322Rows })).toBe(0);
+  });
+
+  it('ignores the credit when the rows do not overshoot', () => {
+    expect(amountDueGapCents({ ...base, lines: supin472108Rows, amountDue: '$4,045.99', freight: null, tax: '$298.11' })).toBe(0);
+    expect(amountDueGapCents({ ...base, lines: supin472322Rows.slice(0, 20), creditCents: 100 })).toBeGreaterThan(0);
+  });
+
+  it('finds the freight inside the printed subtotal from the document arithmetic', () => {
+    expect(subtotalFreightCents({ subtotal: header.extractedLineSubtotal, ...base })).toBe(200000);
+    expect(subtotalFreightCents({ subtotal: { label: 'Subtotal', amount: '46102.66' }, ...base })).toBeUndefined();
+    expect(subtotalFreightCents({ subtotal: header.extractedLineSubtotal, ...base, freight: null })).toBeUndefined();
+    expect(subtotalFreightCents({ subtotal: null, ...base })).toBeUndefined();
+  });
+
+  it('measures the subtotal shortfall without the freight inside it', () => {
+    expect(lineSubtotalShortfallCents(supin472322ProductionRows, header.extractedLineSubtotal)).toBe(338800);
+    expect(lineSubtotalShortfallCents(supin472322ProductionRows, header.extractedLineSubtotal, 200000)).toBe(138800);
+    expect(lineSubtotalShortfallCents(supin472322Rows, header.extractedLineSubtotal, 200000)).toBeUndefined();
+  });
+
+  it('words the note around the rows without freight', () => {
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000)).toBe(
+      'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.'
+      + ' The $1,388.00 difference may be a row that was not read.'
+    );
+    expect(lineSubtotalReviewNote(supin472322Rows, header.extractedLineSubtotal, undefined, 200000)).toBeUndefined();
+    expect(lineSubtotalReviewNote(supin472322Rows, header.extractedLineSubtotal, 0, 200000)).toBeUndefined();
   });
 });
 

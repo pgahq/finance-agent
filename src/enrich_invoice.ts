@@ -62,8 +62,8 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -78,6 +78,8 @@ import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapsh
 import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
+// Enrich has 300 seconds, so it reads again only when the first read was quick; a skipped second read costs a review note, a timeout costs the invoice.
+const ENRICH_RETRY_MAX_FIRST_READ_MS = 30_000;
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
@@ -206,7 +208,7 @@ async function processInvoice(
       undefined,
       abortSignal,
       // An annotate-only run never submits lines, so a second read for missing rows would be wasted.
-      { retryMissingRows: canModifyInvoice }
+      { retryMissingRows: canModifyInvoice, retryMaxFirstReadMs: ENRICH_RETRY_MAX_FIRST_READ_MS }
     );
     debug('Enrichment result:', result);
 
@@ -422,8 +424,29 @@ async function processInvoice(
     const depositApplied = Boolean(depositPlan?.applied);
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
     if (depositApplied) chargeCheck = [];
+    const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+      ? undefined
+      : reviewAmountDueGapCents({
+        lines: charges.lines,
+        amountDue: extractedAmountDue,
+        freight: freightCleared ? undefined : extractedFreightAmount,
+        tax: taxCleared ? undefined : extractedTaxAmount,
+        otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+        summaryCharges: result.extractedSummaryCharges,
+        creditCents,
+      });
+    const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
+      subtotal: result.extractedLineSubtotal,
+      amountDue: extractedAmountDue,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: result.extractedFreightAmount ?? undefined,
+      tax: taxCleared ? undefined : extractedTaxAmount,
+      otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+      creditCents,
+    }) ?? 0;
     const lineSubtotalNote = submitsLines
-      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal)].filter(Boolean).join(' ') || undefined
+      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap, subtotalFreight)].filter(Boolean).join(' ') || undefined
       : undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
