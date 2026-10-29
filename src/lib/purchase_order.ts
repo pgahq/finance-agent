@@ -77,7 +77,7 @@ export function normalizeNoteInvoiceNumber(value?: string | null): string | unde
 }
 
 // "both invoices", "all the invoices", "these invoices", "each invoice": the PO covers every invoice on the ticket.
-const NOTE_ALL_INVOICES = /\b(?:(?:both|all|these|those|the\s+(?:two|three|2|3)|two|three)(?:\s+of\s+(?:the|these|those))?\s+invoices|(?:each|every)\s+invoice)\b/gi;
+const NOTE_ALL_INVOICES = /\b(?:(?:both|all|these|those|the\s+(?:two|three|2|3))(?:\s+of\s+(?:the|these|those))?\s+invoices|(?:each|every)\s+invoice)\b/gi;
 // A standalone line reference ("go to line 8", "line #8 for invoice 101535"), found anywhere outside a "PO-N Line N" match.
 const NOTE_LINE_REFERENCE_PATTERN = /\b(?:lines?|ln)\b\.?[ \t]*(?:(?:number|no\.?|#)[ \t]*)?:?[ \t]*(\d{1,4})\b/gi;
 const NOTE_LINE_RANGE_AFTER = new RegExp(String.raw`^[ \t]*(?:[-–,&/+]|and\b|or\b|to\b|through\b|thru\b)[ \t]*(?:${NOTE_LINE_LABEL})?\d`, 'i');
@@ -306,15 +306,13 @@ export function findNotePurchaseOrders(text?: string | null): NotePurchaseOrder[
     previousEnd = order.end;
   }
 
-  const distinctOrders = new Set(orders.map((order) => order.purchaseOrderNumber));
+  // A line beside an invoice counts only in a sentence that names a PO; "Invoice 101535 line 2 is a duplicate charge"
+  // is about the invoice, not a PO line.
   for (const pair of pairs) {
-    const owner = pair.sentenceOrders.length
-      ? pair.sentenceOrders.reduce((nearest, order) =>
-        Math.abs(order.index - pair.line.index) < Math.abs(nearest.index - pair.line.index) ? order : nearest)
-      : undefined;
-    const purchaseOrderNumber = owner?.purchaseOrderNumber ?? (distinctOrders.size === 1 ? [...distinctOrders][0] : undefined);
-    if (!purchaseOrderNumber) continue;
-    const draft = draftFor(purchaseOrderNumber);
+    if (!pair.sentenceOrders.length) continue;
+    const owner = pair.sentenceOrders.reduce((nearest, order) =>
+      Math.abs(order.index - pair.line.index) < Math.abs(nearest.index - pair.line.index) ? order : nearest);
+    const draft = draftFor(owner.purchaseOrderNumber);
     pair.invoices.forEach((invoiceNumber) => addInvoiceLine(draft, invoiceNumber, pair.line.lineNumber));
   }
 
@@ -386,8 +384,8 @@ export function findNotePurchaseOrdersForOtherInvoices(
  * The note PO to use over the invoice PO. A PO the notes reject is never used.
  *
  * When the notes tie POs to invoice numbers (a conversation with several invoices) or give a PO to every invoice
- * ("both invoices go to PO-413672"), only a PO tied to this invoice's number or given to every invoice can override,
- * and an invoice the notes do not name keeps its own PO. Without an invoice number (before enrichment, or when it
+ * ("both invoices go to PO-413672"), only a PO tied to this invoice's number (else one given to every invoice) can
+ * override, and an invoice the notes do not name keeps its own PO. Without an invoice number (before enrichment, or when it
  * was not read), a PO given to every invoice is used only when it is the one PO the notes name for invoices.
  * Otherwise a note naming one PO overrides, and a note naming several resolves only when it rejects the invoice PO
  * and exactly one other PO remains ("not PO 411406, use PO-413672").
@@ -399,10 +397,12 @@ export function selectNotePurchaseOrder(
 ): NotePurchaseOrder | undefined {
   if (notePurchaseOrders.some((po) => po.invoiceNumbers?.length || po.allInvoices)) {
     const normalizedInvoiceNumber = normalizeNoteInvoiceNumber(invoiceNumber);
-    const forInvoice = notePurchaseOrders.filter(
-      (po) => !po.rejected
-        && (po.allInvoices || (normalizedInvoiceNumber && po.invoiceNumbers?.includes(normalizedInvoiceNumber)))
+    // A PO tied to this invoice's number beats one given to every invoice ("Invoice 101 goes to PO-111111. The
+    // other invoices go to PO-222222.").
+    const tiedToInvoice = notePurchaseOrders.filter(
+      (po) => !po.rejected && normalizedInvoiceNumber && po.invoiceNumbers?.includes(normalizedInvoiceNumber)
     );
+    const forInvoice = tiedToInvoice.length ? tiedToInvoice : notePurchaseOrders.filter((po) => !po.rejected && po.allInvoices);
     if (forInvoice.length !== 1) return undefined;
     if (normalizedInvoiceNumber) return forInvoice[0];
     const tiedToInvoices = notePurchaseOrders.filter((po) => !po.rejected && (po.allInvoices || po.invoiceNumbers?.length));
