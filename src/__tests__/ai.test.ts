@@ -1,5 +1,6 @@
 import type { LanguageModel } from 'ai';
 import { getAiResponse } from '../lib/ai.js';
+import { ProcessorDeadlineError } from '../lib/deadline.js';
 
 // Mock the AI SDK
 jest.mock('ai', () => ({
@@ -293,6 +294,23 @@ describe('AI utilities', () => {
       expect(mockGenerateText).toHaveBeenCalledTimes(3);
       expect(mockGenerateText.mock.calls[1][0].abortSignal).toBe(signal);
       expect(mockGenerateText.mock.calls[2][0].abortSignal).toBe(signal);
+    });
+
+    it('rethrows the deadline signal reason instead of the SDK AbortError', async () => {
+      const controller = new AbortController();
+      const reason = new ProcessorDeadlineError('Processor deadline reached; aborting AI calls');
+      mockGenerateText.mockImplementationOnce(async () => {
+        controller.abort(reason);
+        throw Object.assign(new Error('Delay was aborted'), { name: 'AbortError' });
+      });
+
+      await expect(getAiResponse({
+        prompt: 'Test prompt',
+        schema: undefined,
+        messages: [{ role: 'user', content: 'Test message' }],
+        tools: {},
+        abortSignal: controller.signal,
+      })).rejects.toBe(reason);
     });
 
     it('should handle API errors', async () => {
