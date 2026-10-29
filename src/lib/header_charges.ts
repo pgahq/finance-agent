@@ -510,15 +510,45 @@ function wholeCents(amount: number): number | undefined {
   return Math.abs(cents - Math.round(cents)) < 1e-6 ? Math.round(cents) : undefined;
 }
 
+type LinePriceReadingKind = 'unitPrice' | 'extension';
+
+interface LinePriceReading {
+  kind: LinePriceReadingKind;
+  /** The line total in cents under the alternative reading. */
+  cents: number;
+}
+
+function isChargeRowDescription(description: string): boolean {
+  return isFreightOrHandlingLine(description) || isTaxChargeDescription(description);
+}
+
 // Quantity above 1, no unit price, one positive price printed as the total, and a product that is a whole-cent amount.
-function singlePriceLineTotalCents(line: ExtractedInvoiceLine): number | undefined {
+function singlePriceReading(line: ExtractedInvoiceLine): LinePriceReading | undefined {
   const quantity = line.quantity;
   if (quantity == null || !Number.isFinite(quantity) || quantity <= 1) return undefined;
   if (line.unitCost?.trim() || line.hasDiscount === true) return undefined;
-  if (isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return undefined;
+  if (isChargeRowDescription(line.description)) return undefined;
   const price = line.totalPrice ? chargeAmount(line.totalPrice) : undefined;
   if (price == null || price <= 0) return undefined;
-  return wholeCents(quantity * price);
+  const cents = wholeCents(quantity * price);
+  return cents == null ? undefined : { kind: 'unitPrice', cents };
+}
+
+// A positive quantity and unit price whose whole-cent product differs from the printed positive line total.
+function extensionReading(line: ExtractedInvoiceLine): LinePriceReading | undefined {
+  const quantity = line.quantity;
+  if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return undefined;
+  if (!line.unitCost?.trim() || !line.totalPrice || line.hasDiscount === true) return undefined;
+  if (isChargeRowDescription(line.description)) return undefined;
+  const unitCost = parseExtractedUnitCost(line.unitCost);
+  const total = chargeAmount(line.totalPrice);
+  if (unitCost == null || unitCost <= 0 || total == null || total <= 0) return undefined;
+  const cents = wholeCents(quantity * unitCost);
+  return cents == null || cents <= 0 || cents === Math.round(total * 100) ? undefined : { kind: 'extension', cents };
+}
+
+function linePriceReading(line: ExtractedInvoiceLine, allowExtension: boolean): LinePriceReading | undefined {
+  return singlePriceReading(line) ?? (allowExtension ? extensionReading(line) : undefined);
 }
 
 function describeSinglePriceLines(lines: ExtractedInvoiceLine[]): string {
@@ -530,31 +560,69 @@ function describeSinglePriceLines(lines: ExtractedInvoiceLine[]): string {
     .join('; ');
 }
 
+function describeExtensionLines(lines: ExtractedInvoiceLine[], readings: Map<ExtractedInvoiceLine, number>): string {
+  return lines
+    .map(line => {
+      const unitCost = parseExtractedUnitCost(line.unitCost ?? '') ?? 0;
+      const total = chargeAmount(line.totalPrice) ?? 0;
+      const product = (readings.get(line) ?? 0) / 100;
+      return `"${printable(line.description)}" prints quantity ${line.quantity} at ${formatChargeDollars(unitCost)} (${formatChargeDollars(product)}) but a line total of ${formatChargeDollars(total)}`;
+    })
+    .join('; ');
+}
+
+function singlePriceNote(changed: ExtractedInvoiceLine[]): string {
+  const many = changed.length > 1;
+  return `${describeSinglePriceLines(changed)}. Read as ${many ? 'line totals' : 'a line total'}, the lines do not add up to the amount due, but reading ${many ? 'those prices' : 'that price'} as ${many ? 'unit prices' : 'a unit price'} does, so the line ${many ? 'totals were' : 'total was'} set to quantity x price.`;
+}
+
+function extensionNote(changed: ExtractedInvoiceLine[], readings: Map<ExtractedInvoiceLine, number>): string {
+  const many = changed.length > 1;
+  return `${describeExtensionLines(changed, readings)}. With the printed ${many ? 'line totals' : 'line total'}, the lines do not add up to the amount due, but with quantity x unit price they do, so the line ${many ? 'totals were' : 'total was'} set to quantity x unit price.`;
+}
+
+export interface LinePriceReadingOptions {
+  /**
+   * Whether a line whose printed total differs from quantity x unit price may take the product as its total.
+   * Callers turn it off when a deposit, prior payment, or balance due is printed, because the lines then
+   * legitimately exceed the amount due and a coincidental match proves nothing.
+   */
+  allowExtension?: boolean;
+}
+
 /**
- * A line that prints a quantity and one price may print that price per unit, with the line total
- * left off. OCR then reads it as the line total (unit cost null), and the line submits amount-only
- * at the unit price. When the lines as read do not reconcile with the amount due but reading the
- * price as a unit price does, the line total becomes quantity x price. `reconciles` is the caller's
- * check against the amount due; the search takes a reading only when exactly one set of lines
- * reconciles, so an ambiguous or unreconcilable invoice keeps its mismatch flag.
+ * Two readings of a line whose quantity and prices disagree with the amount due:
+ * - A line that prints a quantity and one price may print that price per unit, with the line total
+ *   left off. OCR then reads it as the line total (unit cost null), and the line submits amount-only
+ *   at the unit price. The line total becomes quantity x price.
+ * - A line that prints a quantity, a unit price, and a line total that is not their product (OCR took
+ *   the tax-inclusive amount due as the total). The line total becomes quantity x unit price.
+ * Either reading is taken only when the lines as read do not reconcile with the amount due and the
+ * reading does. `reconciles` is the caller's check against the amount due; the search takes a reading
+ * only when exactly one set of lines reconciles, so an ambiguous or unreconcilable invoice keeps its
+ * mismatch flag.
  */
 export function reinterpretSinglePriceLines(
   lines: ExtractedInvoiceLine[],
-  reconciles: (candidate: ExtractedInvoiceLine[]) => boolean
+  reconciles: (candidate: ExtractedInvoiceLine[]) => boolean,
+  options: LinePriceReadingOptions = {}
 ): SinglePriceReinterpretation {
   const unchanged: SinglePriceReinterpretation = { lines };
+  const allowExtension = options.allowExtension ?? true;
   const eligible = lines.flatMap((line, index) => {
-    const cents = singlePriceLineTotalCents(line);
-    return cents == null ? [] : [{ index, cents }];
+    const reading = linePriceReading(line, allowExtension);
+    return reading == null ? [] : [{ index, reading }];
   });
   if (eligible.length === 0 || eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES) return unchanged;
   if (reconciles(lines)) return unchanged;
 
   const apply = (mask: number): ExtractedInvoiceLine[] => {
-    const chosen = new Map(eligible.filter((_, bit) => mask & (1 << bit)).map(entry => [entry.index, entry.cents]));
+    const chosen = new Map(eligible.filter((_, bit) => mask & (1 << bit)).map(entry => [entry.index, entry.reading]));
     return lines.map((line, index) => {
-      const cents = chosen.get(index);
-      return cents == null ? line : { ...line, unitCost: line.totalPrice, totalPrice: formatChargeDollars(cents / 100) };
+      const reading = chosen.get(index);
+      if (reading == null) return line;
+      const totalPrice = formatChargeDollars(reading.cents / 100);
+      return reading.kind === 'unitPrice' ? { ...line, unitCost: line.totalPrice, totalPrice } : { ...line, totalPrice };
     });
   };
   const matches: number[] = [];
@@ -564,10 +632,17 @@ export function reinterpretSinglePriceLines(
   if (matches.length !== 1) return unchanged;
 
   const reinterpreted = apply(matches[0]);
-  const changed = lines.filter((_, index) => reinterpreted[index] !== lines[index]);
+  const changedEntries = eligible.filter((_, bit) => matches[0] & (1 << bit));
+  const ofKind = (kind: LinePriceReadingKind) => changedEntries.filter(entry => entry.reading.kind === kind).map(entry => lines[entry.index]);
+  const singlePrice = ofKind('unitPrice');
+  const extension = ofKind('extension');
+  const products = new Map(changedEntries.map(entry => [lines[entry.index], entry.reading.cents]));
   return {
     lines: reinterpreted,
-    note: `${describeSinglePriceLines(changed)}. Read as ${changed.length > 1 ? 'line totals' : 'a line total'}, the lines do not add up to the amount due, but reading ${changed.length > 1 ? 'those prices' : 'that price'} as ${changed.length > 1 ? 'unit prices' : 'a unit price'} does, so the line ${changed.length > 1 ? 'totals were' : 'total was'} set to quantity x price.`,
+    note: [
+      ...(singlePrice.length ? [singlePriceNote(singlePrice)] : []),
+      ...(extension.length ? [extensionNote(extension, products)] : []),
+    ].join(' '),
   };
 }
 
@@ -584,6 +659,17 @@ export interface SinglePriceChargeContext {
   summaryChargesPlaceable: boolean;
   printedTaxCharges?: PrintedCharge[] | null;
   printedSummaryCharges?: PrintedSummaryCharge[] | null;
+  /** A deposit, prior payment, or balance due is printed, so a line total is not replaced by quantity x unit price. */
+  settlementPrinted?: boolean;
+}
+
+/** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */
+export function hasPrintedSettlement(result: {
+  extractedPartialPayment?: unknown;
+  extractedPriorPayments?: unknown[] | null;
+  emailBalanceDue?: unknown;
+}): boolean {
+  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.emailBalanceDue);
 }
 
 /**
@@ -630,5 +716,5 @@ export function reinterpretSinglePriceLinesForCharges(
       taxCleared: taxCharges.taxCleared,
     }).lines.length > 0;
   };
-  return reinterpretSinglePriceLines(lines, reconciles);
+  return reinterpretSinglePriceLines(lines, reconciles, { allowExtension: !context.settlementPrinted });
 }

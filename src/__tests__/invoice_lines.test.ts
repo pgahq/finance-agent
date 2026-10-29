@@ -3997,3 +3997,17 @@ describe('single price read as a unit price (SUPIN-471803)', () => {
     expect(line).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 75 });
   });
 });
+
+describe('unit price beside a line total that is not their product (SUPIN-472062)', () => {
+  const base = { lineOrder: 1, description: 'eSign Non 8879', quantity: 23, unitCost: 1.25 };
+
+  it('submits quantity 23 at $1.25 once the line total is $28.75', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, extendedAmount: 28.75 }], true);
+    expect(line).toMatchObject({ quantity: 23, unitCost: 1.25, extendedAmount: 28.75 });
+  });
+
+  it('still goes amount-only at the printed total when it is not the product', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, extendedAmount: 30.65 }], true);
+    expect(line).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 30.65 });
+  });
+});

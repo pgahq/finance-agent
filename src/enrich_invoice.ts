@@ -62,7 +62,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -355,6 +355,7 @@ async function processInvoice(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement(result),
     }) : { lines: printedLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.

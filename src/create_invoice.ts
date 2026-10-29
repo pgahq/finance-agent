@@ -81,7 +81,7 @@ import {
   splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
@@ -1100,6 +1100,7 @@ async function processInvoiceCluster(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement(result),
     });
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     const restoredFreight = restoreClearedFreightFromRows(extractedLines, {
