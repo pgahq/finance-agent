@@ -380,6 +380,10 @@ export function formatLineTotalReviewNotes(reviewNote: string | undefined): stri
   return reviewNote ? `\n\nLine total review: ${reviewNote}` : '';
 }
 
+export function formatPoLineReviewNotes(note: string | undefined): string {
+  return note ? `\n\nPO line review: ${note}` : '';
+}
+
 export function formatPositivePoQuantityNotes(note: string | undefined): string {
   return note ? `\n\nPO line quantity: ${note}` : '';
 }

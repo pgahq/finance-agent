@@ -11,6 +11,7 @@ import {
   type RelatedLob,
 } from './related_worktags.js';
 import { isQuantityDistributedSplits, worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
+import { sharesDescriptiveWord } from './po_service_lines.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -21,6 +22,8 @@ export interface ExtractedInvoiceLine {
   hasDiscount?: boolean | null;
   tableNumber?: number | null;
   sectionLabel?: string | null;
+  /** The PO service line this row was matched to in code; the row stays an invoice line on that PO line. */
+  pinnedPurchaseOrderLineId?: string | null;
 }
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
@@ -145,6 +148,8 @@ export interface FinalInvoiceLine {
   omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
+  /** The PO service line code matched this row to; the line is never moved to header freight or tax. */
+  pinnedPurchaseOrderLineId?: string | null;
 }
 
 // Extraction sets hasDiscount on merchandise rows that print a discounted net price.
@@ -174,6 +179,8 @@ export interface BuiltInvoiceLines {
   appliedFallbacks: LineFallbacks;
   relatedLobByCostCenter: Map<string, RelatedLob>;
   emailBudgetSplit?: EmailBudgetSplitOutcome;
+  /** Rows the merge linked to a PO line that does not describe them; they were left unlinked. */
+  unlinkedPoRows?: Array<{ lineOrder: number; description: string }>;
 }
 
 export interface LineFallbacks {
@@ -325,11 +332,13 @@ export function splitFreightLines<T extends {
   Extended_Amount?: number | string | null;
   quantity?: number | null;
   Quantity?: number | string | null;
+  pinnedPurchaseOrderLineId?: string | null;
 }>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
   const merchandiseLines: T[] = [];
   const freightLines: T[] = [];
   for (const line of lines) {
-    if (isFreightOrHandlingLine(lineDescription(line))) {
+    // A row matched to a PO service line is billed against that line, not moved to header freight.
+    if (!line.pinnedPurchaseOrderLineId && isFreightOrHandlingLine(lineDescription(line))) {
       freightLines.push(line);
     } else {
       merchandiseLines.push(line);
@@ -370,6 +379,7 @@ export function isTaxChargeDescription(description: string | undefined): boolean
 type ChargeLine = Parameters<typeof lineAmount>[0] & {
   description?: string | null;
   Item_Description?: string | null;
+  pinnedPurchaseOrderLineId?: string | null;
 };
 
 type ChargeAmount = string | number | null | undefined;
@@ -479,8 +489,8 @@ export function reconcileSubmittedCharges<T extends ChargeLine>(
     return { ...unchanged, unreconciled: { lineTotal: sumCents(entries) / 100, freight, tax, amountDue } };
   }
 
-  const isFreightEntry = (entry: CentsLine<T>) => isFreightOrHandlingLine(lineDescription(entry.line));
-  const isTaxEntry = (entry: CentsLine<T>) => isTaxChargeDescription(lineDescription(entry.line));
+  const isFreightEntry = (entry: CentsLine<T>) => !entry.line.pinnedPurchaseOrderLineId && isFreightOrHandlingLine(lineDescription(entry.line));
+  const isTaxEntry = (entry: CentsLine<T>) => !entry.line.pinnedPurchaseOrderLineId && isTaxChargeDescription(lineDescription(entry.line));
   let freightDuplicates: CentsLine<T>[] | undefined;
   let taxDuplicates: CentsLine<T>[] | undefined;
   if (freightCents > 0 && excessCents === freightCents) {
@@ -1129,6 +1139,7 @@ export interface ParsedPoLineWorktags {
   splitLineData: PurchaseOrderLineSplit[];
   quantity?: number | null;
   unitCost?: number | null;
+  extendedAmount?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   availableForInvoicing?: boolean;
@@ -1156,6 +1167,9 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       splitLineData: line.splitLineData ?? [],
       quantity: line.quantity != null && Number.isFinite(line.quantity) && line.quantity > 0 ? line.quantity : null,
       unitCost: line.unitCost != null && Number.isFinite(line.unitCost) && line.unitCost > 0 ? line.unitCost : null,
+      extendedAmount: line.extendedAmount != null && Number.isFinite(Number(line.extendedAmount)) && Number(line.extendedAmount) > 0
+        ? Number(line.extendedAmount)
+        : null,
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
       availableForInvoicing: line.availableForInvoicing !== false,
@@ -2453,7 +2467,7 @@ export async function buildFinalInvoiceLines(
       invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
       invoiceServicePeriod,
     } : {}),
-    extractedInvoiceLines: extractedLines,
+    extractedInvoiceLines: extractedLines.map(({ pinnedPurchaseOrderLineId: _pinned, ...row }) => row),
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
       purchaseOrderLineId: line.purchaseOrderLineId,
@@ -2491,17 +2505,21 @@ export async function buildFinalInvoiceLines(
     }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+    return finalizeInvoiceLines(applyPinnedPoLines(fallback.lines, extractedLines, parsedPoLines), fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+    return finalizeInvoiceLines(applyPinnedPoLines(fallback.lines, extractedLines, parsedPoLines), fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  const describedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  const { lines: pinnedLines, unlinked: unlinkedPoRows } = unlinkRowsOutsideTheirPoLine(
+    applyPinnedPoLines(describedLines, extractedLines, parsedPoLines),
+    parsedPoLines
+  );
   // invoiceServicePeriod covers every line that states no period of its own, so when it
   // names a period no line is left for the invoice-date fallback.
   const selectedLines = !poLineSelection
@@ -2512,7 +2530,7 @@ export async function buildFinalInvoiceLines(
         : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate),
       parsedPoLines
     );
-  return finalizeInvoiceLines(
+  const built = await finalizeInvoiceLines(
     selectedLines,
     appliedFallbacks,
     parsedPoLines,
@@ -2520,6 +2538,70 @@ export async function buildFinalInvoiceLines(
     relatedLobLookup,
     fallbackIds
   );
+  return unlinkedPoRows.length > 0 ? { ...built, unlinkedPoRows } : built;
+}
+
+// A row code matched to a PO service line is linked to it whatever the merge returned, and takes that line's coding.
+function applyPinnedPoLines(
+  lines: FinalInvoiceLine[],
+  extractedLines: ExtractedInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  if (lines.length !== extractedLines.length || !extractedLines.some(row => row.pinnedPurchaseOrderLineId)) return lines;
+  const byId = new Map(poLines.filter(line => line.purchaseOrderLineId).map(line => [line.purchaseOrderLineId as string, line]));
+  return lines.map((line, index) => {
+    const pinnedId = extractedLines[index].pinnedPurchaseOrderLineId;
+    const poLine = pinnedId ? byId.get(pinnedId) : undefined;
+    if (!pinnedId || !poLine) return line;
+    return {
+      ...line,
+      pinnedPurchaseOrderLineId: pinnedId,
+      purchaseOrderLineId: pinnedId,
+      shipToAddressId: poLine.shipToAddressId ?? line.shipToAddressId ?? null,
+      costCenterId: poLine.costCenterId ?? line.costCenterId,
+      fundId: poLine.fundId ?? line.fundId,
+      spendCategoryId: poLine.spendCategoryId ?? line.spendCategoryId,
+      lineOfBusinessId: poLine.lineOfBusinessId ?? line.lineOfBusinessId,
+    };
+  });
+}
+
+/**
+ * The merge links a row to a PO line even when nothing on the PO describes it (fuel on a light tower line).
+ * A link is removed only when the row shares no descriptive word with its PO line and the rows on that line
+ * bill more than the PO line's amount; either signal alone leaves the model's choice in place. The row keeps its
+ * coding, so only the link to the PO line goes.
+ */
+export function unlinkRowsOutsideTheirPoLine(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): { lines: FinalInvoiceLine[]; unlinked: Array<{ lineOrder: number; description: string }> } {
+  const byId = new Map(poLines.filter(line => line.purchaseOrderLineId).map(line => [line.purchaseOrderLineId as string, line]));
+  const billedByPoLine = new Map<string, number>();
+  for (const line of lines) {
+    if (!line.purchaseOrderLineId || isDiscountLine(line)) continue;
+    billedByPoLine.set(line.purchaseOrderLineId, (billedByPoLine.get(line.purchaseOrderLineId) ?? 0) + (submittedLineAmount(line) ?? 0));
+  }
+  const unlinked: Array<{ lineOrder: number; description: string }> = [];
+  const result = lines.map(line => {
+    const poLine = line.purchaseOrderLineId ? byId.get(line.purchaseOrderLineId) : undefined;
+    if (!poLine || line.pinnedPurchaseOrderLineId || isDiscountLine(line)) return line;
+    const poAmount = poLine.extendedAmount;
+    const billed = billedByPoLine.get(poLine.purchaseOrderLineId as string) ?? 0;
+    if (poAmount == null || billed <= poAmount + 0.005) return line;
+    if (sharesDescriptiveWord(line.description, poLine)) return line;
+    debug(`Invoice line ${line.lineOrder} "${line.description}" shares no wording with PO line ${poLine.purchaseOrderLineId} ("${poLine.description}") and the rows on it exceed its ${poAmount}; leaving it unlinked`);
+    unlinked.push({ lineOrder: line.lineOrder, description: line.description });
+    return { ...line, purchaseOrderLineId: null };
+  });
+  return { lines: result, unlinked };
+}
+
+export function unlinkedPoRowsNote(rows: Array<{ description: string }> | undefined): string | undefined {
+  if (!rows?.length) return undefined;
+  const named = rows.map(row => `"${printable(row.description)}"`).join(', ');
+  const plural = rows.length > 1;
+  return `${named} ${plural ? 'are' : 'is'} not linked to a PO line: no line on the PO describes ${plural ? 'them' : 'it'}, and the PO line chosen for ${plural ? 'them' : 'it'} is billed past its amount by other rows.`;
 }
 
 async function finalizeInvoiceLines(

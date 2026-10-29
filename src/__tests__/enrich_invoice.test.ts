@@ -1993,6 +1993,80 @@ describe('enrich_invoice', () => {
     );
   });
 
+  it('bills delivery and pickup rows on their PO service lines instead of header freight (SUPIN-472110)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-414149',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Goods_Line_Data: {
+              Line_Number: 1, Item_Order_Line_ID: 'GOODS-1', Description: 'LIGHT TOWER', Quantity: 4, Unit_Cost: 337, Extended_Amount: 1348
+            },
+            Service_Line_Data: [
+              { Line_Number: 2, Service_Order_Line_ID: 'SVC-DELIVERY', Description: 'DELIVERY CHARGE', Extended_Amount: 231.88 },
+              { Line_Number: 3, Service_Order_Line_ID: 'SVC-PICKUP', Description: 'PICK UP CHARGE', Extended_Amount: 231.88 },
+            ]
+          }
+        }
+      }
+    });
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'United Rentals' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-414149',
+      extractedFreightAmount: null,
+      extractedInvoiceLines: [
+        { description: 'LIGHT TOWER', quantity: 4, unitCost: '337.00', totalPrice: '$1,348.00', hasDiscount: false },
+        { description: 'DELIVERY CHARGE', quantity: 1, unitCost: '228.160', totalPrice: '$228.16', hasDiscount: false },
+        { description: 'PICKUP CHARGE', quantity: 1, unitCost: '228.160', totalPrice: '$228.16', hasDiscount: false },
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementationOnce(async (extracted: Array<{ description: string }>) => ({
+      lines: extracted.map((row, index) => ({ lineOrder: index + 1, description: row.description, quantity: 1, unitCost: 1, extendedAmount: 1 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const rowsSentToMerge = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+    expect(rowsSentToMerge.map((row: { description: string }) => row.description))
+      .toEqual(['LIGHT TOWER', 'DELIVERY CHARGE', 'PICKUP CHARGE']);
+    expect(rowsSentToMerge.map((row: { pinnedPurchaseOrderLineId?: string }) => row.pinnedPurchaseOrderLineId))
+      .toEqual([undefined, 'SVC-DELIVERY', 'SVC-PICKUP']);
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.extractedFreightAmount).toBeUndefined();
+  });
+
   it('omits PO line refs but keeps PO line coding when the PO is Pending Close', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

@@ -161,7 +161,7 @@ function missingRowsInstruction(result: InvoiceOcrResult): string | undefined {
   const lines = result.extractedInvoiceLines ?? [];
   // A row that prints a net-of-discount total never reaches a subtotal printed before discounts.
   if (lines.some(line => line.hasDiscount === true)) return undefined;
-  const shortfall = lineSubtotalShortfallCents(lines, result.extractedLineSubtotal);
+  const shortfall = lineSubtotalShortfallCents(lines, result.extractedLineSubtotal, { freight: result.extractedFreightAmount, otherCharges: result.extractedOtherCharges });
   const summed = sumExtractedLineCents(lines);
   if (shortfall === undefined || summed === undefined || !result.extractedLineSubtotal) return undefined;
   return `A first read returned ${lines.length} rows totaling ${formatChargeDollars(summed / 100)}, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}". `
