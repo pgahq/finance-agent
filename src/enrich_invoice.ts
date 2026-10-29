@@ -63,7 +63,7 @@ import {
   type LineFallbacks,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { amountDueGapCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -416,8 +416,16 @@ async function processInvoice(
     const depositApplied = Boolean(depositPlan?.applied);
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
     if (depositApplied) chargeCheck = [];
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+      ? undefined
+      : amountDueGapCents({
+        lines: charges.lines,
+        amountDue: extractedAmountDue,
+        freight: freightCleared ? undefined : extractedFreightAmount,
+        tax: taxCleared ? undefined : extractedTaxAmount,
+      });
     const lineSubtotalNote = submitsLines
-      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal)].filter(Boolean).join(' ') || undefined
+      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap)].filter(Boolean).join(' ') || undefined
       : undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
