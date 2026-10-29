@@ -304,7 +304,7 @@ Read the invoice attachment and extract the freight amount. It may be labeled as
 
 If the invoice presents a single freight/shipping/handling charge as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
 
-When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows in an itemized table (for example \`DELIVERY CHARGE 1 EACH 208.660 208.66\` and \`PICKUP CHARGE 1 EACH 208.660 208.66\` under SALES/MISCELLANEOUS ITEMS), there is no single freight amount: return each of those rows in \`extractedInvoiceLines\` with its printed description and amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. Never add the rows together.
+When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows in an itemized table (for example \`DELIVERY CHARGE 1 EACH 208.660 208.66\` and \`PICKUP CHARGE 1 EACH 208.660 208.66\` under SALES/MISCELLANEOUS ITEMS), there is no single freight amount: return each of those rows in \`extractedInvoiceLines\` with its printed description and amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. Do not merge the rows into one line or one freight amount; the system decides afterward which of them are freight.
 
 ---
 

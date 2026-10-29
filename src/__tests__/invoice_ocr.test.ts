@@ -397,6 +397,9 @@ describe('invoice OCR pass', () => {
           outcome: 'accepted',
           firstRows: 27,
           durationMs: expect.any(Number),
+          checks: ['subtotal'],
+          amountDueShortfallCents: undefined,
+          subtotalShortfallCents: 405000,
         });
         const retryText = mockGetAiResponse.mock.calls[1][0].messages[0].content[0].text;
         expect(retryText).toContain('A first read returned 27 rows totaling $34,205.00');
@@ -542,7 +545,7 @@ describe('invoice OCR pass', () => {
           { description: 'DELIVERY CHARGE', totalPrice: '208.66' },
           { description: 'PICKUP CHARGE', totalPrice: '208.66' },
         ]);
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', { outcome: 'accepted', firstRows: 5, durationMs: expect.any(Number) });
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', { outcome: 'accepted', firstRows: 5, durationMs: expect.any(Number), checks: ['amountDue', 'subtotal'], amountDueShortfallCents: 41732, subtotalShortfallCents: 26111 });
         const retryText = mockGetAiResponse.mock.calls[1][0].messages[0].content[0].text;
         expect(retryText).toContain('A first read returned 5 rows totaling $3,330.56');
         expect(retryText).toContain('$417.32 short of the amount due $4,045.99');
@@ -684,7 +687,7 @@ describe('invoice OCR pass', () => {
         expect(retryText).toContain('after the printed discount, those rows are $1,388.00 short of the amount due $41,590.16');
         expect(result?.extractedInvoiceLines).toHaveLength(61);
         expect(result?.extractedRowsAddedOnSecondRead).toEqual(supin472322MissedRows.map(row => ({ description: row.description, totalPrice: row.totalPrice })));
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', { outcome: 'accepted', firstRows: 59, durationMs: expect.any(Number) });
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', { outcome: 'accepted', firstRows: 59, durationMs: expect.any(Number), checks: ['amountDue', 'subtotal'], amountDueShortfallCents: 138800, subtotalShortfallCents: 138800 });
       });
 
       it('keeps the first read when the added rows do not total the $1,388.00', async () => {

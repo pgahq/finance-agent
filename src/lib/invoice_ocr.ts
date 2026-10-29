@@ -130,7 +130,14 @@ export async function extractInvoiceDocuments(
       outcome = 'failed';
       debug('Invoice OCR second read failed; keeping the first read', error);
     }
-    debug('Invoice OCR missing-row retry', { outcome, firstRows: firstRows.length, durationMs: Date.now() - startedAt });
+    debug('Invoice OCR missing-row retry', {
+      outcome,
+      firstRows: firstRows.length,
+      durationMs: Date.now() - startedAt,
+      checks: retryPlan.checks,
+      amountDueShortfallCents: retryPlan.amountDueShortfall,
+      subtotalShortfallCents: retryPlan.subtotalShortfall,
+    });
   }
   return result;
 }
@@ -160,6 +167,8 @@ interface MissingRowsPlan {
   subtotalShortfall?: number;
   /** The rows' total a second read must reach to close the subtotal shortfall: the printed total less any freight inside it. */
   subtotalRowsCents?: number;
+  /** Which checks fired, for the retry log. */
+  checks: Array<'amountDue' | 'subtotal'>;
 }
 
 function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined {
@@ -207,7 +216,9 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     parts.push(`With the printed freight and tax${discountCounted ? ' and after the printed discount' : ''}, those rows are ${formatChargeDollars(amountDueShortfall / 100)} short of the amount due ${result.extractedAmountDue}, so printed charges are missing. A section subtotal may cover only some of the rows.`);
   }
   parts.push('Read every table and section again row by row (rental or equipment items, sales or miscellaneous items, delivery, pickup, fuel, and other charge rows) and return every printed row, including a row that is identical to another row but printed under a different date, event, or section heading.');
-  return { instruction: parts.join(' '), amountDueShortfall, subtotalShortfall, subtotalRowsCents: subtotalShortfall === undefined ? undefined : subtotalShortfall + summed };
+  return { instruction: parts.join(' '), amountDueShortfall, subtotalShortfall, subtotalRowsCents: subtotalShortfall === undefined ? undefined : subtotalShortfall + summed,
+    checks: [...(amountDueShortfall !== undefined ? ['amountDue' as const] : []), ...(subtotalShortfall !== undefined ? ['subtotal' as const] : [])],
+  };
 }
 
 function secondReadClosesGap(

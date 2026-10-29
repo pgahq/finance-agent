@@ -118,6 +118,15 @@ export function amountDueShortfallCents(input: AmountDueGapInput): number | unde
 }
 
 /**
+ * The amount-due gap for the review note: a gap that a totals-block row explains reads as zero, because that row is
+ * placed as a line and the invoice then reconciles (the note must not claim rows were missed).
+ */
+export function reviewAmountDueGapCents(input: AmountDueGapInput): number | undefined {
+  const gap = amountDueGapCents(input);
+  return gap != null && gap > 0 && amountDueShortfallCents(input) === undefined ? 0 : gap;
+}
+
+/**
  * Cents of printed freight that the line-table subtotal already contains, or undefined when it does not. The
  * document's own arithmetic decides: a subtotal that, less any credits, plus tax and other charges equals the amount
  * due has no freight added on top, so the freight is inside it (SUPIN-472322: $48,102.66 - $8,866.66 + $2,354.16

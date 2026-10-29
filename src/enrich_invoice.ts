@@ -63,7 +63,7 @@ import {
   type LineFallbacks,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { amountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -419,11 +419,13 @@ async function processInvoice(
     const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
     const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
       ? undefined
-      : amountDueGapCents({
+      : reviewAmountDueGapCents({
         lines: charges.lines,
         amountDue: extractedAmountDue,
         freight: freightCleared ? undefined : extractedFreightAmount,
         tax: taxCleared ? undefined : extractedTaxAmount,
+        otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+        summaryCharges: result.extractedSummaryCharges,
         creditCents,
       });
     const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
@@ -431,6 +433,7 @@ async function processInvoice(
       amountDue: extractedAmountDue,
       freight: extractedFreightAmount,
       tax: taxCleared ? undefined : extractedTaxAmount,
+      otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
       creditCents,
     }) ?? 0;
     const lineSubtotalNote = submitsLines
