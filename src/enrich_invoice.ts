@@ -78,6 +78,8 @@ import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapsh
 import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
+// Enrich has 300 seconds, so it reads again only when the first read was quick; a skipped second read costs a review note, a timeout costs the invoice.
+const ENRICH_RETRY_MAX_FIRST_READ_MS = 30_000;
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
@@ -206,7 +208,7 @@ async function processInvoice(
       undefined,
       abortSignal,
       // An annotate-only run never submits lines, so a second read for missing rows would be wasted.
-      { retryMissingRows: canModifyInvoice }
+      { retryMissingRows: canModifyInvoice, retryMaxFirstReadMs: ENRICH_RETRY_MAX_FIRST_READ_MS }
     );
     debug('Enrichment result:', result);
 
@@ -431,7 +433,8 @@ async function processInvoice(
     const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
       subtotal: result.extractedLineSubtotal,
       amountDue: extractedAmountDue,
-      freight: extractedFreightAmount,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: result.extractedFreightAmount ?? undefined,
       tax: taxCleared ? undefined : extractedTaxAmount,
       otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
       creditCents,

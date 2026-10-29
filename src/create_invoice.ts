@@ -1181,7 +1181,8 @@ async function processInvoiceCluster(
     const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
       subtotal: result.extractedLineSubtotal,
       amountDue: extractedAmountDue,
-      freight: extractedFreightAmount,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: result.extractedFreightAmount ?? undefined,
       tax: taxCleared ? undefined : extractedTaxAmount,
       otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
       creditCents,

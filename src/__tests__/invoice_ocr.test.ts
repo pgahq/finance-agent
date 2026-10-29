@@ -701,6 +701,36 @@ describe('invoice OCR pass', () => {
         expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
       });
 
+      it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 61_000;
+          return responseFor(supin472322ProductionRows);
+        });
+
+        const result = await extractInvoiceDocuments([pdf]);
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+        expect(result?.extractedInvoiceLines).toHaveLength(59);
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'skipped', reason: 'slow first read', checks: ['amountDue', 'subtotal'] }));
+      });
+
+      it('lets the caller shorten the limit', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 31_000;
+          return responseFor(supin472322ProductionRows);
+        });
+
+        await extractInvoiceDocuments([pdf], undefined, undefined, { retryMaxFirstReadMs: 30_000 });
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
       it('does not read again once the rows and discount reconcile', async () => {
         mockGetAiResponse.mockResolvedValueOnce(responseFor(supin472322Rows));
 

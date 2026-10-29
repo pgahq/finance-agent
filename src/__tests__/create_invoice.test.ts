@@ -2427,6 +2427,27 @@ describe('create_invoice', () => {
       expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('probably not read');
     });
 
+    it('still says a row was not read when a delivery row is a line and the subtotal includes it', async () => {
+      const row = (description: string, amount: string) => ({ description, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' });
+      const { workday } = await run(
+        [row('Tent', '950.00'), row('Delivery', '100.00')],
+        {
+          extractedAmountDue: '$1,100.00',
+          extractedFreightAmount: null,
+          extractedFreightLabel: null,
+          extractedTaxAmount: null,
+          extractedTaxLabel: null,
+          extractedLineSubtotal: { label: 'Subtotal', amount: '1,100.00' },
+          extractedSummaryCharges: null,
+        }
+      );
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('The $50.00 difference may be a row that was not read.');
+      expect(notes).not.toContain('read twice');
+      expect(notes).not.toContain('freight it includes');
+    });
+
     it('says $1,388.00 was probably not read, not $3,388.00, when the rows are still missing', async () => {
       const { workday, slack } = await run(supin472322ProductionRows);
 

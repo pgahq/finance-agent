@@ -57,7 +57,14 @@ async function convertOfficeAttachmentsForModel(attachments: PresignedAttachment
 export interface ExtractInvoiceDocumentsOptions {
   /** False when the caller will not submit lines, so a second read to find missing rows would be wasted. Default true. */
   retryMissingRows?: boolean;
+  /**
+   * A second read takes several times as long as the first (SUPIN-472322: 51 seconds, then 144), and a timed-out
+   * run loses the whole invoice, so it is skipped when the first read took longer than this. Default 60 seconds.
+   */
+  retryMaxFirstReadMs?: number;
 }
+
+const DEFAULT_RETRY_MAX_FIRST_READ_MS = 60_000;
 
 // Returns undefined when no PDF or image can be read. A model or schema failure throws; there is no fallback model.
 export async function extractInvoiceDocuments(
@@ -107,8 +114,19 @@ export async function extractInvoiceDocuments(
   debug('Invoice OCR finished', { durationMs: Date.now() - startedAt, documentCount: parts.length, documentBytes });
   debug('Invoice OCR result:', result);
 
+  const firstReadMs = Date.now() - startedAt;
   const retryPlan = options.retryMissingRows === false ? undefined : missingRowsPlan(result);
-  if (retryPlan) {
+  if (retryPlan && firstReadMs > (options.retryMaxFirstReadMs ?? DEFAULT_RETRY_MAX_FIRST_READ_MS)) {
+    debug('Invoice OCR missing-row retry', {
+      outcome: 'skipped',
+      reason: 'slow first read',
+      firstRows: result.extractedInvoiceLines?.length ?? 0,
+      durationMs: firstReadMs,
+      checks: retryPlan.checks,
+      amountDueShortfallCents: retryPlan.amountDueShortfall,
+      subtotalShortfallCents: retryPlan.subtotalShortfall,
+    });
+  } else if (retryPlan) {
     const firstRows = result.extractedInvoiceLines ?? [];
     let outcome: 'accepted' | 'rejected' | 'failed' = 'rejected';
     try {
