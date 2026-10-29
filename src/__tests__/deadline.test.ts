@@ -5,7 +5,7 @@ describe('ProcessorDeadlineError', () => {
     const message = new ProcessorDeadlineError('Processor deadline reached; aborting AI calls').userMessage();
 
     expect(message).toContain('ran out of time');
-    expect(message).toContain('Check Workday');
+    expect(message).toContain('Check Workday for any partial result');
     expect(message).not.toContain('No invoice was created');
   });
 

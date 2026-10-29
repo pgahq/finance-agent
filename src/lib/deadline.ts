@@ -11,7 +11,7 @@ export class ProcessorDeadlineError extends Error {
 
   /** What AP reads in Slack. It makes no claim about Workday, since it is shared by every processor. */
   userMessage(): string {
-    return 'The run ran out of time and stopped before finishing. Check Workday for the invoice before re-triggering it.';
+    return 'The run ran out of time and stopped before finishing. Check Workday for any partial result before re-running it.';
   }
 }
 
