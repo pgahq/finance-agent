@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { debug } from '@pga/logger';
 import { normalizePrintedDate } from './prompts/invoice_ocr_prompt.js';
 import { throwIfDeadlineReached, withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
+import { ProcessorDeadlineError, deadlineErrorFromSignal, isDeadlineError } from './lib/deadline.js';
+import { MAX_DEADLINE_RETRIES, SUBMIT_MIN_REMAINING_MS } from './lib/ai_budgets.js';
 import {
   enrichInvoiceFromAttachments,
   formatAmountNotes,
@@ -419,6 +421,8 @@ export interface CreateInvoiceRequest {
   /** Cluster plan row this fanned-out record processes (`invoice_cluster_plans`). */
   planId?: string;
   clusterIndex?: number;
+  /** Immediate requeues already spent on this cluster after it ran out of time; the processor retries once. */
+  retryAttempt?: number;
   conversationPdf?: {
     s3Key: string;
     fileName: string;
@@ -452,7 +456,7 @@ export const processor = withProcessorHandler(async (context, requests, _event, 
   const abortSignal = options?.abortSignal;
   for (const request of requests) {
     await throwIfDeadlineReached(abortSignal);
-    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal);
+    await processNewInvoice(context, request as CreateInvoiceRequest, abortSignal, options?.getRemainingTimeMs);
   }
 });
 
@@ -465,7 +469,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'supersededFileNames' | 'planId' | 'clusterIndex'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'supersededFileNames' | 'planId' | 'clusterIndex' | 'retryAttempt'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -527,7 +531,8 @@ async function reportShadowClustering(
 async function processNewInvoice(
   context: ProcessingContext,
   request: CreateInvoiceRequest,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  getRemainingTimeMs?: () => number
 ): Promise<void> {
   if (request.shadow) {
     // A shadow record never writes to Workday or the registry, whatever this container's flag says.
@@ -552,6 +557,7 @@ async function processNewInvoice(
     supersededFileNames,
     planId: requestPlanId,
     clusterIndex: requestClusterIndex,
+    retryAttempt,
   } = request;
   const clusteringEnabled = isInvoiceAttachmentClusteringEnabled();
 
@@ -664,6 +670,7 @@ async function processNewInvoice(
         preloadedBuffers,
         plan: { planId, clusterIndex: 0 },
         startTime,
+        getRemainingTimeMs,
         clustered: true,
       }, abortSignal);
     } finally {
@@ -704,7 +711,9 @@ async function processNewInvoice(
       ...(clustered && requestPlanId && requestClusterIndex != null
         ? { plan: { planId: requestPlanId, clusterIndex: requestClusterIndex } }
         : {}),
+      ...(retryAttempt ? { retryAttempt } : {}),
       startTime,
+      getRemainingTimeMs,
       clustered: true,
     }, abortSignal);
     return;
@@ -722,6 +731,7 @@ async function processNewInvoice(
         conversationCreatedAt: attachment.conversationCreatedAt ?? conversationCreatedAt,
         conversationPdf,
         startTime: Date.now(),
+        getRemainingTimeMs,
         clustered: false,
       }, abortSignal);
     }
@@ -746,6 +756,7 @@ async function processNewInvoice(
     conversationCreatedAt,
     conversationPdf,
     startTime,
+    getRemainingTimeMs,
     clustered: false,
   }, abortSignal);
 }
@@ -771,6 +782,10 @@ interface ClusterInvoiceInput {
   plan?: { planId: string; clusterIndex: number };
   startTime: number;
   clustered: boolean;
+  /** Immediate requeues already spent on this cluster. */
+  retryAttempt?: number;
+  /** Milliseconds left before the Lambda hard limit; absent outside Lambda. */
+  getRemainingTimeMs?: () => number;
 }
 
 /** Set while processing a cluster so the wrapper can finish the plan row and release the invoice claim. */
@@ -779,6 +794,10 @@ interface ClusterRunState {
   /** Another run held the invoice claim, so this run did no Workday or registry work. */
   invoiceClaimContended?: boolean;
   workdayInvoiceWid?: string;
+  /** A Workday write was started, so a requeue could write the invoice twice. */
+  submitStarted?: boolean;
+  /** Posts the deferred Slack alert for a run that ran out of time, once the requeue outcome is known. */
+  notifyDeadline?: () => Promise<void>;
 }
 
 interface LoadedClusterFile extends CreateInvoiceAttachment {
@@ -809,6 +828,8 @@ async function createInvoiceFromCluster(
     return;
   }
   const run: ClusterRunState = {};
+  let deadlineError: ProcessorDeadlineError | undefined;
+  let planMarkedFailed = false;
   try {
     await processInvoiceCluster(context, input, run, abortSignal);
     if (plan && run.invoiceClaimContended) {
@@ -823,11 +844,16 @@ async function createInvoiceFromCluster(
       if (run.workdayInvoiceWid) {
         await markInvoiceClusterDone(context, input, plan, run.workdayInvoiceWid);
       } else {
-        await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'failed')
-          .catch((finishError: unknown) => debug('Failed to mark invoice cluster failed', { ...plan, error: finishError }));
+        planMarkedFailed = await finishInvoiceCluster(context.dbConnection, plan.planId, plan.clusterIndex, 'failed')
+          .then(() => true)
+          .catch((finishError: unknown) => {
+            debug('Failed to mark invoice cluster failed', { ...plan, error: finishError });
+            return false;
+          });
       }
     }
-    throw error;
+    if (!isDeadlineError(error)) throw error;
+    deadlineError = error;
   } finally {
     const claim = run.invoiceClaim;
     if (claim) {
@@ -835,6 +861,59 @@ async function createInvoiceFromCluster(
         .catch((error: unknown) => debug('Failed to release conversation invoice claim', { ...claim, error }));
     }
   }
+  if (deadlineError) {
+    // The requeue waits until the plan row and invoice claim are released, or the retry would find them taken and skip.
+    await settleDeadlineFailure(input, run, deadlineError, planMarkedFailed);
+  }
+}
+
+/**
+ * A run that ran out of time before any Workday write is queued again once, for the same plan row. Otherwise
+ * AP is told no invoice was created and the conversation needs a re-trigger. The error is rethrown either way
+ * so the invocation still shows as failed.
+ */
+async function settleDeadlineFailure(
+  input: ClusterInvoiceInput,
+  run: ClusterRunState,
+  error: ProcessorDeadlineError,
+  planMarkedFailed: boolean
+): Promise<never> {
+  const { plan } = input;
+  const attempt = input.retryAttempt ?? 0;
+  const noWriteStarted = !run.workdayInvoiceWid && !run.submitStarted && !run.invoiceClaimContended;
+  if (plan && noWriteStarted && attempt < MAX_DEADLINE_RETRIES) {
+    if (!planMarkedFailed) {
+      error.disposition = 'retry_failed';
+    } else {
+      try {
+        await fanOutCluster(input.files, {
+          emailContext: input.emailContext,
+          conversationId: input.conversationId,
+          intercomAppId: input.intercomAppId,
+          assigneeEmail: input.assigneeEmail,
+          conversationCreatedAt: input.conversationCreatedAt,
+          conversationPdf: input.conversationPdf,
+          latestMessageAt: input.latestMessageAt,
+          otherClustersLatestReceivedAt: input.otherClustersLatestReceivedAt,
+          supersededFileNames: input.supersededFileNames,
+          planId: plan.planId,
+          clusterIndex: plan.clusterIndex,
+          retryAttempt: attempt + 1,
+        });
+        error.disposition = 'retrying';
+        debug('Invoice cluster ran out of time; queued it again', { ...plan, retryAttempt: attempt + 1, kind: error.kind, stage: error.stage });
+      } catch (dispatchError) {
+        debug('Failed to queue the invoice cluster again after it ran out of time', { ...plan, error: dispatchError });
+        error.disposition = 'retry_failed';
+      }
+    }
+  } else {
+    error.disposition = plan && noWriteStarted ? 'retry_exhausted' : 'no_retry';
+  }
+  if (run.notifyDeadline) {
+    await run.notifyDeadline();
+  }
+  throw error;
 }
 
 async function markInvoiceClusterDone(
@@ -883,6 +962,7 @@ async function processInvoiceCluster(
     preloadedBuffers,
     startTime,
     clustered,
+    getRemainingTimeMs,
   } = input;
   const [primary] = files;
   const { s3Key, fileName, contentType } = primary;
@@ -894,6 +974,16 @@ async function processInvoiceCluster(
     clusteringMode: invoiceAttachmentClusteringMode(),
   };
   let assigneeLookup: { match?: EmployeeLookupResult } | undefined;
+
+  // A Workday write cannot be aborted, so one never starts with too little time left; the run is requeued instead.
+  const beforeWorkdayWrite = () => {
+    if (abortSignal?.aborted) throw deadlineErrorFromSignal(abortSignal);
+    const remainingMs = getRemainingTimeMs?.();
+    if (remainingMs !== undefined && remainingMs < SUBMIT_MIN_REMAINING_MS) {
+      throw new ProcessorDeadlineError('submit_gate', `Only ${remainingMs}ms of the Lambda budget left; not starting a Workday write`);
+    }
+    run.submitStarted = true;
+  };
 
   try {
     debug(`Processing new invoice from S3: ${s3Key}`, clustered ? { clusterFiles: files.map((file) => file.fileName) } : {});
@@ -1693,6 +1783,7 @@ async function processInvoiceCluster(
             formatPurchaseOrderLineFallbackNotes(appliedFallbacks, extractedPurchaseOrderNumber) +
             (listedFallbacks.length ? `\n\nFallback values applied: ${listedFallbacks.map(f => f.label).join('; ')}` : '');
         };
+        beforeWorkdayWrite();
         const updateOutcome = await submitSupplierInvoiceUpdate(context, {
           invoiceWorkdayID: existing.workdayInvoiceWid,
           supplierWID: purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID ?? registeredSupplierWID ?? targetSupplierWID,
@@ -1768,6 +1859,7 @@ async function processInvoiceCluster(
       ? replacedInvoice.workdayInvoiceNumber ?? replacedInvoice.workdayInvoiceWid
       : undefined;
     const trackResends = Boolean(clusteringEnabled && conversationId && registryNumber);
+    beforeWorkdayWrite();
     const createOutcome = await submitNewSupplierInvoice(context, {
       supplierWID: submitSupplierWID,
       companyWID,
@@ -1857,24 +1949,32 @@ async function processInvoiceCluster(
   } catch (error) {
     const processingTime = Date.now() - startTime;
     debug('Error creating new supplier invoice:', error);
-    const triggeredByMatch = assigneeLookup
-      ? assigneeLookup.match
-      : await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
-    await notifyResult(
-      'create_invoice',
-      'error',
-      processingTime,
-      slackInvoiceDetails({
-        s3Key,
-        fileName,
-        ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
-        ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
-      }, conversationId, intercomAppId, {
-        email: assigneeEmail,
-        name: triggeredByMatch ? employeeDisplayName(triggeredByMatch) : undefined,
-      }),
-      error
-    );
+    const notifyError = async (reported: unknown) => {
+      const triggeredByMatch = assigneeLookup
+        ? assigneeLookup.match
+        : await getEmployeeWidByEmail(context.dbConnection, assigneeEmail);
+      await notifyResult(
+        'create_invoice',
+        'error',
+        processingTime,
+        slackInvoiceDetails({
+          s3Key,
+          fileName,
+          ...(clustered ? { attachments: files.map((file) => file.fileName) } : {}),
+          ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+        }, conversationId, intercomAppId, {
+          email: assigneeEmail,
+          name: triggeredByMatch ? employeeDisplayName(triggeredByMatch) : undefined,
+        }),
+        reported
+      );
+    };
+    if (isDeadlineError(error)) {
+      // The caller decides whether to requeue after it releases the plan row and claim, so the alert waits for that outcome.
+      run.notifyDeadline = () => notifyError(error);
+      throw error;
+    }
+    await notifyError(error);
     throw error;
   }
 }

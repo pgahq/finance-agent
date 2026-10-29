@@ -319,6 +319,48 @@ describe('handlers', () => {
       jest.useRealTimers();
     });
 
+    it('logs the time actually left when the deadline fires, and aborts with a deadline error', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+      const { debug } = require('@pga/logger');
+      debug.mockClear();
+      let capturedSignal: AbortSignal | undefined;
+      const mockProcessAction = jest.fn().mockImplementation((_ctx, _data, _event, options) => {
+        capturedSignal = options?.abortSignal;
+        return new Promise<void>((_resolve, reject) => {
+          capturedSignal?.addEventListener('abort', () => reject(capturedSignal?.reason), { once: true });
+        });
+      });
+      const processor = withProcessorHandler(mockProcessAction);
+      let remainingMs = 419_966;
+      const lambdaContext = { getRemainingTimeInMillis: jest.fn(() => remainingMs) } as unknown as Context;
+
+      const promise = processor({ data: [{ id: '1' }] }, lambdaContext);
+      const settled = promise.catch((error: unknown) => error);
+      await new Promise(resolve => setImmediate(resolve));
+      remainingMs = 20_001;
+      jest.advanceTimersByTime(399_966);
+
+      const error = await settled;
+      expect(error).toMatchObject({ name: 'ProcessorDeadlineError', kind: 'lambda' });
+      const logged = debug.mock.calls.map((call: unknown[]) => String(call[0])).find((line: string) => line.includes('Lambda deadline approaching'));
+      expect(logged).toContain('20001ms remaining');
+      expect(logged).toContain('419966ms budget');
+      expect(logged).not.toContain('(419966ms remaining');
+
+      jest.useRealTimers();
+    });
+
+    it('passes the remaining-time reader to the processor', async () => {
+      const mockProcessAction = jest.fn().mockResolvedValue(undefined);
+      const processor = withProcessorHandler(mockProcessAction);
+      const getRemainingTimeInMillis = jest.fn().mockReturnValue(120_000);
+
+      await processor({ data: [{ id: '1' }] }, { getRemainingTimeInMillis } as unknown as Context);
+
+      getRemainingTimeInMillis.mockReturnValue(55_000);
+      expect(mockProcessAction.mock.calls[0][3].getRemainingTimeMs()).toBe(55_000);
+    });
+
     it('should alert and skip processing when remaining time is inside the buffer', async () => {
       const { notifyResult } = require('../lib/slack.js');
       process.env.AWS_LAMBDA_FUNCTION_NAME = 'test-processor-lambda';

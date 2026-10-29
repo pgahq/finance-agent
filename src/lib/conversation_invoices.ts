@@ -73,10 +73,10 @@ export async function upsertConversationSupplierInvoice(
 }
 
 /**
- * Longer than the CreateInvoiceProcessor Lambda timeout (300s, guarded by template.test.ts), so a claim
+ * Longer than the CreateInvoiceProcessor Lambda timeout (840s, guarded by template.test.ts), so a claim
  * can only be taken over after its owner was stopped and can no longer write.
  */
-export const CONVERSATION_INVOICE_CLAIM_TTL_MINUTES = 15;
+export const CONVERSATION_INVOICE_CLAIM_TTL_MINUTES = 20;
 
 /**
  * Claims a conversation invoice before any Workday create or update. Returns false when another run

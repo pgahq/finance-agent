@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
+import { isDeadlineError } from './deadline.js';
 import type { PurchaseOrderLine } from './workday.js';
 import { mergeInvoiceLinesPromptFor, MergeInvoiceLinesSchema, type MergeInvoiceLinesResult } from '../prompts/merge_invoice_lines_prompt.js';
 import {
@@ -2483,10 +2484,12 @@ export async function buildFinalInvoiceLines(
       messages: [{ role: 'user', content: JSON.stringify(mergeInput, null, 2) }],
       tools: {},
       abortSignal,
+      stage: 'line_merge',
     }) as MergeInvoiceLinesResult;
   } catch (error) {
-    if (abortSignal?.aborted) {
-      debug('Line merge aborted by deadline signal; rethrowing so the processor error path runs');
+    // A stalled merge is requeued rather than coded from fallback worktags, which would give AP a poorly coded draft.
+    if (abortSignal?.aborted || isDeadlineError(error)) {
+      debug('Line merge ran out of time; rethrowing so the processor error path can requeue the run');
       throw error;
     }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);

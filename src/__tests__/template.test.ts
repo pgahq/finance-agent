@@ -14,6 +14,13 @@ describe('SAM template', () => {
     expect(timeoutSeconds).toBeLessThan(CONVERSATION_INVOICE_CLAIM_TTL_MINUTES * 60);
   });
 
+  it('gives the create-invoice processor 840 seconds with a 20-minute claim lifetime', () => {
+    const template = readFileSync(join(process.cwd(), 'template.yml'), 'utf8');
+    const processorBlock = template.split('\n  CreateInvoiceProcessor:')[1]?.split('\n  # ')[0] ?? '';
+    expect(Number(processorBlock.match(/Timeout:\s*(\d+)/)?.[1])).toBe(840);
+    expect(CONVERSATION_INVOICE_CLAIM_TTL_MINUTES).toBe(20);
+  });
+
   it('disables Lambda async retries for all functions', () => {
     expect(globals).toContain('EventInvokeConfig:');
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);

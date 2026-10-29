@@ -510,6 +510,19 @@ describe('invoice OCR pass', () => {
 
         await expect(extractInvoiceDocuments([pdf], undefined, controller.signal)).rejects.toThrow('aborted');
       });
+
+      it('tags the first read ocr and the second read ocr_second_read, and keeps the first read when the second hits its cap', async () => {
+        const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+        mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockRejectedValueOnce(
+          new ProcessorDeadlineError('stage_timeout', 'cap', { stage: 'ocr_second_read', timeoutMs: 150000 })
+        );
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse.mock.calls[0][0]).toMatchObject({ stage: 'ocr' });
+        expect(mockGetAiResponse.mock.calls[1][0]).toMatchObject({ stage: 'ocr_second_read' });
+        expect(result?.extractedInvoiceLines).toHaveLength(productionRows.length);
+      });
     });
 
     it('throws an OCR failure without retrying on another model', async () => {

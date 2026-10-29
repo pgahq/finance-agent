@@ -38,6 +38,14 @@ invocations. They still Event-invoke processors, which inherit the global
 
 ## Not Lambda retries
 
+`CreateInvoiceProcessor` has `Timeout: 840` (14 minutes), which must stay below
+the 20-minute takeover TTL (`CONVERSATION_INVOICE_CLAIM_TTL_MINUTES`;
+`template.test.ts` guards both). When a run runs out of time, the app
+requeues the cluster once by Event-invoking the same function with
+`retryAttempt: 1` (see `invoice-attachment-clustering`). That is an
+application-level requeue, not a Lambda async retry, so
+`MaximumRetryAttempts` stays `0`.
+
 Do not change these when the ask is "stop Lambda retries":
 
 - Workday submit validation/fallback loops in `src/lib/workday.ts`

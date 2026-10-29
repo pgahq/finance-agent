@@ -709,6 +709,23 @@ describe('buildFinalInvoiceLines', () => {
     )).rejects.toThrow('Processor deadline reached');
   });
 
+  it('rethrows a stage timeout on the merge instead of coding the lines from fallback worktags', async () => {
+    const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+    const timeout = new ProcessorDeadlineError('stage_timeout', 'AI stage line_merge exceeded its 240000ms cap', { stage: 'line_merge', timeoutMs: 240000 });
+    mockGetAiResponse.mockRejectedValue(timeout);
+
+    await expect(buildFinalInvoiceLines(extracted, [poLine()], undefined, {})).rejects.toBe(timeout);
+    expect(mockGetAiResponse).toHaveBeenCalledWith(expect.objectContaining({ stage: 'line_merge' }));
+  });
+
+  it('still falls back to extracted lines when the merge fails for another reason', async () => {
+    mockGetAiResponse.mockRejectedValue(new Error('Gateway error: 500'));
+
+    const result = await buildFinalInvoiceLines(extracted, [poLine()], undefined, {});
+
+    expect(result.lines.length).toBeGreaterThan(0);
+  });
+
   it('lets email LOB override the PO LOB', async () => {
     mockGetAiResponse.mockResolvedValue({
       lines: [{

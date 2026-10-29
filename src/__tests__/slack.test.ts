@@ -71,6 +71,36 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Full error*');
   });
 
+  it('tells AP no invoice was created and the run is retrying, without the SDK abort text', async () => {
+    const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+    const error = new ProcessorDeadlineError('lambda', 'Processor deadline reached; aborting AI calls', { stage: 'line_merge', cause: new Error('Delay was aborted') });
+    error.disposition = 'retrying';
+
+    await notifyResult('create_invoice', 'error', 399070, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('ran out of time after 399.07s');
+    expect(texts).toContain('retrying automatically');
+    expect(texts).toContain('No invoice has been created in Workday yet');
+    expect(texts).toContain('during invoice line coding');
+    expect(texts).not.toContain('Delay was aborted');
+    expect(texts).not.toContain('function ran *with error*');
+  });
+
+  it('asks for a re-trigger when the run ran out of time and will not be retried', async () => {
+    const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+    const error = new ProcessorDeadlineError('stage_timeout', 'cap', { stage: 'ocr', timeoutMs: 300000 });
+    error.disposition = 'retry_exhausted';
+
+    await notifyResult('create_invoice', 'error', 700000, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('no invoice was created, re-trigger needed');
+    expect(texts).toContain('The AI service was too slow during invoice PDF reading (gave up after 300s)');
+    expect(texts).toContain('already retried once');
+    expect(texts).toContain('Re-trigger the conversation');
+  });
+
   it('renders the shadow clustering plan as readable lines instead of JSON', async () => {
     await notifyResult('create_invoice_shadow', 'success', 2000, {
       mode: 'shadow',

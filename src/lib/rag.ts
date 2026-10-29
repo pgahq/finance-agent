@@ -8,6 +8,7 @@ import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
 import { textFromWqlValue } from './workday_reference_id.js';
 import { gatewayProviderPin } from './models.js';
+import { AI_MAX_RETRIES, EMBEDDING_TIMEOUT_MS } from './ai_budgets.js';
 import { supplierRecordFromDocument } from './supplier_match.js';
 export type { DocumentType } from './database.js';
 
@@ -15,8 +16,21 @@ export type { DocumentType } from './database.js';
 const EMBEDDING_MODEL_ID = 'openai/text-embedding-3-small';
 export const embeddingModel = gateway.embeddingModel(EMBEDDING_MODEL_ID);
 
-export async function createEmbedding(text: string): Promise<number[]> {
-  const { embedding } = await embed({ model: embeddingModel, value: text, providerOptions: gatewayProviderPin(EMBEDDING_MODEL_ID) });
+// Bounded callers (invoice runs and queries) get a call cap and one retry; the cache sync jobs keep the SDK defaults.
+export async function createEmbedding(
+  text: string,
+  options?: { abortSignal?: AbortSignal; bounded?: boolean }
+): Promise<number[]> {
+  const bounded = options?.bounded ?? false;
+  const signals = [options?.abortSignal, bounded ? AbortSignal.timeout(EMBEDDING_TIMEOUT_MS) : undefined]
+    .filter((signal): signal is AbortSignal => signal !== undefined);
+  const { embedding } = await embed({
+    model: embeddingModel,
+    value: text,
+    providerOptions: gatewayProviderPin(EMBEDDING_MODEL_ID),
+    ...(bounded ? { maxRetries: AI_MAX_RETRIES } : {}),
+    ...(signals.length ? { abortSignal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}),
+  });
   return embedding;
 }
 
@@ -123,6 +137,7 @@ export interface RAGQuery {
   documentType?: 'supplier' | 'invoice' | 'company' | 'cost_center' | 'payment_terms' | 'event' | 'lob' | 'fund' | 'spend_category';
   limit?: number;
   similarityThreshold?: number;
+  abortSignal?: AbortSignal;
 }
 
 // RAG result interface
@@ -144,7 +159,8 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
       query,
       documentType,
       limit = DEFAULT_RAG_LIMIT,
-      similarityThreshold = DEFAULT_RAG_SIMILARITY_THRESHOLD
+      similarityThreshold = DEFAULT_RAG_SIMILARITY_THRESHOLD,
+      abortSignal
     } = ragQuery;
 
     if (!query || query.trim().length === 0) {
@@ -152,7 +168,7 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     }
 
     // Create embedding for the query
-    const queryEmbedding = await createEmbedding(query);
+    const queryEmbedding = await createEmbedding(query, { abortSignal, bounded: true });
 
     const db = await getDatabaseConnection(process.env);
 
@@ -226,9 +242,10 @@ export const findSuppliersTool = tool({
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'supplier',
       limit,
       similarityThreshold
@@ -272,9 +289,10 @@ export const findCostCentersTool = tool({
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'cost_center',
       limit,
       similarityThreshold
@@ -314,7 +332,7 @@ export const findCompaniesTool = tool({
     limit: z.number().min(1).max(500).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, address, limit, similarityThreshold }) => {
+  execute: async ({ query, address, limit, similarityThreshold }, options) => {
     const parsed = parseCompanySearchQuery(query);
     const nameQuery = parsed.nameQuery;
     const billToAddress = address?.trim() || parsed.billToAddress;
@@ -336,6 +354,7 @@ export const findCompaniesTool = tool({
     const [results, cachedCompanies] = await Promise.all([
       queryDocuments({
         query: nameQuery,
+        abortSignal: options?.abortSignal,
         documentType: 'company',
         limit: resultLimit,
         similarityThreshold
@@ -395,9 +414,10 @@ export const findEventsTool = tool({
     limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'event',
       limit,
       similarityThreshold
@@ -428,9 +448,10 @@ export const findLobsTool = tool({
     limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'lob',
       limit,
       similarityThreshold
@@ -461,9 +482,10 @@ export const findFundsTool = tool({
     limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'fund',
       limit,
       similarityThreshold
@@ -495,9 +517,10 @@ export const findSpendCategoriesTool = tool({
     limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'spend_category',
       limit,
       similarityThreshold
@@ -528,9 +551,10 @@ export const findPaymentTermsTool = tool({
     limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return (default: 100)'),
     similarityThreshold: z.number().min(0).max(1).optional().describe('Minimum similarity score (0-1, default: 0.3)')
   }),
-  execute: async ({ query, limit, similarityThreshold }) => {
+  execute: async ({ query, limit, similarityThreshold }, options) => {
     const results = await queryDocuments({
       query,
+      abortSignal: options?.abortSignal,
       documentType: 'payment_terms',
       limit,
       similarityThreshold

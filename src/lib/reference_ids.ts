@@ -196,7 +196,7 @@ async function findSimilarReferenceMatches(
   db: DatabaseConnection,
   code: string
 ): Promise<CachedReferenceMatch[]> {
-  const embedding = await createEmbedding(code);
+  const embedding = await createEmbedding(code, { bounded: true });
   const rows = await searchDocumentsByTypes(db, embedding, code, REFERENCE_CODE_DOCUMENT_TYPES, 8);
   const matches = rows
     .map((row) => {

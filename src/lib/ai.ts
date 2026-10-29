@@ -4,6 +4,12 @@ import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 import { resolveReferenceCodeTool } from './reference_ids.js';
 import { defaultModel } from './models.js';
+import { AI_MAX_RETRIES, AI_STAGE_TIMEOUT_MS, type AiStage } from './ai_budgets.js';
+import { ProcessorDeadlineError, deadlineErrorFromSignal } from './deadline.js';
+
+function logStageFinished(stage: AiStage | undefined, startedAt: number): void {
+  if (stage) debug('AI stage finished', { stage, durationMs: Date.now() - startedAt });
+}
 
 // Main AI function with RAG tool integration
 export async function getAiResponse({
@@ -14,6 +20,9 @@ export async function getAiResponse({
   tools,
   abortSignal,
   temperature = 0.2,
+  stage,
+  timeoutMs,
+  maxRetries = AI_MAX_RETRIES,
 }: {
   prompt: string;
   messages: ModelMessage[];
@@ -23,7 +32,18 @@ export async function getAiResponse({
   abortSignal?: AbortSignal;
   // null omits temperature for models that reject sampling parameters.
   temperature?: number | null;
+  /** Names the step in logs and Slack; also picks the default cap from AI_STAGE_TIMEOUT_MS. */
+  stage?: AiStage;
+  /** Cap on the whole call, retries and the structured second pass included. */
+  timeoutMs?: number;
+  maxRetries?: number;
 }): Promise<unknown> {
+  const stageTimeoutMs = timeoutMs ?? (stage ? AI_STAGE_TIMEOUT_MS[stage] : undefined);
+  const stageSignal = stageTimeoutMs ? AbortSignal.timeout(stageTimeoutMs) : undefined;
+  const callSignal = stageSignal
+    ? (abortSignal ? AbortSignal.any([abortSignal, stageSignal]) : stageSignal)
+    : abortSignal;
+  const startedAt = Date.now();
   try {
     const defaultTools = {
       findSuppliers: findSuppliersTool,
@@ -44,7 +64,8 @@ export async function getAiResponse({
       system: prompt,
       stopWhen: stepCountIs(10),
       ...(temperature === null ? {} : { temperature }),
-      abortSignal,
+      maxRetries,
+      abortSignal: callSignal,
       ...(hasTools
         ? { tools: toolsToUse }
         : schema
@@ -56,6 +77,7 @@ export async function getAiResponse({
 
     // If no schema is provided, return the text result
     if (!schema) {
+      logStageFinished(stage, startedAt);
       return textResult.text;
     }
 
@@ -72,15 +94,33 @@ export async function getAiResponse({
         system: prompt,
         output: Output.object({ schema }),
         temperature: 0.1,
-        abortSignal,
+        maxRetries,
+        abortSignal: callSignal,
       });
+      logStageFinished(stage, startedAt);
       return structuredResult.output;
     }
 
+    logStageFinished(stage, startedAt);
     return textResult.output;
 
   } catch (error) {
-    debug(`AI call error: ${error}`);
+    debug(`AI call error: ${error}`, { stage, durationMs: Date.now() - startedAt });
+    if (abortSignal?.aborted) {
+      throw deadlineErrorFromSignal(abortSignal, stage);
+    }
+    if (stageSignal?.aborted && stageTimeoutMs) {
+      debug(`AI stage cap fired: ${stage ?? 'unnamed'} exceeded ${stageTimeoutMs}ms (retries included)`, {
+        stage,
+        timeoutMs: stageTimeoutMs,
+        durationMs: Date.now() - startedAt,
+      });
+      throw new ProcessorDeadlineError(
+        'stage_timeout',
+        `AI stage ${stage ?? 'unnamed'} exceeded its ${stageTimeoutMs}ms cap`,
+        { stage, timeoutMs: stageTimeoutMs, cause: error }
+      );
+    }
     if (NoObjectGeneratedError.isInstance(error)) {
       debug(`NoObjectGeneratedError: ${error}`);
       debug('Cause:', error.cause);
