@@ -248,7 +248,7 @@ describe('create_invoice', () => {
 
     await processor(
       { data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any,
-      { getRemainingTimeInMillis: () => 120_000 } as any
+      { getRemainingTimeInMillis: () => 200_000 } as any
     );
 
     const enrichSignal = invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][7];
@@ -4728,7 +4728,7 @@ describe('create_invoice', () => {
         const [, , , , reported] = errorNotification(slack);
         expect(reported.disposition).toBe('retry_exhausted');
         expect(reported.userMessage()).toContain('Re-trigger the conversation');
-        expect(reported.userMessage()).toContain('No invoice was created in Workday');
+        expect(reported.userMessage()).toContain('Nothing was written to Workday');
       });
 
       it('does not requeue when no cluster plan row exists', async () => {
@@ -4800,7 +4800,7 @@ describe('create_invoice', () => {
       it('starts the Workday write when enough time is left', async () => {
         const { processor, workday } = setup();
 
-        await processor({ data: [fanOutRecord()] } as any, { getRemainingTimeInMillis: () => 120_000 } as any);
+        await processor({ data: [fanOutRecord()] } as any, { getRemainingTimeInMillis: () => 200_000 } as any);
 
         expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
         expect(mockLambdaSend).not.toHaveBeenCalled();

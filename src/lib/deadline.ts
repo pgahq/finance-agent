@@ -5,7 +5,7 @@
  */
 export type DeadlineKind = 'lambda' | 'stage_timeout' | 'submit_gate';
 
-/** What the processor did about the run, so the Slack post can tell AP what happens next. */
+/** What the create-invoice processor did about the run, so the Slack post can tell AP what happens next. */
 export type DeadlineDisposition = 'retrying' | 'retry_failed' | 'retry_exhausted' | 'no_retry';
 
 const STAGE_LABELS: Record<string, string> = {
@@ -25,6 +25,8 @@ export class ProcessorDeadlineError extends Error {
   readonly stage?: string;
   readonly timeoutMs?: number;
   disposition?: DeadlineDisposition;
+  /** Set with `no_retry` when a Workday write had started, so a re-trigger could duplicate it. */
+  writeStarted?: boolean;
 
   constructor(
     kind: DeadlineKind,
@@ -38,7 +40,10 @@ export class ProcessorDeadlineError extends Error {
     this.timeoutMs = options.timeoutMs;
   }
 
-  /** The sentence AP reads in Slack, without the SDK or Lambda internals. */
+  /**
+   * The sentence AP reads in Slack, without the SDK or Lambda internals. Only the create-invoice path sets a
+   * disposition, so only it makes claims about what happened in Workday; other processors get the generic text.
+   */
   userMessage(): string {
     const label = stageLabel(this.stage);
     const where = label ? ` during ${label}` : '';
@@ -49,13 +54,17 @@ export class ProcessorDeadlineError extends Error {
         : `The run hit its time limit${where}.`;
     switch (this.disposition) {
       case 'retrying':
-        return `${what} No invoice has been created in Workday yet. The run was queued again automatically, so no action is needed unless a second alert follows.`;
+        return `${what} Nothing has been written to Workday yet. The run was queued again automatically, so no action is needed unless a second alert follows.`;
       case 'retry_failed':
-        return `${what} No invoice was created in Workday, and the automatic retry could not be queued. Re-trigger the conversation to try again.`;
+        return `${what} Nothing was written to Workday, and the automatic retry could not be queued. Re-trigger the conversation to try again.`;
       case 'retry_exhausted':
-        return `${what} The run was already retried once. No invoice was created in Workday. Re-trigger the conversation to try again.`;
+        return `${what} The run was already retried once. Nothing was written to Workday. Re-trigger the conversation to try again.`;
+      case 'no_retry':
+        return this.writeStarted
+          ? `${what} A Workday write may have started. Check Workday before re-triggering the conversation.`
+          : `${what} Nothing was written to Workday. Re-trigger the conversation to try again.`;
       default:
-        return `${what} No invoice was created in Workday. Re-trigger the conversation to try again.`;
+        return what;
     }
   }
 }
@@ -71,7 +80,12 @@ export function isDeadlineError(error: unknown): error is ProcessorDeadlineError
  */
 export function deadlineErrorFromSignal(signal: AbortSignal, stage?: string): ProcessorDeadlineError {
   const reason: unknown = signal.reason;
-  if (isDeadlineError(reason)) return reason;
+  if (isDeadlineError(reason)) {
+    // The signal's reason is shared by every caller and carries no stage, so a known stage gets its own error.
+    return stage && !reason.stage
+      ? new ProcessorDeadlineError(reason.kind, reason.message, { stage, cause: reason })
+      : reason;
+  }
   return new ProcessorDeadlineError(
     'lambda',
     reason instanceof Error ? reason.message : 'Processor deadline reached; aborting AI calls',

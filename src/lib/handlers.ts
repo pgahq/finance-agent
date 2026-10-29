@@ -11,7 +11,7 @@ import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import type { Context } from 'aws-lambda';
 import { notifyResult } from './slack.js';
-import { ProcessorDeadlineError, isDeadlineError } from './deadline.js';
+import { ProcessorDeadlineError } from './deadline.js';
 
 /** Milliseconds to reserve before the Lambda hard limit so the error path can run. */
 const PROCESSOR_DEADLINE_BUFFER_MS = 20_000;
@@ -155,7 +155,6 @@ export async function throwIfDeadlineReached(abortSignal: AbortSignal | undefine
   const reason = abortSignal.reason instanceof Error
     ? abortSignal.reason
     : new Error('Processor deadline reached');
-  if (isDeadlineError(reason)) reason.disposition ??= 'no_retry';
   const lambdaName = process.env.AWS_LAMBDA_FUNCTION_NAME || 'unknown';
   try {
     await notifyResult(lambdaName, 'error', undefined, undefined, reason);

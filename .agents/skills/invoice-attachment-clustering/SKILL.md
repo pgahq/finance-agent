@@ -75,9 +75,13 @@ Shadow exists to prove the classifier on real traffic with no write risk:
      the invoice claim was not contended, and the plan row was marked `failed`
      first. The invoice claim is released before the requeue, so the retry
      does not skip as "in progress elsewhere". The submit gate
-     (`beforeWorkdayWrite`) refuses to start a Workday write with under 90s
+     (`beforeWorkdayWrite`) refuses to start a Workday write with under 150s
      left, because Workday writes cannot be aborted. A second timeout posts a
-     Slack message saying no invoice was created and a re-trigger is needed.
+     Slack message saying nothing was written to Workday and a re-trigger is
+     needed (or, if a write had started, to check Workday first, since a
+     re-trigger could create a second SUPIN). Only this path sets the error's
+     `disposition`; other processors (`enrich_invoice`, `cache_*`) keep the
+     generic deadline text with no claims about Workday.
      The requeue never sets `Submit: true`; every invoice stays a draft.
    - Every cluster run claims its plan row (`pending`/`failed` → `processing`,
      or a `processing` row older than 20 minutes) before loading files, and

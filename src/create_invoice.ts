@@ -909,6 +909,7 @@ async function settleDeadlineFailure(
     }
   } else {
     error.disposition = plan && noWriteStarted ? 'retry_exhausted' : 'no_retry';
+    if (run.workdayInvoiceWid || run.submitStarted) error.writeStarted = true;
   }
   if (run.notifyDeadline) {
     await run.notifyDeadline();

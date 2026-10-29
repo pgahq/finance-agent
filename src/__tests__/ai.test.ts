@@ -324,7 +324,7 @@ describe('AI utilities', () => {
       expect(call.abortSignal.aborted).toBe(true);
     });
 
-    it('rethrows the deadline signal reason instead of the SDK AbortError', async () => {
+    it('rethrows the deadline signal reason, tagged with the stage, instead of the SDK AbortError', async () => {
       const controller = new AbortController();
       const reason = new ProcessorDeadlineError('lambda', 'Processor deadline reached; aborting AI calls');
       mockGenerateText.mockImplementationOnce(async () => {
@@ -339,7 +339,8 @@ describe('AI utilities', () => {
         tools: {},
         abortSignal: controller.signal,
         stage: 'ocr',
-      })).rejects.toBe(reason);
+      })).rejects.toMatchObject({ name: 'ProcessorDeadlineError', kind: 'lambda', stage: 'ocr', message: reason.message });
+      expect(reason.stage).toBeUndefined();
     });
 
     it('wraps a stage cap that fired in a stage_timeout deadline error and logs it', async () => {

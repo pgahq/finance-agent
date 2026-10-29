@@ -20,7 +20,7 @@ export const AI_MAX_RETRIES = 1;
 export const EMBEDDING_TIMEOUT_MS = 30_000;
 
 /** A Workday write is not abortable, so none starts with less than this left. */
-export const SUBMIT_MIN_REMAINING_MS = 90_000;
+export const SUBMIT_MIN_REMAINING_MS = 150_000;
 
 /** Immediate requeues of a run that ran out of time. */
 export const MAX_DEADLINE_RETRIES = 1;
