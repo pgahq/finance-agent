@@ -341,8 +341,9 @@ async function processInvoice(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
-    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
     // printed ones and the Amount check.
     const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,

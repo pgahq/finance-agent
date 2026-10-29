@@ -1087,8 +1087,9 @@ async function processInvoiceCluster(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: splitFreightLines(printedLines).freightAmountFromLines,
     });
-    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due.
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due.
     const { lines: extractedLines, note: linePriceNote } = reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,
       freight: resolvedFreightAmount,
