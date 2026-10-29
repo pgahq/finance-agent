@@ -2976,6 +2976,90 @@ describe('create_invoice', () => {
       expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
     });
 
+    describe('one PO with a different line for each invoice (Clean Scapes)', () => {
+      const cleanScapesPo = {
+        documentNumber: 'PO-413785',
+        company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+        lines: Array.from({ length: 19 }, (_, index) => ({
+          lineOrder: index + 1,
+          purchaseOrderLineId: `POL-413785-${index + 1}`,
+          purchaseOrderDocumentNumber: 'PO-413785',
+          description: 'Landscaping Maintenance',
+        })),
+      };
+      const tristanNote = '<p>Both invoices go to PO-413785 - make invoice 101535 go to line 8, make invoice 101547 go to line 15</p>';
+      const processInvoice = async (invoiceNumber: string, note: string, key: string) => {
+        const modules = freshRequire();
+        modules.workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => (
+          poNumber === 'PO-413785' ? cleanScapesPo : undefined
+        ));
+        modules.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...baseEnrichmentResult,
+          extractedSuppliersInvoiceNumber: invoiceNumber,
+          extractedPurchaseOrderNumber: null,
+        });
+        modules.invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        await modules.processor({
+          data: [{
+            ...attachmentRequest(`new-invoices/${key}/invoice.pdf`),
+            emailContext: {
+              subject: `Clean Scapes invoice ${invoiceNumber}`,
+              plainTextBody: 'Invoice attached',
+              conversationParts: note,
+              adminConversationParts: note,
+            },
+          }]
+        } as any);
+        return modules;
+      };
+
+      it.each([['101535', 8], ['101547', 15]])('gives invoice %s PO-413785 line %i from the same note', async (invoiceNumber, line) => {
+        const { workday, slack, invoiceEnrichment, invoiceLines } = await processInvoice(invoiceNumber, tristanNote, `req-both-${invoiceNumber}`);
+
+        expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413785']);
+        expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][5]).toEqual(
+          expect.objectContaining({ documentNumber: 'PO-413785' })
+        );
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+          expect.objectContaining({ lineOrder: line, purchaseOrderLineId: `POL-413785-${line}` })
+        ]);
+        expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+          purchaseOrderNumber: 'PO-413785',
+          purchaseOrderSource: 'note',
+          purchaseOrderLine: line,
+        }));
+        const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+        expect(notes).toContain(`Purchase order: Used PO-413785 Line ${line} from the Intercom note.`);
+        expect(notes).not.toContain('not this invoice');
+      });
+
+      it('uses the PO for an invoice whose number was not read when the note gives it to both invoices', async () => {
+        const { slack } = await processInvoice('', tristanNote, 'req-both-unread');
+
+        expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413785');
+      });
+
+      it('says no line was pinned when the note gives this invoice conflicting lines', async () => {
+        const note = 'Invoice 101535: use PO-413785 Line 8, not Line 9';
+        const { workday, invoiceLines, slack } = await processInvoice('101535', note, 'req-conflicting-lines');
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(19);
+        expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderLine).toBeUndefined();
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+          'Purchase order: Used PO-413785 from the Intercom note. The note gives this invoice conflicting PO lines, so no line was pinned and every PO line was considered.'
+        );
+      });
+
+      it('names the missing line when the invoice line is not on the PO', async () => {
+        const { workday, invoiceLines } = await processInvoice('101547', 'Invoice 101547: PO-413785 Line 40', 'req-line-not-on-po');
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(19);
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+          'The note names Line 40, which is not on PO-413785, so every PO line was considered.'
+        );
+      });
+    });
+
     it('uses the PO named in the supplier reply that carried the invoice over the invoice PO', async () => {
       const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
       loadArrowPos(workday);
