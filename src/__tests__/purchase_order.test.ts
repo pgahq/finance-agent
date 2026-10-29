@@ -5,6 +5,7 @@ import {
   findPurchaseOrderNumbers,
   findSolePurchaseOrderNumber,
   normalizePurchaseOrderNumber,
+  noteLineForInvoice,
   selectNotePurchaseOrder,
 } from '../lib/purchase_order.js';
 
@@ -114,12 +115,12 @@ describe('findNotePurchaseOrders', () => {
   });
 
   it('names no line when the same clause names a second line for the PO', () => {
-    expect(findNotePurchaseOrders('use PO-413672 Line 7, not Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7, not Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineConflict: true }]);
     expect(findNotePurchaseOrders('use PO-413672 Line 7 and 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
     expect(findNotePurchaseOrders('use PO-413672 Line 7 and Ln 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
     expect(findNotePurchaseOrders('use PO-413672 Lines 7 and 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
-    expect(findNotePurchaseOrders('PO-413672 Line 7\nPO-413672 Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
-    expect(findNotePurchaseOrders('use PO-413672 Line 7, not the PO line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672' }]);
+    expect(findNotePurchaseOrders('PO-413672 Line 7\nPO-413672 Line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineConflict: true }]);
+    expect(findNotePurchaseOrders('use PO-413672 Line 7, not the PO line 8')).toEqual([{ purchaseOrderNumber: 'PO-413672', lineConflict: true }]);
   });
 
   it('keeps the line when a later sentence or block names another line', () => {
@@ -167,7 +168,7 @@ describe('findNotePurchaseOrders', () => {
 
   it('lists each distinct PO once and drops a line number the notes contradict', () => {
     expect(findNotePurchaseOrders('use PO-413672 Line 7\n\nPO-413672 Line 8, not PO 411406')).toEqual([
-      { purchaseOrderNumber: 'PO-413672' },
+      { purchaseOrderNumber: 'PO-413672', lineConflict: true },
       { purchaseOrderNumber: 'PO-411406', rejected: true },
     ]);
     expect(findNotePurchaseOrders('PO-413672 Line 7\n\nconfirmed PO-413672 line 7')).toEqual([
@@ -303,5 +304,202 @@ describe('findNotePurchaseOrdersForOtherInvoices', () => {
     expect(findNotePurchaseOrdersForOtherInvoices([forA, forB], 'INV-0069962699')).toEqual([]);
     expect(findNotePurchaseOrdersForOtherInvoices([{ purchaseOrderNumber: 'PO-413672' }], '69962699')).toEqual([]);
     expect(findNotePurchaseOrdersForOtherInvoices([{ ...forA, rejected: true }], '69962699')).toEqual([]);
+  });
+});
+
+describe('notes that give one PO a different line for each invoice', () => {
+  const tristan = 'Both invoices go to PO-413785 - make invoice 101535 go to line 8, make invoice 101547 go to line 15';
+  const perInvoice = {
+    purchaseOrderNumber: 'PO-413785',
+    allInvoices: true,
+    invoiceNumbers: ['101535', '101547'],
+    lineNumbersByInvoice: { '101535': 8, '101547': 15 },
+  };
+
+  it("reads Tristan's note: both invoices get the PO, 101535 line 8, 101547 line 15", () => {
+    const notePurchaseOrders = findNotePurchaseOrders(tristan);
+    expect(notePurchaseOrders).toEqual([perInvoice]);
+    for (const [invoiceNumber, lineNumber] of [['101535', 8], ['101547', 15]] as const) {
+      const selected = selectNotePurchaseOrder(notePurchaseOrders, undefined, invoiceNumber);
+      expect(selected?.purchaseOrderNumber).toBe('PO-413785');
+      expect(noteLineForInvoice(selected!, invoiceNumber)).toEqual({ lineNumber, conflict: false });
+    }
+  });
+
+  it('reads the same note from Intercom HTML and with invoice number formatting', () => {
+    expect(findNotePurchaseOrders(`<p>${tristan}</p>`)).toEqual([perInvoice]);
+    const selected = selectNotePurchaseOrder(findNotePurchaseOrders(tristan), 'PO-411406', 'INV-0101547');
+    expect(noteLineForInvoice(selected!, 'INV-0101547')).toEqual({ lineNumber: 15, conflict: false });
+  });
+
+  it('gives a PO to every invoice, including one the note does not name or whose number was not read', () => {
+    const notePurchaseOrders = findNotePurchaseOrders(tristan);
+    expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, '101999')?.purchaseOrderNumber).toBe('PO-413785');
+    expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, undefined)?.purchaseOrderNumber).toBe('PO-413785');
+    expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, null)?.purchaseOrderNumber).toBe('PO-413785');
+    expect(noteLineForInvoice(notePurchaseOrders[0], '101999')).toEqual({ conflict: false });
+    expect(findNotePurchaseOrdersForOtherInvoices(notePurchaseOrders, '101999')).toEqual([]);
+  });
+
+  it('reads "invoice X: PO Line N" sentences with a different line each', () => {
+    expect(findNotePurchaseOrders('Invoice 101535: PO-413785 Line 8. Invoice 101547: PO-413785 Line 15.')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535', '101547'], lineNumbersByInvoice: { '101535': 8, '101547': 15 } },
+    ]);
+    expect(findNotePurchaseOrders('PO-413785 Line 8 for invoice 101535 and PO-413785 Line 15 for invoice 101547')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535', '101547'], lineNumbersByInvoice: { '101535': 8, '101547': 15 } },
+    ]);
+    expect(findNotePurchaseOrders('Invoice 101535: use PO-413785, line 8\nInvoice 101547: use PO-413785, line 15')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535', '101547'], lineNumbersByInvoice: { '101535': 8, '101547': 15 } },
+    ]);
+  });
+
+  it('names the PO once and gives each invoice its line', () => {
+    const expected = [
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535', '101547'], lineNumbersByInvoice: { '101535': 8, '101547': 15 } },
+    ];
+    expect(findNotePurchaseOrders('PO-413785 - invoice 101535 line 8, invoice 101547 line 15')).toEqual(expected);
+    expect(findNotePurchaseOrders('Use PO-413785: line 8 for invoice 101535, line #15 for invoice 101547')).toEqual(expected);
+    expect(findNotePurchaseOrders('Use PO-413785, invoice 101535 goes to Ln 8 and invoice 101547 goes to Line No: 15.')).toEqual(expected);
+  });
+
+  it('treats both/all/these/each invoices as every invoice on the ticket', () => {
+    for (const note of [
+      'Use PO-413785 for both invoices',
+      'All invoices go to PO-413785',
+      'These invoices are for PO-413785.',
+      'Put the two invoices on PO-413785',
+      'PO-413785 for each invoice',
+    ]) {
+      expect(findNotePurchaseOrders(note)).toEqual([{ purchaseOrderNumber: 'PO-413785', allInvoices: true }]);
+    }
+    expect(findNotePurchaseOrders('Both invoices go to PO-413785 Line 8')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', allInvoices: true, lineNumber: 8 },
+    ]);
+  });
+
+  it('does not read "both invoices 101535 and 101547" as an all-invoices marker', () => {
+    expect(findNotePurchaseOrders('both invoices 101535 and 101547 use PO-413785')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535', '101547'] },
+    ]);
+  });
+
+  it('keeps an untied line for invoices the note does not give a line', () => {
+    expect(findNotePurchaseOrders('Both invoices go to PO-413785 Line 8, invoice 101547 goes to line 15')[0]).toEqual({
+      purchaseOrderNumber: 'PO-413785',
+      allInvoices: true,
+      lineNumber: 8,
+      invoiceNumbers: ['101547'],
+      lineNumbersByInvoice: { '101547': 15 },
+    });
+  });
+
+  it('gives no line to an invoice the note gives two lines, a range, or a contradicted line', () => {
+    const conflicted = (note: string) => findNotePurchaseOrders(note)[0];
+    expect(conflicted('Both invoices go to PO-413785, invoice 101535 line 8, invoice 101535 line 9, invoice 101547 line 15')).toEqual({
+      purchaseOrderNumber: 'PO-413785',
+      allInvoices: true,
+      invoiceNumbers: ['101535', '101547'],
+      lineNumbersByInvoice: { '101547': 15 },
+      conflictingLineInvoices: ['101535'],
+    });
+    expect(conflicted('PO-413785: invoice 101535 line 8-9, invoice 101547 line 15')).toEqual({
+      purchaseOrderNumber: 'PO-413785',
+      invoiceNumbers: ['101535', '101547'],
+      lineNumbersByInvoice: { '101547': 15 },
+      conflictingLineInvoices: ['101535'],
+    });
+    expect(conflicted('Invoice 101535: use PO-413785 Line 8, not Line 9')).toEqual({
+      purchaseOrderNumber: 'PO-413785',
+      invoiceNumbers: ['101535'],
+      conflictingLineInvoices: ['101535'],
+    });
+  });
+
+  it('reports a conflicting line for the invoice only', () => {
+    const [noteOrder] = findNotePurchaseOrders('Both invoices go to PO-413785, invoice 101535 line 8, invoice 101535 line 9, invoice 101547 line 15');
+    expect(noteLineForInvoice(noteOrder, '101535')).toEqual({ conflict: true });
+    expect(noteLineForInvoice(noteOrder, '101547')).toEqual({ lineNumber: 15, conflict: false });
+  });
+
+  it('ignores a line it cannot give to one PO when the note names several POs', () => {
+    expect(findNotePurchaseOrders('PO-413785 for invoice 101535; PO-411406 for invoice 101547. Invoice 101535 line 8')).toEqual([
+      { purchaseOrderNumber: 'PO-413785', invoiceNumbers: ['101535'] },
+      { purchaseOrderNumber: 'PO-411406', invoiceNumbers: ['101547'] },
+    ]);
+  });
+
+  it('keeps the single-line shapes for notes with one line and one invoice', () => {
+    expect(findNotePurchaseOrders('use PO-413672 Line 7 for invoice 69962682')).toEqual([
+      { purchaseOrderNumber: 'PO-413672', lineNumber: 7, invoiceNumbers: ['69962682'] },
+    ]);
+    expect(noteLineForInvoice({ purchaseOrderNumber: 'PO-413672', lineNumber: 7 }, '69962682')).toEqual({ lineNumber: 7, conflict: false });
+    expect(noteLineForInvoice({ purchaseOrderNumber: 'PO-413672', lineConflict: true }, undefined)).toEqual({ conflict: true });
+    expect(noteLineForInvoice({ purchaseOrderNumber: 'PO-413672' }, '69962682')).toEqual({ conflict: false });
+  });
+});
+
+describe('notes that behave as they did before per-invoice lines', () => {
+  it('pins no PO line for an invoice remark in a sentence that names no PO', () => {
+    expect(findNotePurchaseOrders('Use PO-413785. Invoice 101535 go to line 8.')).toEqual([{ purchaseOrderNumber: 'PO-413785' }]);
+    expect(
+      findNotePurchaseOrders('Use PO-413785 for this one.\nInvoice 101535 line 2 is a duplicate charge, please remove.')
+    ).toEqual([{ purchaseOrderNumber: 'PO-413785' }]);
+    expect(findNotePurchaseOrders('PO-413785.\nInvoice 101535 line 8, invoice 101547 line 15.')).toEqual([
+      { purchaseOrderNumber: 'PO-413785' },
+    ]);
+  });
+
+  it('still gives the PO to every invoice, tied or not, when a note only remarks on one invoice line', () => {
+    const notePurchaseOrders = findNotePurchaseOrders('Use PO-413785. Invoice 101535 go to line 8.');
+    for (const invoiceNumber of ['101535', '101547', undefined]) {
+      expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, invoiceNumber)?.purchaseOrderNumber).toBe('PO-413785');
+      expect(noteLineForInvoice(notePurchaseOrders[0], invoiceNumber)).toEqual({ conflict: false });
+    }
+  });
+
+  it('keeps the PO tied to an invoice when the note gives the other invoices another PO', () => {
+    const note = 'Invoice 101 goes to PO-111111. The other two invoices go to PO-222222.';
+    const notePurchaseOrders = findNotePurchaseOrders(note);
+    expect(notePurchaseOrders).toEqual([
+      { purchaseOrderNumber: 'PO-111111', invoiceNumbers: ['101'] },
+      { purchaseOrderNumber: 'PO-222222' },
+    ]);
+    expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, '101')?.purchaseOrderNumber).toBe('PO-111111');
+    expect(selectNotePurchaseOrder(notePurchaseOrders, undefined, '102')).toBeUndefined();
+  });
+
+  it('does not read a bare "two invoices" as every invoice', () => {
+    expect(findNotePurchaseOrders('The other two invoices go to PO-222222')).toEqual([{ purchaseOrderNumber: 'PO-222222' }]);
+    expect(findNotePurchaseOrders('The two invoices go to PO-222222')).toEqual([
+      { purchaseOrderNumber: 'PO-222222', allInvoices: true },
+    ]);
+  });
+});
+
+describe('selectNotePurchaseOrder with a PO given to every invoice', () => {
+  const everyInvoice = { purchaseOrderNumber: 'PO-413785', allInvoices: true };
+  const forA = { purchaseOrderNumber: 'PO-413672', invoiceNumbers: ['69962682'] };
+
+  it('does not use the PO before an invoice number is known when another PO is tied to an invoice', () => {
+    expect(selectNotePurchaseOrder([everyInvoice, forA], undefined, undefined)).toBeUndefined();
+  });
+
+  it('uses the PO tied to this invoice over the PO given to every invoice', () => {
+    expect(selectNotePurchaseOrder([everyInvoice, forA], undefined, '69962682')).toBe(forA);
+    expect(selectNotePurchaseOrder([everyInvoice, forA], undefined, '101535')).toBe(everyInvoice);
+  });
+
+  it('stays put when an invoice is tied to two POs', () => {
+    const forAToo = { purchaseOrderNumber: 'PO-500001', invoiceNumbers: ['69962682'] };
+    expect(selectNotePurchaseOrder([everyInvoice, forA, forAToo], undefined, '69962682')).toBeUndefined();
+    expect(selectNotePurchaseOrder([everyInvoice, forA], undefined, '101535')).toBe(everyInvoice);
+  });
+
+  it('never uses an all-invoices PO the note rejects', () => {
+    expect(selectNotePurchaseOrder([{ ...everyInvoice, rejected: true }], undefined, '101535')).toBeUndefined();
+  });
+
+  it('does not call an all-invoices PO a PO for other invoices', () => {
+    expect(findNotePurchaseOrdersForOtherInvoices([everyInvoice, forA], '101535')).toEqual([]);
   });
 });

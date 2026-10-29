@@ -62,7 +62,7 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
@@ -343,8 +343,9 @@ async function processInvoice(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
-    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
     // printed ones and the Amount check.
     const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,
@@ -357,6 +358,11 @@ async function processInvoice(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
     }) : { lines: printedLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.

@@ -81,7 +81,7 @@ import {
   splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
 import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
@@ -90,6 +90,7 @@ import {
   findPurchaseOrderNumbers,
   findSolePurchaseOrderNumber,
   normalizePurchaseOrderNumber,
+  noteLineForInvoice,
   selectNotePurchaseOrder,
   type NotePurchaseOrder,
   type PurchaseOrderEnrichmentContext,
@@ -305,7 +306,7 @@ function pinNotePurchaseOrderLine(
   lineNumber: number | undefined
 ): { purchaseOrder?: ParsedPurchaseOrder; lineMissing: boolean } {
   if (!purchaseOrder || !lineNumber) return { purchaseOrder, lineMissing: false };
-  const lines = purchaseOrder.lines.filter((line) => line.lineOrder === lineNumber);
+  const lines = purchaseOrder.lines.filter((line) => Number(line.lineOrder) === lineNumber);
   if (!lines.length) {
     debug(`Intercom note names line ${lineNumber}, which is not on ${purchaseOrder.documentNumber}; matching against every PO line`);
     return { purchaseOrder, lineMissing: true };
@@ -320,9 +321,13 @@ function formatPurchaseOrderSelectionNotes(input: {
   emailPurchaseOrderNumber?: string;
   /** The note line the invoice lines were coded from; unset when PO lines were not used. */
   appliedLineNumber?: number;
+  /** The line the notes give this invoice, even when it is not on the PO. */
+  noteLineNumber?: number;
   noteLineMissing: boolean;
+  /** The notes give this invoice a line they contradict ("Line 7, not Line 8"), so none was pinned. */
+  noteLineConflict: boolean;
 }): string {
-  const { selected, invoicePurchaseOrderNumber, emailPurchaseOrderNumber, appliedLineNumber, noteLineMissing } = input;
+  const { selected, invoicePurchaseOrderNumber, emailPurchaseOrderNumber, appliedLineNumber, noteLineNumber, noteLineMissing, noteLineConflict } = input;
   const loadedPurchaseOrderNumber = selected.purchaseOrder?.documentNumber;
   if (selected.notePurchaseOrderNotFound) {
     return `\n\nPurchase order: ${selected.notePurchaseOrderNotFound} from the Intercom note was not found in Workday; ${loadedPurchaseOrderNumber ? `used ${loadedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
@@ -344,17 +349,20 @@ function formatPurchaseOrderSelectionNotes(input: {
   }
   const { fromNote } = selected;
   if (!fromNote || !loadedPurchaseOrderNumber) return '';
-  if (!appliedLineNumber && !noteLineMissing && invoicePurchaseOrderNumber === loadedPurchaseOrderNumber) return '';
+  if (!appliedLineNumber && !noteLineMissing && !noteLineConflict && invoicePurchaseOrderNumber === loadedPurchaseOrderNumber) return '';
   const used = `${loadedPurchaseOrderNumber}${appliedLineNumber ? ` Line ${appliedLineNumber}` : ''}`;
   const instead = invoicePurchaseOrderNumber
     ? (invoicePurchaseOrderNumber !== loadedPurchaseOrderNumber ? ` instead of ${invoicePurchaseOrderNumber} on the invoice` : '')
     : (emailPurchaseOrderNumber && emailPurchaseOrderNumber !== loadedPurchaseOrderNumber
       ? ` instead of ${emailPurchaseOrderNumber} in the email`
       : '');
-  const missingLine = noteLineMissing && fromNote.lineNumber
-    ? ` The note names Line ${fromNote.lineNumber}, which is not on ${loadedPurchaseOrderNumber}, so every PO line was considered.`
+  const missingLine = noteLineMissing && noteLineNumber
+    ? ` The note names Line ${noteLineNumber}, which is not on ${loadedPurchaseOrderNumber}, so every PO line was considered.`
     : '';
-  return `\n\nPurchase order: Used ${used} from the Intercom note${instead}.${missingLine}`;
+  const conflictingLine = noteLineConflict
+    ? ' The note gives this invoice conflicting PO lines, so no line was pinned and every PO line was considered.'
+    : '';
+  return `\n\nPurchase order: Used ${used} from the Intercom note${instead}.${missingLine}${conflictingLine}`;
 }
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -1016,7 +1024,10 @@ async function processInvoiceCluster(
       enrichmentPoNumber,
       result.extractedSuppliersInvoiceNumber
     );
-    const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
+    const noteLine = selectedPo.fromNote
+      ? noteLineForInvoice(selectedPo.fromNote, result.extractedSuppliersInvoiceNumber)
+      : { conflict: false };
+    const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, noteLine.lineNumber);
     const matchedPo = pinnedPo.purchaseOrder;
     const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
       purchaseOrderNumber: matchedPo?.documentNumber,
@@ -1052,13 +1063,15 @@ async function processInvoiceCluster(
     const purchaseOrderLineFallbackLabel = (label: string) =>
       purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     // The default company codes no PO lines, so a note line is honored only when PO lines are used.
-    const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : selectedPo.fromNote?.lineNumber;
+    const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : noteLine.lineNumber;
     const purchaseOrderSelectionNotes = formatPurchaseOrderSelectionNotes({
       selected: selectedPo,
       invoicePurchaseOrderNumber: enrichmentPoNumber,
       emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber,
       appliedLineNumber: notePoLineNumber,
+      noteLineNumber: noteLine.lineNumber,
       noteLineMissing: pinnedPo.lineMissing && !usedDefaultCompany,
+      noteLineConflict: noteLine.conflict && Boolean(matchedPoLines?.length),
     });
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
@@ -1087,8 +1100,9 @@ async function processInvoiceCluster(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: splitFreightLines(printedLines).freightAmountFromLines,
     });
-    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due.
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due.
     const { lines: extractedLines, note: linePriceNote } = reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,
       freight: resolvedFreightAmount,
@@ -1100,6 +1114,11 @@ async function processInvoiceCluster(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
     });
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     const restoredFreight = restoreClearedFreightFromRows(extractedLines, {

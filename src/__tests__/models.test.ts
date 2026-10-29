@@ -56,4 +56,31 @@ describe('models', () => {
       expect.objectContaining({ providerOptions: { gateway: { only: ['openai'] } } })
     );
   });
+
+  it('logs each failed provider attempt with its status and Retry-After', async () => {
+    jest.resetModules();
+    const debugMock = jest.fn();
+    jest.doMock('@pga/logger', () => ({ debug: debugMock }));
+    const { createLanguageModel: freshCreate } = require('../lib/models.js');
+    const model = freshCreate('gpt-5.4-mini') as unknown as CallableModel;
+    const freshGateway = jest.requireMock<{ gateway: jest.Mock }>('ai').gateway;
+    const underlying = freshGateway.mock.results[freshGateway.mock.results.length - 1].value as CallableModel;
+    const failure = Object.assign(new Error('rate limited'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: { 'retry-after': '41' },
+    });
+    (underlying.doGenerate as jest.Mock).mockRejectedValueOnce(failure);
+
+    await expect(model.doGenerate({ prompt: [] })).rejects.toBe(failure);
+
+    expect(debugMock).toHaveBeenCalledWith('AI model attempt failed', expect.objectContaining({
+      model: 'openai/gpt-5.4-mini',
+      statusCode: 429,
+      isRetryable: true,
+      retryAfter: '41',
+    }));
+    jest.dontMock('@pga/logger');
+  });
 });
