@@ -55,7 +55,8 @@ the cluster plans table, and the `agent_invoice_touches` view plus
 failure there is logged and does not fail cold start. `agent_invoice_coverage_daily`
 (one row per Central invoice creation day, rewritten by `ScoreDigest` from a
 Workday query; `ensureCoverageReporting` in the same file) is created the same
-way. `agent_invoice_status_checks`
+way, and the same call runs its one-time migration from the `uncovered_integration`
+columns to `automated` (see `agent-invoice-scoring`). `agent_invoice_status_checks`
 (`src/lib/invoice_scores.ts`) and `agent_invoice_audit_posts`
 (`src/score_digest.ts`) are created by the scoring jobs themselves, not at cold
 start.

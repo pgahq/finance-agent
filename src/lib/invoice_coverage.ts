@@ -10,6 +10,8 @@ import { executeWorkdayQuery, getWorkQueueTagWIDs } from './workday.js';
  * created or enriched. An invoice counts as agent supported when it carries the agent's work queue tag or has a row in
  * `agent_invoice_snapshots` (AP can replace the tag; older invoices predate snapshots). `invoiceCreatedBy` cannot
  * identify agent invoices (it names the AP teammate who started the Intercom action), so it only splits the rest.
+ * Invoices with no creator were loaded by an integration (supplier XML such as Amazon, ODP batches), not keyed by a
+ * person, so they are counted as `automated` and left out of the share.
  */
 
 export const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -49,10 +51,10 @@ export type CoverageCategory =
   | 'agent_notes_only'
   | 'uncovered_ocr'
   | 'uncovered_manual'
-  | 'uncovered_integration';
+  | 'automated';
 
 const AGENT_CATEGORIES: CoverageCategory[] = ['agent_created', 'agent_enriched', 'agent_notes_only'];
-const UNCOVERED_CATEGORIES: CoverageCategory[] = ['uncovered_ocr', 'uncovered_manual', 'uncovered_integration'];
+const UNCOVERED_CATEGORIES: CoverageCategory[] = ['uncovered_ocr', 'uncovered_manual'];
 
 export interface CoverageRow {
   workdayInvoiceWid: string;
@@ -223,7 +225,8 @@ const ENRICH_SOURCES = new Set(['enrich']);
 
 /**
  * Labels each invoice, checking in this order: outside the scoped companies, canceled (kept out of the share), agent
- * supported (tag or snapshot), then how the rest got into Workday. An empty creator is not agent support by itself.
+ * supported (tag or snapshot), then how the rest got into Workday. An empty creator is not agent support by itself;
+ * a Workday OCR invoice with no creator stays `uncovered_ocr`, because the agent should have enriched it.
  */
 export function classifyCoverage(
   rows: CoverageRow[],
@@ -241,7 +244,7 @@ export function classifyCoverage(
     } else if (row.hasAgentTag) category = 'agent_notes_only';
     else if (row.isOcr) category = 'uncovered_ocr';
     else if (row.creator) category = 'uncovered_manual';
-    else category = 'uncovered_integration';
+    else category = 'automated';
     return { ...row, category };
   });
 }
@@ -250,13 +253,11 @@ export type CoverageCounts = Record<CoverageCategory, number>;
 
 export interface CoverageTotals {
   counts: CoverageCounts;
-  /** Invoices in the share: in scope and not canceled. */
+  /** Invoices in the share: in scope, not canceled, and not automated. */
   invoices: number;
   supported: number;
   /** supported / invoices; undefined when there were no invoices. */
   share?: number;
-  /** The same share with integration-created invoices (no creator) left out of the denominator. */
-  shareWithoutIntegrations?: number;
 }
 
 const ROUND = 10_000;
@@ -271,19 +272,17 @@ export function coverageTotals(invoices: ClassifiedInvoice[]): CoverageTotals {
     agent_notes_only: 0,
     uncovered_ocr: 0,
     uncovered_manual: 0,
-    uncovered_integration: 0,
+    automated: 0,
   };
   for (const invoice of invoices) counts[invoice.category] += 1;
   const supported = AGENT_CATEGORIES.reduce((sum, category) => sum + counts[category], 0);
   const uncovered = UNCOVERED_CATEGORIES.reduce((sum, category) => sum + counts[category], 0);
   const share = ratio(supported, supported + uncovered);
-  const shareWithoutIntegrations = ratio(supported, supported + uncovered - counts.uncovered_integration);
   return {
     counts,
     invoices: supported + uncovered,
     supported,
     ...(share !== undefined ? { share } : {}),
-    ...(shareWithoutIntegrations !== undefined ? { shareWithoutIntegrations } : {}),
   };
 }
 
@@ -305,6 +304,8 @@ export interface CoverageSummary {
   totals: CoverageTotals;
   previous?: CoverageTotals;
   topSuppliers: Array<{ name: string; count: number }>;
+  /** Suppliers of the automated invoices, each with one invoice to open, so AP can check only integration feeds land there. */
+  automatedSuppliers: Array<{ name: string; count: number; sample?: CoverageLink }>;
   /** AP teammates who keyed invoices by hand, with how many of their invoices went through the agent. */
   creators: CoverageCreator[];
   links: CoverageLink[];
@@ -314,6 +315,16 @@ export interface CoverageSummary {
 
 const byCountThenName = <T extends { name: string }>(count: (item: T) => number) => (a: T, b: T) =>
   count(b) - count(a) || a.name.localeCompare(b.name);
+
+function linkTo(invoice: ClassifiedInvoice): CoverageLink {
+  return {
+    workdayInvoiceWid: invoice.workdayInvoiceWid,
+    ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
+    ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
+    ...(invoice.creator ? { creator: invoice.creator } : {}),
+    category: invoice.category,
+  };
+}
 
 /** One invoice per creator in turn, biggest groups first, so a single teammate's batch does not fill the list. */
 function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): CoverageLink[] {
@@ -329,13 +340,7 @@ function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): Coverag
       if (links.length >= limit) break;
       const invoice = group[round];
       if (!invoice) continue;
-      links.push({
-        workdayInvoiceWid: invoice.workdayInvoiceWid,
-        ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
-        ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
-        ...(invoice.creator ? { creator: invoice.creator } : {}),
-        category: invoice.category,
-      });
+      links.push(linkTo(invoice));
     }
   }
   return links;
@@ -349,12 +354,16 @@ export function summarizeCoverage(
 ): CoverageSummary {
   const top = limits.top ?? COVERAGE_TOP_LIMIT;
   const uncovered = current.filter((invoice) => UNCOVERED_CATEGORIES.includes(invoice.category));
-
-  const suppliers = new Map<string, number>();
-  for (const invoice of uncovered) {
-    const name = invoice.supplier ?? '(no supplier)';
-    suppliers.set(name, (suppliers.get(name) ?? 0) + 1);
-  }
+  const topBySupplier = (invoices: ClassifiedInvoice[]) => {
+    const suppliers = new Map<string, { name: string; count: number; first: ClassifiedInvoice }>();
+    for (const invoice of invoices) {
+      const name = invoice.supplier ?? '(no supplier)';
+      const entry = suppliers.get(name) ?? { name, count: 0, first: invoice };
+      entry.count += 1;
+      suppliers.set(name, entry);
+    }
+    return [...suppliers.values()].sort(byCountThenName((item) => item.count)).slice(0, top);
+  };
 
   const creators = new Map<string, CoverageCreator>();
   for (const invoice of current) {
@@ -368,10 +377,9 @@ export function summarizeCoverage(
   return {
     totals: coverageTotals(current),
     ...(previous ? { previous: coverageTotals(previous) } : {}),
-    topSuppliers: [...suppliers.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort(byCountThenName((item) => item.count))
-      .slice(0, top),
+    topSuppliers: topBySupplier(uncovered).map(({ name, count }) => ({ name, count })),
+    automatedSuppliers: topBySupplier(current.filter((invoice) => invoice.category === 'automated'))
+      .map(({ name, count, first }) => ({ name, count, sample: linkTo(first) })),
     creators: [...creators.values()]
       .filter((creator) => creator.byHand > 0)
       .sort(byCountThenName((item) => item.byHand))
@@ -430,7 +438,7 @@ export function dailyCoverage(invoices: ClassifiedInvoice[], startDay: string, e
 
 const COVERAGE_DAILY_COLUMNS = [
   'created_day', 'invoices', 'agent_created', 'agent_enriched', 'agent_notes_only', 'uncovered_ocr',
-  'uncovered_manual', 'uncovered_integration', 'canceled', 'coverage_share', 'coverage_share_without_integrations',
+  'uncovered_manual', 'automated', 'canceled', 'coverage_share',
 ];
 
 /** Multi-row upsert for `rows` days, with `COVERAGE_DAILY_COLUMNS` placeholders per row. */
@@ -455,10 +463,9 @@ export function coverageDayParams(days: CoverageDay[]): unknown[] {
     totals.counts.agent_notes_only,
     totals.counts.uncovered_ocr,
     totals.counts.uncovered_manual,
-    totals.counts.uncovered_integration,
+    totals.counts.automated,
     totals.counts.canceled,
     totals.share ?? null,
-    totals.shareWithoutIntegrations ?? null,
   ]);
 }
 

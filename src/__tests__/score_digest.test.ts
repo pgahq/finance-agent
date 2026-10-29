@@ -740,18 +740,18 @@ describe('score digest handler', () => {
     routeQueries({});
     await handler({ mode: 'daily', coverageBackfill: true });
     expect(coverageWrites()).toHaveLength(1);
-    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 11);
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 10);
   });
 
   it('rebuilds the long span of the rollup on a weekly run with coverageBackfill', async () => {
     routeQueries({});
     await handler({});
-    expect((coverageWrites()[0][1] as unknown[]).length).toBe(15 * 11);
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(15 * 10);
 
     mockQuery.mockClear();
     routeQueries({});
     await handler({ coverageBackfill: true });
-    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 11);
+    expect((coverageWrites()[0][1] as unknown[]).length).toBe(90 * 10);
   });
 
   it('says coverage is unavailable, and still posts, when Workday cannot be queried for it', async () => {
@@ -797,15 +797,20 @@ describe('agent coverage in the weekly digest', () => {
     const previous = classifyCoverage([rows[0], rows[2], rows[3], rows[3]].map((row, index) => ({ ...row, workdayInvoiceWid: `p${index}` })), new Map(), ['c']);
     const coverage = { ...summarizeCoverage(classified, previous), outOfScope: 1612 };
     const text = textOf(buildDigestBlocks({ ...base, coverage }));
-    expect(text).toContain('*Agent coverage* · *50%* of PGA Corp supplier invoices went through the agent last week (2 of 4) (was 25% the week before)');
+    expect(text).toContain('*Agent coverage* · *67%* of PGA Corp supplier invoices went through the agent last week (2 of 3) (was 50% the week before)');
     expect(text).toContain('• 2 tagged by the agent (notes only)');
     expect(text).toContain('• 1 keyed by hand');
-    expect(text).toContain('• 1 created with no creator (integrations)');
-    expect(text).toContain('Without integration invoices: 67%');
+    expect(text).toContain('*1* automated invoice left out of the share (no person keyed them, such as supplier XML)');
+    expect(text).toContain('_Automated, by supplier_\n• `Amazon`: 1, such as ');
+    expect(text.slice(text.indexOf('_Automated, by supplier_'))).toMatch(/• `Amazon`: 1, such as (<[^|]+\|i1>|`i1`)/);
+    expect(text).not.toContain('Without integration invoices');
     expect(text).toContain('_1 canceled invoice not counted · 1612 invoices for other companies left out_');
     expect(text).toContain('*Where the agent was not used*');
     expect(text).toContain('• `Tiffany Mead [C]`: 1 by hand, 0 through the agent');
     expect(text).toContain('SUPIN-H1');
+    const missed = text.slice(text.indexOf('*Where the agent was not used*'));
+    expect(missed).not.toContain('Amazon');
+    expect(missed).not.toContain('no creator');
   });
 
   it('keeps invoice text from formatting or mentioning in Slack', () => {
@@ -814,15 +819,17 @@ describe('agent coverage in the weekly digest', () => {
     expect(text).not.toContain('<ups@x>');
   });
 
-  it('omits categories with no invoices and the without-integrations line when there are none', () => {
-    const text = textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage(classified.filter((invoice) => invoice.category !== 'uncovered_integration')) }));
-    expect(text).not.toContain('integrations');
-    expect(text).not.toContain('Without integration invoices');
+  it('omits categories with no invoices and the automated lines when there are none', () => {
+    const text = textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage(classified.filter((invoice) => invoice.category !== 'automated')) }));
+    expect(text).not.toContain('automated');
+    expect(text).not.toContain('Automated');
     expect(text).not.toContain('created by the agent');
   });
 
-  it('says so when no invoice was created, or when coverage could not be computed', () => {
-    expect(textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage([]) }))).toContain('no PGA Corp supplier invoices were created last week');
+  it('says so when no invoice counts toward the share, or when coverage could not be computed', () => {
+    expect(textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage([]) }))).toContain('no PGA Corp supplier invoices to count last week');
+    const onlyAutomated = textOf(buildDigestBlocks({ ...base, coverage: summarizeCoverage(classified.filter((invoice) => invoice.category === 'automated')) }));
+    expect(onlyAutomated).toContain('no PGA Corp supplier invoices to count last week.\n*1* automated invoice left out of the share');
     expect(textOf(buildDigestBlocks({ ...base, coverageUnavailable: true }))).toContain('*Agent coverage* · unavailable this week; Workday query failed.');
     expect(textOf(buildDigestBlocks(base))).not.toContain('Agent coverage');
   });
