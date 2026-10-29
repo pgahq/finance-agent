@@ -1100,7 +1100,11 @@ async function processInvoiceCluster(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
-      settlementPrinted: hasPrintedSettlement(result),
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
     });
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     const restoredFreight = restoreClearedFreightFromRows(extractedLines, {

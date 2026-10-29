@@ -702,6 +702,29 @@ describe('reinterpretSinglePriceLinesForCharges with a unit price beside a diffe
     expect(reinterpretSinglePriceLinesForCharges([line], context).lines).toEqual([line]);
   });
 
+  it('keeps a printed total that is within the rounding of a unit price printed to the cent', () => {
+    const widget = { description: 'Widget', quantity: 3, unitCost: '$33.33', totalPrice: '$100.00', hasDiscount: false };
+    const service = { description: 'Service', quantity: 1, unitCost: '$50.00', totalPrice: '$50.00', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([widget, service], { ...context, amountDue: '$149.99', tax: undefined });
+    expect(result.lines).toEqual([widget, service]);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('still reads a gap larger than the rounding of the unit price', () => {
+    const widget = { description: 'Widget', quantity: 3, unitCost: '$33.33', totalPrice: '$100.03', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([widget], { ...context, amountDue: '$99.99', tax: undefined });
+    expect(result.lines).toEqual([{ ...widget, totalPrice: '$99.99' }]);
+  });
+
+  it('keeps the single-price reading when too many other rows are eligible for the new reading', () => {
+    const participants = { description: 'Participants', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false };
+    const priced = Array.from({ length: 8 }, (_, index) => ({ description: `Session ${index + 1}`, quantity: 2, unitCost: '$10.00', totalPrice: '$50.00', hasDiscount: false }));
+    const result = reinterpretSinglePriceLinesForCharges([participants, ...priced], { ...context, amountDue: '$1,075.00', tax: undefined });
+    expect(result.lines).toEqual([{ ...participants, unitCost: '$75.00', totalPrice: '$675.00' }, ...priced]);
+    expect(result.note).toContain('prints quantity 9 and one price of $75.00');
+    expect(result.note).not.toContain('at $10.00');
+  });
+
   it('leaves the line alone when a deposit, payment, or balance due is printed', () => {
     const result = reinterpretSinglePriceLinesForCharges(printedLines, { ...context, settlementPrinted: true });
     expect(result.lines).toEqual(printedLines);
@@ -724,16 +747,19 @@ describe('reinterpretSinglePriceLinesForCharges with a unit price beside a diffe
 });
 
 describe('hasPrintedSettlement', () => {
+  const noSettlement = { extractedPartialPayment: null, extractedPriorPayments: null, emailBalanceDue: null };
+
   it.each([
     ['a partial payment', { extractedPartialPayment: { label: 'Deposit', percent: null, amount: '$10.00' } }],
     ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$10.00' }] }],
     ['an email balance due', { emailBalanceDue: { amount: '$10.00', phrase: 'remaining balance' } }],
-  ])('is true for %s', (_name, result) => {
-    expect(hasPrintedSettlement(result)).toBe(true);
+  ])('is true for %s', (_name, override) => {
+    expect(hasPrintedSettlement({ ...noSettlement, ...override })).toBe(true);
   });
 
   it('is false for an ordinary invoice', () => {
-    expect(hasPrintedSettlement({ extractedPartialPayment: null, extractedPriorPayments: [], emailBalanceDue: null })).toBe(false);
-    expect(hasPrintedSettlement({})).toBe(false);
+    expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: [] })).toBe(false);
+    expect(hasPrintedSettlement(noSettlement)).toBe(false);
+    expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: undefined })).toBe(false);
   });
 });

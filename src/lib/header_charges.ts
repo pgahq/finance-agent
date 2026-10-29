@@ -544,7 +544,11 @@ function extensionReading(line: ExtractedInvoiceLine): LinePriceReading | undefi
   const total = chargeAmount(line.totalPrice);
   if (unitCost == null || unitCost <= 0 || total == null || total <= 0) return undefined;
   const cents = wholeCents(quantity * unitCost);
-  return cents == null || cents <= 0 || cents === Math.round(total * 100) ? undefined : { kind: 'extension', cents };
+  if (cents == null || cents <= 0) return undefined;
+  // A unit price printed rounded to the cent is off by at most half a cent per unit, so a gap that small is the
+  // vendor's rounding and the printed total stands (3 x $33.33 printed as $100.00).
+  const totalCents = Math.round(total * 100);
+  return Math.abs(totalCents - cents) <= Math.ceil(quantity / 2) ? undefined : { kind: 'extension', cents };
 }
 
 function linePriceReading(line: ExtractedInvoiceLine, allowExtension: boolean): LinePriceReading | undefined {
@@ -613,6 +617,11 @@ export function reinterpretSinglePriceLines(
     const reading = linePriceReading(line, allowExtension);
     return reading == null ? [] : [{ index, reading }];
   });
+  // Quantity x unit price rows share the cap with single-price rows, so too many of them must not switch off the
+  // single-price reading, which has always worked on its own.
+  if (eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES && allowExtension) {
+    return reinterpretSinglePriceLines(lines, reconciles, { ...options, allowExtension: false });
+  }
   if (eligible.length === 0 || eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES) return unchanged;
   if (reconciles(lines)) return unchanged;
 
@@ -665,9 +674,9 @@ export interface SinglePriceChargeContext {
 
 /** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */
 export function hasPrintedSettlement(result: {
-  extractedPartialPayment?: unknown;
-  extractedPriorPayments?: unknown[] | null;
-  emailBalanceDue?: unknown;
+  extractedPartialPayment: unknown;
+  extractedPriorPayments: unknown[] | null | undefined;
+  emailBalanceDue: unknown;
 }): boolean {
   return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.emailBalanceDue);
 }

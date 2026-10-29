@@ -355,7 +355,11 @@ async function processInvoice(
       summaryChargesPlaceable: printedLines.length === extractedRows.length,
       printedTaxCharges: result.extractedOtherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
-      settlementPrinted: hasPrintedSettlement(result),
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
     }) : { lines: printedLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.
