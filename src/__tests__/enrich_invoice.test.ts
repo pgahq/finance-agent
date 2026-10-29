@@ -1553,6 +1553,56 @@ describe('enrich_invoice', () => {
     expect(notes).not.toContain('Line total review');
   });
 
+  it('sets the SUPIN-472062 line total to quantity x unit price on update when that makes the lines match the amount due', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin472062CorrectedEsignRow, supin472062Header, supin472062Rows } = require('./fixtures/supin_472062.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'CCH INCORPORATED', memo: 'eSign usage' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin472062Header,
+      extractedInvoiceLines: supin472062Rows
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'eSign Non 8879', quantity: 23, unitCost: 1.25, extendedAmount: 28.75 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062CorrectedEsignRow]);
+    const notes = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1].buildNotes([]);
+    expect(notes).toContain('Line price review: "eSign Non 8879" prints quantity 23 at $1.25 ($28.75) but a line total of $30.65.');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
+    expect(notes).not.toContain('Line subtotal review');
+  });
+
   it('adds the SUPIN-470485 totals-block Decoration $5.00 as a line on update', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

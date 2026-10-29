@@ -1,4 +1,5 @@
-import { applyPrintedTaxCharges, isTaxLikeChargeLabel, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, isTaxLikeChargeLabel, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, type FinalInvoiceLine } from '../lib/invoice_lines.js';
 
 // SUPIN-467011: two lines, Sales Tax $28.26, a printed EnvChg tax row of $17.00, amount due $387.76.
@@ -610,7 +611,6 @@ describe('reinterpretSinglePriceLinesForCharges', () => {
   it.each([
     ['quantity 1', { quantity: 1 }],
     ['no quantity', { quantity: null }],
-    ['a printed unit cost', { unitCost: '$75.00' }],
     ['a discount marker', { hasDiscount: true }],
     ['a printed credit', { totalPrice: '($75.00)' }],
     ['a freight description', { description: 'Shipping and Handling' }],
@@ -624,5 +624,142 @@ describe('reinterpretSinglePriceLinesForCharges', () => {
   it('does nothing while a header charge is withheld or the amount due is unreadable', () => {
     expect(reinterpretSinglePriceLinesForCharges([participants], { ...context, chargeWithheld: true }).note).toBeUndefined();
     expect(reinterpretSinglePriceLinesForCharges([participants], { ...context, amountDue: null }).note).toBeUndefined();
+  });
+});
+
+// SUPIN-472062: CCH INCORPORATED prints quantity 23 at $1.25 and Subtotal $28.75; OCR read the line total as the $30.65 amount due.
+describe('reinterpretSinglePriceLinesForCharges with a unit price beside a different line total', () => {
+  const printedLines = supin472062Rows.filter(line => line.totalPrice || line.unitCost);
+  const context = {
+    amountDue: supin472062Header.extractedAmountDue,
+    tax: supin472062Header.extractedTaxAmount,
+    taxLabel: supin472062Header.extractedTaxLabel,
+    freightCleared: false,
+    taxCleared: false,
+    summaryChargesPlaceable: printedLines.length === supin472062Rows.length,
+  };
+
+  it('keeps only the priced row and sets its total to quantity x unit price', () => {
+    expect(printedLines).toEqual([supin472062EsignRow]);
+
+    const result = reinterpretSinglePriceLinesForCharges(printedLines, context);
+
+    expect(result.lines).toEqual([supin472062CorrectedEsignRow]);
+    expect(result.note).toBe(
+      '"eSign Non 8879" prints quantity 23 at $1.25 ($28.75) but a line total of $30.65. '
+      + 'With the printed line total, the lines do not add up to the amount due, but with quantity x unit price they do, so the line total was set to quantity x unit price.'
+    );
+    expect(chargeReconciliationMessages(reconcileSubmittedCharges(result.lines, { amountDue: '$30.65', tax: '$1.90' }))).toEqual([]);
+  });
+
+  it('keeps the line total when it already reconciles', () => {
+    const result = reinterpretSinglePriceLinesForCharges(printedLines, { ...context, amountDue: '$32.55' });
+    expect(result.lines).toEqual(printedLines);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('keeps the mismatch when quantity x unit price does not reconcile either', () => {
+    const result = reinterpretSinglePriceLinesForCharges(printedLines, { ...context, amountDue: '$40.00' });
+    expect(result.lines).toEqual(printedLines);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('reads a quantity of 1 and a quantity above 1 alike', () => {
+    const one = { ...supin472062EsignRow, quantity: 1, unitCost: '$28.75' };
+    const result = reinterpretSinglePriceLinesForCharges([one], context);
+    expect(result.lines).toEqual([{ ...one, totalPrice: '$28.75' }]);
+  });
+
+  it('reads a unit price of $75.00 beside a $75.00 total as quantity x unit price when that is the amount due', () => {
+    const line = { description: 'Participant fees', quantity: 9, unitCost: '$75.00', totalPrice: '$75.00', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([line], { amountDue: '$675.00', freightCleared: false, taxCleared: false, summaryChargesPlaceable: true });
+    expect(result.lines).toEqual([{ ...line, totalPrice: '$675.00' }]);
+  });
+
+  it('reads each kind of line in one search and names both in the note', () => {
+    const unitPrice = { description: 'Participants', quantity: 3, unitCost: null, totalPrice: '$10.00', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([unitPrice, supin472062EsignRow], {
+      ...context,
+      amountDue: '$60.65',
+    });
+    expect(result.lines).toEqual([{ ...unitPrice, unitCost: '$10.00', totalPrice: '$30.00' }, supin472062CorrectedEsignRow]);
+    expect(result.note).toContain('prints quantity 3 and one price of $10.00');
+    expect(result.note).toContain('prints quantity 23 at $1.25 ($28.75) but a line total of $30.65');
+  });
+
+  it.each([
+    ['a discount marker', { hasDiscount: true }],
+    ['a printed credit total', { totalPrice: '($30.65)' }],
+    ['a freight description', { description: 'Shipping and Handling' }],
+    ['a tax description', { description: 'Sales Tax' }],
+    ['no quantity', { quantity: null }],
+    ['a zero quantity', { quantity: 0 }],
+    ['a zero unit price', { unitCost: '$0.00' }],
+    ['no line total', { totalPrice: null }],
+    ['a product that is not a whole-cent amount', { quantity: 2.5, unitCost: '$0.333' }],
+  ])('does not touch a line with %s', (_name, override) => {
+    const line = { ...supin472062EsignRow, ...override };
+    expect(reinterpretSinglePriceLinesForCharges([line], context).lines).toEqual([line]);
+  });
+
+  it('keeps a printed total that is within the rounding of a unit price printed to the cent', () => {
+    const widget = { description: 'Widget', quantity: 3, unitCost: '$33.33', totalPrice: '$100.00', hasDiscount: false };
+    const service = { description: 'Service', quantity: 1, unitCost: '$50.00', totalPrice: '$50.00', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([widget, service], { ...context, amountDue: '$149.99', tax: undefined });
+    expect(result.lines).toEqual([widget, service]);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('still reads a gap larger than the rounding of the unit price', () => {
+    const widget = { description: 'Widget', quantity: 3, unitCost: '$33.33', totalPrice: '$100.03', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([widget], { ...context, amountDue: '$99.99', tax: undefined });
+    expect(result.lines).toEqual([{ ...widget, totalPrice: '$99.99' }]);
+  });
+
+  it('keeps the single-price reading when too many other rows are eligible for the new reading', () => {
+    const participants = { description: 'Participants', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false };
+    const priced = Array.from({ length: 8 }, (_, index) => ({ description: `Session ${index + 1}`, quantity: 2, unitCost: '$10.00', totalPrice: '$50.00', hasDiscount: false }));
+    const result = reinterpretSinglePriceLinesForCharges([participants, ...priced], { ...context, amountDue: '$1,075.00', tax: undefined });
+    expect(result.lines).toEqual([{ ...participants, unitCost: '$75.00', totalPrice: '$675.00' }, ...priced]);
+    expect(result.note).toContain('prints quantity 9 and one price of $75.00');
+    expect(result.note).not.toContain('at $10.00');
+  });
+
+  it('leaves the line alone when a deposit, payment, or balance due is printed', () => {
+    const result = reinterpretSinglePriceLinesForCharges(printedLines, { ...context, settlementPrinted: true });
+    expect(result.lines).toEqual(printedLines);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('leaves ambiguous readings alone', () => {
+    const first = { ...supin472062EsignRow, description: 'Session A', quantity: 2, unitCost: '$10.00', totalPrice: '$99.00' };
+    const second = { ...first, description: 'Session B' };
+    const result = reinterpretSinglePriceLinesForCharges([first, second], { ...context, amountDue: '$60.00', tax: undefined });
+    expect(result.lines).toEqual([first, second]);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('still reads a lone unit price beside a quantity as a unit price', () => {
+    const line = { description: 'Participants', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false };
+    const result = reinterpretSinglePriceLinesForCharges([line], { amountDue: '$675.00', freightCleared: false, taxCleared: false, summaryChargesPlaceable: true });
+    expect(result.lines).toEqual([{ ...line, unitCost: '$75.00', totalPrice: '$675.00' }]);
+  });
+});
+
+describe('hasPrintedSettlement', () => {
+  const noSettlement = { extractedPartialPayment: null, extractedPriorPayments: null, emailBalanceDue: null };
+
+  it.each([
+    ['a partial payment', { extractedPartialPayment: { label: 'Deposit', percent: null, amount: '$10.00' } }],
+    ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$10.00' }] }],
+    ['an email balance due', { emailBalanceDue: { amount: '$10.00', phrase: 'remaining balance' } }],
+  ])('is true for %s', (_name, override) => {
+    expect(hasPrintedSettlement({ ...noSettlement, ...override })).toBe(true);
+  });
+
+  it('is false for an ordinary invoice', () => {
+    expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: [] })).toBe(false);
+    expect(hasPrintedSettlement(noSettlement)).toBe(false);
+    expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: undefined })).toBe(false);
   });
 });

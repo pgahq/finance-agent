@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
 jest.mock('@pga/lambda-env', () => ({
@@ -967,6 +968,65 @@ describe('create_invoice', () => {
       await processor({ data: [attachmentRequest('new-invoices/req-single-price-neither/invoice.pdf')] } as any);
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([participants]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+  });
+
+  describe('SUPIN-472062 line total read as the tax-inclusive amount due', () => {
+    const esign = supin472062EsignRow;
+    const built = {
+      lines: [{ lineOrder: 1, description: esign.description, quantity: 23, unitCost: 1.25, extendedAmount: 28.75 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    };
+    const enrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...supin472062Header,
+      extractedInvoiceLines: supin472062Rows,
+      ...overrides
+    });
+
+    it('sets the line total to quantity x unit price so the lines and tax match the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-total/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062CorrectedEsignRow]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines[0]).toMatchObject({ quantity: 23, unitCost: 1.25, extendedAmount: 28.75 });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Line price review: "eSign Non 8879" prints quantity 23 at $1.25 ($28.75) but a line total of $30.65.');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([expect.stringContaining('Line price review:')]);
+      expect(slackDetails.chargeCheck).toBeUndefined();
+    });
+
+    it('keeps the printed line total when a deposit or payment is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedPriorPayments: [{ label: 'Payments Received', amount: '$5.00' }]
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-payments/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062EsignRow]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+
+    it('keeps the amount mismatch when quantity x unit price does not reconcile either', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({ extractedAmountDue: '$40.00' }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-neither/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062EsignRow]);
       expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
     });
   });
