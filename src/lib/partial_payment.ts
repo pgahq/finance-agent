@@ -78,6 +78,11 @@ interface AmountDueGapInput {
   summaryCharges?: Array<{ amount: string | null }> | null;
   partialPayment?: unknown;
   priorPayments?: unknown[] | null;
+  /**
+   * Cents of unlined discounts and credits in the totals block (`summaryCreditCents`). Counted against the amount
+   * due only when the rows overshoot it and the credit brings them back to it or below.
+   */
+  creditCents?: number;
 }
 
 /**
@@ -92,7 +97,9 @@ export function amountDueGapCents(input: AmountDueGapInput): number | undefined 
   const rows = sumExtractedLineCents(input.lines);
   if (amountDue == null || rows == null) return undefined;
   const otherCents = (input.otherCharges ?? []).reduce((total, charge) => total + toCents(chargeAmount(charge.amount) ?? 0), 0);
-  return toCents(amountDue) - rows - toCents(chargeAmount(input.freight) ?? 0) - toCents(chargeAmount(input.tax) ?? 0) - otherCents;
+  const gap = toCents(amountDue) - rows - toCents(chargeAmount(input.freight) ?? 0) - toCents(chargeAmount(input.tax) ?? 0) - otherCents;
+  const credit = input.creditCents ?? 0;
+  return gap < 0 && credit > 0 && gap + credit >= 0 ? gap + credit : gap;
 }
 
 /**
@@ -103,23 +110,52 @@ export function amountDueGapCents(input: AmountDueGapInput): number | undefined 
 export function amountDueShortfallCents(input: AmountDueGapInput): number | undefined {
   const gap = amountDueGapCents(input);
   if (gap == null || gap <= 0) return undefined;
+  // A credit that was counted is the totals row that explains the overshoot, not a row that explains this gap.
+  if (input.creditCents && amountDueGapCents({ ...input, creditCents: 0 })! < 0) return gap;
   const summary = (input.summaryCharges ?? []).map(charge => toCents(chargeAmount(charge.amount) ?? 0)).filter(cents => cents !== 0);
   const explainedBySummary = new Set([...summary.map(Math.abs), summary.reduce((total, cents) => total + Math.abs(cents), 0), Math.abs(summary.reduce((total, cents) => total + cents, 0))]);
   return explainedBySummary.has(gap) ? undefined : gap;
 }
 
 /**
+ * Cents of printed freight that the line-table subtotal already contains, or undefined when it does not. The
+ * document's own arithmetic decides: a subtotal that, less any credits, plus tax and other charges equals the amount
+ * due has no freight added on top, so the freight is inside it (SUPIN-472322: $48,102.66 - $8,866.66 + $2,354.16
+ * = $41,590.16 with $2,000.00 freight inside the subtotal).
+ */
+export function subtotalFreightCents(input: {
+  subtotal: PrintedAmount | null | undefined;
+  amountDue?: string | null;
+  freight?: string | null;
+  tax?: string | null;
+  otherCharges?: Array<{ amount: string | null }> | null;
+  creditCents?: number;
+}): number | undefined {
+  const subtotal = parseCanonicalChargeAmount(input.subtotal?.amount);
+  const amountDue = chargeAmount(input.amountDue);
+  const freight = toCents(chargeAmount(input.freight) ?? 0);
+  if (subtotal == null || amountDue == null || freight <= 0) return undefined;
+  const other = (input.otherCharges ?? []).reduce((total, charge) => total + toCents(chargeAmount(charge.amount) ?? 0), 0);
+  const inside = toCents(subtotal) + toCents(chargeAmount(input.tax) ?? 0) + other;
+  const credits = new Set([0, input.creditCents ?? 0]);
+  const reaches = (total: number) => [...credits].some(credit => total - credit === toCents(amountDue));
+  return !reaches(inside + freight) && reaches(inside) ? freight : undefined;
+}
+
+/**
  * How far the extracted rows fall short of the line-table total the document prints, in cents. Undefined when the
- * document prints no readable total, a row has no total, or the rows do not fall short.
+ * document prints no readable total, a row has no total, or the rows do not fall short. `freightCents` is freight
+ * the printed total already contains (`subtotalFreightCents`), which is not a row.
  */
 export function lineSubtotalShortfallCents(
   lines: ExtractedInvoiceLine[],
-  subtotal: PrintedAmount | null | undefined
+  subtotal: PrintedAmount | null | undefined,
+  freightCents = 0
 ): number | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
-  const gap = toCents(printed) - summed;
+  const gap = toCents(printed) - freightCents - summed;
   return gap > 0 ? gap : undefined;
 }
 
@@ -137,7 +173,8 @@ function describeLines(lines: ExtractedInvoiceLine[]): string {
 export function lineSubtotalReviewNote(
   lines: ExtractedInvoiceLine[],
   subtotal: PrintedAmount | null | undefined,
-  dueGapCents?: number
+  dueGapCents?: number,
+  subtotalFreight = 0
 ): string | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
@@ -145,10 +182,14 @@ export function lineSubtotalReviewNote(
   const printedCents = toCents(printed);
   if (printedCents === summed) return undefined;
   const label = printable(subtotal?.label) || 'line total';
-  const gap = printedCents - summed;
-  const head = `The extracted lines total ${centsDollars(summed)}, but the document prints ${centsDollars(printedCents)} as "${label}".`;
+  const rowsCents = printedCents - subtotalFreight;
+  const gap = rowsCents - summed;
+  const printedText = subtotalFreight > 0
+    ? `${centsDollars(printedCents)} as "${label}", ${centsDollars(rowsCents)} without the ${centsDollars(subtotalFreight)} freight it includes`
+    : `${centsDollars(printedCents)} as "${label}"`;
+  const head = `The extracted lines total ${centsDollars(summed)}, but the document prints ${printedText}.`;
   // Rows, freight, and tax that already equal the amount due mean the printed total covers only part of the table.
-  if (dueGapCents === 0) return undefined;
+  if (dueGapCents === 0 || gap === 0) return undefined;
   if (gap < 0) return `${head} Check for a row that was read twice or a charge that is not a line.`;
   if (dueGapCents != null && dueGapCents > 0 && dueGapCents !== gap) {
     return `${head} Lines, freight, and tax are ${centsDollars(dueGapCents)} short of the amount due, so charges that the document prints (for example delivery, pickup, or other rows) were probably not read.`;

@@ -8,6 +8,7 @@ import type { InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js'
 import type { PurchaseOrderEnrichmentContext } from '../lib/purchase_order.js';
 import type { PresignedAttachment } from '../lib/types.js';
 import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
+import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 
 jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
@@ -649,6 +650,71 @@ describe('invoice OCR pass', () => {
         await extractInvoiceDocuments([pdf]);
 
         expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('freight inside the printed subtotal and an unlined discount (SUPIN-472322)', () => {
+      const withCells = (rows: typeof supin472322Rows) => rows.map(row => ({ ...row, descriptionCells: [] as string[] }));
+      const responseFor = (rows: typeof supin472322Rows, overrides: Partial<InvoiceOcrResponse> = {}): InvoiceOcrResponse => ({
+        ...ocrResponse,
+        extractedAmountDue: supin472322Header.extractedAmountDue,
+        extractedFreightAmount: supin472322Header.extractedFreightAmount,
+        extractedFreightLabel: 'Freight',
+        extractedTaxAmount: supin472322Header.extractedTaxAmount,
+        extractedTaxLabel: 'Tax',
+        extractedOtherCharges: [],
+        extractedSummaryCharges: supin472322Header.extractedSummaryCharges,
+        extractedLineSubtotal: supin472322Header.extractedLineSubtotal,
+        extractedInvoiceLines: withCells(rows),
+        ...overrides,
+      });
+      const retryLog = () => jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug;
+
+      it('names the $1,388.00 the first read missed, not $3,388.00, and accepts the second read that adds it', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
+          .mockResolvedValueOnce(responseFor(supin472322Rows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+        const retryText = mockGetAiResponse.mock.calls[1][0].messages[0].content[0].text;
+        expect(retryText).toContain('A first read returned 59 rows totaling $44,714.66');
+        expect(retryText).toContain('which includes $2,000.00 of freight');
+        expect(retryText).toContain('after the printed discount, those rows are $1,388.00 short of the amount due $41,590.16');
+        expect(result?.extractedInvoiceLines).toHaveLength(61);
+        expect(result?.extractedRowsAddedOnSecondRead).toEqual(supin472322MissedRows.map(row => ({ description: row.description, totalPrice: row.totalPrice })));
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', { outcome: 'accepted', firstRows: 59, durationMs: expect.any(Number) });
+      });
+
+      it('keeps the first read when the added rows do not total the $1,388.00', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
+          .mockResolvedValueOnce(responseFor([...supin472322ProductionRows, supin472322MissedRows[0]]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(59);
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+      });
+
+      it('does not read again once the rows and discount reconcile', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseFor(supin472322Rows));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not count a charge-style totals row as a credit', async () => {
+        mockGetAiResponse.mockResolvedValueOnce(responseFor(
+          supin472322ProductionRows,
+          { extractedSummaryCharges: [{ label: 'Service Fee', amount: '8866.66' }], extractedLineSubtotal: { label: '', amount: '' } }
+        ));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       });
     });
 

@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin472322Header, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
@@ -2359,6 +2360,64 @@ describe('create_invoice', () => {
       expect(slackDetails).not.toHaveProperty('chargeCheck');
       expect(slackDetails).not.toHaveProperty('amountMismatch');
       expect(slackDetails).not.toHaveProperty('lineReview');
+    });
+  });
+
+  describe('freight inside the printed subtotal and an unlined discount (SUPIN-472322)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')) || undefined,
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')) || 0,
+      })),
+      appliedFallbacks,
+    });
+    const run = async (rows: any[], overrides: Record<string, unknown> = {}) => {
+      const mocks = freshRequire();
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: rows,
+        ...overrides,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('adds the unsigned $8,866.66 discount as a negative line once the second read recovers the rows', async () => {
+      const { workday, slack } = await run(supin472322Rows, {
+        extractedRowsAddedOnSecondRead: [
+          { description: 'Row the first read missed (A)', totalPrice: '1000.00' },
+          { description: 'Row the first read missed (B)', totalPrice: '388.00' },
+        ],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const amounts = submitArgs.finalLines.map((line: any) => line.extendedAmount);
+      expect(amounts).toHaveLength(62);
+      expect(amounts[amounts.length - 1]).toBe(-8866.66);
+      const lineTotal = amounts.reduce((total: number, amount: number) => total + amount, 0);
+      expect(Math.round((lineTotal + 2000 + 2354.16) * 100) / 100).toBe(41590.16);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview.join(' ')).not.toContain('3,388');
+      expect(slackDetails.lineReview.join(' ')).not.toContain('2,000.00 difference');
+    });
+
+    it('says $1,388.00 was probably not read, not $3,388.00, when the rows are still missing', async () => {
+      const { workday, slack } = await run(supin472322ProductionRows);
+
+      const review = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.'
+        + ' The $1,388.00 difference may be a row that was not read.';
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
+      expect(submitArgs.buildNotes([])).not.toContain('3,388');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
+      expect(submitArgs.finalLines.some((line: any) => line.extendedAmount < 0)).toBe(false);
     });
   });
 
