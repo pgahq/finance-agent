@@ -19,11 +19,109 @@ import {
   type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from './invoice_lines.js';
+import { uniqueServiceLineMatches } from './po_service_lines.js';
+import type { PurchaseOrderLine } from './workday.js';
 
 /** A printed tax row besides the main tax, as OCR read it. Only rows whose label says tax are applied. */
 export interface PrintedCharge {
   label: string;
   amount: string;
+}
+
+export interface PlacedPoServiceCharges {
+  lines: ExtractedInvoiceLine[];
+  /** The printed other charges that were not placed as lines. */
+  otherCharges: PrintedCharge[] | null | undefined;
+  /** Header freight, cleared when the placed rows are the freight it summed. */
+  freightAmount: string | null | undefined;
+  freightLabel: string | null | undefined;
+  /** Rows created from printed other charges, so row counts taken before placement can be corrected. */
+  addedLines: number;
+  /** Rows and charges now tied to a PO service line. */
+  placed: Array<{ description: string; purchaseOrderLineId: string }>;
+}
+
+/**
+ * A priced row or printed other charge whose description names exactly one open PO service line (Delivery Charge,
+ * Pick up Charge, Property Tax Surcharge) is billed on that line. Pinned rows stay invoice lines instead of being
+ * folded into header freight or tax, and a printed other charge that names such a line becomes a row on it.
+ * Anything that fits no line or several lines is left for the usual freight and tax handling.
+ */
+export function placeChargesOnPoServiceLines(input: {
+  lines: ExtractedInvoiceLine[];
+  otherCharges?: PrintedCharge[] | null;
+  freightAmount?: string | null;
+  freightLabel?: string | null;
+  taxAmount?: string | null;
+  poLines?: PurchaseOrderLine[];
+}): PlacedPoServiceCharges {
+  const unchanged: PlacedPoServiceCharges = {
+    lines: input.lines,
+    otherCharges: input.otherCharges,
+    freightAmount: input.freightAmount,
+    freightLabel: input.freightLabel,
+    addedLines: 0,
+    placed: [],
+  };
+  if (!input.poLines?.length) return unchanged;
+
+  const taxCents = toCents(chargeAmount(input.taxAmount) ?? 0);
+  const charges = (input.otherCharges ?? []).map(charge => {
+    const amount = parseCanonicalChargeAmount(charge.amount);
+    return { charge, cents: amount != null && amount > 0 ? toCents(amount) : undefined };
+  });
+  const rowAmounts = input.lines.map(line => signedChargeLineAmount(line));
+  // Credits and rows with no amount are never placed, and a charge equal to the header tax restates it.
+  const candidates = [
+    ...input.lines.map((line, index) => ((rowAmounts[index] ?? 0) > 0 ? line.description : undefined)),
+    ...charges.map(({ charge, cents }) => (cents != null && cents !== taxCents ? charge.label : undefined)),
+  ];
+  const matches = uniqueServiceLineMatches(candidates, input.poLines);
+  if (matches.size === 0) return unchanged;
+
+  const placed: PlacedPoServiceCharges['placed'] = [];
+  const lines = input.lines.map((line, index) => {
+    const purchaseOrderLineId = matches.get(index);
+    if (!purchaseOrderLineId) return line;
+    placed.push({ description: line.description, purchaseOrderLineId });
+    return { ...line, pinnedPurchaseOrderLineId: purchaseOrderLineId };
+  });
+
+  const addedLines: ExtractedInvoiceLine[] = [];
+  const remainingCharges: PrintedCharge[] = [];
+  charges.forEach(({ charge }, offset) => {
+    const purchaseOrderLineId = matches.get(input.lines.length + offset);
+    if (!purchaseOrderLineId) {
+      remainingCharges.push(charge);
+      return;
+    }
+    placed.push({ description: charge.label, purchaseOrderLineId });
+    addedLines.push({
+      description: charge.label,
+      quantity: 1,
+      unitCost: charge.amount.replace(/^\$/, ''),
+      totalPrice: charge.amount,
+      hasDiscount: null,
+      pinnedPurchaseOrderLineId: purchaseOrderLineId,
+    });
+  });
+
+  // Header freight that equals the freight-like rows now placed is those same rows read twice.
+  const placedFreightCents = input.lines.reduce((total, line, index) => {
+    const pinned = matches.has(index) && isFreightOrHandlingLine(line.description);
+    return pinned ? total + toCents(rowAmounts[index] ?? 0) : total;
+  }, 0);
+  const headerFreight = chargeAmount(input.freightAmount);
+  const freightRepeatsPlacedRows = placedFreightCents > 0 && headerFreight != null && toCents(headerFreight) === placedFreightCents;
+
+  return {
+    lines: [...lines, ...addedLines],
+    otherCharges: input.otherCharges == null ? input.otherCharges : remainingCharges,
+    freightAmount: freightRepeatsPlacedRows ? null : input.freightAmount,
+    freightLabel: freightRepeatsPlacedRows ? null : input.freightLabel,
+    addedLines: addedLines.length,
+    placed,
+  };
 }
 
 /**

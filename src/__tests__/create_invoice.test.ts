@@ -5,6 +5,16 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import {
+  DELIVERY_LINE,
+  PICKUP_LINE,
+  SURCHARGE_LINE,
+  supin472110Header,
+  supin472110PoLines,
+  supin472110ProductionHeader,
+  supin472110ProductionRows,
+  supin472110Rows,
+} from './fixtures/supin_472110.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
 jest.mock('@pga/lambda-env', () => ({
@@ -2425,6 +2435,80 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Deposit invoice');
       expect(notes).not.toContain('Line subtotal review');
       expect(mocks.slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('deposit');
+    });
+  });
+
+  describe('PO service lines (SUPIN-472110)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const parsedPo = {
+      documentNumber: 'PO-414149',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      lines: supin472110PoLines,
+    };
+    const enrichment = (header: Record<string, unknown>, rows: any[]) => ({
+      ...baseEnrichmentResult,
+      ...header,
+      extractedInvoiceLines: rows,
+    });
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost ?? line.totalPrice).replace(/[$,]/g, '')),
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        ...(line.pinnedPurchaseOrderLineId ? { purchaseOrderLineId: line.pinnedPurchaseOrderLineId, pinnedPurchaseOrderLineId: line.pinnedPurchaseOrderLineId } : {}),
+      })),
+      appliedFallbacks,
+    });
+    const run = async (header: Record<string, unknown>, rows: any[]) => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(parsedPo);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment(header, rows));
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-service-lines/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('bills delivery, pickup, and the surcharge on their PO lines with no header freight and untouched header tax', async () => {
+      const { workday, invoiceLines, slack } = await run(supin472110Header, supin472110Rows);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      expect(candidates).toHaveLength(11);
+      expect(Object.fromEntries(candidates.filter((line: any) => line.pinnedPurchaseOrderLineId).map((line: any) => [line.description, line.pinnedPurchaseOrderLineId]))).toMatchObject({
+        'DELIVERY CHARGE': DELIVERY_LINE,
+        'PICKUP CHARGE': PICKUP_LINE,
+        'PROPERTY TAX SURCHARGE [DRSURAZ/MCI]': SURCHARGE_LINE,
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(11);
+      expect(submitArgs.finalLines.find((line: any) => line.description === 'DELIVERY CHARGE')).toMatchObject({ purchaseOrderLineId: DELIVERY_LINE, extendedAmount: 228.16 });
+      expect(submitArgs.extractedFreightAmount).toBeUndefined();
+      expect(submitArgs.extractedTaxAmount).toBe('$156.95');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line subtotal review');
+      expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('chargeCheck');
+    });
+
+    it('places the surcharge OCR read as a tax row on its PO line and keeps freight and tax untouched', async () => {
+      const { workday, invoiceLines } = await run(supin472110ProductionHeader, supin472110ProductionRows);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      expect(candidates).toHaveLength(9);
+      expect(candidates[candidates.length - 1]).toMatchObject({
+        description: 'PROPERTY TAX SURCHARGE [DRSURAZ/MCI]',
+        totalPrice: '$20.22',
+        pinnedPurchaseOrderLineId: SURCHARGE_LINE,
+      });
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('$156.95');
+      expect(submitArgs.extractedFreightAmount).toBe('$456.32');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).not.toContain('Added "PROPERTY TAX SURCHARGE');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('may be a row that was not read');
     });
   });
 

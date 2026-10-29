@@ -304,6 +304,8 @@ Read the invoice attachment and extract the freight amount. It may be labeled as
 
 If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
 
+Exception: when the document prints two or more separate priced rows for delivery, pickup, transport, or return (for example \`DELIVERY CHARGE $228.16\` and \`PICKUP CHARGE $228.16\` in the line table) and no single freight total, do not add them together. Return each as its own row in \`extractedInvoiceLines\` with its printed amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. A single freight, shipping, or handling amount, whether a summary field or one row, still goes in the freight fields.
+
 ---
 
 ## Part 5.5: Tax Amount
@@ -320,6 +322,7 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
 
+- A row in the line table that prints a quantity, a unit price, and its own extended amount (for example \`1 PROPERTY TAX SURCHARGE 20.220 EACH 20.22\`) is a priced line item, not an additional tax row, even when its label contains the word tax. Return it in \`extractedInvoiceLines\`. Rows that print only a label and an amount (\`Sales Tax\`, \`5% EnvChg Tax\`) are tax rows.
 - Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
 - Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
 - Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
@@ -410,7 +413,7 @@ Extract the individual line items from the invoice document:
 Extract every printed row, in document order. Two rows with the same description, quantity, and price are two separate charges when they are printed under different dates, events, or section headings, or in different places; return both. Only skip a row that is clearly the same printed row repeated, such as a page header or a table carried over onto the next page.
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
-Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
+Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead. The exception is the separate delivery, pickup, transport, or return rows described in Part 5, which stay as rows.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

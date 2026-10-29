@@ -60,19 +60,73 @@ export function sumExtractedLineCents(lines: ExtractedInvoiceLine[]): number | u
   return total;
 }
 
+/** Header amounts printed outside the line table that a document's line-table total may still include. */
+export interface SubtotalCharges {
+  freight?: string | null;
+  otherCharges?: Array<{ label: string; amount: string }> | null;
+}
+
+const MAX_SUBTOTAL_ITEMS = 20;
+
+/**
+ * True when exactly one combination of the rows, the header freight, and the printed other charges adds up to the
+ * printed line-table total. A document can print freight or a surcharge inside its subtotal and leave fuel or
+ * another section out of it, so the rows alone need not match. Rows that repeat the same description and amount
+ * move together, so a row read twice never looks like a section left out.
+ */
+export function subtotalExplainedByCharges(
+  lines: ExtractedInvoiceLine[],
+  subtotal: PrintedAmount | null | undefined,
+  charges?: SubtotalCharges
+): boolean {
+  const printed = parseCanonicalChargeAmount(subtotal?.amount);
+  if (printed == null) return false;
+  const items = new Map<string, number>();
+  for (const line of lines) {
+    const amount = line.totalPrice ? parseExtractedLineAmount(line.totalPrice) : undefined;
+    if (amount == null) return false;
+    const key = `${normalizeLabel(line.description) ?? ''}|${toCents(amount)}`;
+    items.set(key, (items.get(key) ?? 0) + toCents(amount));
+  }
+  const freight = parseCanonicalChargeAmount(charges?.freight);
+  const extras = [
+    ...(freight != null && freight > 0 ? [toCents(freight)] : []),
+    ...(charges?.otherCharges ?? []).flatMap(charge => {
+      const amount = parseCanonicalChargeAmount(charge.amount);
+      return amount != null && amount > 0 ? [toCents(amount)] : [];
+    }),
+  ];
+  const values = [...items.values(), ...extras].filter(value => value !== 0);
+  if (values.length === 0 || values.length > MAX_SUBTOTAL_ITEMS) return false;
+  const target = toCents(printed);
+  let solutions = 0;
+  const total = 1 << values.length;
+  for (let mask = 1; mask < total && solutions < 2; mask++) {
+    let sum = 0;
+    for (let bit = 0; bit < values.length; bit++) {
+      if (mask & (1 << bit)) sum += values[bit];
+    }
+    if (sum === target) solutions++;
+  }
+  return solutions === 1;
+}
+
 /**
  * How far the extracted rows fall short of the line-table total the document prints, in cents. Undefined when the
- * document prints no readable total, a row has no total, or the rows do not fall short.
+ * document prints no readable total, a row has no total, the rows do not fall short, or the printed charges
+ * account for the difference.
  */
 export function lineSubtotalShortfallCents(
   lines: ExtractedInvoiceLine[],
-  subtotal: PrintedAmount | null | undefined
+  subtotal: PrintedAmount | null | undefined,
+  charges?: SubtotalCharges
 ): number | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
   const gap = toCents(printed) - summed;
-  return gap > 0 ? gap : undefined;
+  if (gap <= 0 || subtotalExplainedByCharges(lines, subtotal, charges)) return undefined;
+  return gap;
 }
 
 function describeLines(lines: ExtractedInvoiceLine[]): string {
@@ -82,13 +136,14 @@ function describeLines(lines: ExtractedInvoiceLine[]): string {
 /** A review sentence when the extracted rows do not add up to the printed line-table total. */
 export function lineSubtotalReviewNote(
   lines: ExtractedInvoiceLine[],
-  subtotal: PrintedAmount | null | undefined
+  subtotal: PrintedAmount | null | undefined,
+  charges?: SubtotalCharges
 ): string | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
   const printedCents = toCents(printed);
-  if (printedCents === summed) return undefined;
+  if (printedCents === summed || subtotalExplainedByCharges(lines, subtotal, charges)) return undefined;
   const label = printable(subtotal?.label) || 'line total';
   const gap = printedCents - summed;
   const head = `The extracted lines total ${centsDollars(summed)}, but the document prints ${centsDollars(printedCents)} as "${label}".`;
