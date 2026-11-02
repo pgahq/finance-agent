@@ -594,6 +594,15 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment(matchingResult, undefined)).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
     });
 
+    it('keeps several separate delivery and pickup rows as lines and a lone freight charge in the freight fields (SUPIN-472108)', () => {
+      expect(invoiceOcrPrompt).toContain('return each of those rows in `extractedInvoiceLines`');
+      expect(invoiceOcrPrompt).toContain('`PICKUP CHARGE 1 EACH 208.660 208.66`');
+      expect(invoiceOcrPrompt).toContain('leave `extractedFreightAmount` and `extractedFreightLabel` empty');
+      expect(invoiceOcrPrompt).toContain('Do not merge the rows into one line or one freight amount');
+      expect(invoiceOcrPrompt).toContain('Exclude a single freight, shipping, handling, or delivery charge from the lines');
+      expect(invoiceOcrPrompt).toContain('a separately printed "Fuel" row');
+    });
+
     it('asks for every printed row, the section label, the printed line total, and the deposit with the SUPIN-470584 example', () => {
       expect(invoiceOcrPrompt).toContain('Extract every printed row, in document order.');
       expect(invoiceOcrPrompt).toContain('printed under different dates, events, or section headings');
