@@ -117,8 +117,6 @@ export function amountDueGapCents(input: AmountDueGapInput): number | undefined 
 export function amountDueShortfallCents(input: AmountDueGapInput): number | undefined {
   const gap = amountDueGapCents(input);
   if (gap == null || gap <= 0) return undefined;
-  // A credit that was counted is the totals row that explains the overshoot, not a row that explains this gap.
-  if (input.creditCents && amountDueGapCents({ ...input, creditCents: 0 })! < 0) return gap;
   const summary = (input.summaryCharges ?? []).map(charge => toCents(chargeAmount(charge.amount) ?? 0)).filter(cents => cents !== 0);
   const explainedBySummary = new Set([...summary.map(Math.abs), summary.reduce((total, cents) => total + Math.abs(cents), 0), Math.abs(summary.reduce((total, cents) => total + cents, 0))]);
   return explainedBySummary.has(gap) ? undefined : gap;

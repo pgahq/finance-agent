@@ -204,6 +204,20 @@ describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', (
     expect(amountDueGapCents({ ...base, lines: supin472322Rows })).toBe(0);
   });
 
+  it('leaves a totals-block fee alongside an unsigned discount to placeSummaryCharges instead of asking for a second read', () => {
+    const summaryCharges = [{ label: 'Discount', amount: '200.00' }, { label: 'Service Fee', amount: '50.00' }];
+    const input = {
+      lines: [{ description: 'Rental', totalPrice: '1,000.00' }],
+      amountDue: '$850.00',
+      summaryCharges,
+      creditCents: summaryCreditCents(summaryCharges, [{ description: 'Rental', totalPrice: '1,000.00' }]),
+    };
+    expect(input.creditCents).toBe(20000);
+    expect(amountDueGapCents(input)).toBe(5000);
+    expect(amountDueShortfallCents(input)).toBeUndefined();
+    expect(reviewAmountDueGapCents(input)).toBe(0);
+  });
+
   it('ignores the credit when the rows do not overshoot', () => {
     expect(amountDueGapCents({ ...base, lines: supin472108Rows, amountDue: '$4,045.99', freight: null, tax: '$298.11' })).toBe(0);
     expect(amountDueGapCents({ ...base, lines: supin472322Rows.slice(0, 20), creditCents: 100 })).toBeGreaterThan(0);
