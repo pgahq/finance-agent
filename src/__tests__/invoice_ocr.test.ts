@@ -585,7 +585,7 @@ describe('invoice OCR pass', () => {
 
         expect(result?.extractedInvoiceLines).toHaveLength(5);
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1 }));
       });
 
       it('keeps the first read when the second read drops a first-read row', async () => {
