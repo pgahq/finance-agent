@@ -255,6 +255,9 @@ describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', (
     expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'skipped')).toBe(
       `${head} The $1,388.00 difference may be a row that was not read. A second read was skipped because the first read was slow.`
     );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'inconclusive')).toBe(
+      `${head} The $1,388.00 difference may be a row that was not read. A second read changed or added rows but did not make up the difference, so it was not used.`
+    );
     expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'failed')).toBe(
       `${head} The $1,388.00 difference may be a row that was not read.`
     );
@@ -267,8 +270,8 @@ describe('poTotalReviewNote (SUPIN-472322)', () => {
 
   it('names six PO lines that total the amount due beside 59 submitted rows', () => {
     expect(poTotalReviewNote(supin472322PoLines as any[], due, 59)).toBe(
-      "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than its own 59 rows."
-      + ' The 59 lines were submitted as extracted; AP may need to book one line per PO line.'
+      "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than the 59 rows read from the PDF."
+      + ' The invoice lines were not changed to match the PO; AP may need to book one line per PO line.'
     );
   });
 

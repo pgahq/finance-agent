@@ -173,8 +173,11 @@ export function lineSubtotalShortfallCents(
   return gap > 0 ? gap : undefined;
 }
 
-/** What a missing-row second read did when it did not supply rows: `rejected` found no row that closed the gap. */
-export type SecondReadOutcome = 'rejected' | 'failed' | 'skipped';
+/**
+ * What a missing-row second read did when its rows were not used: `rejected` returned the same rows and nothing new,
+ * `inconclusive` added or changed rows without closing the gap, `failed` errored, and `skipped` never ran.
+ */
+export type SecondReadOutcome = 'rejected' | 'inconclusive' | 'failed' | 'skipped';
 
 function describeLines(lines: ExtractedInvoiceLine[]): string {
   return lines.map(line => `"${printable(line.description)}"`).join(', ');
@@ -222,8 +225,12 @@ export function lineSubtotalReviewNote(
   if (secondRead === 'rejected') {
     return `${head} A second read of the document found no row that makes up the ${centsDollars(gap)}, so the document's own totals may not agree (a section or summary total that is higher than its rows). Check the PDF; if no row carries the ${centsDollars(gap)}, it is not missing from the lines.`;
   }
-  const skipped = secondRead === 'skipped' ? ' A second read was skipped because the first read was slow.' : '';
-  return `${head} The ${centsDollars(gap)} difference may be a row that was not read.${skipped}`;
+  const after = secondRead === 'skipped'
+    ? ' A second read was skipped because the first read was slow.'
+    : secondRead === 'inconclusive'
+      ? ' A second read changed or added rows but did not make up the difference, so it was not used.'
+      : '';
+  return `${head} The ${centsDollars(gap)} difference may be a row that was not read.${after}`;
 }
 
 /**
@@ -235,10 +242,10 @@ export function lineSubtotalReviewNote(
 export function poTotalReviewNote(
   poLines: PurchaseOrderLine[] | undefined,
   amountDue: string | null | undefined,
-  submittedLineCount: number
+  rowCount: number
 ): string | undefined {
   const due = chargeAmount(amountDue);
-  if (!poLines?.length || due == null || poLines.length === submittedLineCount) return undefined;
+  if (!poLines?.length || due == null || poLines.length === rowCount) return undefined;
   let total = 0;
   for (const line of poLines) {
     const cents = poLineAmountCents(line);
@@ -247,7 +254,7 @@ export function poTotalReviewNote(
   }
   if (total !== toCents(due)) return undefined;
   const lineText = poLines.length === 1 ? '1 line' : `${poLines.length} lines`;
-  return `The PO's ${lineText} total ${centsDollars(total)}, which is the amount due, so the supplier may have billed what the PO lists rather than its own ${submittedLineCount} rows. The ${submittedLineCount} lines were submitted as extracted; AP may need to book one line per PO line.`;
+  return `The PO's ${lineText} total ${centsDollars(total)}, which is the amount due, so the supplier may have billed what the PO lists rather than the ${rowCount} rows read from the PDF. The invoice lines were not changed to match the PO; AP may need to book one line per PO line.`;
 }
 
 export interface PartialPaymentPlan {

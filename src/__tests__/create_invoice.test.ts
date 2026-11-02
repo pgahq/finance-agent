@@ -2509,7 +2509,7 @@ describe('create_invoice', () => {
     });
 
     const printedSubtotalReview = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.';
-    const poTotalSentence = "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than its own 59 rows.";
+    const poTotalSentence = "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than the 59 rows read from the PDF.";
 
     it('submits the 59 printed rows with freight and tax in the header when no row carries the $1,388.00', async () => {
       const { workday } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
@@ -2532,6 +2532,14 @@ describe('create_invoice', () => {
       expect(submitArgs.buildNotes([])).not.toContain('may be a row that was not read');
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
+    });
+
+    it('keeps the "may not have been read" wording when a second read changed rows but did not close the gap', async () => {
+      const { workday } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'inconclusive' });
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(`${printedSubtotalReview} The $1,388.00 difference may be a row that was not read. A second read changed or added rows but did not make up the difference, so it was not used.`);
+      expect(notes).not.toContain('found no row');
     });
 
     it('still says a row may not have been read when no second read ran', async () => {
@@ -2561,7 +2569,7 @@ describe('create_invoice', () => {
       const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
       const notes = submitArgs.buildNotes([]);
       expect(notes).toContain(poTotalSentence);
-      expect(notes).toContain('The 59 lines were submitted as extracted; AP may need to book one line per PO line.');
+      expect(notes).toContain('The invoice lines were not changed to match the PO; AP may need to book one line per PO line.');
       expect(submitArgs.finalLines).toHaveLength(59);
     });
 
