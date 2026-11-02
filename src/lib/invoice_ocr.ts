@@ -5,7 +5,8 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type Inv
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
-import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, sumExtractedLineCents } from './partial_payment.js';
+import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
+import { summaryCreditCents } from './header_charges.js';
 import { formatChargeDollars } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
@@ -182,7 +183,7 @@ interface MissingRowsPlan {
   amountDueShortfall?: number;
   /** Set when the rows fall short of the printed line total, so a second read that reaches it exactly is accepted. */
   subtotalShortfall?: number;
-  /** The rows' total a second read must reach to close the subtotal shortfall: the printed line total. */
+  /** The rows' total a second read must reach to close the subtotal shortfall: the printed total less any freight inside it. */
   subtotalRowsCents?: number;
   /** Which checks fired, for the retry log. */
   checks: Array<'amountDue' | 'subtotal'>;
@@ -199,6 +200,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     tax: result.extractedTaxAmount,
     otherCharges: result.extractedOtherCharges,
     summaryCharges: result.extractedSummaryCharges,
+    creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
     partialPayment: result.extractedPartialPayment,
     priorPayments: result.extractedPriorPayments,
   };
@@ -206,20 +208,30 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
   // printed subtotal covers (an agreement subtotal can leave a fuel row out).
   if (amountDueGapCents(gapInput) === 0) return undefined;
   const amountDueShortfall = amountDueShortfallCents(gapInput);
+  const discountCounted = Boolean(gapInput.creditCents) && (amountDueGapCents({ ...gapInput, creditCents: 0 }) ?? 0) < 0;
+  // A subtotal that already contains the freight is compared with the rows without it.
+  const subtotalFreight = subtotalFreightCents({
+    subtotal: result.extractedLineSubtotal,
+    amountDue: result.extractedAmountDue,
+    freight: result.extractedFreightAmount,
+    tax: result.extractedTaxAmount,
+    otherCharges: result.extractedOtherCharges,
+    creditCents: gapInput.creditCents,
+  }) ?? 0;
   // A row that prints a net-of-discount total never reaches a subtotal printed before discounts.
   const subtotalShortfall = lines.some(line => line.hasDiscount === true)
     ? undefined
-    : lineSubtotalShortfallCents(lines, result.extractedLineSubtotal);
+    : lineSubtotalShortfallCents(lines, result.extractedLineSubtotal, subtotalFreight);
   if (amountDueShortfall === undefined && subtotalShortfall === undefined) return undefined;
 
   const parts = [`A first read returned ${lines.length} rows totaling ${formatChargeDollars(summed / 100)}`];
   if (subtotalShortfall !== undefined && result.extractedLineSubtotal) {
-    parts[0] += `, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}".`;
+    parts[0] += `, but the document prints ${result.extractedLineSubtotal.amount} as "${result.extractedLineSubtotal.label}"${subtotalFreight > 0 ? `, which includes ${formatChargeDollars(subtotalFreight / 100)} of freight` : ''}.`;
   } else {
     parts[0] += '.';
   }
   if (amountDueShortfall !== undefined) {
-    parts.push(`With the printed freight and tax, those rows are ${formatChargeDollars(amountDueShortfall / 100)} short of the amount due ${result.extractedAmountDue}, so printed charges are missing. A section subtotal may cover only some of the rows.`);
+    parts.push(`With the printed freight and tax${discountCounted ? ' and after the printed discount' : ''}, those rows are ${formatChargeDollars(amountDueShortfall / 100)} short of the amount due ${result.extractedAmountDue}, so printed charges are missing. A section subtotal may cover only some of the rows.`);
   }
   parts.push('Read every table and section again row by row (rental or equipment items, sales or miscellaneous items, delivery, pickup, fuel, and other charge rows) and return every printed row, including a row that is identical to another row but printed under a different date, event, or section heading.');
   return { instruction: parts.join(' '), amountDueShortfall, subtotalShortfall, subtotalRowsCents: subtotalShortfall === undefined ? undefined : subtotalShortfall + summed,

@@ -295,6 +295,75 @@ function notAddedNotes(rows: {
   return notes;
 }
 
+interface SummaryCandidates {
+  candidates: SummaryCandidate[];
+  withoutAmount: string[];
+  settlements: SettlementRow[];
+}
+
+function collectSummaryCandidates(
+  charges: PrintedSummaryCharge[],
+  lines: ExtractedInvoiceLine[],
+  lineCentsList: number[],
+  freightCents: number,
+  taxCents: number
+): SummaryCandidates {
+  const discountInLines = lineDiscountCents(lines);
+  const lineEntries = lines.map((line, index) => ({
+    tokens: new Set(labelTokens(line.description ?? '')),
+    cents: lineCentsList[index] ?? 0,
+  }));
+  const seen = new Set<string>();
+  const candidates: SummaryCandidate[] = [];
+  const withoutAmount: string[] = [];
+  const settlements: SettlementRow[] = [];
+  for (const charge of charges) {
+    const tokens = labelTokens(charge.label);
+    if (tokens.length === 0 || isSummaryLabel(tokens)) continue;
+    if (labelMatchesFreight(charge.label) || isShippingAbbreviation(tokens) || isTaxLikeChargeLabel(charge.label)) continue;
+    const parsed = parseSummaryAmount(charge.amount);
+    if (isSettlementLabel(tokens)) {
+      if (parsed?.cents !== 0) settlements.push({ label: charge.label, cents: parsed?.cents, printedCredit: Boolean(parsed?.printedCredit) });
+      continue;
+    }
+    if (!parsed) {
+      withoutAmount.push(charge.label);
+      continue;
+    }
+    if (parsed.cents === 0) continue;
+    const discount = isDiscountLabel(tokens);
+    // `Less Early Pay $3.00` says the row reduces the bill, the same as a printed minus sign.
+    const printedCredit = parsed.printedCredit || tokens[0] === 'less';
+    const sign: SummarySign = printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
+    // A charge row for the same amount as header freight or tax is that charge under a label the matchers miss.
+    if (sign === 'charge' && (parsed.cents === freightCents || parsed.cents === taxCents)) continue;
+    const significant = significantTokens(tokens);
+    const alreadyLine = lineEntries.some(entry => Math.abs(entry.cents) === parsed.cents
+      && ((sign !== 'charge' && entry.cents < 0) || significant.some(token => entry.tokens.has(token))));
+    if (alreadyLine) continue;
+    if (sign !== 'charge' && discountInLines === parsed.cents) continue;
+    const key = `${tokens.join(' ')}|${parsed.cents}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ label: charge.label, cents: parsed.cents, sign });
+  }
+  return { candidates, withoutAmount, settlements };
+}
+
+/**
+ * Cents of totals-block rows that reduce the bill and are not on a line yet: a printed minus sign or parentheses,
+ * a leading `Less`, or a discount-style label printed without a sign (a credit only when the amounts then add up,
+ * which the caller checks).
+ */
+export function summaryCreditCents(
+  charges: PrintedSummaryCharge[] | null | undefined,
+  lines: ExtractedInvoiceLine[]
+): number {
+  if (!charges?.length) return 0;
+  const { candidates } = collectSummaryCandidates(charges, lines, lines.map(line => toCents(signedChargeLineAmount(line) ?? 0)), 0, 0);
+  return candidates.filter(candidate => candidate.sign !== 'charge').reduce((total, candidate) => total + candidate.cents, 0);
+}
+
 /**
  * Adds priced totals-block rows (a decoration fee, a merchandise discount) as invoice lines, but only when
  * lines + freight + tax miss the amount due by exactly those rows. An unsigned discount is a credit only when
@@ -326,45 +395,13 @@ export function placeSummaryCharges(input: {
   const gapCents = amountDueCents - submittedCents;
   if (gapCents === 0) return none;
 
-  const discountInLines = lineDiscountCents(input.lines);
-  const lineEntries = input.lines.map((line, index) => ({
-    tokens: new Set(labelTokens(line.description ?? '')),
-    cents: toCents(lineAmounts[index] ?? 0),
-  }));
-  const seen = new Set<string>();
-  const candidates: SummaryCandidate[] = [];
-  const withoutAmount: string[] = [];
-  const settlements: SettlementRow[] = [];
-  for (const charge of input.charges) {
-    const tokens = labelTokens(charge.label);
-    if (tokens.length === 0 || isSummaryLabel(tokens)) continue;
-    if (labelMatchesFreight(charge.label) || isShippingAbbreviation(tokens) || isTaxLikeChargeLabel(charge.label)) continue;
-    const parsed = parseSummaryAmount(charge.amount);
-    if (isSettlementLabel(tokens)) {
-      if (parsed?.cents !== 0) settlements.push({ label: charge.label, cents: parsed?.cents, printedCredit: Boolean(parsed?.printedCredit) });
-      continue;
-    }
-    if (!parsed) {
-      withoutAmount.push(charge.label);
-      continue;
-    }
-    if (parsed.cents === 0) continue;
-    const discount = isDiscountLabel(tokens);
-    // `Less Early Pay $3.00` says the row reduces the bill, the same as a printed minus sign.
-    const printedCredit = parsed.printedCredit || tokens[0] === 'less';
-    const sign: SummarySign = printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
-    // A charge row for the same amount as header freight or tax is that charge under a label the matchers miss.
-    if (sign === 'charge' && (parsed.cents === freightCents || parsed.cents === taxCents)) continue;
-    const significant = significantTokens(tokens);
-    const alreadyLine = lineEntries.some(entry => Math.abs(entry.cents) === parsed.cents
-      && ((sign !== 'charge' && entry.cents < 0) || significant.some(token => entry.tokens.has(token))));
-    if (alreadyLine) continue;
-    if (sign !== 'charge' && discountInLines === parsed.cents) continue;
-    const key = `${tokens.join(' ')}|${parsed.cents}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push({ label: charge.label, cents: parsed.cents, sign });
-  }
+  const { candidates, withoutAmount, settlements } = collectSummaryCandidates(
+    input.charges,
+    input.lines,
+    lineAmounts.map(amount => toCents(amount ?? 0)),
+    freightCents,
+    taxCents
+  );
   if (candidates.length === 0 && withoutAmount.length === 0 && settlements.length === 0) return none;
 
   const allCents = sumSignedCents(candidates);
