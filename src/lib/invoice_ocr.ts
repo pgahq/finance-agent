@@ -240,7 +240,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
   };
 }
 
-const NON_LINE_ROW_WORDS = new Set(['payment', 'payments', 'finance', 'interest']);
+const NON_LINE_ROW_WORDS = new Set(['payment', 'payments', 'finance', 'interest', 'past', 'overdue', 'outstanding', 'late', 'prior']);
 
 /** Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. */
 function isNonLineRowLabel(description: string): boolean {
