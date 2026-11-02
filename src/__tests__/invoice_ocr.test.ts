@@ -585,7 +585,14 @@ describe('invoice OCR pass', () => {
 
         expect(result?.extractedInvoiceLines).toHaveLength(5);
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1 }));
+        expect(result?.extractedSecondReadOutcome).toBe('not_lines');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({
+          outcome: 'not_lines',
+          reason: 'added rows are not lines',
+          rowsAdded: 1,
+          rowsAddedCents: 41732,
+          wantedAmountDueShortfallCents: 41732,
+        }));
       });
 
       it('keeps the first read when the second read drops a first-read row', async () => {

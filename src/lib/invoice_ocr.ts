@@ -129,7 +129,7 @@ export async function extractInvoiceDocuments(
     result = { ...result, extractedSecondReadOutcome: 'skipped' };
   } else if (retryPlan) {
     const firstRows = result.extractedInvoiceLines ?? [];
-    let outcome: 'accepted' | 'rejected' | 'inconclusive' | 'failed' = 'rejected';
+    let outcome: 'accepted' | 'rejected' | 'inconclusive' | 'not_lines' | 'failed' = 'rejected';
     let rejection: Record<string, unknown> | undefined;
     try {
       const retried = await read(retryPlan.instruction);
@@ -185,13 +185,14 @@ function rowsAddedBySecondRead<T extends { description: string; totalPrice?: str
   return added.length > 0 ? added : undefined;
 }
 
-// Why a second read was not used, for the retry log. `rejected` is a read with nothing new and nothing lost; a read that
-// added rows, or dropped or changed a first-read row, is `inconclusive`: it may have found rows, just not the ones that close the gap.
+// Why a second read was not used, for the retry log. `rejected` is a read with nothing new and nothing lost; `not_lines`
+// is a read whose added rows total the gap but are labeled like tax, a balance, a payment, or a finance charge; a read that
+// added other rows, or dropped or changed a first-read row, is `inconclusive`: it may have found rows, just not the ones that close the gap.
 function describeRejectedSecondRead(
   plan: MissingRowsPlan,
   firstRows: Array<{ description: string; totalPrice?: string | null }>,
   retriedRows: Array<{ description: string; totalPrice?: string | null }>
-): { outcome: 'rejected' | 'inconclusive'; log: Record<string, unknown> } {
+): { outcome: 'rejected' | 'inconclusive' | 'not_lines'; log: Record<string, unknown> } {
   const firstKeys = new Map<string, number>();
   for (const row of firstRows) firstKeys.set(rowKey(row), (firstKeys.get(rowKey(row)) ?? 0) + 1);
   let kept = 0;
@@ -208,7 +209,10 @@ function describeRejectedSecondRead(
   }
   const dropped = firstRows.length - kept;
   const toSum = (rows: typeof retriedRows) => sumExtractedLineCents(rows as InvoiceOcrResult['extractedInvoiceLines'] & object);
-  const outcome = unmatched.length === 0 && dropped === 0 ? 'rejected' : 'inconclusive';
+  // Rows that total the amount-due gap but read as tax, a balance, a payment, or a finance charge are refused as not lines.
+  const notLines = dropped === 0 && plan.amountDueShortfall !== undefined && unmatched.length > 0
+    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description));
+  const outcome = notLines ? 'not_lines' : unmatched.length === 0 && dropped === 0 ? 'rejected' : 'inconclusive';
   return {
     outcome,
     log: {
@@ -220,7 +224,7 @@ function describeRejectedSecondRead(
       rowsAddedCents: unmatched.length ? toSum(unmatched) : undefined,
       wantedAmountDueShortfallCents: plan.amountDueShortfall,
       wantedRowsCents: plan.subtotalRowsCents,
-      reason: dropped > 0 ? 'dropped or changed a first-read row' : unmatched.length ? 'added rows do not close the gap' : 'no new rows',
+      reason: dropped > 0 ? 'dropped or changed a first-read row' : notLines ? 'added rows are not lines' : unmatched.length ? 'added rows do not close the gap' : 'no new rows',
     },
   };
 }

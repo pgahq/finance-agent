@@ -181,9 +181,10 @@ export function lineSubtotalShortfallCents(
 
 /**
  * What a missing-row second read did when its rows were not used: `rejected` returned the same rows and nothing new,
- * `inconclusive` added or changed rows without closing the gap, `failed` errored, and `skipped` never ran.
+ * `inconclusive` added or changed rows without closing the gap, `not_lines` added a row that closes the amount-due gap
+ * but is labeled like tax, a balance, a payment, or a finance charge, `failed` errored, and `skipped` never ran.
  */
-export type SecondReadOutcome = 'rejected' | 'inconclusive' | 'failed' | 'skipped';
+export type SecondReadOutcome = 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped';
 
 function describeLines(lines: ExtractedInvoiceLine[]): string {
   return lines.map(line => `"${printable(line.description)}"`).join(', ');
@@ -230,6 +231,9 @@ export function lineSubtotalReviewNote(
   }
   if (secondRead === 'rejected') {
     return `${head} A second read of the document found no row that makes up the ${centsDollars(gap)}, so the document's own totals may not agree (a section or summary total that is higher than its rows). Check the PDF; if no row carries the ${centsDollars(gap)}, it is not missing from the lines.`;
+  }
+  if (secondRead === 'not_lines') {
+    return `${head} A second read returned a row that would make up the shortfall, but its label reads as tax, a balance, a payment, or a finance charge, so it was not added as a line. Check the PDF for what that row is.`;
   }
   const after = secondRead === 'skipped'
     ? ' A second read was skipped because the first read was slow.'

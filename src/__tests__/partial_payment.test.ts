@@ -262,6 +262,9 @@ describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', (
     expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'inconclusive')).toBe(
       `${head} The $1,388.00 difference may be a row that was not read. A second read changed or added rows but did not make up the difference, so it was not used.`
     );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'not_lines')).toBe(
+      `${head} A second read returned a row that would make up the shortfall, but its label reads as tax, a balance, a payment, or a finance charge, so it was not added as a line. Check the PDF for what that row is.`
+    );
     expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'failed')).toBe(
       `${head} The $1,388.00 difference may be a row that was not read.`
     );

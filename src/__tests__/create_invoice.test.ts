@@ -2825,6 +2825,24 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('balanceInvoice');
     });
 
+    it('does not add the PO-total note to a balance invoice that replaces the lines with one balance line', async () => {
+      const po = {
+        documentNumber: 'PO-472750',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'L1', purchaseOrderDocumentNumber: 'PO-472750', quantity: 1, unitCost: 5909.5, extendedAmount: 5909.5 }],
+      };
+      const { workday, invoiceLines } = await run(balanceEnrichment({
+        extractedPurchaseOrderNumber: 'PO-472750',
+        extractedLineSubtotal: { label: 'Total Contract Price', amount: '$24,887.00' },
+      }), po);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(1);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Balance invoice:');
+      expect(notes).toContain('Line subtotal review:');
+      expect(notes).not.toContain("The PO's");
+    });
+
     it('submits the printed lines and says why when the PO has no line for the balance', async () => {
       const po = {
         documentNumber: 'PO-472750',
