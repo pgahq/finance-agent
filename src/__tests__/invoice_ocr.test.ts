@@ -768,6 +768,24 @@ describe('invoice OCR pass', () => {
         expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       });
 
+      it('does not read again when a totals-block fee beside an unsigned discount explains the gap', async () => {
+        const rental = { description: 'Rental', descriptionCells: [] as string[], quantity: 1, unitCost: '1,000.00', totalPrice: '1,000.00', hasDiscount: null, tableNumber: 1, sectionLabel: '' };
+        mockGetAiResponse.mockResolvedValueOnce(responseFor(
+          [rental],
+          {
+            extractedAmountDue: '$850.00',
+            extractedFreightAmount: undefined,
+            extractedTaxAmount: undefined,
+            extractedSummaryCharges: [{ label: 'Discount', amount: '200.00' }, { label: 'Service Fee', amount: '50.00' }],
+            extractedLineSubtotal: { label: '', amount: '' },
+          }
+        ));
+
+        await extractInvoiceDocuments([pdf]);
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
       it('does not count a charge-style totals row as a credit', async () => {
         mockGetAiResponse.mockResolvedValueOnce(responseFor(
           supin472322ProductionRows,
