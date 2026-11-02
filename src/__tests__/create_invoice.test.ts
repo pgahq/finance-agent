@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
-import { supin472322Header, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
+import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
@@ -2451,8 +2451,8 @@ describe('create_invoice', () => {
     it('adds the unsigned $8,866.66 discount as a negative line once the second read recovers the rows', async () => {
       const { workday, slack } = await run(supin472322Rows, {
         extractedRowsAddedOnSecondRead: [
-          { description: 'Row the first read missed (A)', totalPrice: '1000.00' },
-          { description: 'Row the first read missed (B)', totalPrice: '388.00' },
+          { description: 'Synthetic recovered row (A)', totalPrice: '1000.00' },
+          { description: 'Synthetic recovered row (B)', totalPrice: '388.00' },
         ],
       });
 
@@ -2508,17 +2508,79 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('freight it includes');
     });
 
-    it('says $1,388.00 was probably not read, not $3,388.00, when the rows are still missing', async () => {
-      const { workday, slack } = await run(supin472322ProductionRows);
+    const printedSubtotalReview = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.';
+    const poTotalSentence = "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than its own 59 rows.";
 
-      const review = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.'
-        + ' The $1,388.00 difference may be a row that was not read.';
+    it('submits the 59 printed rows with freight and tax in the header when no row carries the $1,388.00', async () => {
+      const { workday } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(59);
+      expect(submitArgs.finalLines.some((line: any) => line.extendedAmount < 0)).toBe(false);
+      expect(submitArgs.extractedFreightAmount).toBe('2000.00');
+      expect(submitArgs.extractedTaxAmount).toBe('2354.16');
+    });
+
+    it('says $1,388.00 is not carried by any row after a second read finds none, not $3,388.00', async () => {
+      const { workday, slack } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
+
+      const review = `${printedSubtotalReview} A second read of the document found no row that makes up the $1,388.00, so the document's own totals may not agree (a section or summary total that is higher than its rows).`
+        + ' Check the PDF; if no row carries the $1,388.00, it is not missing from the lines.';
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
       expect(submitArgs.buildNotes([])).not.toContain('3,388');
+      expect(submitArgs.buildNotes([])).not.toContain('may be a row that was not read');
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
-      expect(submitArgs.finalLines.some((line: any) => line.extendedAmount < 0)).toBe(false);
+    });
+
+    it('still says a row may not have been read when no second read ran', async () => {
+      const { workday } = await run(supin472322ProductionRows);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(`Line subtotal review: ${printedSubtotalReview} The $1,388.00 difference may be a row that was not read.`);
+      expect(notes).not.toContain('found no row');
+    });
+
+    it('notes that the PO lists six lines totaling the amount due, without changing the 59 lines', async () => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414792',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: supin472322PoLines,
+      });
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: supin472322ProductionRows,
+        extractedSecondReadOutcome: 'rejected',
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+
+      const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(poTotalSentence);
+      expect(notes).toContain('The 59 lines were submitted as extracted; AP may need to book one line per PO line.');
+      expect(submitArgs.finalLines).toHaveLength(59);
+    });
+
+    it('does not mention the PO total when the recovered rows reconcile the invoice', async () => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414792',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: supin472322PoLines,
+      });
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: supin472322Rows,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+
+      expect(mocks.workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain("The PO's");
     });
   });
 

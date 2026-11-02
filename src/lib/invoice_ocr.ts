@@ -126,9 +126,11 @@ export async function extractInvoiceDocuments(
       amountDueShortfallCents: retryPlan.amountDueShortfall,
       subtotalShortfallCents: retryPlan.subtotalShortfall,
     });
+    result = { ...result, extractedSecondReadOutcome: 'skipped' };
   } else if (retryPlan) {
     const firstRows = result.extractedInvoiceLines ?? [];
     let outcome: 'accepted' | 'rejected' | 'failed' = 'rejected';
+    let rejection: Record<string, unknown> | undefined;
     try {
       const retried = await read(retryPlan.instruction);
       const retriedRows = retried.extractedInvoiceLines ?? [];
@@ -142,6 +144,8 @@ export async function extractInvoiceDocuments(
           extractedInvoiceLines: retriedRows,
           extractedRowsAddedOnSecondRead: added.map(row => ({ description: row.description, totalPrice: row.totalPrice ?? null })),
         };
+      } else {
+        rejection = describeRejectedSecondRead(retryPlan, firstRows, retriedRows, added);
       }
     } catch (error) {
       if (abortSignal?.aborted) throw error;
@@ -155,9 +159,44 @@ export async function extractInvoiceDocuments(
       checks: retryPlan.checks,
       amountDueShortfallCents: retryPlan.amountDueShortfall,
       subtotalShortfallCents: retryPlan.subtotalShortfall,
+      ...rejection,
     });
+    result = { ...result, extractedSecondReadOutcome: outcome === 'accepted' ? null : outcome };
   }
   return result;
+}
+
+// Why a second read was not used, for the retry log: a read with no new row and a read whose new rows missed the gap differ.
+function describeRejectedSecondRead(
+  plan: MissingRowsPlan,
+  firstRows: Array<{ description: string; totalPrice?: string | null }>,
+  retriedRows: Array<{ description: string; totalPrice?: string | null }>,
+  added: Array<{ description: string; totalPrice?: string | null }> | undefined
+): Record<string, unknown> {
+  const firstKeys = new Map<string, number>();
+  for (const row of firstRows) firstKeys.set(rowKey(row), (firstKeys.get(rowKey(row)) ?? 0) + 1);
+  let kept = 0;
+  for (const row of retriedRows) {
+    const key = rowKey(row);
+    const count = firstKeys.get(key) ?? 0;
+    if (count > 0) {
+      kept += 1;
+      firstKeys.set(key, count - 1);
+    }
+  }
+  const retriedCents = sumExtractedLineCents(retriedRows as InvoiceOcrResult['extractedInvoiceLines'] & object);
+  const addedCents = added ? sumExtractedLineCents(added as InvoiceOcrResult['extractedInvoiceLines'] & object) : undefined;
+  return {
+    secondReadRows: retriedRows.length,
+    secondReadRowsCents: retriedCents,
+    firstRowsKept: kept,
+    firstRowsDroppedOrChanged: firstRows.length - kept,
+    rowsAdded: added?.length ?? 0,
+    rowsAddedCents: addedCents,
+    wantedAmountDueShortfallCents: plan.amountDueShortfall,
+    wantedRowsCents: plan.subtotalRowsCents,
+    reason: added ? 'added rows do not close the gap' : kept < firstRows.length ? 'dropped or changed a first-read row' : 'no new rows',
+  };
 }
 
 function rowKey(row: { description: string; totalPrice?: string | null }): string {
@@ -277,6 +316,7 @@ export function mergeInvoiceEnrichment(
       extractedSummaryCharges: null,
       extractedLineSubtotal: null,
       extractedRowsAddedOnSecondRead: null,
+      extractedSecondReadOutcome: null,
       extractedPartialPayment: null,
       extractedPriorPayments: null,
       extractedPurchaseOrderNumber: null,
@@ -321,6 +361,7 @@ export function mergeInvoiceEnrichment(
     extractedSummaryCharges: ocr.extractedSummaryCharges,
     extractedLineSubtotal: ocr.extractedLineSubtotal,
     extractedRowsAddedOnSecondRead: ocr.extractedRowsAddedOnSecondRead ?? null,
+    extractedSecondReadOutcome: ocr.extractedSecondReadOutcome ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,

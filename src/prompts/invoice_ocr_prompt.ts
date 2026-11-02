@@ -113,6 +113,8 @@ export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNu
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
   /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
   extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
+  /** Set by extractInvoiceDocuments when a missing-row second read ran or was skipped and its rows were not used. */
+  extractedSecondReadOutcome?: 'rejected' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
