@@ -70,6 +70,14 @@ export function sumExtractedLineCents(lines: ExtractedInvoiceLine[]): number | u
   return total;
 }
 
+/** The other charges in cents, leaving out a row that repeats the header tax: that money is already counted as tax. */
+function otherChargesCents(charges: Array<{ label?: string | null; amount: string | null }> | null | undefined, taxLabel: string | null | undefined, taxCents: number): number {
+  return (charges ?? []).reduce((total, charge) => {
+    const cents = toCents(chargeAmount(charge.amount) ?? 0);
+    return restatesHeaderTax(charge.label, cents, taxLabel, taxCents) ? total : total + cents;
+  }, 0);
+}
+
 interface AmountDueGapInput {
   lines: ExtractedInvoiceLine[];
   amountDue?: string | null;
@@ -100,10 +108,7 @@ export function amountDueGapCents(input: AmountDueGapInput): number | undefined 
   if (amountDue == null || rows == null) return undefined;
   const taxCents = toCents(chargeAmount(input.tax) ?? 0);
   // An other-charge row that repeats the header tax is the same money, so it is not taken out a second time.
-  const otherCents = (input.otherCharges ?? []).reduce((total, charge) => {
-    const cents = toCents(chargeAmount(charge.amount) ?? 0);
-    return restatesHeaderTax(charge.label, cents, input.taxLabel, taxCents) ? total : total + cents;
-  }, 0);
+  const otherCents = otherChargesCents(input.otherCharges, input.taxLabel, taxCents);
   const gap = toCents(amountDue) - rows - toCents(chargeAmount(input.freight) ?? 0) - taxCents - otherCents;
   const credit = input.creditCents ?? 0;
   return gap < 0 && credit > 0 && gap + credit >= 0 ? gap + credit : gap;
@@ -142,15 +147,16 @@ export function subtotalFreightCents(input: {
   amountDue?: string | null;
   freight?: string | null;
   tax?: string | null;
-  otherCharges?: Array<{ amount: string | null }> | null;
+  taxLabel?: string | null;
+  otherCharges?: Array<{ label?: string | null; amount: string | null }> | null;
   creditCents?: number;
 }): number | undefined {
   const subtotal = parseCanonicalChargeAmount(input.subtotal?.amount);
   const amountDue = chargeAmount(input.amountDue);
   const freight = toCents(chargeAmount(input.freight) ?? 0);
   if (subtotal == null || amountDue == null || freight <= 0) return undefined;
-  const other = (input.otherCharges ?? []).reduce((total, charge) => total + toCents(chargeAmount(charge.amount) ?? 0), 0);
-  const inside = toCents(subtotal) + toCents(chargeAmount(input.tax) ?? 0) + other;
+  const taxCents = toCents(chargeAmount(input.tax) ?? 0);
+  const inside = toCents(subtotal) + taxCents + otherChargesCents(input.otherCharges, input.taxLabel, taxCents);
   const credits = new Set([0, input.creditCents ?? 0]);
   const reaches = (total: number) => [...credits].some(credit => total - credit === toCents(amountDue));
   return !reaches(inside + freight) && reaches(inside) ? freight : undefined;

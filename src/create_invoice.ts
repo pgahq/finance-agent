@@ -1204,6 +1204,7 @@ async function processInvoiceCluster(
       // Only freight the document printed in its header: freight taken from a row is still one of the rows.
       freight: result.extractedFreightAmount ?? undefined,
       tax: taxCleared ? undefined : extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
       otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
       creditCents,
     }) ?? 0;

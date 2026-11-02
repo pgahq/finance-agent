@@ -2508,6 +2508,24 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('freight it includes');
     });
 
+    it('places both a discount and a fee from the totals block, with no missed-row note', async () => {
+      const row = { description: 'Rental', quantity: 1, unitCost: '1,000.00', totalPrice: '1,000.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' };
+      const { workday, slack } = await run([row], {
+        extractedAmountDue: '$850.00',
+        extractedFreightAmount: null,
+        extractedFreightLabel: null,
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+        extractedLineSubtotal: { label: '', amount: '' },
+        extractedSummaryCharges: [{ label: 'Discount', amount: '200.00' }, { label: 'Service Fee', amount: '50.00' }],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([1000, -200, 50]);
+      expect(submitArgs.buildNotes([])).not.toContain('not read');
+      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('not read');
+    });
+
     const printedSubtotalReview = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.';
     const poTotalSentence = "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than the 59 rows read from the PDF.";
 
