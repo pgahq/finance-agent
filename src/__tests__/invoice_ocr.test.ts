@@ -628,6 +628,53 @@ describe('invoice OCR pass', () => {
         expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       });
 
+      it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 61_000;
+          return responseFor(supin472108ProductionRows);
+        });
+
+        const result = await extractInvoiceDocuments([pdf]);
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+        expect(result?.extractedInvoiceLines).toHaveLength(5);
+        expect(result?.extractedSecondReadOutcome).toBe('skipped');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'skipped', reason: 'slow first read', checks: ['amountDue', 'subtotal'] }));
+      });
+
+      it('lets the caller shorten the limit', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 31_000;
+          return responseFor(supin472108ProductionRows);
+        });
+
+        await extractInvoiceDocuments([pdf], undefined, undefined, { retryMaxFirstReadMs: 30_000 });
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+      });
+
+      it('reads again when the first read was quick enough', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse
+          .mockImplementationOnce(async () => {
+            now += 59_000;
+            return responseFor(supin472108ProductionRows);
+          })
+          .mockResolvedValueOnce(responseFor(supin472108Rows));
+
+        await extractInvoiceDocuments([pdf]);
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(2);
+      });
+
       it('does not use the amount due on an invoice that bills a deposit or payments received', async () => {
         const noSubtotal = { extractedLineSubtotal: { label: '', amount: '' } };
         mockGetAiResponse.mockResolvedValueOnce(responseFor(
@@ -750,37 +797,6 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(result?.extractedSecondReadOutcome).toBeNull();
-      });
-
-      it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
-        let now = 1_000_000;
-        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
-        mockGetAiResponse.mockImplementationOnce(async () => {
-          now += 61_000;
-          return responseFor(supin472322ProductionRows);
-        });
-
-        const result = await extractInvoiceDocuments([pdf]);
-        clock.mockRestore();
-
-        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
-        expect(result?.extractedInvoiceLines).toHaveLength(59);
-        expect(result?.extractedSecondReadOutcome).toBe('skipped');
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'skipped', reason: 'slow first read', checks: ['amountDue', 'subtotal'] }));
-      });
-
-      it('lets the caller shorten the limit', async () => {
-        let now = 1_000_000;
-        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
-        mockGetAiResponse.mockImplementationOnce(async () => {
-          now += 31_000;
-          return responseFor(supin472322ProductionRows);
-        });
-
-        await extractInvoiceDocuments([pdf], undefined, undefined, { retryMaxFirstReadMs: 30_000 });
-        clock.mockRestore();
-
-        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       });
 
       it('does not read again once the rows and discount reconcile', async () => {

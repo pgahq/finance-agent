@@ -2421,6 +2421,26 @@ describe('create_invoice', () => {
       expect(slackDetails).not.toHaveProperty('amountMismatch');
       expect(slackDetails).not.toHaveProperty('lineReview');
     });
+
+    it('does not say rows were missed when a totals-block fee that gets placed explains the gap', async () => {
+      const { workday, slack } = await run(
+        [{ description: 'Setup', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' }],
+        {
+          extractedAmountDue: '$125.00',
+          extractedFreightAmount: null,
+          extractedFreightLabel: null,
+          extractedTaxAmount: null,
+          extractedTaxLabel: null,
+          extractedLineSubtotal: { label: 'Subtotal', amount: '120.00' },
+          extractedSummaryCharges: [{ label: 'Service Fee', amount: '25.00' }],
+        }
+      );
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([100, 25]);
+      expect(submitArgs.buildNotes([])).not.toContain('probably not read');
+      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('probably not read');
+    });
   });
 
   describe('freight inside the printed subtotal and an unlined discount (SUPIN-472322)', () => {
@@ -2465,26 +2485,6 @@ describe('create_invoice', () => {
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.lineReview.join(' ')).not.toContain('3,388');
       expect(slackDetails.lineReview.join(' ')).not.toContain('2,000.00 difference');
-    });
-
-    it('does not say rows were missed when a totals-block fee that gets placed explains the gap', async () => {
-      const { workday, slack } = await run(
-        [{ description: 'Setup', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' }],
-        {
-          extractedAmountDue: '$125.00',
-          extractedFreightAmount: null,
-          extractedFreightLabel: null,
-          extractedTaxAmount: null,
-          extractedTaxLabel: null,
-          extractedLineSubtotal: { label: 'Subtotal', amount: '120.00' },
-          extractedSummaryCharges: [{ label: 'Service Fee', amount: '25.00' }],
-        }
-      );
-
-      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
-      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([100, 25]);
-      expect(submitArgs.buildNotes([])).not.toContain('probably not read');
-      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('probably not read');
     });
 
     it('still says a row was not read when a delivery row is a line and the subtotal includes it', async () => {

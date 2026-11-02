@@ -8,6 +8,7 @@ import {
   lineSubtotalShortfallCents,
   planBalanceInvoice,
   planPartialPayment,
+  reviewAmountDueGapCents,
   secondReadRowsNote,
   subtotalFreightCents,
   selectDepositPoLine,
@@ -155,6 +156,15 @@ describe('amount due gap (SUPIN-472108)', () => {
     expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$417.32' }] })).toBeUndefined();
     expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$200.00' }, { amount: '$217.32' }] })).toBeUndefined();
     expect(amountDueShortfallCents({ ...base, lines, summaryCharges: [{ amount: '$5.00' }] })).toBe(41732);
+  });
+
+  it('reads a gap that a totals-block row explains as zero for the review note', () => {
+    const lines = supin472108ProductionRows;
+    expect(reviewAmountDueGapCents({ ...base, lines })).toBe(41732);
+    expect(reviewAmountDueGapCents({ ...base, lines, summaryCharges: [{ amount: '$417.32' }] })).toBe(0);
+    expect(reviewAmountDueGapCents({ ...base, lines, otherCharges: [{ amount: '$417.32' }] })).toBe(0);
+    expect(reviewAmountDueGapCents({ ...base, lines: supin472108Rows })).toBe(0);
+    expect(reviewAmountDueGapCents({ ...base, lines, partialPayment: { amount: '$1.00' } })).toBeUndefined();
   });
 
   it('words the review note from the amount due, not the partial printed subtotal', () => {
