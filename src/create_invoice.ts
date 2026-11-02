@@ -81,8 +81,8 @@ import {
   splitFreightLines,
   withComposedLineDescriptions,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { reviewAmountDueGapCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -1185,6 +1185,7 @@ async function processInvoiceCluster(
     // would otherwise look like rows read twice.
     // The amount due is the better judge of missing rows when the printed total covers only part of the table, but
     // it says nothing on an invoice that bills a deposit, an advance, or what is left after payments.
+    const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
     const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
       ? undefined
       : reviewAmountDueGapCents({
@@ -1195,10 +1196,21 @@ async function processInvoiceCluster(
         taxLabel: result.extractedTaxLabel,
         otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
         summaryCharges: result.extractedSummaryCharges,
+        creditCents,
       });
+    const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
+      subtotal: result.extractedLineSubtotal,
+      amountDue: extractedAmountDue,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: result.extractedFreightAmount ?? undefined,
+      tax: taxCleared ? undefined : extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+      creditCents,
+    }) ?? 0;
     const lineSubtotalNote = [
       secondReadRowsNote(result.extractedRowsAddedOnSecondRead),
-      repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap),
+      repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap, subtotalFreight),
     ].filter(Boolean).join(' ') || undefined;
     if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
