@@ -216,6 +216,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     amountDue: result.extractedAmountDue,
     freight: result.extractedFreightAmount,
     tax: result.extractedTaxAmount,
+    taxLabel: result.extractedTaxLabel,
     otherCharges: result.extractedOtherCharges,
     creditCents: gapInput.creditCents,
   }) ?? 0;

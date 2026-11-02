@@ -228,6 +228,10 @@ describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', (
     expect(subtotalFreightCents({ subtotal: { label: 'Subtotal', amount: '46102.66' }, ...base })).toBeUndefined();
     expect(subtotalFreightCents({ subtotal: header.extractedLineSubtotal, ...base, freight: null })).toBeUndefined();
     expect(subtotalFreightCents({ subtotal: null, ...base })).toBeUndefined();
+    // A repeated header tax row is not a second tax, so it does not hide the freight inside the subtotal.
+    const repeatedTax = { subtotal: { label: 'Subtotal', amount: '1,100.00' }, amountDue: '$1,150.00', freight: '$100.00', tax: '$50.00', taxLabel: 'Sales Tax', creditCents: 0 };
+    expect(subtotalFreightCents({ ...repeatedTax, otherCharges: [{ label: 'Sales Tax', amount: '$50.00' }] })).toBe(10000);
+    expect(subtotalFreightCents({ ...repeatedTax, otherCharges: [{ label: 'County Tax', amount: '$50.00' }] })).toBeUndefined();
   });
 
   it('measures the subtotal shortfall without the freight inside it', () => {
