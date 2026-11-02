@@ -11,6 +11,7 @@ import {
   parseExtractedUnitCost,
   printable,
   reconcileSubmittedCharges,
+  restatesHeaderTax,
   restoreClearedFreightFromRows,
   signedChargeLineAmount,
   splitFreightLines,
@@ -98,11 +99,7 @@ export function applyPrintedTaxCharges(input: {
     const amount = parseCanonicalChargeAmount(charge.amount);
     if (amount == null || amount <= 0) continue;
     const cents = toCents(amount);
-    // A row that restates the header tax (same label, or a total row) is not a second tax; two different
-    // taxes with the same amount (State Tax and County Tax) both count.
-    const label = normalizeLabel(charge.label) ?? '';
-    const restatesHeaderTax = label === normalizeLabel(input.taxLabel) || /\btotal\b/.test(label);
-    if (cents === currentTaxCents && restatesHeaderTax) continue;
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, currentTaxCents)) continue;
     const key = `${normalizeLabel(charge.label)}|${cents}`;
     if (seen.has(key)) continue;
     seen.add(key);

@@ -5,9 +5,9 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type Inv
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
-import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
-import { summaryCreditCents } from './header_charges.js';
-import { formatChargeDollars } from './invoice_lines.js';
+import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
+import { isTaxLikeChargeLabel, summaryCreditCents } from './header_charges.js';
+import { formatChargeDollars, normalizeLabel } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
   fileName: string;
@@ -198,6 +198,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     amountDue: result.extractedAmountDue,
     freight: result.extractedFreightAmount,
     tax: result.extractedTaxAmount,
+    taxLabel: result.extractedTaxLabel,
     otherCharges: result.extractedOtherCharges,
     summaryCharges: result.extractedSummaryCharges,
     creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
@@ -239,15 +240,23 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
   };
 }
 
+const NON_LINE_ROW_WORDS = new Set(['payment', 'payments', 'finance', 'interest']);
+
+/** Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. */
+function isNonLineRowLabel(description: string): boolean {
+  const tokens = (normalizeLabel(description) ?? '').split(' ');
+  return isTaxLikeChargeLabel(description) || tokens.some(token => NOT_BILLED_WORDS.has(token) || NON_LINE_ROW_WORDS.has(token));
+}
+
 function secondReadClosesGap(
   plan: MissingRowsPlan,
-  added: Array<{ description: string; totalPrice?: string | null }>,
-  retriedRows: InvoiceOcrResult['extractedInvoiceLines'] & object
+  added: NonNullable<InvoiceOcrResult['extractedInvoiceLines']>,
+  retriedRows: NonNullable<InvoiceOcrResult['extractedInvoiceLines']>
 ): boolean {
   if (plan.amountDueShortfall !== undefined) {
-    const addedRows = retriedRows.filter(row => added.includes(row));
-    const addedCents = sumExtractedLineCents(addedRows);
-    if (addedCents === plan.amountDueShortfall && addedRows.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0)) return true;
+    // The instruction names the gap, so a tax, balance, payment, or finance row that equals it must not pass for a
+    // missed line.
+    if (sumExtractedLineCents(added) === plan.amountDueShortfall && added.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0 && !isNonLineRowLabel(row.description))) return true;
   }
   if (plan.subtotalShortfall !== undefined) {
     const retriedCents = sumExtractedLineCents(retriedRows);

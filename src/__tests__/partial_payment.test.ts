@@ -141,6 +141,13 @@ describe('amount due gap (SUPIN-472108)', () => {
   it('subtracts the printed freight and other charges', () => {
     expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, freight: '$208.66' })).toBe(20866);
     expect(amountDueGapCents({ ...base, lines: supin472108ProductionRows, otherCharges: [{ amount: '$417.32' }] })).toBe(0);
+    // A row that repeats the header tax is the same money, so it is not taken out twice.
+    const tax = '$298.11';
+    const withTax = { ...base, lines: supin472108ProductionRows, tax, taxLabel: 'Tax' };
+    const untaxed = amountDueGapCents({ ...withTax, otherCharges: null });
+    expect(amountDueGapCents({ ...withTax, otherCharges: [{ label: 'Tax', amount: tax }] })).toBe(untaxed);
+    expect(amountDueGapCents({ ...withTax, otherCharges: [{ label: 'Total Tax', amount: tax }] })).toBe(untaxed);
+    expect(amountDueGapCents({ ...withTax, otherCharges: [{ label: 'County Tax', amount: tax }] })).toBe((untaxed ?? 0) - 29811);
   });
 
   it('does not check deposit invoices, prior payments, or unreadable amounts', () => {

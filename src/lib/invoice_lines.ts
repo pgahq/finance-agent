@@ -771,6 +771,16 @@ export function normalizeLabel(label: string | null | undefined): string | undef
   return normalized || undefined;
 }
 
+/**
+ * Whether a printed charge repeats the header tax rather than adding a second one: same amount and either the tax's
+ * own label or a total row. Two different taxes with the same amount (State Tax and County Tax) both count.
+ */
+export function restatesHeaderTax(label: string | null | undefined, cents: number, taxLabel: string | null | undefined, taxCents: number): boolean {
+  if (cents !== taxCents) return false;
+  const normalized = normalizeLabel(label) ?? '';
+  return normalized === normalizeLabel(taxLabel) || /\btotal\b/.test(normalized);
+}
+
 const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
 
 export function labelMatchesFreight(label: string | null | undefined): boolean {

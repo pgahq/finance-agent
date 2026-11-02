@@ -6,6 +6,7 @@ import {
   parseCanonicalChargeAmount,
   parseExtractedLineAmount,
   printable,
+  restatesHeaderTax,
   type ExtractedInvoiceLine,
 } from './invoice_lines.js';
 import type { PurchaseOrderLine } from './workday.js';
@@ -24,7 +25,7 @@ export interface PrintedPartialPayment {
 
 const DEPOSIT_WORDS = new Set(['deposit', 'deposits', 'advance', 'down', 'downpayment', 'prepayment', 'installment', 'progress', 'partial']);
 // Rows that report a payment already made or an amount still to come are not the amount this invoice bills.
-const NOT_BILLED_WORDS = new Set(['less', 'paid', 'applied', 'received', 'credit', 'credits', 'balance', 'remaining', 'previous', 'retainer', 'refund']);
+export const NOT_BILLED_WORDS = new Set(['less', 'paid', 'applied', 'received', 'credit', 'credits', 'balance', 'remaining', 'previous', 'retainer', 'refund']);
 
 function toCents(amount: number): number {
   return Math.round(amount * 100);
@@ -74,7 +75,8 @@ interface AmountDueGapInput {
   amountDue?: string | null;
   freight?: string | null;
   tax?: string | null;
-  otherCharges?: Array<{ amount: string | null }> | null;
+  otherCharges?: Array<{ label?: string | null; amount: string | null }> | null;
+  taxLabel?: string | null;
   summaryCharges?: Array<{ amount: string | null }> | null;
   partialPayment?: unknown;
   priorPayments?: unknown[] | null;
@@ -96,8 +98,13 @@ export function amountDueGapCents(input: AmountDueGapInput): number | undefined 
   const amountDue = chargeAmount(input.amountDue);
   const rows = sumExtractedLineCents(input.lines);
   if (amountDue == null || rows == null) return undefined;
-  const otherCents = (input.otherCharges ?? []).reduce((total, charge) => total + toCents(chargeAmount(charge.amount) ?? 0), 0);
-  const gap = toCents(amountDue) - rows - toCents(chargeAmount(input.freight) ?? 0) - toCents(chargeAmount(input.tax) ?? 0) - otherCents;
+  const taxCents = toCents(chargeAmount(input.tax) ?? 0);
+  // An other-charge row that repeats the header tax is the same money, so it is not taken out a second time.
+  const otherCents = (input.otherCharges ?? []).reduce((total, charge) => {
+    const cents = toCents(chargeAmount(charge.amount) ?? 0);
+    return restatesHeaderTax(charge.label, cents, input.taxLabel, taxCents) ? total : total + cents;
+  }, 0);
+  const gap = toCents(amountDue) - rows - toCents(chargeAmount(input.freight) ?? 0) - taxCents - otherCents;
   const credit = input.creditCents ?? 0;
   return gap < 0 && credit > 0 && gap + credit >= 0 ? gap + credit : gap;
 }
