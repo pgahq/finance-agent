@@ -574,6 +574,19 @@ describe('invoice OCR pass', () => {
         expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
       });
 
+      it.each(['Sales Tax', 'Previous Balance', 'Payment Received', 'Finance Charge'])('keeps the first read when the second read fills the gap with a "%s" row, which is not a line', async label => {
+        const fillerRow = { ...supin472108DeliveryRow, description: label, totalPrice: '417.32', unitCost: '417.320' };
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472108ProductionRows))
+          .mockResolvedValueOnce(responseFor([...supin472108ProductionRows, fillerRow]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(5);
+        expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+      });
+
       it('keeps the first read when the second read drops a first-read row', async () => {
         mockGetAiResponse
           .mockResolvedValueOnce(responseFor(supin472108ProductionRows))

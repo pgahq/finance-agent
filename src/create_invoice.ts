@@ -1192,6 +1192,7 @@ async function processInvoiceCluster(
         amountDue: extractedAmountDue,
         freight: freightCleared ? undefined : extractedFreightAmount,
         tax: taxCleared ? undefined : extractedTaxAmount,
+        taxLabel: result.extractedTaxLabel,
         otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
         summaryCharges: result.extractedSummaryCharges,
       });
