@@ -600,7 +600,9 @@ describe('invoice OCR pass', () => {
       expect(invoiceOcrPrompt).toContain('leave `extractedFreightAmount` and `extractedFreightLabel` empty');
       expect(invoiceOcrPrompt).toContain('Do not merge the rows into one line or one freight amount');
       expect(invoiceOcrPrompt).toContain('Exclude a single freight, shipping, handling, or delivery charge from the lines');
-      expect(invoiceOcrPrompt).toContain('a separately printed "Fuel" row');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }');
+      expect(invoiceOcrPrompt).toContain('When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together.');
+      expect(invoiceOcrPrompt).toContain('when it restates the table rows');
     });
 
     it('asks for every printed row, the section label, the printed line total, and the deposit with the SUPIN-470584 example', () => {
