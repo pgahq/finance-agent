@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
@@ -2343,6 +2344,102 @@ describe('create_invoice', () => {
     expect(submitArgs.companyWID).toBe('pga-company-wid');
     expect(submitArgs.companyReferenceType).toBe('WID');
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
+  });
+
+  describe('delivery and pickup rows inside the printed subtotal (SUPIN-472108)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')) || undefined,
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')) || 0,
+      })),
+      appliedFallbacks,
+    });
+    const run = async (rows: any[], overrides: Record<string, unknown> = {}) => {
+      const mocks = freshRequire();
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472108Header,
+        extractedInvoiceLines: rows,
+        ...overrides,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-united-rentals/invoice.pdf')] } as any);
+      return mocks;
+    };
+    const readTwiceReview = 'Check for a row that was read twice or a charge that is not a line.';
+
+    it('submits lines that reconcile to $4,045.99 once the second read adds delivery and pickup', async () => {
+      const { workday, slack } = await run(supin472108Rows, {
+        extractedRowsAddedOnSecondRead: [
+          { description: 'DELIVERY CHARGE', totalPrice: '208.66' },
+          { description: 'PICKUP CHARGE', totalPrice: '208.66' },
+        ],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedAmountDue).toBe('$4,045.99');
+      expect(submitArgs.extractedFreightAmount).toBe('208.66');
+      const lineTotal = submitArgs.finalLines
+        .filter((line: any) => line.description !== 'DELIVERY CHARGE')
+        .reduce((total: number, line: any) => total + line.extendedAmount, 0);
+      expect(Math.round((lineTotal + 208.66 + 298.11) * 100) / 100).toBe(4045.99);
+      const secondRead = 'A second read of the document added 2 rows the first read missed: "DELIVERY CHARGE" 208.66, "PICKUP CHARGE" 208.66. Check them against the PDF.';
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${secondRead}`);
+      expect(submitArgs.buildNotes([])).not.toContain(readTwiceReview);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([`Line subtotal review: ${secondRead}`]);
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails).not.toHaveProperty('amountMismatch');
+    });
+
+    it('says delivery or pickup was probably not read, with the true $417.32 gap, when the rows are still missing', async () => {
+      const { workday, slack } = await run(supin472108ProductionRows);
+
+      const review = 'The extracted lines total $3,330.56, but the document prints $3,591.67 as "Agreement Subtotal".'
+        + ' Lines, freight, and tax are $417.32 short of the amount due, so charges that the document prints (for example delivery, pickup, or other rows) were probably not read.';
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([expect.stringContaining('$3,747.88')]));
+    });
+
+    it('adds nothing when delivery is already the header freight and pickup is a row', async () => {
+      const { workday, slack } = await run([...supin472108ProductionRows, supin472108PickupRow], {
+        extractedFreightAmount: '$208.66',
+        extractedFreightLabel: 'Delivery Charge',
+      });
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedFreightAmount).toBe('$208.66');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails).not.toHaveProperty('amountMismatch');
+      expect(slackDetails).not.toHaveProperty('lineReview');
+    });
+
+    it('does not say rows were missed when a totals-block fee that gets placed explains the gap', async () => {
+      const { workday, slack } = await run(
+        [{ description: 'Setup', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' }],
+        {
+          extractedAmountDue: '$125.00',
+          extractedFreightAmount: null,
+          extractedFreightLabel: null,
+          extractedTaxAmount: null,
+          extractedTaxLabel: null,
+          extractedLineSubtotal: { label: 'Subtotal', amount: '120.00' },
+          extractedSummaryCharges: [{ label: 'Service Fee', amount: '25.00' }],
+        }
+      );
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([100, 25]);
+      expect(submitArgs.buildNotes([])).not.toContain('probably not read');
+      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('probably not read');
+    });
   });
 
   describe('deposit invoice (SUPIN-470584)', () => {
