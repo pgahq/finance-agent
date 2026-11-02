@@ -448,14 +448,9 @@ async function processInvoice(
     const subtotalMismatch = submitsLines
       ? lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap, subtotalFreight, result.extractedSecondReadOutcome)
       : undefined;
-    const lineSubtotalNote = submitsLines
-      ? [
-        secondReadRowsNote(result.extractedRowsAddedOnSecondRead),
-        subtotalMismatch,
-        subtotalMismatch && !depositApplied && !chargeWithheld && !freightAsLines ? poTotalReviewNote(poLines, extractedAmountDue, extractedLines.length) : undefined,
-      ].filter(Boolean).join(' ') || undefined
+    const lineSubtotalBaseNote = submitsLines
+      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), subtotalMismatch].filter(Boolean).join(' ') || undefined
       : undefined;
-    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
     const placedSummaryCharges: PlacedSummaryCharges = !submitsLines || depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
       ? { lines: [] }
@@ -487,6 +482,11 @@ async function processInvoice(
     const summaryCharges: PlacedSummaryCharges = balanceApplied ? { lines: [] } : placedSummaryCharges;
     const billedPlan = depositPlan ?? balancePlan;
     const billedPlanApplied = depositApplied || balanceApplied;
+    const lineSubtotalNote = [
+      lineSubtotalBaseNote,
+      subtotalMismatch && !billedPlanApplied && !chargeWithheld && !freightAsLines ? poTotalReviewNote(poLines, extractedAmountDue, extractedLines.length) : undefined,
+    ].filter(Boolean).join(' ') || undefined;
+    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     if (summaryCharges.lines.length || summaryCharges.reviewNote) {
       debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
     }

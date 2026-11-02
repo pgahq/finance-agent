@@ -427,7 +427,7 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedInvoiceLines).toHaveLength(27);
         expect(result?.extractedInvoiceLines?.[0].totalPrice).toBe('$750.00');
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive' }));
       });
 
       it('keeps the first read when the second read drops a first-read row and adds others to reach the total', async () => {
@@ -572,7 +572,7 @@ describe('invoice OCR pass', () => {
 
         expect(result?.extractedInvoiceLines).toHaveLength(5);
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1, rowsAddedCents: 20866 }));
       });
 
       it('keeps the first read when the second read drops a first-read row', async () => {
@@ -698,7 +698,8 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(result?.extractedInvoiceLines).toHaveLength(59);
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(result?.extractedSecondReadOutcome).toBe('inconclusive');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1, rowsAddedCents: 100000 }));
       });
 
       it('rejects a second read that finds no new row, as the PDF itself does, and says why', async () => {
@@ -731,10 +732,13 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(result?.extractedInvoiceLines).toHaveLength(59);
-        expect(result?.extractedSecondReadOutcome).toBe('rejected');
+        expect(result?.extractedSecondReadOutcome).toBe('inconclusive');
         expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({
+          outcome: 'inconclusive',
           reason: 'dropped or changed a first-read row',
           firstRowsDroppedOrChanged: 1,
+          rowsAdded: 2,
+          rowsAddedCents: 138800,
         }));
       });
 
