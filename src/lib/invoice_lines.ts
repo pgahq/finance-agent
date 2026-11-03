@@ -227,6 +227,14 @@ export function parseExtractedLineAmount(raw: string): number | undefined {
   return parseExtractedNumber(raw, EXTENDED_AMOUNT_DECIMALS, true);
 }
 
+const NO_CHARGE_AMOUNTS = new Set(['nc', 'no charge', 'no cost', 'included', 'incl', 'free', 'waived', 'complimentary']);
+
+/** A row printed with a word instead of an amount (`N/C`, `Included`, `No Charge`): it bills nothing. */
+export function isNoChargeAmount(raw: string | null | undefined): boolean {
+  const text = raw?.toLowerCase().replace(/[/.*]/g, '').replace(/\s+/g, ' ').trim();
+  return text != null && NO_CHARGE_AMOUNTS.has(text);
+}
+
 // A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
 export function parseExtractedUnitCost(raw: string): number | undefined {
   return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
@@ -761,6 +769,16 @@ export function normalizeLabel(label: string | null | undefined): string | undef
     .replace(/\s+/g, ' ')
     .trim();
   return normalized || undefined;
+}
+
+/**
+ * Whether a printed charge repeats the header tax rather than adding a second one: same amount and either the tax's
+ * own label or a total row. Two different taxes with the same amount (State Tax and County Tax) both count.
+ */
+export function restatesHeaderTax(label: string | null | undefined, cents: number, taxLabel: string | null | undefined, taxCents: number): boolean {
+  if (cents !== taxCents) return false;
+  const normalized = normalizeLabel(label) ?? '';
+  return normalized === normalizeLabel(taxLabel) || /\btotal\b/.test(normalized);
 }
 
 const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);

@@ -71,6 +71,19 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Full error*');
   });
 
+  it('shows a readable deadline message instead of the SDK abort text', async () => {
+    const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+    const error = new ProcessorDeadlineError('Processor deadline reached; aborting AI calls', { cause: new Error('Delay was aborted') });
+
+    await notifyResult('create_invoice', 'error', 399070, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('ran out of time after 399.07s');
+    expect(texts).toContain('The run ran out of time and stopped before finishing. Check Workday for any partial result before re-running it.');
+    expect(texts).not.toContain('Delay was aborted');
+    expect(texts).not.toContain('function ran *with error*');
+  });
+
   it('renders the shadow clustering plan as readable lines instead of JSON', async () => {
     await notifyResult('create_invoice_shadow', 'success', 2000, {
       mode: 'shadow',
