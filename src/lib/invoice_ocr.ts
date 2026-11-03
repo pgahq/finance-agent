@@ -126,9 +126,11 @@ export async function extractInvoiceDocuments(
       amountDueShortfallCents: retryPlan.amountDueShortfall,
       subtotalShortfallCents: retryPlan.subtotalShortfall,
     });
+    result = { ...result, extractedSecondReadOutcome: 'skipped' };
   } else if (retryPlan) {
     const firstRows = result.extractedInvoiceLines ?? [];
-    let outcome: 'accepted' | 'rejected' | 'failed' = 'rejected';
+    let outcome: 'accepted' | 'rejected' | 'inconclusive' | 'not_lines' | 'failed' = 'rejected';
+    let rejection: Record<string, unknown> | undefined;
     try {
       const retried = await read(retryPlan.instruction);
       const retriedRows = retried.extractedInvoiceLines ?? [];
@@ -142,6 +144,10 @@ export async function extractInvoiceDocuments(
           extractedInvoiceLines: retriedRows,
           extractedRowsAddedOnSecondRead: added.map(row => ({ description: row.description, totalPrice: row.totalPrice ?? null })),
         };
+      } else {
+        const described = describeRejectedSecondRead(retryPlan, firstRows, retriedRows);
+        rejection = described.log;
+        outcome = described.outcome;
       }
     } catch (error) {
       if (abortSignal?.aborted) throw error;
@@ -155,7 +161,9 @@ export async function extractInvoiceDocuments(
       checks: retryPlan.checks,
       amountDueShortfallCents: retryPlan.amountDueShortfall,
       subtotalShortfallCents: retryPlan.subtotalShortfall,
+      ...rejection,
     });
+    result = { ...result, extractedSecondReadOutcome: outcome === 'accepted' ? null : outcome };
   }
   return result;
 }
@@ -175,6 +183,50 @@ function rowsAddedBySecondRead<T extends { description: string; totalPrice?: str
   }
   const added = [...remaining.values()].flat();
   return added.length > 0 ? added : undefined;
+}
+
+// Why a second read was not used, for the retry log. `rejected` is a read with nothing new and nothing lost; `not_lines`
+// is a read whose added rows total the gap but are labeled like tax, a balance, a payment, or a finance charge; a read that
+// added other rows, or dropped or changed a first-read row, is `inconclusive`: it may have found rows, just not the ones that close the gap.
+function describeRejectedSecondRead(
+  plan: MissingRowsPlan,
+  firstRows: Array<{ description: string; totalPrice?: string | null }>,
+  retriedRows: Array<{ description: string; totalPrice?: string | null }>
+): { outcome: 'rejected' | 'inconclusive' | 'not_lines'; log: Record<string, unknown> } {
+  const firstKeys = new Map<string, number>();
+  for (const row of firstRows) firstKeys.set(rowKey(row), (firstKeys.get(rowKey(row)) ?? 0) + 1);
+  let kept = 0;
+  const unmatched: typeof retriedRows = [];
+  for (const row of retriedRows) {
+    const key = rowKey(row);
+    const count = firstKeys.get(key) ?? 0;
+    if (count > 0) {
+      kept += 1;
+      firstKeys.set(key, count - 1);
+    } else {
+      unmatched.push(row);
+    }
+  }
+  const dropped = firstRows.length - kept;
+  const toSum = (rows: typeof retriedRows) => sumExtractedLineCents(rows as InvoiceOcrResult['extractedInvoiceLines'] & object);
+  // Rows that total the amount-due gap but read as tax, a balance, a payment, or a finance charge are refused as not lines.
+  const notLines = dropped === 0 && plan.amountDueShortfall !== undefined && unmatched.length > 0
+    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description));
+  const outcome = notLines ? 'not_lines' : unmatched.length === 0 && dropped === 0 ? 'rejected' : 'inconclusive';
+  return {
+    outcome,
+    log: {
+      secondReadRows: retriedRows.length,
+      secondReadRowsCents: toSum(retriedRows),
+      firstRowsKept: kept,
+      firstRowsDroppedOrChanged: dropped,
+      rowsAdded: unmatched.length,
+      rowsAddedCents: unmatched.length ? toSum(unmatched) : undefined,
+      wantedAmountDueShortfallCents: plan.amountDueShortfall,
+      wantedRowsCents: plan.subtotalRowsCents,
+      reason: dropped > 0 ? 'dropped or changed a first-read row' : notLines ? 'added rows are not lines' : unmatched.length ? 'added rows do not close the gap' : 'no new rows',
+    },
+  };
 }
 
 interface MissingRowsPlan {
@@ -287,6 +339,7 @@ export function mergeInvoiceEnrichment(
       extractedSummaryCharges: null,
       extractedLineSubtotal: null,
       extractedRowsAddedOnSecondRead: null,
+      extractedSecondReadOutcome: null,
       extractedPartialPayment: null,
       extractedPriorPayments: null,
       extractedPurchaseOrderNumber: null,
@@ -331,6 +384,7 @@ export function mergeInvoiceEnrichment(
     extractedSummaryCharges: ocr.extractedSummaryCharges,
     extractedLineSubtotal: ocr.extractedLineSubtotal,
     extractedRowsAddedOnSecondRead: ocr.extractedRowsAddedOnSecondRead ?? null,
+    extractedSecondReadOutcome: ocr.extractedSecondReadOutcome ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,

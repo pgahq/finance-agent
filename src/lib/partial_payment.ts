@@ -179,6 +179,13 @@ export function lineSubtotalShortfallCents(
   return gap > 0 ? gap : undefined;
 }
 
+/**
+ * What a missing-row second read did when its rows were not used: `rejected` returned the same rows and nothing new,
+ * `inconclusive` added or changed rows without closing the gap, `not_lines` added a row that closes the amount-due gap
+ * but is labeled like tax, a balance, a payment, or a finance charge, `failed` errored, and `skipped` never ran.
+ */
+export type SecondReadOutcome = 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped';
+
 function describeLines(lines: ExtractedInvoiceLine[]): string {
   return lines.map(line => `"${printable(line.description)}"`).join(', ');
 }
@@ -194,7 +201,8 @@ export function lineSubtotalReviewNote(
   lines: ExtractedInvoiceLine[],
   subtotal: PrintedAmount | null | undefined,
   dueGapCents?: number,
-  subtotalFreight = 0
+  subtotalFreight = 0,
+  secondRead?: SecondReadOutcome | null
 ): string | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
@@ -218,10 +226,45 @@ export function lineSubtotalReviewNote(
     const cents = lineTotalCents(line);
     return cents != null && cents === gap;
   });
-  const hint = matching.length
-    ? ` The ${centsDollars(gap)} difference equals ${describeLines(matching.slice(0, 3))}; check whether that row is printed more than once.`
-    : ` The ${centsDollars(gap)} difference may be a row that was not read.`;
-  return `${head}${hint}`;
+  if (matching.length) {
+    return `${head} The ${centsDollars(gap)} difference equals ${describeLines(matching.slice(0, 3))}; check whether that row is printed more than once.`;
+  }
+  if (secondRead === 'rejected') {
+    return `${head} A second read of the document found no row that makes up the ${centsDollars(gap)}, so the document's own totals may not agree (a section or summary total that is higher than its rows). Check the PDF; if no row carries the ${centsDollars(gap)}, it is not missing from the lines.`;
+  }
+  if (secondRead === 'not_lines') {
+    return `${head} A second read returned a row that would make up the shortfall, but its label reads as tax, a balance, a payment, or a finance charge, so it was not added as a line. Check the PDF for what that row is.`;
+  }
+  const after = secondRead === 'skipped'
+    ? ' A second read was skipped because the first read was slow.'
+    : secondRead === 'inconclusive'
+      ? ' A second read changed or added rows but did not make up the difference, so it was not used.'
+      : '';
+  return `${head} The ${centsDollars(gap)} difference may be a row that was not read.${after}`;
+}
+
+/**
+ * A sentence for the line-subtotal review when the PO's own lines add up to the amount due: the supplier then billed
+ * what the PO lists, and AP may need one invoice line per PO line rather than the supplier's printed rows. It only
+ * names the match; the lines stay as extracted. Undefined when the PO's lines do not equal the amount due or the
+ * invoice already has one line per PO line.
+ */
+export function poTotalReviewNote(
+  poLines: PurchaseOrderLine[] | undefined,
+  amountDue: string | null | undefined,
+  rowCount: number
+): string | undefined {
+  const due = chargeAmount(amountDue);
+  if (!poLines?.length || due == null || poLines.length === rowCount) return undefined;
+  let total = 0;
+  for (const line of poLines) {
+    const cents = poLineAmountCents(line);
+    if (cents == null) return undefined;
+    total += cents;
+  }
+  if (total !== toCents(due)) return undefined;
+  const lineText = poLines.length === 1 ? '1 line' : `${poLines.length} lines`;
+  return `The PO's ${lineText} total ${centsDollars(total)}, which is the amount due, so the supplier may have billed what the PO lists rather than the ${rowCount} rows read from the PDF. The invoice lines were not changed to match the PO; AP may need to book one line per PO line.`;
 }
 
 export interface PartialPaymentPlan {

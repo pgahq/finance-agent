@@ -1,8 +1,10 @@
-// SUPIN-472322: NMR Events invoice 320751 for PO-414792 (amount due $41,590.16), from the production OCR log.
+// SUPIN-472322: NMR Events invoice 320751 for PO-414792 (amount due $41,590.16), from the production OCR log and the PDF.
 // The printed Subtotal $48,102.66 already contains the $2,000.00 freight. $48,102.66 - Discount $8,866.66
-// + Tax $2,354.16 = $41,590.16. The first read returned 59 rows totaling $44,714.66, so rows worth $1,388.00 were
-// missed (the rows themselves are not in the log; the two below only carry their total) and the unlined discount
-// was left off.
+// + Tax $2,354.16 = $41,590.16. The 59 rows below are every billed row the PDF prints besides that freight, and they
+// total $44,714.66, which is $1,388.00 less than the $46,102.66 the subtotal leaves for rows. No printed row
+// carries that $1,388.00: the PDF's Summary Equipment total is $1,388.00 more than its section totals add up to,
+// so a second read finds nothing to add. `supin472322MissedRows` is NOT in the PDF; it is a synthetic recovered
+// row set, used only to test that the placement and note logic reconcile once rows do add up.
 interface Row {
   description: string;
   descriptionCells: string[] | null;
@@ -80,9 +82,10 @@ export const supin472322ProductionRows: Row[] = [
   row('Video Engineer Hi-Res*', 1, '1150.00', '230.00', 'Additional Overtime for 10/17', 2),
 ];
 
+// Synthetic: not printed on the invoice (see the header comment).
 export const supin472322MissedRows: Row[] = [
-  row('Row the first read missed (A)', 1, '1000.00', '1000.00', 'Audio Equipment'),
-  row('Row the first read missed (B)', 1, '388.00', '388.00', 'Audio Equipment'),
+  row('Synthetic recovered row (A)', 1, '1000.00', '1000.00', 'Audio Equipment'),
+  row('Synthetic recovered row (B)', 1, '388.00', '388.00', 'Audio Equipment'),
 ];
 
 export const supin472322Rows: Row[] = [...supin472322ProductionRows, ...supin472322MissedRows];
@@ -104,3 +107,13 @@ export const supin472322Header = {
   extractedPartialPayment: null,
   extractedPriorPayments: null,
 };
+
+// PO-414792: the six lines AP booked the invoice against; their amounts include tax and total the amount due.
+export const supin472322PoLines = [
+  { lineOrder: 1, purchaseOrderLineId: 'ITEM_ORDER_LINE-1', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 29097.0, extendedAmount: 29097.0 },
+  { lineOrder: 2, purchaseOrderLineId: 'ITEM_ORDER_LINE-2', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 4314.2, extendedAmount: 4314.2 },
+  { lineOrder: 3, purchaseOrderLineId: 'ITEM_ORDER_LINE-3', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 4747.74, extendedAmount: 4747.74 },
+  { lineOrder: 4, purchaseOrderLineId: 'ITEM_ORDER_LINE-4', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 1176.6, extendedAmount: 1176.6 },
+  { lineOrder: 5, purchaseOrderLineId: 'ITEM_ORDER_LINE-5', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 267.12, extendedAmount: 267.12 },
+  { lineOrder: 6, purchaseOrderLineId: 'ITEM_ORDER_LINE-6', purchaseOrderDocumentNumber: 'PO-414792', quantity: 1, unitCost: 1987.5, extendedAmount: 1987.5 },
+];

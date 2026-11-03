@@ -4,6 +4,7 @@ import {
   formatLineSubtotalNotes,
   formatPartialPaymentNotes,
   lineSubtotalReviewNote,
+  poTotalReviewNote,
   lineSubtotalShortfallCents,
   planBalanceInvoice,
   planPartialPayment,
@@ -22,7 +23,7 @@ import {
   supin470584Rows,
 } from './fixtures/supin_470584.js';
 
-import { supin472322Header, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
+import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { summaryCreditCents } from '../lib/header_charges.js';
 import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
@@ -247,6 +248,52 @@ describe('freight inside the subtotal and an unlined discount (SUPIN-472322)', (
     );
     expect(lineSubtotalReviewNote(supin472322Rows, header.extractedLineSubtotal, undefined, 200000)).toBeUndefined();
     expect(lineSubtotalReviewNote(supin472322Rows, header.extractedLineSubtotal, 0, 200000)).toBeUndefined();
+  });
+
+  it('says no row carries the $1,388.00 once a second read found none, and that the second read was skipped when it was', () => {
+    const head = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.';
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'rejected')).toBe(
+      `${head} A second read of the document found no row that makes up the $1,388.00, so the document's own totals may not agree (a section or summary total that is higher than its rows).`
+      + ' Check the PDF; if no row carries the $1,388.00, it is not missing from the lines.'
+    );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'skipped')).toBe(
+      `${head} The $1,388.00 difference may be a row that was not read. A second read was skipped because the first read was slow.`
+    );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'inconclusive')).toBe(
+      `${head} The $1,388.00 difference may be a row that was not read. A second read changed or added rows but did not make up the difference, so it was not used.`
+    );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'not_lines')).toBe(
+      `${head} A second read returned a row that would make up the shortfall, but its label reads as tax, a balance, a payment, or a finance charge, so it was not added as a line. Check the PDF for what that row is.`
+    );
+    expect(lineSubtotalReviewNote(supin472322ProductionRows, header.extractedLineSubtotal, 138800, 200000, 'failed')).toBe(
+      `${head} The $1,388.00 difference may be a row that was not read.`
+    );
+    expect(lineSubtotalReviewNote(supin472322Rows, header.extractedLineSubtotal, 0, 200000, 'rejected')).toBeUndefined();
+  });
+});
+
+describe('poTotalReviewNote (SUPIN-472322)', () => {
+  const due = supin472322Header.extractedAmountDue;
+
+  it('names six PO lines that total the amount due beside 59 submitted rows', () => {
+    expect(poTotalReviewNote(supin472322PoLines as any[], due, 59)).toBe(
+      "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than the 59 rows read from the PDF."
+      + ' The invoice lines were not changed to match the PO; AP may need to book one line per PO line.'
+    );
+  });
+
+  it('says nothing when the PO total is not the amount due, a PO line has no amount, or the line counts match', () => {
+    expect(poTotalReviewNote(supin472322PoLines as any[], '$41,590.17', 59)).toBeUndefined();
+    expect(poTotalReviewNote([...supin472322PoLines, { lineOrder: 7, purchaseOrderLineId: 'X' }] as any[], due, 59)).toBeUndefined();
+    expect(poTotalReviewNote(supin472322PoLines as any[], due, 6)).toBeUndefined();
+    expect(poTotalReviewNote(undefined, due, 59)).toBeUndefined();
+    expect(poTotalReviewNote([], due, 59)).toBeUndefined();
+    expect(poTotalReviewNote(supin472322PoLines as any[], null, 59)).toBeUndefined();
+  });
+
+  it('reads a PO line from quantity times unit cost when it has no extended amount', () => {
+    const lines = [{ lineOrder: 1, purchaseOrderLineId: 'A', quantity: 2, unitCost: 50 }, { lineOrder: 2, purchaseOrderLineId: 'B', quantity: 1, unitCost: 25 }] as any[];
+    expect(poTotalReviewNote(lines, '$125.00', 5)).toContain("The PO's 2 lines total $125.00");
   });
 });
 

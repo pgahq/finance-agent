@@ -427,7 +427,7 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedInvoiceLines).toHaveLength(27);
         expect(result?.extractedInvoiceLines?.[0].totalPrice).toBe('$750.00');
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive' }));
       });
 
       it('keeps the first read when the second read drops a first-read row and adds others to reach the total', async () => {
@@ -572,7 +572,7 @@ describe('invoice OCR pass', () => {
 
         expect(result?.extractedInvoiceLines).toHaveLength(5);
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1, rowsAddedCents: 20866 }));
       });
 
       it.each(['Sales Tax', 'Previous Balance', 'Payment Received', 'Finance Charge', 'Past Due', 'Overdue Amount', 'Outstanding', 'Late Fee', 'Prior Invoice #123'])('keeps the first read when the second read fills the gap with a "%s" row, which is not a line', async label => {
@@ -585,7 +585,14 @@ describe('invoice OCR pass', () => {
 
         expect(result?.extractedInvoiceLines).toHaveLength(5);
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(result?.extractedSecondReadOutcome).toBe('not_lines');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({
+          outcome: 'not_lines',
+          reason: 'added rows are not lines',
+          rowsAdded: 1,
+          rowsAddedCents: 41732,
+          wantedAmountDueShortfallCents: 41732,
+        }));
       });
 
       it('keeps the first read when the second read drops a first-read row', async () => {
@@ -732,7 +739,7 @@ describe('invoice OCR pass', () => {
       });
       const retryLog = () => jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug;
 
-      it('names the $1,388.00 the first read missed, not $3,388.00, and accepts the second read that adds it', async () => {
+      it('names the $1,388.00 short, not $3,388.00, and accepts a second read that supplies rows reaching it (synthetic rows)', async () => {
         mockGetAiResponse
           .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
           .mockResolvedValueOnce(responseFor(supin472322Rows));
@@ -757,7 +764,89 @@ describe('invoice OCR pass', () => {
         const result = await extractInvoiceDocuments([pdf]);
 
         expect(result?.extractedInvoiceLines).toHaveLength(59);
-        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'rejected' }));
+        expect(result?.extractedSecondReadOutcome).toBe('inconclusive');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'inconclusive', reason: 'added rows do not close the gap', rowsAdded: 1, rowsAddedCents: 100000 }));
+      });
+
+      it('rejects a second read that finds no new row, as the PDF itself does, and says why', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(59);
+        expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
+        expect(result?.extractedSecondReadOutcome).toBe('rejected');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({
+          outcome: 'rejected',
+          reason: 'no new rows',
+          secondReadRows: 59,
+          secondReadRowsCents: 4471466,
+          firstRowsKept: 59,
+          firstRowsDroppedOrChanged: 0,
+          rowsAdded: 0,
+          wantedAmountDueShortfallCents: 138800,
+        }));
+      });
+
+      it('rejects a second read that drops or changes a first-read row even when it adds $1,388.00', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
+          .mockResolvedValueOnce(responseFor([...supin472322ProductionRows.slice(1), ...supin472322MissedRows]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(59);
+        expect(result?.extractedSecondReadOutcome).toBe('inconclusive');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({
+          outcome: 'inconclusive',
+          reason: 'dropped or changed a first-read row',
+          firstRowsDroppedOrChanged: 1,
+          rowsAdded: 2,
+          rowsAddedCents: 138800,
+        }));
+      });
+
+      it('leaves no outcome on an accepted second read', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows))
+          .mockResolvedValueOnce(responseFor(supin472322Rows));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedSecondReadOutcome).toBeNull();
+      });
+
+      it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 61_000;
+          return responseFor(supin472322ProductionRows);
+        });
+
+        const result = await extractInvoiceDocuments([pdf]);
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
+        expect(result?.extractedInvoiceLines).toHaveLength(59);
+        expect(result?.extractedSecondReadOutcome).toBe('skipped');
+        expect(retryLog()).toHaveBeenCalledWith('Invoice OCR missing-row retry', expect.objectContaining({ outcome: 'skipped', reason: 'slow first read', checks: ['amountDue', 'subtotal'] }));
+      });
+
+      it('lets the caller shorten the limit', async () => {
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        mockGetAiResponse.mockImplementationOnce(async () => {
+          now += 31_000;
+          return responseFor(supin472322ProductionRows);
+        });
+
+        await extractInvoiceDocuments([pdf], undefined, undefined, { retryMaxFirstReadMs: 30_000 });
+        clock.mockRestore();
+
+        expect(mockGetAiResponse).toHaveBeenCalledTimes(1);
       });
 
       it('does not read again once the rows and discount reconcile', async () => {
@@ -947,7 +1036,7 @@ describe('invoice OCR pass', () => {
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
       });
-      expect(Object.keys(merged).sort()).toEqual(Object.keys({ ...InvoiceMatchingSchema.shape, ...ocrResult, extractedRowsAddedOnSecondRead: null }).filter((key) => !key.startsWith('printed')).sort());
+      expect(Object.keys(merged).sort()).toEqual(Object.keys({ ...InvoiceMatchingSchema.shape, ...ocrResult, extractedRowsAddedOnSecondRead: null, extractedSecondReadOutcome: null }).filter((key) => !key.startsWith('printed')).sort());
     });
 
     it('keeps the OCR payment terms name and drops terms the document does not print', () => {
