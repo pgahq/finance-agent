@@ -100,6 +100,15 @@ jest.mock('../lib/invoice_enrichment.js', () => {
   };
 });
 
+jest.mock('../lib/reimbursement_packet.js', () => {
+  const actual = jest.requireActual('../lib/reimbursement_packet.js');
+  return {
+    ...actual,
+    readReimbursementPacket: jest.fn(actual.readReimbursementPacket),
+    decideReimbursement: jest.fn(actual.decideReimbursement),
+  };
+});
+
 jest.mock('../lib/invoice_lines.js', () => {
   const actual = jest.requireActual('../lib/invoice_lines.js');
   return {
@@ -203,6 +212,7 @@ function freshRequire() {
     slack: require('../lib/slack.js'),
     invoiceEnrichment: require('../lib/invoice_enrichment.js'),
     invoiceLines: require('../lib/invoice_lines.js'),
+    reimbursementPacket: require('../lib/reimbursement_packet.js'),
     database: require('../lib/database.js'),
     clustering: require('../lib/invoice_attachment_clustering.js'),
     s3: require('../lib/s3.js'),
@@ -292,6 +302,112 @@ describe('create_invoice', () => {
         assigneeName: 'Joe Carey',
       }),
     );
+  });
+
+  describe('expense reimbursement packet', () => {
+    const reimbursement = {
+      payee: { workdayId: 'wid-ellery', supplierName: 'MORGAN T ELLERY', supplierId: 'S-000123', nameOnForm: 'MORGAN T ELLERY', matchedBy: 'name' },
+      amount: 1000,
+      amountLabel: '$1,000.00',
+      invoiceDate: '2026-11-02',
+      description: 'Hotel reimbursement - 2026 Sample Marathon Team',
+    };
+    const payeeEnrichment = {
+      ...baseEnrichmentResult,
+      supplier: {
+        ...baseEnrichmentResult.supplier,
+        extractedInformation: { supplierName: 'MORGAN T ELLERY', memo: null },
+        resolvedSupplier: { workdayId: 'wid-ellery', supplierName: 'MORGAN T ELLERY', confidence: 1, reason: 'payee' },
+        reason: 'Reimbursement payee MORGAN T ELLERY matched Workday supplier S-000123 MORGAN T ELLERY by exact name. The merchant on receipts or folios was not used as the supplier.',
+      },
+      extractedInvoiceDate: '2026-11-02',
+      extractedAmountDue: '$1,000.00',
+      extractedSuppliersInvoiceNumber: null,
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: [
+        { description: reimbursement.description, quantity: null, unitCost: null, totalPrice: '$1,000.00', hasDiscount: false },
+      ],
+    };
+    const reimbursementRequest = {
+      ...attachmentRequest('new-invoices/req-reimb/packet.pdf', 'packet.pdf'),
+      emailContext: {
+        subject: 'Hotel reimbursement for Morgan Ellery',
+        plainTextBody: 'Please reimburse Morgan for the hotel. Use PO-413821.',
+        adminConversationParts: '<p>Use PO-413821</p>',
+      },
+    };
+
+    it('invoices the payee at the approved amount, keeps the supplier, and ignores a named PO', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, reimbursementPacket } = freshRequire();
+      reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+      reimbursementPacket.decideReimbursement.mockResolvedValue({ outcome: 'apply', reimbursement });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(payeeEnrichment);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: reimbursement.description, extendedAmount: 1000 }],
+        appliedFallbacks: defaultFinalLines.appliedFallbacks,
+      });
+
+      await processor({ data: [reimbursementRequest] } as any);
+
+      expect(workday.loadPurchaseOrder).not.toHaveBeenCalled();
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][5]).toBeUndefined();
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][9]).toEqual(reimbursement);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs).toMatchObject({
+        supplierWID: 'wid-ellery',
+        extractedAmountDue: '$1,000.00',
+        invoiceDate: '2026-11-02',
+        keepSupplier: true,
+      });
+      expect(submitArgs.suppliersInvoiceNumber).toMatch(/^MORG/);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('The merchant on receipts or folios was not used as the supplier.');
+      expect(notes).toContain('Reimbursement packet: invoiced to S-000123 MORGAN T ELLERY for $1,000.00, the Amount to Pay on the reimbursement form.');
+      expect(notes).not.toContain('Purchase order');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          supplier: expect.objectContaining({ status: 'found', resolvedName: 'MORGAN T ELLERY', isDefault: false }),
+          reimbursement: expect.arrayContaining([expect.stringContaining('Payee: MORGAN T ELLERY (S-000123)')]),
+        }),
+      );
+    });
+
+    it('creates nothing and posts a manual-entry stop when the payee or amount is not confident', async () => {
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines, reimbursementPacket } = freshRequire();
+      const manual = { reason: 'the reimbursement form prints no Amount to Pay', payeeName: 'MORGAN T ELLERY' };
+      reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'reimbursement' });
+      reimbursementPacket.decideReimbursement.mockResolvedValue({ outcome: 'manual_entry', manual });
+
+      await processor({ data: [reimbursementRequest] } as any);
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(invoiceLines.buildFinalInvoiceLines).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      expect(workday.submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+      expect(slack.notifyResult).toHaveBeenCalledTimes(1);
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({ reimbursementManualEntry: manual }),
+      );
+    });
+
+    it('books an ordinary invoice as before when the packet is not a reimbursement', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, reimbursementPacket } = freshRequire();
+      reimbursementPacket.readReimbursementPacket.mockResolvedValue({ kind: 'supplier_invoice' });
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+
+      await processor({ data: [reimbursementRequest] } as any);
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][9]).toBeUndefined();
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1]).not.toHaveProperty('keepSupplier');
+      expect(workday.loadPurchaseOrder).toHaveBeenCalledWith(expect.anything(), 'PO-413821');
+    });
   });
 
   describe('IBS invoice 1026465 printed due date', () => {

@@ -15,6 +15,10 @@ A change that sets `Submit: true` or adds another submit path changes this and s
 
 So a draft is not a guarantee that AP corrects a defect. Notes on the invoice must describe what was actually submitted, because AP relies on them. Fallback labels come from the payload Workday accepted. Review notes are built before submit, so keep their claims true even if a repair retry changes the line.
 
+### Reimbursement packets and the default supplier
+
+A reimbursement packet is invoiced to the payee the form names, for the form's Amount to Pay, and never to the supplier on a folio or receipt. When the payee or the approved amount cannot be picked confidently, no invoice is created and the run posts a manual-entry message to Slack. `submitNewSupplierInvoice` takes `keepSupplier` for these invoices, which disables the repair retry on the default supplier (`WORKDAY_DEFAULT_SUPPLIER_WID`) so a payment to a person is never moved to a generic supplier. Details are in `integrations-and-external-contracts` ("Expense reimbursement packets").
+
 ## Where the rules live
 
 Detailed behavior (amount alignment, PO line matching, repair retries, Workday contracts) is documented in the skills under `.agents/skills/`. Read the relevant skill before changing that area, and update it in the same PR:
