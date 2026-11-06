@@ -516,6 +516,8 @@ interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
   defaultSupplierWID?: string;
+  /** The supplier was chosen for a reason the default supplier cannot stand in for (a reimbursement payee): never retry on it. */
+  keepSupplier?: boolean;
   companyWID?: string;
   companyReferenceType?: string;
   workQueueTags?: WorkQueueTag[];
@@ -1429,6 +1431,7 @@ function getFallbackRetryBuildOptions(
     &&
     defaultSupplierWID
     && normalizeSupplierWID(options.supplierWID) !== defaultSupplierWID
+    && !options.keepSupplier
     && !submitLinksPurchaseOrderLines(options)
   ) {
     return {
@@ -2954,6 +2957,8 @@ export interface SubmitNewSupplierInvoiceParams {
   assigneeWID?: string;
   omitPurchaseOrderLineReference?: boolean;
   conversationUrl?: string;
+  /** Never retry on the default supplier: a payment to this supplier must not move to a generic one. */
+  keepSupplier?: boolean;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -2986,6 +2991,7 @@ export async function submitNewSupplierInvoice(
     assigneeWID,
     omitPurchaseOrderLineReference,
     conversationUrl,
+    keepSupplier,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -3060,6 +3066,7 @@ export async function submitNewSupplierInvoice(
       assigneeWID,
       omitPurchaseOrderLineReference,
       conversationUrl,
+      ...(keepSupplier ? { keepSupplier } : {}),
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',
