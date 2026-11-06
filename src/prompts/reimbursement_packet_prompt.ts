@@ -24,6 +24,8 @@ export const reimbursementPacketPrompt = `You decide whether an AP email packet 
 Return kind "reimbursement" only when the packet is a person-to-be-paid-back request: an employee or volunteer expense reimbursement form (or an email that says to reimburse a named person) with receipts, hotel folios, or credit card slips as support. Return "supplier_invoice" when a business is billing PGA, even if the email says "please reimburse us for shipping" or the invoice lists reimbursable expenses.
 
 Rules:
+- Judge kind from the documents in this packet. The email is context only, and an email that says "reimburse" does not make a business's invoice a reimbursement. A document that is an invoice or bill from a business with an amount due to PGA is supplier_invoice.
+- A hotel folio, receipt, or card slip is backup, not a bill to PGA. When the email asks AP to reimburse a person and the documents are only receipts or folios, return reimbursement with formAmountToPay null.
 - The payee is the person being paid back, from the reimbursement form. A hotel, airline, restaurant, or other merchant on a receipt or folio is never the payee.
 - formAmountToPay is the figure the form itself says to pay. Never use a receipt, folio, or card slip total, and never add numbers together. A hotel folio can show a zero balance because a card already paid it; that is not the amount to pay.
 - emailAmount is a dollar amount the email asks AP to pay. Set emailAmountIsCap to true for wording such as "up to", "maximum", or "not to exceed", and false for an exact amount.

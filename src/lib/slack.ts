@@ -175,7 +175,7 @@ function appendReimbursementManualEntryBlock(blocks: SlackBlock[], entry: Record
     ...(text(entry.payeeName) ? [`Payee on the form: ${text(entry.payeeName)}`] : []),
     ...(text(entry.formAmount) ? [`Amount to Pay on the form: ${text(entry.formAmount)}`] : []),
     ...(text(entry.emailAmount) ? [`Amount in the email: ${text(entry.emailAmount)}`] : []),
-    'Nothing was written to Workday. Enter this reimbursement manually.',
+    'Nothing was written to Workday. Before entering this reimbursement manually, check this conversation for an invoice already created from the form, so the person is not paid twice.',
   ];
   blocks.push({
     type: 'section',

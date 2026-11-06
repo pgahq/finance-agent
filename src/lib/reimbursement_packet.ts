@@ -17,6 +17,13 @@ import {
 
 export type { ReimbursementPacket };
 
+export const REIMBURSEMENT_PACKETS_ENV_VAR = 'REIMBURSEMENT_PACKETS_ENABLED';
+
+/** A kill switch read from SSM: only `false` turns it off, and a missing parameter (empty) leaves it on. */
+export function isReimbursementPacketsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[REIMBURSEMENT_PACKETS_ENV_VAR]?.trim().toLowerCase() !== 'false';
+}
+
 /**
  * A reimbursement packet asks AP to pay a person back. The folio or receipt in it is backup, so the invoice goes to
  * the person for the amount the form approves, never to the merchant for what the folio prints.
@@ -52,7 +59,9 @@ export type ReimbursementDecision =
 type EmailContextInput = InvoiceData['emailContext'];
 
 const MIN_CONFIDENCE = 0.8;
-const SIGNAL = /\breimburs\w*|\bamount\s+to\s+pay\b|\bexpense\s+report\b/i;
+// "reimbursable expenses" on a supplier's invoice is common, so only the verbs and the noun count.
+const SIGNAL = /\breimburs(?:e|es|ed|ing|ement|ements)\b|\bamount\s+to\s+pay\b|\bexpense\s+report\b/i;
+const READ_ATTEMPTS = 2;
 const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
@@ -88,6 +97,7 @@ export async function readReimbursementPacket(
   emailContext: EmailContextInput,
   abortSignal?: AbortSignal
 ): Promise<ReimbursementPacket | undefined> {
+  if (!isReimbursementPacketsEnabled()) return undefined;
   if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
   const readable = await convertOfficeAttachmentsForModel(attachments);
   const parts = attachmentContentParts(readable);
@@ -96,28 +106,38 @@ export async function readReimbursementPacket(
     return undefined;
   }
   const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
-  const response = await getAiResponse({
-    prompt: reimbursementPacketPrompt,
-    schema: ReimbursementPacketSchema,
-    tools: {},
-    abortSignal,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: `Decide whether this packet is an expense reimbursement.\n\nDocuments: ${fileList}\n\nEmail:\n${emailText(emailContext)}` },
-          ...parts,
+  let lastFailure: unknown;
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
+    if (abortSignal?.aborted) break;
+    try {
+      const response = await getAiResponse({
+        prompt: reimbursementPacketPrompt,
+        schema: ReimbursementPacketSchema,
+        tools: {},
+        abortSignal,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: `Decide whether this packet is an expense reimbursement.\n\nDocuments: ${fileList}\n\nEmail:\n${emailText(emailContext)}` },
+              ...parts,
+            ],
+          },
         ],
-      },
-    ],
-  });
-  const parsed = ReimbursementPacketSchema.safeParse(response);
-  if (!parsed.success) {
-    debug('Reimbursement packet read failed schema validation', { issues: parsed.error.issues });
-    throw new Error('Reimbursement packet read returned an unexpected shape');
+      });
+      const parsed = ReimbursementPacketSchema.safeParse(response);
+      if (parsed.success) {
+        debug('Reimbursement packet read', parsed.data);
+        return parsed.data;
+      }
+      debug('Reimbursement packet read failed schema validation', { attempt, issues: parsed.error.issues });
+      lastFailure = new Error('Reimbursement packet read returned an unexpected shape');
+    } catch (error) {
+      debug('Reimbursement packet read failed', { attempt, error });
+      lastFailure = error;
+    }
   }
-  debug('Reimbursement packet read', parsed.data);
-  return parsed.data;
+  throw lastFailure ?? new Error('Reimbursement packet read was aborted');
 }
 
 function cents(amount: number): number {

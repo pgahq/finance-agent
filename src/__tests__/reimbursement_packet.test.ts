@@ -16,6 +16,7 @@ import {
   applyReimbursementToEnrichment,
   decideReimbursement,
   hasReimbursementSignal,
+  isReimbursementPacketsEnabled,
   readReimbursementPacket,
   reimbursementDescription,
   reimbursementNote,
@@ -64,6 +65,10 @@ describe('hasReimbursementSignal', () => {
     expect(hasReimbursementSignal(undefined, ['Expense Reimbursement Form.pdf'])).toBe(true);
   });
 
+  it('does not fire on reimbursable expenses printed on a supplier invoice', () => {
+    expect(hasReimbursementSignal({ plainTextBody: 'Reimbursable expenses are itemized on the invoice.' } as never, [])).toBe(false);
+  });
+
   it('does not fire on an ordinary invoice email', () => {
     expect(hasReimbursementSignal({ subject: 'Invoice 1234', plainTextBody: 'Attached is our invoice.' } as never, ['invoice.pdf'])).toBe(false);
   });
@@ -96,6 +101,35 @@ describe('readReimbursementPacket', () => {
     aiResponse.mockResolvedValue({ kind: 'maybe' });
     await expect(readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never))
       .rejects.toThrow('unexpected shape');
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a failed read once before giving up', async () => {
+    aiResponse.mockRejectedValueOnce(new Error('gateway timeout')).mockResolvedValueOnce(packet());
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.kind).toBe('reimbursement');
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws the last failure when both attempts fail', async () => {
+    aiResponse.mockRejectedValue(new Error('gateway timeout'));
+    await expect(readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never))
+      .rejects.toThrow('gateway timeout');
+  });
+
+  it('is off only when the switch says false', async () => {
+    aiResponse.mockResolvedValue(packet());
+    process.env.REIMBURSEMENT_PACKETS_ENABLED = 'false';
+    try {
+      expect(await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never)).toBeUndefined();
+      expect(aiResponse).not.toHaveBeenCalled();
+      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: ' False ' })).toBe(false);
+      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: '' })).toBe(true);
+      expect(isReimbursementPacketsEnabled({})).toBe(true);
+      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: 'true' })).toBe(true);
+    } finally {
+      delete process.env.REIMBURSEMENT_PACKETS_ENABLED;
+    }
   });
 });
 

@@ -697,7 +697,7 @@ describe('notifyResult', () => {
     expect(texts).toContain('Not created: the reimbursement form prints no Amount to Pay.');
     expect(texts).toContain('Payee on the form: Morgan &lt;T&gt; Ellery');
     expect(texts).toContain('Amount in the email: $900.00');
-    expect(texts).toContain('Nothing was written to Workday. Enter this reimbursement manually.');
+    expect(texts).toContain('Nothing was written to Workday. Before entering this reimbursement manually, check this conversation for an invoice already created from the form');
     expect(texts).not.toContain('function ran');
   });
 
