@@ -308,4 +308,33 @@ describe('enrichInvoiceFromAttachments supplier name check', () => {
     expect(result.supplier.status).toBe('not_found');
     expect(findDocuments).not.toHaveBeenCalled();
   });
+
+  it('uses the reimbursement payee and amount instead of reading the documents as an invoice', async () => {
+    const reimbursement = {
+      payee: { workdayId: 'wid-payee', supplierName: 'MORGAN T ELLERY', supplierId: 'S-000123', nameOnForm: 'Morgan Ellery', matchedBy: 'name' as const },
+      amount: 1000,
+      amountLabel: '$1,000.00',
+      invoiceDate: '2026-11-02',
+      description: 'Hotel reimbursement',
+    };
+    (getAiResponse as jest.Mock).mockResolvedValue({
+      ...matching,
+      emailBalanceDue: { amount: '$5.00', phrase: 'remaining balance' },
+    });
+
+    const result = await enrichInvoiceFromAttachments(
+      {} as never, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, reimbursement
+    );
+
+    expect(extractInvoiceDocuments).not.toHaveBeenCalled();
+    expect(findDocuments).not.toHaveBeenCalled();
+    expect(result.supplier.status).toBe('found');
+    expect(result.supplier.resolvedSupplier?.workdayId).toBe('wid-payee');
+    expect(result.extractedAmountDue).toBe('$1,000.00');
+    expect(result.extractedInvoiceLines).toEqual([expect.objectContaining({ description: 'Hotel reimbursement', totalPrice: '$1,000.00' })]);
+    expect(result.emailBalanceDue).toBeNull();
+    const prompt = (getAiResponse as jest.Mock).mock.calls[0][0].messages[0].content[0].text as string;
+    expect(prompt).toContain('Reimbursement packet: AP asked to pay Morgan Ellery back $1,000.00');
+    expect(prompt).toContain('"totalPrice": "$1,000.00"');
+  });
 });

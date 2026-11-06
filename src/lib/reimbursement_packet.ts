@@ -161,7 +161,7 @@ function approvedAmount(packet: ReimbursementPacket): AmountResult {
 }
 
 function clean(value: string | null | undefined): string | undefined {
-  const text = (value ?? '').replace(/[|<>\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = (value ?? '').replace(/[|<>\p{Cc}]/gu, ' ').replace(/\s+/g, ' ').trim();
   return text ? text.slice(0, DESCRIPTION_LIMIT) : undefined;
 }
 
