@@ -11,7 +11,7 @@ import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470
 import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 
-jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
+jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
 
 jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
 
