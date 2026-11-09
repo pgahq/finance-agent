@@ -265,6 +265,22 @@ describe('convertOfficeToPdf', () => {
     expect(text).toContain('after the odd cells');
   });
 
+  it('reads merged cells under a rich-text or hyperlink master as that text, not "[object Object]"', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Rich');
+    sheet.getCell('A1').value = { richText: [{ text: 'Rich ' }, { text: 'Heading' }] };
+    sheet.mergeCells('A1:C1');
+    sheet.getCell('A3').value = { text: 'Receipt link', hyperlink: 'https://example.com/receipt' };
+    sheet.mergeCells('A3:B3');
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
+
+    expect(text).toContain('Rich Heading');
+    expect(text).toContain('Receipt link');
+    expect(text).not.toContain('[object Object]');
+  });
+
   it('throws OfficeConversionError for corrupt files', async () => {
     await expect(convertOfficeToPdf(Buffer.from('not a zip'), 'docx')).rejects.toBeInstanceOf(OfficeConversionError);
     await expect(convertOfficeToPdf(Buffer.from('not a zip'), 'xlsx')).rejects.toBeInstanceOf(OfficeConversionError);

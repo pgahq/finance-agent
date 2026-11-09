@@ -430,8 +430,10 @@ function dateText(value: Date): string {
   return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.replace('T', ' ').slice(0, 16);
 }
 
-// ExcelJS throws from `cell.text` for the non-master cells of a blank merged range (it calls `.toString()` on the
-// merge's null master value). One odd cell must not make the whole workbook unreadable, so it reads as blank.
+// ExcelJS throws from `cell.text` on the non-master cells of a blank merged range (it calls `.toString()` on the
+// merge's null master value) and returns "[object Object]" when the master holds rich text or a hyperlink. A merged
+// cell therefore reads as its master. The catch is a fallback for any other cell that throws: it reads as blank so
+// one odd cell does not fail the workbook, and the caller logs the count at warn level.
 function safeCellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
   try {
     return cell.text ?? '';
@@ -442,6 +444,7 @@ function safeCellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
 }
 
 function cellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
+  if (cell.isMerged && cell.master !== cell) return cellText(cell.master, stats);
   let raw: unknown = cell.value;
   if (raw && typeof raw === 'object' && !(raw instanceof Date) && 'result' in raw) {
     raw = (raw as { result?: unknown }).result;
@@ -474,7 +477,7 @@ async function xlsxBlocks(buffer: Buffer): Promise<Block[]> {
       const filled = Array.from(values, (value) => value ?? '');
       if (filled.some((value) => value.trim() !== '')) rows.push(filled);
     });
-    if (stats.blanked > 0) debug('Read unreadable xlsx cells as blank', { sheet: sheet.name, cells: stats.blanked });
+    if (stats.blanked > 0) warn('Read unexpectedly unreadable xlsx cells as blank', { sheet: sheet.name, cells: stats.blanked });
     if (rows.length === 0) continue;
     const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
     if (blocks.length > 0) blocks.push({ type: 'pageBreak' });
