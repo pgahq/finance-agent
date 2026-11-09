@@ -240,12 +240,16 @@ describe('convertOfficeToPdf', () => {
     // Guards the fixture: ExcelJS itself throws on these cells, which is what used to fail the whole file.
     expect(() => reloaded.getWorksheet('Reimbursement')!.getCell('C5').text).toThrow();
 
+    const warn = jest.requireMock<{ warn: jest.Mock }>('@pga/logger').warn;
+    warn.mockClear();
+
     const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
 
     expect(text).toContain('Expense Reimbursement');
     expect(text).toContain('Courtney Vogel');
     expect(text).toContain('Hotel - Courtyard Marriott - 10/29 - 11/2');
     expect(text).toContain('$1,000.00');
+    expect(warn).not.toHaveBeenCalledWith('Read unexpectedly unreadable xlsx cells as blank', expect.anything());
   });
 
   it('still reads merged cells that have a value, formulas without a cached result, and error values', async () => {
