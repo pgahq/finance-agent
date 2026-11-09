@@ -1,4 +1,4 @@
-import { debug } from '@pga/logger';
+import { debug, warn } from '@pga/logger';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import PDFDocument from 'pdfkit';
@@ -430,6 +430,16 @@ function dateText(value: Date): string {
   return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.replace('T', ' ').slice(0, 16);
 }
 
+// ExcelJS throws from `cell.text` for the non-master cells of a blank merged range (it calls `.toString()` on the
+// merge's null master value). One odd cell must not make the whole workbook unreadable, so it reads as blank.
+function safeCellText(cell: ExcelJS.Cell): string {
+  try {
+    return cell.text ?? '';
+  } catch {
+    return '';
+  }
+}
+
 function cellText(cell: ExcelJS.Cell): string {
   let raw: unknown = cell.value;
   if (raw && typeof raw === 'object' && !(raw instanceof Date) && 'result' in raw) {
@@ -438,7 +448,7 @@ function cellText(cell: ExcelJS.Cell): string {
   let text: string;
   if (raw instanceof Date) text = dateText(raw);
   else if (typeof raw === 'number') text = formatNumberCell(raw, cell.numFmt);
-  else text = cell.text ?? '';
+  else text = safeCellText(cell);
   return text.length > MAX_CELL_CHARS ? text.slice(0, MAX_CELL_CHARS) : text;
 }
 
@@ -513,9 +523,10 @@ async function convertForModel(doc: ModelDocument, kind: OfficeKind): Promise<Bu
     });
     return buffer;
   } catch (error) {
-    debug('Office attachment could not be converted for the model; skipping it', {
+    warn('Office attachment could not be converted for the model; skipping it', {
       fileName: doc.fileName,
       error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return undefined;
   }

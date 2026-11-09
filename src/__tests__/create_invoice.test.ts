@@ -608,6 +608,45 @@ describe('create_invoice', () => {
       }]);
     });
 
+    it('creates the invoice from a reimbursement workbook that has blank merged cells', async () => {
+      const { processor, workday, s3, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Reimbursement');
+      sheet.getCell('A1').value = 'Hotel - Courtyard Marriott - 10/29 - 11/2';
+      sheet.getCell('B1').value = 1000;
+      sheet.getCell('A3').value = 'Notes';
+      sheet.mergeCells('B3:E5');
+      const original = Buffer.from(await workbook.xlsx.writeBuffer());
+      s3.getBinaryFromS3.mockResolvedValue(original);
+
+      await processor({
+        data: [{ s3Key: 'new-invoices/req-merged/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any);
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].attachments).toEqual([{
+        fileName: 'Vogel Reimbursement.xlsx',
+        contentType: xlsxType,
+        base64Content: original.toString('base64'),
+      }]);
+    });
+
+    it('stops with an error and creates nothing when the Excel invoice file is corrupt', async () => {
+      const { processor, workday, s3, invoiceEnrichment } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      s3.getBinaryFromS3.mockResolvedValue(Buffer.from('not a workbook'));
+
+      await expect(processor({
+        data: [{ s3Key: 'new-invoices/req-bad-xlsx/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any)).rejects.toThrow('Vogel Reimbursement.xlsx could not be opened');
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    });
+
     it('stops with an error and creates nothing when the invoice file cannot be opened', async () => {
       const { processor, workday, slack, invoiceEnrichment } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
