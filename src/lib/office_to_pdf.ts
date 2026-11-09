@@ -432,15 +432,16 @@ function dateText(value: Date): string {
 
 // ExcelJS throws from `cell.text` for the non-master cells of a blank merged range (it calls `.toString()` on the
 // merge's null master value). One odd cell must not make the whole workbook unreadable, so it reads as blank.
-function safeCellText(cell: ExcelJS.Cell): string {
+function safeCellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
   try {
     return cell.text ?? '';
   } catch {
+    stats.blanked += 1;
     return '';
   }
 }
 
-function cellText(cell: ExcelJS.Cell): string {
+function cellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
   let raw: unknown = cell.value;
   if (raw && typeof raw === 'object' && !(raw instanceof Date) && 'result' in raw) {
     raw = (raw as { result?: unknown }).result;
@@ -448,7 +449,7 @@ function cellText(cell: ExcelJS.Cell): string {
   let text: string;
   if (raw instanceof Date) text = dateText(raw);
   else if (typeof raw === 'number') text = formatNumberCell(raw, cell.numFmt);
-  else text = safeCellText(cell);
+  else text = safeCellText(cell, stats);
   return text.length > MAX_CELL_CHARS ? text.slice(0, MAX_CELL_CHARS) : text;
 }
 
@@ -459,6 +460,7 @@ async function xlsxBlocks(buffer: Buffer): Promise<Block[]> {
   for (const sheet of workbook.worksheets) {
     if (sheet.state && sheet.state !== 'visible') continue;
     const rows: string[][] = [];
+    const stats = { blanked: 0 };
     let truncated = false;
     sheet.eachRow({ includeEmpty: false }, (row) => {
       if (rows.length >= MAX_SHEET_ROWS) {
@@ -467,11 +469,12 @@ async function xlsxBlocks(buffer: Buffer): Promise<Block[]> {
       }
       const values: string[] = [];
       row.eachCell({ includeEmpty: true }, (cell, column) => {
-        if (column <= MAX_SHEET_COLUMNS) values[column - 1] = cellText(cell);
+        if (column <= MAX_SHEET_COLUMNS) values[column - 1] = cellText(cell, stats);
       });
       const filled = Array.from(values, (value) => value ?? '');
       if (filled.some((value) => value.trim() !== '')) rows.push(filled);
     });
+    if (stats.blanked > 0) debug('Read unreadable xlsx cells as blank', { sheet: sheet.name, cells: stats.blanked });
     if (rows.length === 0) continue;
     const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
     if (blocks.length > 0) blocks.push({ type: 'pageBreak' });
@@ -525,8 +528,7 @@ async function convertForModel(doc: ModelDocument, kind: OfficeKind): Promise<Bu
   } catch (error) {
     warn('Office attachment could not be converted for the model; skipping it', {
       fileName: doc.fileName,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
     });
     return undefined;
   }
