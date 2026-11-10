@@ -230,16 +230,32 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   Workday or token problem, and the post itself went out.
 - `automated` is an additive column (`DEFAULT 0`): `ensureCoverageReporting`
   adds it to a table that lacks it, checking `information_schema` first so a
-  table that has it takes no lock at cold start. Reverting needs no table
-  repair: the older code never names the column, so its upsert still works.
-  Days written before the column existed count automated invoices in `invoices`
-  and `uncovered_integration` until a backfill restates them.
+  table that has it takes no lock at cold start.
+- Rollout: after the deploy, invoke `ScoreDigest` with `{"coverageBackfill":true}`.
+  A normal run rewrites only the last 15 days, so without the backfill the
+  stored series changes meaning where the rewrite stops (older days count
+  automated invoices in `invoices` and `uncovered_integration`).
+- Rollback: the older code never names `automated`, so its upsert still works
+  and the table needs no repair to keep refreshing. But its
+  `ON CONFLICT ... DO UPDATE` never resets the column, so a day this code wrote
+  keeps its `automated` count while the older code also counts those invoices in
+  `invoices` and `uncovered_integration`; summing the columns would double-count
+  them. After the revert deploys, run `UPDATE agent_invoice_coverage_daily SET
+  automated = 0`.
 - Rows older than 15 days keep the scope they were computed with. After
-  changing `COVERAGE_COMPANY_WIDS` or `AUTOMATED_SUPPLIER_WIDS`, invoke `ScoreDigest` with
-  `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate
-  needed). The run posts the weekly digest as usual; adding
-  `"mode":"daily"` posts the daily summary instead, which posts nothing when
-  no invoice was scored since the last daily post.
+  changing `COVERAGE_COMPANY_WIDS` or `AUTOMATED_SUPPLIER_WIDS`, invoke
+  `ScoreDigest` with `{"coverageBackfill":true}` to rewrite the last 90 days in
+  place (no truncate needed). The run posts the weekly digest as usual; adding
+  `"mode":"daily"` posts the daily summary instead, which posts nothing when no
+  invoice was scored since the last daily post.
+- `DEFAULT_AUTOMATED_SUPPLIER_WIDS` were read from the `supplier` reference of
+  Amazon (`SUPIN-468084`) and ODP (`SUPIN-468900`) invoices in the production
+  tenant. A wrong WID fails safe (that supplier's invoices stay
+  `uncovered_integration`) but silently, so after the first weekly post check
+  that "Automated, by supplier" lists both Amazon and ODP. If one is missing,
+  look up its WID: `SELECT workdayID, supplier FROM supplierInvoices
+  (dataSourceFilter = supplierInvoicesFilter) WHERE invoiceNumber = '<SUPIN
+  number of one of its invoices>'`, then set `AUTOMATED_SUPPLIER_WIDS`.
 - The weekly digest shows the share against the week before, the counts per
   category, the automated count with its top suppliers, the invoices created
   for other companies, the top suppliers the agent missed, who keyed by hand

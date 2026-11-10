@@ -33,7 +33,9 @@ export const DEFAULT_COVERAGE_COMPANY_WIDS = [
 
 /**
  * Suppliers whose invoices an integration loads (supplier XML), as Workday supplier WIDs as `supplier` returns them.
- * Override with a comma-separated `AUTOMATED_SUPPLIER_WIDS`.
+ * Override with a comma-separated `AUTOMATED_SUPPLIER_WIDS`. The defaults were read from the `supplier` reference of
+ * production invoices SUPIN-468084 (Amazon) and SUPIN-468900 (ODP); a wrong WID leaves that supplier's invoices in
+ * `uncovered_integration`, so the digest's automated-by-supplier list is where a miss shows.
  */
 export const DEFAULT_AUTOMATED_SUPPLIER_WIDS = [
   'c3fdce78966e0130831180dbec011221', // AMAZON CAPITAL SERVICES INC
