@@ -236,9 +236,77 @@ export function parseExtractedLineAmount(raw: string): number | undefined {
   return parseExtractedNumber(raw, EXTENDED_AMOUNT_DECIMALS, true);
 }
 
+const NO_CHARGE_AMOUNTS = new Set(['nc', 'no charge', 'no cost', 'included', 'incl', 'free', 'waived', 'complimentary']);
+
+/** A row printed with a word instead of an amount (`N/C`, `Included`, `No Charge`): it bills nothing. */
+export function isNoChargeAmount(raw: string | null | undefined): boolean {
+  const text = raw?.toLowerCase().replace(/[/.*]/g, '').replace(/\s+/g, ' ').trim();
+  return text != null && NO_CHARGE_AMOUNTS.has(text);
+}
+
 // A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
 export function parseExtractedUnitCost(raw: string): number | undefined {
   return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
+}
+
+// true: printed as exactly zero or a no-charge word; false: a real or unreadable amount; undefined: nothing printed.
+// Only a whole numeric token counts (`$0.00`, `(0)`), so text that merely contains a zero (`TBD 0`) and a tiny
+// positive amount (`$0.0004`, which the line-amount rounding would turn into 0) are not free.
+function printedAmountIsZero(raw: string | null | undefined): boolean | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  if (isNoChargeAmount(text)) return true;
+  const digits = text.replace(/^\(\s*(.*?)\s*\)$/, '$1').replace(/^[-\u2212]?\s*\$?\s*/, '').replace(/\s*-$/, '');
+  return /^(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d+)?$/.test(digits) && /\d/.test(digits) && Number(digits.replace(/,/g, '')) === 0;
+}
+
+/**
+ * A printed row that bills nothing (`Business Approved Free Diagnostics $0.00`, `N/C`, `Included`): every price it
+ * prints is zero or a no-charge word. Freight and tax rows keep their own handling, a discount marker keeps a row,
+ * and a row that prints a positive unit cost is a comped charge, not a free row.
+ */
+export function isFreeRow(row: ExtractedInvoiceLine): boolean {
+  if (!row.description?.trim() || row.hasDiscount === true) return false;
+  if (isFreightOrHandlingLine(row.description) || isTaxChargeDescription(row.description)) return false;
+  const printed = [printedAmountIsZero(row.totalPrice), printedAmountIsZero(row.unitCost)].filter(zero => zero !== undefined);
+  return printed.length > 0 && printed.every(Boolean);
+}
+
+const FREE_ROWS_LISTED = 5;
+
+function listedDescriptions(rows: Array<{ description: string }>): string {
+  const listed = rows.slice(0, FREE_ROWS_LISTED).map(row => `"${row.description.replace(/\s+/g, ' ').trim()}"`);
+  const unlisted = rows.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return listed.join(', ');
+}
+
+/** The AP note for rows left off the invoice because they bill nothing. */
+export function freeRowsNote(rows: Array<{ description: string }>): string | undefined {
+  if (rows.length === 0) return undefined;
+  return `${rows.length === 1 ? 'Row' : 'Rows'} ${listedDescriptions(rows)} ${rows.length === 1 ? 'was' : 'were'} left off the invoice lines because`
+    + ` ${rows.length === 1 ? 'it prints' : 'they print'} no charge. ${rows.length === 1 ? 'It adds' : 'They add'} nothing to the total,`
+    + ` and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/** The AP note for merged lines left off because they bill $0.00 although the document may print a price for them. */
+export function zeroAmountLinesNote(lines: Array<{ description: string }>): string | undefined {
+  if (lines.length === 0) return undefined;
+  const many = lines.length > 1;
+  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 as read, so ${many ? 'they were' : 'it was'} left off the invoice lines.`
+    + ` ${many ? 'They add' : 'It adds'} nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/**
+ * Takes the free rows out of the printed rows so they never reach the PO line match. When every row is free the
+ * rows are left alone, so an all-$0 invoice still submits what it printed.
+ */
+export function removeFreeRows<T extends ExtractedInvoiceLine>(rows: T[]): { rows: T[]; removed: T[] } {
+  const removed = rows.filter(isFreeRow);
+  if (removed.length === 0 || removed.length === rows.length) return { rows, removed: [] };
+  const printsAPrice = (row: T) => Boolean(row.totalPrice?.trim() || row.unitCost?.trim());
+  if (!rows.some(row => !isFreeRow(row) && printsAPrice(row))) return { rows, removed: [] };
+  return { rows: rows.filter(row => !isFreeRow(row)), removed };
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
@@ -773,6 +841,16 @@ export function normalizeLabel(label: string | null | undefined): string | undef
     .replace(/\s+/g, ' ')
     .trim();
   return normalized || undefined;
+}
+
+/**
+ * Whether a printed charge repeats the header tax rather than adding a second one: same amount and either the tax's
+ * own label or a total row. Two different taxes with the same amount (State Tax and County Tax) both count.
+ */
+export function restatesHeaderTax(label: string | null | undefined, cents: number, taxLabel: string | null | undefined, taxCents: number): boolean {
+  if (cents !== taxCents) return false;
+  const normalized = normalizeLabel(label) ?? '';
+  return normalized === normalizeLabel(taxLabel) || /\btotal\b/.test(normalized);
 }
 
 const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
@@ -2308,15 +2386,38 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
     + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost by less than a cent a unit; the total is unchanged.`;
 }
 
+// A line that bills nothing has no amount for Workday to count. Left on the invoice it needs a quantity of at least
+// one on its PO line, which would use up PO quantity the priced lines need, so it is left off while a priced line
+// remains. Freight rows and discount-marked lines keep their own handling.
+export function removeZeroAmountLines(lines: FinalInvoiceLine[]): { lines: FinalInvoiceLine[]; removed: FinalInvoiceLine[] } {
+  const isZero = (line: FinalInvoiceLine) => {
+    if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return false;
+    return submittedLineAmount(line) === 0;
+  };
+  const removed = lines.filter(isZero);
+  if (removed.length === 0) return { lines, removed: [] };
+  const remaining = lines.filter(line => !isZero(line));
+  const pricedRemains = remaining.some(line => {
+    const amount = submittedLineAmount(line);
+    return amount != null && amount !== 0;
+  });
+  return pricedRemains ? { lines: remaining, removed } : { lines, removed: [] };
+}
+
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
-// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead.
+// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead. A line with no
+// amount to submit is left off, unless that would leave no priced line.
 export function applyPositivePoQuantityRetry(lines: FinalInvoiceLine[], zeroQuantityLineOrders: Set<number>): FinalInvoiceLine[] {
-  return lines.map(line => {
-    if (!zeroQuantityLineOrders.has(line.lineOrder)) return line;
+  const hasNoAmount = (line: FinalInvoiceLine) => zeroQuantityLineOrders.has(line.lineOrder) && (line.extendedAmount ?? line.unitCost ?? 0) === 0;
+  const forced = lines.map(line => {
+    if (!zeroQuantityLineOrders.has(line.lineOrder) || hasNoAmount(line)) return line;
     const amount = line.extendedAmount ?? line.unitCost ?? null;
     if (amount == null || amount <= 0) return line;
     return { ...line, forcePositivePoQuantity: true, quantity: 1, unitCost: amount, extendedAmount: amount };
   });
+  const kept = forced.filter(line => !hasNoAmount(line));
+  const pricedRemains = kept.some(line => (line.extendedAmount ?? line.unitCost ?? 0) > 0);
+  return kept.length < forced.length && pricedRemains ? kept : forced;
 }
 
 export interface InvoiceDateContext {

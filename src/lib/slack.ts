@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
+import { isDeadlineError } from './deadline.js';
 
 // TypeScript types for Slack blocks
 interface SlackTextElement {
@@ -55,9 +56,11 @@ function truncateEscapedSlackText(text: string, limit: number): string {
 }
 
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
-  const errorMessage = typeof error?.message === 'string' && error.message.trim()
-    ? error.message.trim()
-    : 'Unknown error';
+  const errorMessage = isDeadlineError(error)
+    ? error.userMessage()
+    : typeof error?.message === 'string' && error.message.trim()
+      ? error.message.trim()
+      : 'Unknown error';
   blocks.push({
     type: 'section',
     text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
@@ -719,7 +722,9 @@ export async function notifyResult(
   const shadowPdfCount = Array.isArray(shadowDetails?.attachments) ? shadowDetails.attachments.length : 0;
 
   // Build the main message
-  let mainMessage = shadowPlan
+  let mainMessage = error && isDeadlineError(error)
+    ? `⏱️ *${lambdaName}* ran out of time after ${timeText}`
+    : shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
     : needsManualReview
     ? `⚠️ *${lambdaName}* needs manual review${invoiceRef} (resend not applied) in ${timeText}`

@@ -384,6 +384,10 @@ export function formatPoLineReviewNotes(note: string | undefined): string {
   return note ? `\n\nPO line review: ${note}` : '';
 }
 
+export function formatFreeRowsNotes(note: string | undefined): string {
+  return note ? `\n\nFree rows: ${note}` : '';
+}
+
 export function formatPositivePoQuantityNotes(note: string | undefined): string {
   return note ? `\n\nPO line quantity: ${note}` : '';
 }

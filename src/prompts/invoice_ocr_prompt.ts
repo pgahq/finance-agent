@@ -113,6 +113,8 @@ export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNu
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
   /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
   extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
+  /** Set by extractInvoiceDocuments when a missing-row second read ran or was skipped and its rows were not used. */
+  extractedSecondReadOutcome?: 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
@@ -290,7 +292,7 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ## Part 4.5: Line Total and Deposits
 
-Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total.
+Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total. A document can print several subtotals, one per section and also a combined one that covers only some of the rows. Report the combined total of the line table, even when it leaves a separately printed row out. For example, an invoice with "Rental Subtotal $3,067.00", "Sales/Misc Subtotal $680.88", and "Agreement Subtotal $3,591.67", where a separately printed "Fuel" row of $156.21 follows the Agreement Subtotal, must return extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }. When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together. Extract every row of every section whether or not the reported total includes it.
 
 When the invoice bills a deposit, advance, or partial payment instead of the full contract total, populate \`extractedPartialPayment\` with the printed label of the deposit row, the percentage when one is printed (for example "90%"), and the deposit amount as printed. For example, an invoice with Total Cost of Contracted Services $38,255.00, Deposit Required Upon Signing 90%, and Advance Deposit Due $34,429.50 must return extractedLineSubtotal { label: "Total Cost of Contracted Services", amount: "$38,255.00" }, extractedPartialPayment { label: "Advance Deposit Due", percent: "90%", amount: "$34,429.50" }, and extractedAmountDue "$34,429.50". Never compute an amount from a percentage. Leave extractedPartialPayment empty for a final invoice that only shows a deposit already paid ("Less deposit paid"), for retainers, and for ordinary invoices.
 
@@ -302,9 +304,9 @@ When the document shows payments, deposits, or credits already received that red
 
 Read the invoice attachment and extract the freight amount. It may be labeled as "Freight", "Shipping", "Handling", "Shipping & Handling", "Delivery", or similar. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00") and populate \`extractedFreightLabel\` with the exact label you read.
 
-If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
+If the invoice presents a single freight/shipping/handling charge as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
 
-Exception: when the document prints two or more separate priced rows for delivery, pickup, transport, or return (for example \`DELIVERY CHARGE $228.16\` and \`PICKUP CHARGE $228.16\` in the line table) and no single freight total, do not add them together. Return each as its own row in \`extractedInvoiceLines\` with its printed amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. A single freight, shipping, or handling amount, whether a summary field or one row, still goes in the freight fields.
+When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows in an itemized table (for example \`DELIVERY CHARGE 1 EACH 208.660 208.66\` and \`PICKUP CHARGE 1 EACH 208.660 208.66\` under SALES/MISCELLANEOUS ITEMS), there is no single freight amount: return each of those rows in \`extractedInvoiceLines\` with its printed description and amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. Do not merge the rows into one line or one freight amount; the system decides afterward which of them are freight. When the totals block also prints its own freight, shipping, or delivery amount, populate \`extractedFreightAmount\` with it only when it is a separate charge that no table row accounts for; when it restates the table rows (it equals one row or the sum of several), leave \`extractedFreightAmount\` empty so the charge is not billed twice.
 
 ---
 
@@ -413,7 +415,7 @@ Extract the individual line items from the invoice document:
 Extract every printed row, in document order. Two rows with the same description, quantity, and price are two separate charges when they are printed under different dates, events, or section headings, or in different places; return both. Only skip a row that is clearly the same printed row repeated, such as a page header or a table carried over onto the next page.
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
-Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead. The exception is the separate delivery, pickup, transport, or return rows described in Part 5, which stay as rows.
+Exclude a single freight, shipping, handling, or delivery charge from the lines — capture it in \`extractedFreightAmount\` instead. When several separate delivery, pickup, or similar rows are printed as priced table rows (Part 5), return every one of them as a line.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

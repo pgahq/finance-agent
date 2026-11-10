@@ -18,6 +18,7 @@ import {
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatFreeRowsNotes,
   formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
   formatTotalsChargeReviewNotes,
@@ -57,6 +58,10 @@ import {
   prepareInvoiceCharges,
   resolveHeaderChargeAmounts,
   restoreClearedFreightFromRows,
+  freeRowsNote,
+  zeroAmountLinesNote,
+  removeFreeRows,
+  removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
@@ -64,8 +69,8 @@ import {
   type FinalInvoiceLine,
   type LineFallbacks,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeChargesOnPoServiceLines, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -80,6 +85,8 @@ import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapsh
 import { annotateSupplierInvoice, executeWorkdayQuery, formatPurchaseOrderLineFallbackNotes, getInboundEmailsForOCRInvoices, getPurchaseOrder, getSupplierInvoiceWithAttachments, getWorkQueueTagWIDs, isPurchaseOrderClosedForInvoicing, isPurchaseOrderLineFallback, markPurchaseOrderLineAvailability, parsePurchaseOrder, purchaseOrderLineFallbackNote, submitSupplierInvoiceUpdate } from './lib/workday.js';
 
 const MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
+// Enrich has 300 seconds, so it reads again only when the first read was quick; a skipped second read costs a review note, a timeout costs the invoice.
+const ENRICH_RETRY_MAX_FIRST_READ_MS = 30_000;
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
 const INVOICE_MOD_ENABLED = process.env.INVOICE_MOD_ENABLED !== 'false'; // enabled by default
 
@@ -208,7 +215,7 @@ async function processInvoice(
       undefined,
       abortSignal,
       // An annotate-only run never submits lines, so a second read for missing rows would be wasted.
-      { retryMissingRows: canModifyInvoice }
+      { retryMissingRows: canModifyInvoice, retryMaxFirstReadMs: ENRICH_RETRY_MAX_FIRST_READ_MS }
     );
     debug('Enrichment result:', result);
 
@@ -325,7 +332,12 @@ async function processInvoice(
       usedPurchaseOrderNumber: extractedPurchaseOrderNumber,
     });
 
-    const extractedRows = result.extractedInvoiceLines ?? [];
+    // Annotate-only runs submit no lines, so they keep every printed row. Otherwise a row that bills nothing never
+    // reaches the PO line match, and does not count as a row dropped from its table.
+    const { rows: extractedRows, removed: freeRows } = canModifyInvoice && submitSupplierWID
+      ? removeFreeRows(result.extractedInvoiceLines ?? [])
+      : { rows: result.extractedInvoiceLines ?? [], removed: [] };
+    if (freeRows.length) debug(`Free rows left off: ${freeRowsNote(freeRows)}`);
     // A row or printed charge that names a PO service line (delivery, pickup, a surcharge) is billed on that line
     // instead of being folded into header freight or tax.
     const placedCharges = placeChargesOnPoServiceLines({
@@ -355,8 +367,9 @@ async function processInvoice(
       extractedTaxLabel: result.extractedTaxLabel,
       freightAmountFromLines: canModifyInvoice ? splitFreightLines(printedLines).freightAmountFromLines : undefined,
     });
-    // A quantity beside one price may be a unit price whose line total was left off; it is read that way only
-    // when that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due. Annotate-only runs submit no lines, so they keep the
     // printed ones and the Amount check.
     const { lines: extractedLines, note: linePriceNote } = canModifyInvoice && submitSupplierWID ? reinterpretSinglePriceLinesForCharges(printedLines, {
       amountDue: extractedAmountDue,
@@ -369,6 +382,12 @@ async function processInvoice(
       summaryChargesPlaceable: printedLines.length === printedRowCount,
       printedTaxCharges: placedCharges.otherCharges,
       printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
+      lineSubtotal: result.extractedLineSubtotal,
     }) : { lines: printedLines, note: undefined };
     if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     // Annotate-only runs submit nothing, so there is no header freight to restore.
@@ -430,10 +449,35 @@ async function processInvoice(
     const depositApplied = Boolean(depositPlan?.applied);
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
     if (depositApplied) chargeCheck = [];
-    const lineSubtotalNote = submitsLines
-      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, { freight: extractedFreightAmount, otherCharges: placedCharges.otherCharges })].filter(Boolean).join(' ') || undefined
+    const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+      ? undefined
+      : reviewAmountDueGapCents({
+        lines: charges.lines,
+        amountDue: extractedAmountDue,
+        freight: freightCleared ? undefined : extractedFreightAmount,
+        tax: taxCleared ? undefined : extractedTaxAmount,
+        taxLabel: result.extractedTaxLabel,
+        otherCharges: taxCharges.message ? undefined : placedCharges.otherCharges,
+        summaryCharges: result.extractedSummaryCharges,
+        creditCents,
+      });
+    const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
+      subtotal: result.extractedLineSubtotal,
+      amountDue: extractedAmountDue,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: placedCharges.freightAmount ?? undefined,
+      tax: taxCleared ? undefined : extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      otherCharges: taxCharges.message ? undefined : placedCharges.otherCharges,
+      creditCents,
+    }) ?? 0;
+    const subtotalMismatch = submitsLines
+      ? lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap, subtotalFreight, result.extractedSecondReadOutcome)
       : undefined;
-    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
+    const lineSubtotalBaseNote = submitsLines
+      ? [secondReadRowsNote(result.extractedRowsAddedOnSecondRead), subtotalMismatch].filter(Boolean).join(' ') || undefined
+      : undefined;
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
     const placedSummaryCharges: PlacedSummaryCharges = !submitsLines || depositApplied || chargeWithheld || freightAsLines || extractedLines.length < printedRowCount
       ? { lines: [] }
@@ -465,6 +509,11 @@ async function processInvoice(
     const summaryCharges: PlacedSummaryCharges = balanceApplied ? { lines: [] } : placedSummaryCharges;
     const billedPlan = depositPlan ?? balancePlan;
     const billedPlanApplied = depositApplied || balanceApplied;
+    const lineSubtotalNote = [
+      lineSubtotalBaseNote,
+      subtotalMismatch && !billedPlanApplied && !chargeWithheld && !freightAsLines ? poTotalReviewNote(poLines, extractedAmountDue, extractedLines.length) : undefined,
+    ].filter(Boolean).join(' ') || undefined;
+    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     if (summaryCharges.lines.length || summaryCharges.reviewNote) {
       debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
     }
@@ -545,7 +594,7 @@ async function processInvoice(
       finalLines = built.lines;
       emailBudgetSplit = built.emailBudgetSplit;
       lineFallbacks = built.appliedFallbacks;
-      poLineNote = unlinkedPoRowsNote(built.unlinkedPoRows, built.modelUnlinkedPoRows);
+      poLineNote = unlinkedPoRowsNote(built.unlinkedPoRows, poClosedForInvoicing ? undefined : built.modelUnlinkedPoRows);
       if (poLineNote) debug(`PO line review: ${poLineNote}`);
       relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);
@@ -575,13 +624,18 @@ async function processInvoice(
     if (chargesInLines) chargeCheck = [];
 
     let poQuantityNote: string | undefined;
+    let zeroAmountLines: FinalInvoiceLine[] = [];
     if (finalLines?.length) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
       poQuantityNote = [positivePoQuantityNote(printedLines, finalLines), unitCostFromLineTotalNote(finalLines)].filter(Boolean).join(' ') || undefined;
       if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
+      // A line that still bills nothing would need a PO quantity of its own, which Workday counts against the priced lines.
+      if (submitsLines) ({ lines: finalLines, removed: zeroAmountLines } = removeZeroAmountLines(finalLines));
     }
+    const freeRowsReview = [freeRowsNote(freeRows), zeroAmountLinesNote(zeroAmountLines)].filter(Boolean).join(' ') || undefined;
+    if (zeroAmountLines.length) debug(`Free lines left off: ${zeroAmountLinesNote(zeroAmountLines)}`);
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = finalLines && !chargeWithheld && !freightAsLines ? lineTotalMismatchNote(finalLines, {
@@ -596,7 +650,7 @@ async function processInvoice(
     if (lineTotalReviewNote) debug(`Line total review: ${lineTotalReviewNote}`);
 
     const upfrontFallbacks = getUpfrontFallbacks(purchaseOrderSupplier?.workdayId ?? resolvedSupplierWID, detailedInvoice, poLines, lineFallbacks);
-    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (submissionFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, existingCompany?.descriptor, { appliedRecommended: companyWID === recommendedCompanyWID, overriddenByEmail: Boolean(emailCompany?.workdayId) }) + (emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '') + formatInvoiceDateNotes(result) + formatDueDateNotes(result, submissionFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + formatEmailWorktagNotes(result) + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const buildNotes = (submissionFallbacks: AppliedFallback[]) => {
       const merged = mergeFallbacks(upfrontFallbacks, submissionFallbacks);
       const invoiceNumberFallback = submissionFallbacks

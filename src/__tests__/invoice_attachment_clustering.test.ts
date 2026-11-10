@@ -522,6 +522,30 @@ describe('parseAndClusterInvoiceAttachments', () => {
     expect(clustering.clusters.map((cluster) => cluster.primary.fileName)).toEqual(['invoice.pdf']);
   });
 
+  it('shows the model a workbook with blank merged cells instead of calling it unreadable', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Reimbursement');
+    sheet.getCell('A1').value = 'Hotel - Courtyard Marriott - 10/29 - 11/2';
+    sheet.getCell('A3').value = 'Notes';
+    sheet.mergeCells('B3:E5');
+    mockGetAiResponse.mockRejectedValueOnce(new Error('stop after the AI call'));
+
+    await expect(parseAndClusterInvoiceAttachments(
+      [{
+        s3Key: 'new-invoices/req-1/1-Vogel Reimbursement.xlsx',
+        fileName: 'Vogel Reimbursement.xlsx',
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }] as any,
+      async () => Buffer.from(await workbook.xlsx.writeBuffer())
+    )).rejects.toThrow('stop after the AI call');
+
+    const content = (mockGetAiResponse.mock.calls[mockGetAiResponse.mock.calls.length - 1][0].messages[0] as any).content.slice(1);
+    expect(content).toEqual([
+      { type: 'file', data: expect.any(Buffer), mediaType: 'application/pdf', filename: '1-Vogel Reimbursement.xlsx' },
+    ]);
+    expect(content[0].data.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
   it('hashes file bytes so identical resends under different names are superseded', async () => {
     const doc = (fileNumber: number, fileName: string, kind: 'supplier_invoice' | 'supporting') => ({
       fileNumber,

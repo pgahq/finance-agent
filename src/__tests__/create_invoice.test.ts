@@ -15,6 +15,10 @@ import {
   supin472110ProductionRows,
   supin472110Rows,
 } from './fixtures/supin_472110.js';
+import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
+import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
+import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
+import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
 jest.mock('@pga/lambda-env', () => ({
@@ -615,6 +619,45 @@ describe('create_invoice', () => {
       }]);
     });
 
+    it('creates the invoice from a reimbursement workbook that has blank merged cells', async () => {
+      const { processor, workday, s3, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Reimbursement');
+      sheet.getCell('A1').value = 'Hotel - Courtyard Marriott - 10/29 - 11/2';
+      sheet.getCell('B1').value = 1000;
+      sheet.getCell('A3').value = 'Notes';
+      sheet.mergeCells('B3:E5');
+      const original = Buffer.from(await workbook.xlsx.writeBuffer());
+      s3.getBinaryFromS3.mockResolvedValue(original);
+
+      await processor({
+        data: [{ s3Key: 'new-invoices/req-merged/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any);
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].attachments).toEqual([{
+        fileName: 'Vogel Reimbursement.xlsx',
+        contentType: xlsxType,
+        base64Content: original.toString('base64'),
+      }]);
+    });
+
+    it('stops with an error and creates nothing when the Excel invoice file is corrupt', async () => {
+      const { processor, workday, s3, invoiceEnrichment } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      s3.getBinaryFromS3.mockResolvedValue(Buffer.from('not a workbook'));
+
+      await expect(processor({
+        data: [{ s3Key: 'new-invoices/req-bad-xlsx/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any)).rejects.toThrow('Vogel Reimbursement.xlsx could not be opened');
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    });
+
     it('stops with an error and creates nothing when the invoice file cannot be opened', async () => {
       const { processor, workday, slack, invoiceEnrichment } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
@@ -977,6 +1020,157 @@ describe('create_invoice', () => {
       await processor({ data: [attachmentRequest('new-invoices/req-single-price-neither/invoice.pdf')] } as any);
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([participants]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+  });
+
+  describe('free $0.00 row beside a priced row whose total includes tax (Mobile Kangaroo 2007056)', () => {
+    const builtLine = (lineOrder: number, description: string, quantity: number, unitCost: number, extendedAmount: number) => ({
+      lineOrder, description, quantity, unitCost, extendedAmount, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-30291'
+    });
+    const built = (lines: any[]) => ({
+      lines,
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+    const enrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...mobileKangarooHeader,
+      extractedInvoiceLines: mobileKangarooRows,
+      ...overrides
+    });
+
+    it('leaves the free row off and books Display at the pre-tax subtotal', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 659, 659)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooCorrectedDisplayRow]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(1);
+      expect(submitArgs.finalLines[0]).toMatchObject({ description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Free rows: Row "Business Approved Free Diagnostics" was left off the invoice lines');
+      expect(notes).toContain('Line price review: "Display" prints $713.37, the amount due, as its price, but the invoice prints "Before taxes" $659.00 and $54.37 of tax');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+    });
+
+    it('sets the pre-tax subtotal when the OCR gives Display no unit price', async () => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedInvoiceLines: [mobileKangarooFreeRow, { ...mobileKangarooDisplayRow, unitCost: null }]
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 659, 659)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-no-unit/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([{ ...mobileKangarooCorrectedDisplayRow, unitCost: null }]);
+    });
+
+    it('keeps the amount mismatch when no pre-tax subtotal is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({ extractedLineSubtotal: null }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 713.37, 713.37)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-no-subtotal/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooDisplayRow]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Free rows:');
+      expect(notes).not.toContain('Line price review');
+    });
+
+    it.each([
+      ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$5.00' }] }],
+      ['an email balance due', { emailBalanceDue: '$713.37' }],
+    ])('keeps the printed Display price when %s is printed', async (_name, overrides) => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment(overrides));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 713.37, 713.37)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-settlement/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooDisplayRow]);
+    });
+
+    it('leaves off a merged line that still bills nothing so it does not take PO quantity', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedInvoiceLines: [mobileKangarooCorrectedDisplayRow, { ...mobileKangarooFreeRow, unitCost: '$50.00' }],
+        extractedAmountDue: '$713.37'
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([
+        builtLine(1, 'Display', 1, 659, 659),
+        builtLine(2, 'Business Approved Free Diagnostics', 1, 50, 0)
+      ]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-line/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
+      expect(submitArgs.buildNotes([])).toContain('Free rows: Line "Business Approved Free Diagnostics" bills $0.00 as read, so it was left off the invoice lines.');
+    });
+  });
+
+  describe('SUPIN-472062 line total read as the tax-inclusive amount due', () => {
+    const esign = supin472062EsignRow;
+    const built = {
+      lines: [{ lineOrder: 1, description: esign.description, quantity: 23, unitCost: 1.25, extendedAmount: 28.75 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    };
+    const enrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...supin472062Header,
+      extractedInvoiceLines: supin472062Rows,
+      ...overrides
+    });
+
+    it('sets the line total to quantity x unit price so the lines and tax match the amount due', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-total/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062CorrectedEsignRow]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines[0]).toMatchObject({ quantity: 23, unitCost: 1.25, extendedAmount: 28.75 });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Line price review: "eSign Non 8879" prints quantity 23 at $1.25 ($28.75) but a line total of $30.65.');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([expect.stringContaining('Line price review:')]);
+      expect(slackDetails.chargeCheck).toBeUndefined();
+    });
+
+    it('keeps the printed line total when a deposit or payment is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedPriorPayments: [{ label: 'Payments Received', amount: '$5.00' }]
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-payments/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062EsignRow]);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+
+    it('keeps the amount mismatch when quantity x unit price does not reconcile either', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({ extractedAmountDue: '$40.00' }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built);
+
+      await processor({ data: [attachmentRequest('new-invoices/req-esign-neither/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062EsignRow]);
       expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
     });
   });
@@ -2295,6 +2489,269 @@ describe('create_invoice', () => {
     expect(submitArgs.omitPurchaseOrderLineReference).toBeUndefined();
   });
 
+  describe('delivery and pickup rows inside the printed subtotal (SUPIN-472108)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')) || undefined,
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')) || 0,
+      })),
+      appliedFallbacks,
+    });
+    const run = async (rows: any[], overrides: Record<string, unknown> = {}) => {
+      const mocks = freshRequire();
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472108Header,
+        extractedInvoiceLines: rows,
+        ...overrides,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-united-rentals/invoice.pdf')] } as any);
+      return mocks;
+    };
+    const readTwiceReview = 'Check for a row that was read twice or a charge that is not a line.';
+
+    it('submits lines that reconcile to $4,045.99 once the second read adds delivery and pickup', async () => {
+      const { workday, slack } = await run(supin472108Rows, {
+        extractedRowsAddedOnSecondRead: [
+          { description: 'DELIVERY CHARGE', totalPrice: '208.66' },
+          { description: 'PICKUP CHARGE', totalPrice: '208.66' },
+        ],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedAmountDue).toBe('$4,045.99');
+      expect(submitArgs.extractedFreightAmount).toBe('208.66');
+      const lineTotal = submitArgs.finalLines
+        .filter((line: any) => line.description !== 'DELIVERY CHARGE')
+        .reduce((total: number, line: any) => total + line.extendedAmount, 0);
+      expect(Math.round((lineTotal + 208.66 + 298.11) * 100) / 100).toBe(4045.99);
+      const secondRead = 'A second read of the document added 2 rows the first read missed: "DELIVERY CHARGE" 208.66, "PICKUP CHARGE" 208.66. Check them against the PDF.';
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${secondRead}`);
+      expect(submitArgs.buildNotes([])).not.toContain(readTwiceReview);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual([`Line subtotal review: ${secondRead}`]);
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails).not.toHaveProperty('amountMismatch');
+    });
+
+    it('says delivery or pickup was probably not read, with the true $417.32 gap, when the rows are still missing', async () => {
+      const { workday, slack } = await run(supin472108ProductionRows);
+
+      const review = 'The extracted lines total $3,330.56, but the document prints $3,591.67 as "Agreement Subtotal".'
+        + ' Lines, freight, and tax are $417.32 short of the amount due, so charges that the document prints (for example delivery, pickup, or other rows) were probably not read.';
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([expect.stringContaining('$3,747.88')]));
+    });
+
+    it('adds nothing when delivery is already the header freight and pickup is a row', async () => {
+      const { workday, slack } = await run([...supin472108ProductionRows, supin472108PickupRow], {
+        extractedFreightAmount: '$208.66',
+        extractedFreightLabel: 'Delivery Charge',
+      });
+
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].extractedFreightAmount).toBe('$208.66');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
+      expect(slackDetails).not.toHaveProperty('amountMismatch');
+      expect(slackDetails).not.toHaveProperty('lineReview');
+    });
+
+    it('does not say rows were missed when a totals-block fee that gets placed explains the gap', async () => {
+      const { workday, slack } = await run(
+        [{ description: 'Setup', quantity: 1, unitCost: '100.00', totalPrice: '100.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' }],
+        {
+          extractedAmountDue: '$125.00',
+          extractedFreightAmount: null,
+          extractedFreightLabel: null,
+          extractedTaxAmount: null,
+          extractedTaxLabel: null,
+          extractedLineSubtotal: { label: 'Subtotal', amount: '120.00' },
+          extractedSummaryCharges: [{ label: 'Service Fee', amount: '25.00' }],
+        }
+      );
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([100, 25]);
+      expect(submitArgs.buildNotes([])).not.toContain('probably not read');
+      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('probably not read');
+    });
+  });
+
+  describe('freight inside the printed subtotal and an unlined discount (SUPIN-472322)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')) || undefined,
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')) || 0,
+      })),
+      appliedFallbacks,
+    });
+    const run = async (rows: any[], overrides: Record<string, unknown> = {}) => {
+      const mocks = freshRequire();
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: rows,
+        ...overrides,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('adds the unsigned $8,866.66 discount as a negative line once the second read recovers the rows', async () => {
+      const { workday, slack } = await run(supin472322Rows, {
+        extractedRowsAddedOnSecondRead: [
+          { description: 'Synthetic recovered row (A)', totalPrice: '1000.00' },
+          { description: 'Synthetic recovered row (B)', totalPrice: '388.00' },
+        ],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const amounts = submitArgs.finalLines.map((line: any) => line.extendedAmount);
+      expect(amounts).toHaveLength(62);
+      expect(amounts[amounts.length - 1]).toBe(-8866.66);
+      const lineTotal = amounts.reduce((total: number, amount: number) => total + amount, 0);
+      expect(Math.round((lineTotal + 2000 + 2354.16) * 100) / 100).toBe(41590.16);
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview.join(' ')).not.toContain('3,388');
+      expect(slackDetails.lineReview.join(' ')).not.toContain('2,000.00 difference');
+    });
+
+    it('still says a row was not read when a delivery row is a line and the subtotal includes it', async () => {
+      const row = (description: string, amount: string) => ({ description, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' });
+      const { workday } = await run(
+        [row('Tent', '950.00'), row('Delivery', '100.00')],
+        {
+          extractedAmountDue: '$1,100.00',
+          extractedFreightAmount: null,
+          extractedFreightLabel: null,
+          extractedTaxAmount: null,
+          extractedTaxLabel: null,
+          extractedLineSubtotal: { label: 'Subtotal', amount: '1,100.00' },
+          extractedSummaryCharges: null,
+        }
+      );
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('The $50.00 difference may be a row that was not read.');
+      expect(notes).not.toContain('read twice');
+      expect(notes).not.toContain('freight it includes');
+    });
+
+    it('places both a discount and a fee from the totals block, with no missed-row note', async () => {
+      const row = { description: 'Rental', quantity: 1, unitCost: '1,000.00', totalPrice: '1,000.00', hasDiscount: null, descriptionCells: [], tableNumber: 1, sectionLabel: '' };
+      const { workday, slack } = await run([row], {
+        extractedAmountDue: '$850.00',
+        extractedFreightAmount: null,
+        extractedFreightLabel: null,
+        extractedTaxAmount: null,
+        extractedTaxLabel: null,
+        extractedLineSubtotal: { label: '', amount: '' },
+        extractedSummaryCharges: [{ label: 'Discount', amount: '200.00' }, { label: 'Service Fee', amount: '50.00' }],
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.extendedAmount)).toEqual([1000, -200, 50]);
+      expect(submitArgs.buildNotes([])).not.toContain('not read');
+      expect(JSON.stringify(slack.notifyResult.mock.calls[0][3].lineReview ?? [])).not.toContain('not read');
+    });
+
+    const printedSubtotalReview = 'The extracted lines total $44,714.66, but the document prints $48,102.66 as "Subtotal", $46,102.66 without the $2,000.00 freight it includes.';
+    const poTotalSentence = "The PO's 6 lines total $41,590.16, which is the amount due, so the supplier may have billed what the PO lists rather than the 59 rows read from the PDF.";
+
+    it('submits the 59 printed rows with freight and tax in the header when no row carries the $1,388.00', async () => {
+      const { workday } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(59);
+      expect(submitArgs.finalLines.some((line: any) => line.extendedAmount < 0)).toBe(false);
+      expect(submitArgs.extractedFreightAmount).toBe('2000.00');
+      expect(submitArgs.extractedTaxAmount).toBe('2354.16');
+    });
+
+    it('says $1,388.00 is not carried by any row after a second read finds none, not $3,388.00', async () => {
+      const { workday, slack } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
+
+      const review = `${printedSubtotalReview} A second read of the document found no row that makes up the $1,388.00, so the document's own totals may not agree (a section or summary total that is higher than its rows).`
+        + ' Check the PDF; if no row carries the $1,388.00, it is not missing from the lines.';
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.buildNotes([])).toContain(`Line subtotal review: ${review}`);
+      expect(submitArgs.buildNotes([])).not.toContain('3,388');
+      expect(submitArgs.buildNotes([])).not.toContain('may be a row that was not read');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.lineReview).toEqual(expect.arrayContaining([`Line subtotal review: ${review}`]));
+    });
+
+    it('keeps the "may not have been read" wording when a second read changed rows but did not close the gap', async () => {
+      const { workday } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'inconclusive' });
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(`${printedSubtotalReview} The $1,388.00 difference may be a row that was not read. A second read changed or added rows but did not make up the difference, so it was not used.`);
+      expect(notes).not.toContain('found no row');
+    });
+
+    it('still says a row may not have been read when no second read ran', async () => {
+      const { workday } = await run(supin472322ProductionRows);
+
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(`Line subtotal review: ${printedSubtotalReview} The $1,388.00 difference may be a row that was not read.`);
+      expect(notes).not.toContain('found no row');
+    });
+
+    it('notes that the PO lists six lines totaling the amount due, without changing the 59 lines', async () => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414792',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: supin472322PoLines,
+      });
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: supin472322ProductionRows,
+        extractedSecondReadOutcome: 'rejected',
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+
+      const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(poTotalSentence);
+      expect(notes).toContain('The invoice lines were not changed to match the PO; AP may need to book one line per PO line.');
+      expect(submitArgs.finalLines).toHaveLength(59);
+    });
+
+    it('does not mention the PO total when the recovered rows reconcile the invoice', async () => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue({
+        documentNumber: 'PO-414792',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: supin472322PoLines,
+      });
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin472322Header,
+        extractedInvoiceLines: supin472322Rows,
+      });
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-nmr-events/invoice.pdf')] } as any);
+
+      expect(mocks.workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain("The PO's");
+    });
+  });
+
   describe('deposit invoice (SUPIN-470584)', () => {
     const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
     const parsedPo = (lines: any[] = supin470584PoLines) => ({
@@ -2488,8 +2945,7 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedTaxAmount).toBe('$156.95');
       const notes = submitArgs.buildNotes([]);
       expect(notes).not.toContain('Amount check');
-      expect(notes).toContain('are not part of the $1,851.50 the document prints as "Agreement Subtotal"');
-      expect(notes).not.toContain('may be a row that was not read');
+      expect(notes).not.toContain('Line subtotal review');
       expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('chargeCheck');
     });
 
@@ -2583,6 +3039,24 @@ describe('create_invoice', () => {
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
       expect(notes).not.toContain('Balance invoice');
       expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('balanceInvoice');
+    });
+
+    it('does not add the PO-total note to a balance invoice that replaces the lines with one balance line', async () => {
+      const po = {
+        documentNumber: 'PO-472750',
+        company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'L1', purchaseOrderDocumentNumber: 'PO-472750', quantity: 1, unitCost: 5909.5, extendedAmount: 5909.5 }],
+      };
+      const { workday, invoiceLines } = await run(balanceEnrichment({
+        extractedPurchaseOrderNumber: 'PO-472750',
+        extractedLineSubtotal: { label: 'Total Contract Price', amount: '$24,887.00' },
+      }), po);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(1);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Balance invoice:');
+      expect(notes).toContain('Line subtotal review:');
+      expect(notes).not.toContain("The PO's");
     });
 
     it('submits the printed lines and says why when the PO has no line for the balance', async () => {
@@ -3059,6 +3533,90 @@ describe('create_invoice', () => {
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-411406');
       expect(submitArgs.buildNotes([])).not.toContain('Intercom note');
+    });
+
+    describe('one PO with a different line for each invoice (Clean Scapes)', () => {
+      const cleanScapesPo = {
+        documentNumber: 'PO-413785',
+        company: { workdayId: 'pga-company-wid', descriptor: 'PGA of America' },
+        lines: Array.from({ length: 19 }, (_, index) => ({
+          lineOrder: index + 1,
+          purchaseOrderLineId: `POL-413785-${index + 1}`,
+          purchaseOrderDocumentNumber: 'PO-413785',
+          description: 'Landscaping Maintenance',
+        })),
+      };
+      const tristanNote = '<p>Both invoices go to PO-413785 - make invoice 101535 go to line 8, make invoice 101547 go to line 15</p>';
+      const processInvoice = async (invoiceNumber: string, note: string, key: string) => {
+        const modules = freshRequire();
+        modules.workday.loadPurchaseOrder.mockImplementation(async (_ctx: unknown, poNumber: string) => (
+          poNumber === 'PO-413785' ? cleanScapesPo : undefined
+        ));
+        modules.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+          ...baseEnrichmentResult,
+          extractedSuppliersInvoiceNumber: invoiceNumber,
+          extractedPurchaseOrderNumber: null,
+        });
+        modules.invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+        await modules.processor({
+          data: [{
+            ...attachmentRequest(`new-invoices/${key}/invoice.pdf`),
+            emailContext: {
+              subject: `Clean Scapes invoice ${invoiceNumber}`,
+              plainTextBody: 'Invoice attached',
+              conversationParts: note,
+              adminConversationParts: note,
+            },
+          }]
+        } as any);
+        return modules;
+      };
+
+      it.each([['101535', 8], ['101547', 15]])('gives invoice %s PO-413785 line %i from the same note', async (invoiceNumber, line) => {
+        const { workday, slack, invoiceEnrichment, invoiceLines } = await processInvoice(invoiceNumber, tristanNote, `req-both-${invoiceNumber}`);
+
+        expect(workday.loadPurchaseOrder.mock.calls.map((call: unknown[]) => call[1])).toEqual(['PO-413785']);
+        expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][5]).toEqual(
+          expect.objectContaining({ documentNumber: 'PO-413785' })
+        );
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([
+          expect.objectContaining({ lineOrder: line, purchaseOrderLineId: `POL-413785-${line}` })
+        ]);
+        expect(slack.notifyResult.mock.calls[0][3].extracted).toEqual(expect.objectContaining({
+          purchaseOrderNumber: 'PO-413785',
+          purchaseOrderSource: 'note',
+          purchaseOrderLine: line,
+        }));
+        const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+        expect(notes).toContain(`Purchase order: Used PO-413785 Line ${line} from the Intercom note.`);
+        expect(notes).not.toContain('not this invoice');
+      });
+
+      it('uses the PO for an invoice whose number was not read when the note gives it to both invoices', async () => {
+        const { slack } = await processInvoice('', tristanNote, 'req-both-unread');
+
+        expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-413785');
+      });
+
+      it('says no line was pinned when the note gives this invoice conflicting lines', async () => {
+        const note = 'Invoice 101535: use PO-413785 Line 8, not Line 9';
+        const { workday, invoiceLines, slack } = await processInvoice('101535', note, 'req-conflicting-lines');
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(19);
+        expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderLine).toBeUndefined();
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+          'Purchase order: Used PO-413785 from the Intercom note. The note gives this invoice conflicting PO lines, so no line was pinned and every PO line was considered.'
+        );
+      });
+
+      it('names the missing line when the invoice line is not on the PO', async () => {
+        const { workday, invoiceLines } = await processInvoice('101547', 'Invoice 101547: PO-413785 Line 40', 'req-line-not-on-po');
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(19);
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).toContain(
+          'The note names Line 40, which is not on PO-413785, so every PO line was considered.'
+        );
+      });
     });
 
     it('uses the PO named in the supplier reply that carried the invoice over the invoice PO', async () => {

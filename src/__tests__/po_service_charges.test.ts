@@ -8,7 +8,7 @@ import {
   unlinkRowsOutsideTheirPoLine,
   type FinalInvoiceLine,
 } from '../lib/invoice_lines.js';
-import { lineSubtotalReviewNote, lineSubtotalShortfallCents, subtotalExplainedByCharges } from '../lib/partial_payment.js';
+import { lineSubtotalReviewNote, lineSubtotalShortfallCents, reviewAmountDueGapCents } from '../lib/partial_payment.js';
 import { isPoServiceLine, uniqueServiceLineMatches } from '../lib/po_service_lines.js';
 import { getAiResponse } from '../lib/ai.js';
 import { invoiceOcrPrompt } from '../prompts/invoice_ocr_prompt.js';
@@ -216,63 +216,42 @@ describe('placeChargesOnPoServiceLines', () => {
   });
 });
 
-describe('subtotal explained by printed charges', () => {
+describe('amount due explains the Agreement Subtotal gap', () => {
   const subtotal = supin472110Header.extractedLineSubtotal;
-  const productionCharges = {
-    freight: supin472110ProductionHeader.extractedFreightAmount,
-    otherCharges: supin472110ProductionHeader.extractedOtherCharges,
-  };
+  const gap = (lines: typeof supin472110Rows, charges: { freight?: string | null; otherCharges?: Array<{ label: string; amount: string }> | null }) =>
+    reviewAmountDueGapCents({ lines, amountDue, tax, taxLabel: 'Tax', ...charges });
 
-  it('today: the production read looks like a $352.08 row that was not read', () => {
-    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal)).toBe(
-      'The extracted lines total $1,499.42, but the document prints $1,851.50 as "Agreement Subtotal". The $352.08 difference may be a row that was not read.'
-    );
+  it('the production read looks like a $352.08 row that was not read until the amount due is counted', () => {
+    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal)).toContain('The $352.08 difference may be a row that was not read.');
     expect(lineSubtotalShortfallCents(supin472110ProductionRows, subtotal)).toBe(35208);
   });
 
-  it('is explained by the header freight and the printed surcharge, so no row looks unread', () => {
-    expect(subtotalExplainedByCharges(supin472110ProductionRows, subtotal, productionCharges)).toBe(true);
-    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal, productionCharges)).toContain(
-      '"DIESEL FUEL [DSL/MCI]", "DYED DIESEL [DYEDDSL/MCI]", "DIESEL FUEL [DSL/MCI]" are not part of the $1,851.50 the document prints as "Agreement Subtotal"'
-    );
-    expect(lineSubtotalShortfallCents(supin472110ProductionRows, subtotal, productionCharges)).toBeUndefined();
+  it('suppresses the note when rows, header freight, the printed surcharge, and tax reach the amount due', () => {
+    const dueGap = gap(supin472110ProductionRows, {
+      freight: supin472110ProductionHeader.extractedFreightAmount,
+      otherCharges: supin472110ProductionHeader.extractedOtherCharges,
+    });
+    expect(dueGap).toBe(0);
+    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal, dueGap)).toBeUndefined();
   });
 
-  it('names the fuel rows that sit outside the subtotal for the eleven printed rows, without saying a row is unread', () => {
-    const note = lineSubtotalReviewNote(supin472110Rows, subtotal, {});
-    expect(note).toContain('are not part of the $1,851.50 the document prints as "Agreement Subtotal"');
-    expect(note).not.toContain('not read');
+  it('suppresses the note for the eleven printed rows, whose fuel rows sit outside the subtotal', () => {
+    const dueGap = gap(supin472110Rows, {});
+    expect(dueGap).toBe(0);
+    expect(lineSubtotalReviewNote(supin472110Rows, subtotal, dueGap)).toBeUndefined();
   });
 
-  it('names a row left out of the only subset that fits, even with no freight or other charges', () => {
-    const labor = { description: 'Labor', quantity: 1, unitCost: '$400.00', totalPrice: '$400.00' };
-    const cont = { description: 'Labor (cont.)', quantity: 1, unitCost: '$100.00', totalPrice: '$100.00' };
-    const note = lineSubtotalReviewNote([labor, cont], { label: 'Subtotal', amount: '$400.00' });
-    expect(note).toContain('"Labor (cont.)" is not part of the $400.00 the document prints as "Subtotal"');
-    expect(lineSubtotalShortfallCents([labor, cont], { label: 'Subtotal', amount: '$400.00' })).toBeUndefined();
-  });
-
-  it('keeps the note when the charges do not account for the gap', () => {
-    const off = { freight: '$456.31', otherCharges: productionCharges.otherCharges };
-    expect(subtotalExplainedByCharges(supin472110ProductionRows, subtotal, off)).toBe(false);
-    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal, off)).toContain('may be a row that was not read');
-  });
-
-  it('keeps the read-twice warning: identical rows move together and are never a section left out', () => {
-    const floral = { description: 'Centerpieces', quantity: 1, unitCost: '$50.00', totalPrice: '$50.00' };
-    const lines = [floral, { ...floral }, { description: 'Linens', quantity: 1, unitCost: '$25.00', totalPrice: '$25.00' }];
-    const printed = { label: 'Subtotal', amount: '$75.00' };
-    expect(subtotalExplainedByCharges(lines, printed)).toBe(false);
-    expect(lineSubtotalReviewNote(lines, printed)).toContain('read twice');
-  });
-
-  it('does not explain a gap when several combinations fit', () => {
-    const rows = [
-      { description: 'A', totalPrice: '$10.00' },
-      { description: 'B', totalPrice: '$10.00' },
-      { description: 'C', totalPrice: '$20.00' },
-    ];
-    expect(subtotalExplainedByCharges(rows as any, { label: 'Subtotal', amount: '$30.00' })).toBe(false);
+  it('counts the surcharge once when it is billed as a row on its PO line instead of an other charge', () => {
+    const placed = placeChargesOnPoServiceLines({
+      lines: supin472110ProductionRows,
+      otherCharges: supin472110ProductionHeader.extractedOtherCharges,
+      freightAmount: supin472110ProductionHeader.extractedFreightAmount,
+      freightLabel: supin472110ProductionHeader.extractedFreightLabel,
+      taxAmount: tax,
+      poLines,
+    });
+    expect(placed.otherCharges).toEqual([]);
+    expect(gap(placed.lines as typeof supin472110Rows, { freight: placed.freightAmount, otherCharges: placed.otherCharges })).toBe(0);
   });
 });
 
@@ -454,10 +433,8 @@ describe('prompts', () => {
     expect(mergeInvoiceLinesPrompt).toContain('Match a delivery, pickup, surcharge, or environmental row to the PO service line with that name');
   });
 
-  it('asks OCR to return separate delivery and pickup rows and a priced surcharge row as lines', () => {
-    expect(invoiceOcrPrompt).toContain('do not add them together');
-    expect(invoiceOcrPrompt).toContain('`DELIVERY CHARGE $228.16` and `PICKUP CHARGE $228.16`');
+  it('asks OCR to return a priced surcharge row as a line, not a tax row', () => {
     expect(invoiceOcrPrompt).toContain('is a priced line item, not an additional tax row');
-    expect(invoiceOcrPrompt).toContain('A single freight, shipping, or handling amount, whether a summary field or one row, still goes in the freight fields');
+    expect(invoiceOcrPrompt).toContain('When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows');
   });
 });
