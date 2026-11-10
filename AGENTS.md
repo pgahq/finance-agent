@@ -10,10 +10,10 @@ A change that sets `Submit: true` or adds another submit path changes this and s
 
 ### AP reviews every draft, and what the draft guarantee does not cover
 
-- AP reviews every invoice before submitting it. That is a standing team process and applies to every invoice this agent creates. The code does not enforce it, because nothing in this code submits a draft.
+- AP reviews every invoice before submitting it. That is a standing team process and applies to every invoice this agent creates. The code does not enforce it: AP can submit a draft without reading it.
 - A supplier resend can overwrite AP's edits. The resend path calls `submitSupplierInvoiceUpdate` on a Draft, unpaid, uncancelled invoice and replaces its lines, so a fix AP made by hand can be lost and AP may have to correct the same defect again. `agent-invoice-scoring` describes this ("A resend update still overwrites AP edits on a Draft invoice") and `invoice-attachment-clustering` covers the resend flow.
 
-So AP's review is what catches a defect in a draft, and a draft alone does not guarantee that a correction AP makes survives a resend. Notes on the invoice must describe what was actually submitted, because AP relies on them. Fallback labels come from the payload Workday accepted. Review notes are built before submit, so keep their claims true even if a repair retry changes the line.
+AP's review is a backstop, not a substitute for checks in the code. Do not rely on it to catch defects the code can check: invoice notes and checks should stand on their own, and a draft alone does not guarantee that a correction AP makes survives a resend. Notes on the invoice must describe what was actually submitted, because AP relies on them. Fallback labels come from the payload Workday accepted. Review notes are built before submit, so keep their claims true even if a repair retry changes the line.
 
 ### Reimbursement packets and the default supplier
 
