@@ -240,12 +240,15 @@ export function parseExtractedUnitCost(raw: string): number | undefined {
   return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
 }
 
-// true: printed as zero or a no-charge word; false: a real or unreadable amount; undefined: nothing printed.
+// true: printed as exactly zero or a no-charge word; false: a real or unreadable amount; undefined: nothing printed.
+// Only a whole numeric token counts (`$0.00`, `(0)`), so text that merely contains a zero (`TBD 0`) and a tiny
+// positive amount (`$0.0004`, which the line-amount rounding would turn into 0) are not free.
 function printedAmountIsZero(raw: string | null | undefined): boolean | undefined {
   const text = raw?.trim();
   if (!text) return undefined;
   if (isNoChargeAmount(text)) return true;
-  return parseExtractedLineAmount(text) === 0;
+  const digits = text.replace(/^\(\s*(.*?)\s*\)$/, '$1').replace(/^[-\u2212]?\s*\$?\s*/, '').replace(/\s*-$/, '');
+  return /^(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d+)?$/.test(digits) && /\d/.test(digits) && Number(digits.replace(/,/g, '')) === 0;
 }
 
 /**
@@ -275,6 +278,14 @@ export function freeRowsNote(rows: Array<{ description: string }>): string | und
   return `${rows.length === 1 ? 'Row' : 'Rows'} ${listedDescriptions(rows)} ${rows.length === 1 ? 'was' : 'were'} left off the invoice lines because`
     + ` ${rows.length === 1 ? 'it prints' : 'they print'} no charge. ${rows.length === 1 ? 'It adds' : 'They add'} nothing to the total,`
     + ` and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/** The AP note for merged lines left off because they bill $0.00 although the document may print a price for them. */
+export function zeroAmountLinesNote(lines: Array<{ description: string }>): string | undefined {
+  if (lines.length === 0) return undefined;
+  const many = lines.length > 1;
+  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 (free or comped), so ${many ? 'they were' : 'it was'} left off the invoice lines.`
+    + ` ${many ? 'They add' : 'It adds'} nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
 }
 
 /**
@@ -2365,15 +2376,14 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
 export function removeZeroAmountLines(lines: FinalInvoiceLine[]): { lines: FinalInvoiceLine[]; removed: FinalInvoiceLine[] } {
   const isZero = (line: FinalInvoiceLine) => {
     if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description)) return false;
-    const amount = submittedLineAmount(line);
-    return amount != null && toCents(amount) === 0;
+    return submittedLineAmount(line) === 0;
   };
   const removed = lines.filter(isZero);
   if (removed.length === 0) return { lines, removed: [] };
   const remaining = lines.filter(line => !isZero(line));
   const pricedRemains = remaining.some(line => {
     const amount = submittedLineAmount(line);
-    return amount != null && toCents(amount) !== 0;
+    return amount != null && amount !== 0;
   });
   return pricedRemains ? { lines: remaining, removed } : { lines, removed: [] };
 }

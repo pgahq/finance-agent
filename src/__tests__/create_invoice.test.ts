@@ -1074,6 +1074,19 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Line price review');
     });
 
+    it.each([
+      ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$5.00' }] }],
+      ['an email balance due', { emailBalanceDue: '$713.37' }],
+    ])('keeps the printed Display price when %s is printed', async (_name, overrides) => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment(overrides));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 713.37, 713.37)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-settlement/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooDisplayRow]);
+    });
+
     it('leaves off a merged line that still bills nothing so it does not take PO quantity', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
@@ -1089,7 +1102,7 @@ describe('create_invoice', () => {
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
-      expect(submitArgs.buildNotes([])).toContain('Free rows: Row "Business Approved Free Diagnostics" was left off');
+      expect(submitArgs.buildNotes([])).toContain('Free rows: Line "Business Approved Free Diagnostics" bills $0.00 (free or comped), so it was left off the invoice lines.');
     });
   });
 

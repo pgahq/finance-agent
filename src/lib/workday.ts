@@ -1264,7 +1264,8 @@ function planPositivePoQuantityRetry(options: buildSubmitInvoiceDataOptions): Po
     ...options,
     finalLines,
     applyPositivePoQuantityRetry: true,
-    zeroAmountPoLinesLeftOff: finalLines.length < options.finalLines.length,
+    zeroAmountPoLinesLeftOff: options.finalLines.some(line =>
+      zeroQuantityLineOrders.has(line.lineOrder) && !finalLines.some(kept => kept.lineOrder === line.lineOrder)),
   };
   // Payload Line_Order values can come from OCR lines rather than finalLines, so confirm the retry
   // payload really sends fewer quantity-0 PO-linked lines than the one that failed.

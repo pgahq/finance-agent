@@ -57,6 +57,7 @@ import {
   resolveHeaderChargeAmounts,
   restoreClearedFreightFromRows,
   freeRowsNote,
+  zeroAmountLinesNote,
   removeFreeRows,
   removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
@@ -616,8 +617,8 @@ async function processInvoice(
       // A line that still bills nothing would need a PO quantity of its own, which Workday counts against the priced lines.
       ({ lines: finalLines, removed: zeroAmountLines } = removeZeroAmountLines(finalLines));
     }
-    const freeRowsReview = [freeRowsNote(freeRows), freeRowsNote(zeroAmountLines)].filter(Boolean).join(' ') || undefined;
-    if (zeroAmountLines.length) debug(`Free lines left off: ${freeRowsNote(zeroAmountLines)}`);
+    const freeRowsReview = [freeRowsNote(freeRows), zeroAmountLinesNote(zeroAmountLines)].filter(Boolean).join(' ') || undefined;
+    if (zeroAmountLines.length) debug(`Free lines left off: ${zeroAmountLinesNote(zeroAmountLines)}`);
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = finalLines && !chargeWithheld && !freightAsLines ? lineTotalMismatchNote(finalLines, {

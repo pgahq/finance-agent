@@ -22,6 +22,7 @@ import {
   removeFreeRows,
   removeRepeatedLineTables,
   removeZeroAmountLines,
+  zeroAmountLinesNote,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
@@ -4028,6 +4029,8 @@ describe('free rows', () => {
     ['a zero total and unit cost', row('Free diagnostics', '0', '0.00')],
     ['a zero unit cost alone', row('Free diagnostics', '$0.00', null)],
     ['N/C', row('Forks', null, 'N/C')],
+    ['a parenthesised zero', row('Free diagnostics', null, '($0.00)')],
+    ['a plain 0', row('Free diagnostics', null, '0')],
     ['Included', row('Setup', null, 'Included')],
   ])('treats a row printed with %s as free', (_name, candidate) => {
     expect(isFreeRow(candidate)).toBe(true);
@@ -4038,6 +4041,9 @@ describe('free rows', () => {
     ['a comped row that prints a positive unit cost', row('Comped repair', '$50.00', '$0.00')],
     ['a row with no price', row('Note', null, null)],
     ['a row with an unreadable price', row('Misc', null, 'TBD')],
+    ['text that merely contains a zero', row('Misc', null, 'TBD 0')],
+    ['a tiny positive total', row('Pennies', null, '$0.0004')],
+    ['a tiny positive unit cost', row('Pennies', '$0.0004', null)],
     ['a $0.00 freight row', row('Freight', null, '$0.00')],
     ['a $0.00 sales tax row', row('Sales Tax', null, '$0.00')],
     ['a discount-marked row', row('Courtesy discount', null, '$0.00', { hasDiscount: true })],
@@ -4085,6 +4091,25 @@ describe('lines that bill nothing', () => {
     const result = removeZeroAmountLines(aligned);
     expect(result.lines.map(kept => kept.description)).toEqual(['Display']);
     expect(result.removed.map(removed => removed.description)).toEqual(['Free diagnostics']);
+  });
+
+  it('keeps a line with a nonzero three-decimal amount', () => {
+    const lines = [line(1, 'Display', 1, 659, 659), line(2, 'Fraction of a cent', 1, null, 0.001)];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
+  it('describes merged zero lines as free or comped', () => {
+    expect(zeroAmountLinesNote([{ description: 'Comped repair' }])).toBe(
+      'Line "Comped repair" bills $0.00 (free or comped), so it was left off the invoice lines. '
+      + 'It adds nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.'
+    );
+    expect(zeroAmountLinesNote([])).toBeUndefined();
+  });
+
+  it('positive-quantity retry keeps a credit while leaving off the $0.00 line', () => {
+    const credit = line(3, 'Credit', 1, null, -10, { hasDiscount: true, purchaseOrderLineId: null });
+    const result = applyPositivePoQuantityRetry([line(1, 'Free diagnostics', 0, 0, 0), line(2, 'Surcharge', 0, 0, 100), credit], new Set([1, 2]));
+    expect(result.map(kept => kept.description)).toEqual(['Surcharge', 'Credit']);
   });
 
   it('leaves the invoice alone when no priced line would remain', () => {

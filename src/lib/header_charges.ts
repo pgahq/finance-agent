@@ -746,9 +746,12 @@ export interface SinglePriceChargeContext {
   lineSubtotal?: { label: string; amount: string } | null;
 }
 
-// The printed subtotal counts only when it plus the header freight and tax is exactly the amount due, so it
-// cannot be a subtotal that leaves a charge out or one that already contains the tax.
+// The printed subtotal counts only when it is labeled, no deposit, payment, or balance is printed, and it plus the
+// header freight and tax is exactly the amount due, so it cannot be a subtotal that leaves a charge out or one that
+// already contains the tax.
 function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | undefined {
+  const label = context.lineSubtotal?.label?.trim();
+  if (!label || context.settlementPrinted) return undefined;
   const amountDue = chargeAmount(context.amountDue);
   const subtotal = chargeAmount(context.lineSubtotal?.amount);
   const tax = context.taxCleared ? undefined : chargeAmount(context.tax);
@@ -758,7 +761,7 @@ function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | 
   const taxCents = Math.round(tax * 100);
   const amountDueCents = Math.round(amountDue * 100);
   if (cents + taxCents + Math.round(freight * 100) !== amountDueCents) return undefined;
-  return { label: context.lineSubtotal?.label ?? '', cents, taxCents, amountDueCents };
+  return { label, cents, taxCents, amountDueCents };
 }
 
 /** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */

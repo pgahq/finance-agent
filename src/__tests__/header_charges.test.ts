@@ -804,6 +804,8 @@ describe('reinterpretSinglePriceLinesForCharges with a tax-inclusive price besid
     ['no header tax', { tax: undefined }],
     ['a cleared header tax', { taxCleared: true }],
     ['a withheld charge', { chargeWithheld: true }],
+    ['a printed deposit, payment, or balance', { settlementPrinted: true }],
+    ['an unlabeled subtotal', { lineSubtotal: { label: '  ', amount: '$659.00' } }],
     ['an unreadable amount due', { amountDue: null }],
   ])('leaves the line alone with %s', (_name, overrides) => {
     const result = reinterpretSinglePriceLinesForCharges([mobileKangarooDisplayRow], { ...context, ...overrides });
