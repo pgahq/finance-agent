@@ -16,7 +16,7 @@ import {
   applyReimbursementToEnrichment,
   decideReimbursement,
   hasReimbursementSignal,
-  isReimbursementPacketsEnabled,
+  packetDisagreement,
   readReimbursementPacket,
   reimbursementDescription,
   reimbursementNote,
@@ -105,31 +105,61 @@ describe('readReimbursementPacket', () => {
   });
 
   it('retries a failed read once before giving up', async () => {
-    aiResponse.mockRejectedValueOnce(new Error('gateway timeout')).mockResolvedValueOnce(packet());
+    aiResponse.mockReset().mockRejectedValueOnce(new Error('gateway timeout')).mockResolvedValue(packet());
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('reimbursement');
-    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(aiResponse).toHaveBeenCalledTimes(3);
   });
 
   it('throws the last failure when both attempts fail', async () => {
-    aiResponse.mockRejectedValue(new Error('gateway timeout'));
+    aiResponse.mockReset().mockRejectedValue(new Error('gateway timeout'));
     await expect(readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never))
       .rejects.toThrow('gateway timeout');
   });
 
-  it('is off only when the switch says false', async () => {
-    aiResponse.mockResolvedValue(packet());
-    process.env.REIMBURSEMENT_PACKETS_ENABLED = 'false';
-    try {
-      expect(await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never)).toBeUndefined();
-      expect(aiResponse).not.toHaveBeenCalled();
-      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: ' False ' })).toBe(false);
-      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: '' })).toBe(true);
-      expect(isReimbursementPacketsEnabled({})).toBe(true);
-      expect(isReimbursementPacketsEnabled({ REIMBURSEMENT_PACKETS_ENABLED: 'true' })).toBe(true);
-    } finally {
-      delete process.env.REIMBURSEMENT_PACKETS_ENABLED;
-    }
+  it('reads a reimbursement a second time and confirms it when the reads agree', async () => {
+    aiResponse.mockReset().mockResolvedValue(packet());
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(read).not.toHaveProperty('unconfirmed');
+  });
+
+  it('marks the read unconfirmed when the second read picks a different amount', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet())
+      .mockResolvedValueOnce(packet({ formAmountToPay: '$1,100.00' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.unconfirmed).toBe("the form's Amount to Pay");
+  });
+
+  it('marks the read unconfirmed when the second read says it is not a reimbursement', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet())
+      .mockResolvedValueOnce(packet({ kind: 'supplier_invoice' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.unconfirmed).toBe('whether it is a reimbursement');
+  });
+
+  it('does not read a supplier invoice a second time', async () => {
+    aiResponse.mockReset().mockResolvedValue(packet({ kind: 'supplier_invoice' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.kind).toBe('supplier_invoice');
+    expect(aiResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('packetDisagreement', () => {
+  it('ignores case and punctuation in names and the formatting of amounts', () => {
+    expect(packetDisagreement(
+      packet(),
+      packet({ payeeName: 'Morgan T. Ellery', formAmountToPay: '1000', payeeSupplierId: null }),
+    )).toBeUndefined();
+  });
+
+  it('flags a different payee, Supplier ID, or email amount', () => {
+    expect(packetDisagreement(packet(), packet({ payeeName: 'Jordan Ellery' }))).toBe('the payee');
+    expect(packetDisagreement(packet(), packet({ payeeSupplierId: 'S-000123' }))).toBe('the payee Supplier ID');
+    expect(packetDisagreement(packet(), packet({ emailAmount: '$900.00' }))).toBe("the email's amount");
   });
 });
 
@@ -193,6 +223,18 @@ describe('decideReimbursement', () => {
     findDocuments.mockResolvedValue([payeeDocument, { ...payeeDocument, workday_id: 'wid-ellery-2', metadata: { ...payeeDocument.metadata, supplierId: 'S-000124' } }]);
     const decision = await decideReimbursement(db as never, packet());
     expect(decision.outcome).toBe('manual_entry');
+  });
+
+  it('stops when two reads of the packet disagreed', async () => {
+    const decision = await decideReimbursement(db as never, { ...packet(), unconfirmed: 'the payee' });
+    expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: 'two reads of the packet disagreed on the payee' } });
+  });
+
+  it('stops when the form has no readable date, since the draft would have no number', async () => {
+    for (const formDate of [null, 'last Tuesday']) {
+      const decision = await decideReimbursement(db as never, packet({ formDate }));
+      expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('no readable date') } });
+    }
   });
 
   it('stops when the packet names no payee', async () => {

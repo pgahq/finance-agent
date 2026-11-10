@@ -17,12 +17,8 @@ import {
 
 export type { ReimbursementPacket };
 
-export const REIMBURSEMENT_PACKETS_ENV_VAR = 'REIMBURSEMENT_PACKETS_ENABLED';
-
-/** A kill switch read from SSM: only `false` turns it off, and a missing parameter (empty) leaves it on. */
-export function isReimbursementPacketsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[REIMBURSEMENT_PACKETS_ENV_VAR]?.trim().toLowerCase() !== 'false';
-}
+/** The packet as read. `unconfirmed` is set when a second, independent read of a reimbursement disagreed with the first. */
+export type ReimbursementRead = ReimbursementPacket & { unconfirmed?: string };
 
 /**
  * A reimbursement packet asks AP to pay a person back. The folio or receipt in it is backup, so the invoice goes to
@@ -40,7 +36,7 @@ export interface AppliedReimbursement {
   amountLabel: string;
   /** The email's own limit when it worded its amount as "up to"; the form amount was checked against it. */
   emailCap?: number;
-  invoiceDate: string | null;
+  invoiceDate: string;
   description: string;
 }
 
@@ -87,25 +83,14 @@ function emailText(emailContext: EmailContextInput): string {
   return `From: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.messageSubject || emailContext.subject || 'N/A'}\nBody: ${body}`;
 }
 
-/**
- * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
- * no document can be read. A model or schema failure throws, so a packet that may be a reimbursement is never
- * silently booked as a supplier invoice.
- */
-export async function readReimbursementPacket(
-  attachments: PresignedAttachment[],
+type PacketParts = ReturnType<typeof attachmentContentParts>;
+
+async function readPacketOnce(
+  fileList: string,
+  parts: PacketParts,
   emailContext: EmailContextInput,
-  abortSignal?: AbortSignal
-): Promise<ReimbursementPacket | undefined> {
-  if (!isReimbursementPacketsEnabled()) return undefined;
-  if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
-  const readable = await convertOfficeAttachmentsForModel(attachments);
-  const parts = attachmentContentParts(readable);
-  if (parts.length === 0) {
-    debug('Reimbursement packet read skipped: no PDF or image attachments');
-    return undefined;
-  }
-  const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
+  abortSignal: AbortSignal | undefined
+): Promise<ReimbursementPacket> {
   let lastFailure: unknown;
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
     if (abortSignal?.aborted) break;
@@ -138,6 +123,53 @@ export async function readReimbursementPacket(
     }
   }
   throw lastFailure ?? new Error('Reimbursement packet read was aborted');
+}
+
+function amountCents(value: string | null): number | null {
+  const amount = parseCanonicalChargeAmount(value);
+  return amount === undefined ? null : Math.round(amount * 100);
+}
+
+function comparableText(value: string | null): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** What the two reads of one packet disagree on, if anything. The facts that decide who is paid and how much must match. */
+export function packetDisagreement(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
+  if (first.kind !== second.kind) return 'whether it is a reimbursement';
+  if (comparableText(first.payeeName) !== comparableText(second.payeeName)) return 'the payee';
+  if (comparableText(first.payeeSupplierId) !== comparableText(second.payeeSupplierId)) return 'the payee Supplier ID';
+  if (amountCents(first.formAmountToPay) !== amountCents(second.formAmountToPay)) return "the form's Amount to Pay";
+  if (amountCents(first.emailAmount) !== amountCents(second.emailAmount)) return "the email's amount";
+  return undefined;
+}
+
+/**
+ * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
+ * no document can be read. A model or schema failure throws (after one retry), so a packet that may be a reimbursement
+ * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time,
+ * and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
+ */
+export async function readReimbursementPacket(
+  attachments: PresignedAttachment[],
+  emailContext: EmailContextInput,
+  abortSignal?: AbortSignal
+): Promise<ReimbursementRead | undefined> {
+  if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
+  const readable = await convertOfficeAttachmentsForModel(attachments);
+  const parts = attachmentContentParts(readable);
+  if (parts.length === 0) {
+    debug('Reimbursement packet read skipped: no PDF or image attachments');
+    return undefined;
+  }
+  const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
+  const first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  if (first.kind !== 'reimbursement') return first;
+
+  const second = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  const disagreement = packetDisagreement(first, second);
+  if (disagreement) debug('Reimbursement packet reads disagree', { disagreement, first, second });
+  return disagreement ? { ...first, unconfirmed: disagreement } : first;
 }
 
 function cents(amount: number): number {
@@ -234,7 +266,7 @@ async function resolvePayee(
  */
 export async function decideReimbursement(
   db: DatabaseConnection,
-  packet: ReimbursementPacket | undefined,
+  packet: ReimbursementRead | undefined,
   options: { defaultSupplierWid?: string } = {}
 ): Promise<ReimbursementDecision> {
   if (!packet || packet.kind !== 'reimbursement') return { outcome: 'not_reimbursement' };
@@ -242,8 +274,17 @@ export async function decideReimbursement(
     return manual(packet, 'the packet looks like a reimbursement but the read was not confident enough to book it');
   }
 
+  if (packet.unconfirmed) {
+    return manual(packet, `two reads of the packet disagreed on ${packet.unconfirmed}`);
+  }
+
   const amount = approvedAmount(packet);
   if ('failure' in amount) return manual(packet, amount.failure);
+
+  // The invoice number is built from the supplier name and this date. Without it the draft has no number, and a
+  // re-trigger of the conversation would create a second draft to the same person.
+  const invoiceDate = normalizePrintedDate(packet.formDate);
+  if (!invoiceDate) return manual(packet, 'the reimbursement form prints no readable date, so the invoice would have no number to stop a duplicate');
 
   const payee = await resolvePayee(db, packet, options.defaultSupplierWid);
   if ('failure' in payee) return manual(packet, payee.failure);
@@ -255,7 +296,7 @@ export async function decideReimbursement(
       amount: amount.amount,
       amountLabel: formatChargeDollars(amount.amount),
       ...(amount.emailCap !== undefined ? { emailCap: amount.emailCap } : {}),
-      invoiceDate: normalizePrintedDate(packet.formDate),
+      invoiceDate,
       description: reimbursementDescription(packet),
     },
   };
