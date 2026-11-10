@@ -2741,7 +2741,7 @@ export function unlinkedPoRowsNote(
   }
   if (leftUnlinked?.length) {
     const { named, plural } = describe(leftUnlinked);
-    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no open line on the PO matched ${plural ? 'them' : 'it'}, so ${plural ? 'they were' : 'it was'} coded from the closest PO line without a link.`);
+    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no open line on the PO matched ${plural ? 'them' : 'it'}. Check ${plural ? 'their' : 'its'} coding.`);
   }
   return sentences.length ? sentences.join(' ') : undefined;
 }

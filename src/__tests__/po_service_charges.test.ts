@@ -415,7 +415,7 @@ describe('unlinkRowsOutsideTheirPoLine', () => {
 
   it('writes a note for rows the merge left without a link when the PO has open lines', () => {
     expect(unlinkedPoRowsNote([], [{ description: 'Setup fee' }])).toBe(
-      '"Setup fee" is not linked to a PO line: no open line on the PO matched it, so it was coded from the closest PO line without a link.'
+      '"Setup fee" is not linked to a PO line: no open line on the PO matched it. Check its coding.'
     );
   });
 
