@@ -1,4 +1,5 @@
 import { applyPrintedTaxCharges, hasPrintedSettlement, isTaxLikeChargeLabel, placeSummaryCharges, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines } from '../lib/header_charges.js';
+import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooHeader } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { chargeReconciliationMessages, prepareInvoiceCharges, reconcileSubmittedCharges, type FinalInvoiceLine } from '../lib/invoice_lines.js';
 
@@ -761,5 +762,80 @@ describe('hasPrintedSettlement', () => {
     expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: [] })).toBe(false);
     expect(hasPrintedSettlement(noSettlement)).toBe(false);
     expect(hasPrintedSettlement({ ...noSettlement, extractedPriorPayments: undefined })).toBe(false);
+  });
+});
+
+// Mobile Kangaroo 2007056: the only priced row prints the $713.37 amount due as its price; the invoice prints Before taxes $659.00 and tax $54.37.
+describe('reinterpretSinglePriceLinesForCharges with a tax-inclusive price beside a printed pre-tax subtotal', () => {
+  const context = {
+    amountDue: mobileKangarooHeader.extractedAmountDue,
+    tax: mobileKangarooHeader.extractedTaxAmount,
+    taxLabel: mobileKangarooHeader.extractedTaxLabel,
+    lineSubtotal: mobileKangarooHeader.extractedLineSubtotal,
+    freightCleared: false,
+    taxCleared: false,
+    summaryChargesPlaceable: true,
+  };
+
+  it('sets the line price and total to the printed subtotal', () => {
+    const result = reinterpretSinglePriceLinesForCharges([mobileKangarooDisplayRow], context);
+
+    expect(result.lines).toEqual([mobileKangarooCorrectedDisplayRow]);
+    expect(result.note).toBe(
+      '"Display" prints $713.37, the amount due, as its price, but the invoice prints "Before taxes" $659.00 and $54.37 of tax. '
+      + 'Counted with that tax, the line overshoots the amount due, but the printed subtotal plus tax equals it, so the line total was set to $659.00 and the tax is not counted twice.'
+    );
+    expect(chargeReconciliationMessages(reconcileSubmittedCharges(result.lines, { amountDue: '$713.37', tax: '$54.37' }))).toEqual([]);
+  });
+
+  it('keeps a missing unit price missing', () => {
+    const result = reinterpretSinglePriceLinesForCharges([{ ...mobileKangarooDisplayRow, unitCost: null }], context);
+    expect(result.lines).toEqual([{ ...mobileKangarooCorrectedDisplayRow, unitCost: null }]);
+  });
+
+  it('also reads a line with no quantity', () => {
+    const result = reinterpretSinglePriceLinesForCharges([{ ...mobileKangarooDisplayRow, quantity: null, unitCost: null }], context);
+    expect(result.lines[0].totalPrice).toBe('$659.00');
+  });
+
+  it.each([
+    ['no printed subtotal', { lineSubtotal: null }],
+    ['a subtotal that with tax is not the amount due', { lineSubtotal: { label: 'Before taxes', amount: '$600.00' } }],
+    ['no header tax', { tax: undefined }],
+    ['a cleared header tax', { taxCleared: true }],
+    ['a withheld charge', { chargeWithheld: true }],
+    ['an unreadable amount due', { amountDue: null }],
+  ])('leaves the line alone with %s', (_name, overrides) => {
+    const result = reinterpretSinglePriceLinesForCharges([mobileKangarooDisplayRow], { ...context, ...overrides });
+    expect(result.lines).toEqual([mobileKangarooDisplayRow]);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('leaves the line alone when its price is not the amount due', () => {
+    const lines = [{ ...mobileKangarooDisplayRow, unitCost: '$700.00', totalPrice: '$700.00' }];
+    expect(reinterpretSinglePriceLinesForCharges(lines, context).lines).toEqual(lines);
+  });
+
+  it('leaves a quantity above one to the unit price readings', () => {
+    const lines = [{ ...mobileKangarooDisplayRow, quantity: 2, unitCost: null }];
+    expect(reinterpretSinglePriceLinesForCharges(lines, context).lines).toEqual(lines);
+  });
+
+  it('leaves two priced lines alone', () => {
+    const lines = [mobileKangarooDisplayRow, { ...mobileKangarooDisplayRow, description: 'Cable', totalPrice: '$5.00', unitCost: '$5.00' }];
+    expect(reinterpretSinglePriceLinesForCharges(lines, context).lines).toEqual(lines);
+  });
+
+  it('keeps the printed total when the line already reconciles with tax', () => {
+    const lines = [mobileKangarooCorrectedDisplayRow];
+    const result = reinterpretSinglePriceLinesForCharges(lines, context);
+    expect(result.lines).toEqual(lines);
+    expect(result.note).toBeUndefined();
+  });
+
+  it('counts printed freight in the subtotal check', () => {
+    const withFreight = { ...context, freight: '$10.00', amountDue: '$723.37' };
+    const lines = [{ ...mobileKangarooDisplayRow, unitCost: '$723.37', totalPrice: '$723.37' }];
+    expect(reinterpretSinglePriceLinesForCharges(lines, withFreight).lines[0].totalPrice).toBe('$659.00');
   });
 });
