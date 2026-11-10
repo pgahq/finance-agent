@@ -51,7 +51,7 @@ export const InvoiceEnrichmentSchema = z.object({
       website: z.string().nullable().describe('The supplier website from the invoice'),
       industry: z.string().nullable().describe('The supplier industry or business type if identifiable'),
       contactPerson: z.string().nullable().describe('The contact person name if mentioned on the invoice'),
-      memo: z.string().nullable().describe('A few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "monthly software subscription", "legal consulting"). No ending period, and do not name PGA, the venue, or the location the service is for. Leave it empty when it would only repeat the supplier name or an identifier. Do not prepend account, customer ID, order, job, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.')
+      memo: z.string().nullable().describe('A few lowercase words saying what the invoice is for (e.g., "elevator phone line service", "monthly software subscription", "legal consulting"). No ending period, and do not name PGA, the venue, or the location the service is for. Leave it empty when it would only repeat the supplier name or an identifier. Do not prepend account, customer ID, order, job, PO, or service date identifiers — those are applied after extraction. Do not use pipe |, greater-than, less-than, or # labels.')
     }).describe('All supplier information extracted from the invoice document'),
 
     resolvedSupplier: z.object({
@@ -134,10 +134,19 @@ export const InvoiceEnrichmentSchema = z.object({
     amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
   }).nullable().optional().describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Null when the invoice bills its full total.'),
 
+  extractedPriorPayments: z.array(z.object({
+    label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
+    amount: z.string().describe('The amount as printed (e.g. "$17,977.50").'),
+  })).nullable().optional().describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Null when none is printed.'),
+
+  invoiceNumbersInDocument: z.array(z.string()).nullable().optional().describe('Every separate invoice number the document reader found in the supplier invoice document, set by code from the document read and never by a model. Null when none was printed.'),
+
   extractedRowsAddedOnSecondRead: z.array(z.object({
     description: z.string(),
     totalPrice: z.string().nullable(),
   })).nullable().optional().describe('Rows that only a second read of the document found, set by code and never by a model. Null when the first read was used.'),
+
+  extractedSecondReadOutcome: z.enum(['rejected', 'inconclusive', 'not_lines', 'failed', 'skipped']).nullable().optional().describe('Set by code and never by a model: why a missing-row second read did not change the rows ("rejected" when it found no new row, "inconclusive" when it changed or added rows without closing the gap, "not_lines" when the row that closed the gap was labeled like tax, a balance, a payment, or a finance charge). Null when no second read was needed or its rows were used.'),
 
   extractedPurchaseOrderNumber: z.string().nullable().describe('The purchase order number as it appears on the supplier\'s invoice document. It may be labeled as "PO Number", "Purchase Order Number", "PO#", or prefixed with "PO-". Null if not visible or unclear. Do not use a free-text PO column value that is not a purchase order number (e.g. "PGA COACHING").'),
 
@@ -188,6 +197,11 @@ export const InvoiceEnrichmentSchema = z.object({
     company: emailBudgetCompanySchema.nullable().describe('The company this budget\'s own coding block names, only when it differs from the company that applies to the whole invoice (which goes in emailWorktags.company). Null otherwise.'),
   })).nullable().describe('One entry per budget when the email divides the invoice cost across two or more budgets or coding blocks, in the order the email lists them. Null when the email codes the whole invoice to one budget or does not divide it. Each entry carries that budget\'s own coding.'),
 
+  emailBalanceDue: z.object({
+    amount: z.string().describe('The amount the email asks AP to pay as the remaining balance, exactly as written (e.g. "$5,909.50"). Never compute it.'),
+    phrase: z.string().describe('The short phrase from the email that calls the amount a remaining balance (e.g. "pay the remaining $5,909.50").'),
+  }).nullable().describe('Set only when the email explicitly says the amount to pay is the remaining balance or the final payment of a larger contract or project. A bare "balance due" does not count. Null otherwise.'),
+
 });
 
 export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
@@ -200,6 +214,7 @@ export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
   extractedPaymentTerms: true,
   emailWorktags: true,
   emailBudgetSplits: true,
+  emailBalanceDue: true,
 });
 
 export type InvoiceMatchingResult = z.infer<typeof InvoiceMatchingSchema>;
@@ -387,7 +402,9 @@ If email context is provided, scan the email body for any contextual mentions of
    - The amounts the email states may include the invoice's tax, so do not adjust them; copy each exactly as written.
    - Return null for emailBudgetSplits when the email codes the whole invoice to one budget or does not divide the cost.
 
-8. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
+8. **Remaining balance**: When the email explicitly says the amount to pay is the remaining balance or the final payment of a larger contract or project (for example "please pay the remaining $5,909.50"), set emailBalanceDue.amount to that dollar amount exactly as written and emailBalanceDue.phrase to the short phrase that says so. A bare "balance due" or "amount due" does not count. Never calculate the amount, and return null when the email only asks to pay the invoice, names no amount, or gives the amount without calling it a remaining balance. A dollar amount that an email assigns to a budget is a budget split, not a remaining balance.
+
+9. If no email context is provided, or none of the above were mentioned, omit emailWorktags entirely.
 
 ---
 

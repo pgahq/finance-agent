@@ -10,14 +10,19 @@ import {
   chargeReconciliationMessages,
   constrainEmailLobToRelatedWorktags,
   extractedChargeCheck,
+  freeRowsNote,
   formatChargeReconciliationNotes,
   FREIGHT_HEADER_FALLBACK_MESSAGE,
   mergeAmountCheckMessages,
   isDiscountLine,
+  isFreeRow,
   isFreightOrHandlingLine,
   lineTotalMismatchNote,
   normalizeExtractedFreightAndTax,
+  removeFreeRows,
   removeRepeatedLineTables,
+  removeZeroAmountLines,
+  zeroAmountLinesNote,
   overlayPoLineOfBusiness,
   overlayPoWorktagsFromPurchaseOrder,
   overlaySharedPoWorktagsOnUnmatchedLines,
@@ -1093,6 +1098,21 @@ describe('applyEmailBudgetSplits', () => {
         { label: 'Brand and Marketing Budget', amountCents: 2000000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
       ],
     });
+  });
+
+  it('splits a remaining-balance line into the two budget amounts and rejects the full contract line (SUPIN-471692)', () => {
+    const first: EmailBudgetSplit = { ...recruitment, label: 'First budget', amount: '$5,279.50' };
+    const second: EmailBudgetSplit = { ...brand, label: 'Second budget', amount: '$630.00' };
+    const balanceLine = { ...sponsorshipLine, extendedAmount: 5909.5 };
+    const options = withSplits([first, second], { budgetSplitBaseCents: 590950 });
+
+    const applied = applyEmailBudgetSplits([balanceLine], options, false);
+    expect(applied.lines.map((line) => line.extendedAmount)).toEqual([5279.5, 630]);
+    expect(applied.outcome?.applied).toBe(true);
+
+    const rejected = applyEmailBudgetSplits([{ ...sponsorshipLine, extendedAmount: 23887 }], options, false);
+    expect(rejected.lines).toHaveLength(1);
+    expect(rejected.outcome?.applied).toBe(false);
   });
 
   it('lets a shared email fund or spend category fill a budget that has none of its own', () => {
@@ -2598,6 +2618,16 @@ describe('removeRepeatedLineTables', () => {
     ['Invoice 1234 Dec services', false],
     ['Retainer 03/01/2026 - 03/31/2026', true],
     ['Retainer 02/30/2026', false],
+    ['09/09/26 - Deutsch, Ben - Update meeting.', true],
+    ['9/9/26 call', true],
+    ['12/31/26 filing', true],
+    ['02/29/28 filing', true],
+    ['02/30/26 filing', false],
+    ['02/29/26 filing', false],
+    ['13/01/26 filing', false],
+    ['1/2 inch pipe', false],
+    ['Size 3/26', false],
+    ['Part 09/09/261', false],
     [`may${' '.repeat(40000)}x`, false],
   ])('reads "%s" as a stated month: %p', (description, states) => {
     const row = { description, quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 };
@@ -2623,6 +2653,148 @@ describe('removeRepeatedLineTables', () => {
       { description: 'Services Sep 2026', quantity: null, unitCost: null, totalPrice: '5,500.00', tableNumber: 2 },
     ];
     expect(removeRepeatedLineTables(lines, levelBlueCharges)).toEqual({ lines, removed: [] });
+  });
+
+  describe('a timekeeper summary beside the time entries (SUPIN-471364)', () => {
+    const summaryRows = [
+      { description: 'Deutsch, Ben', quantity: 0.9, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+      { description: 'Oram, Jon', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 1 },
+    ];
+    const datedEntries = [
+      { description: '09/09/26 - Deutsch, Ben - Update meeting.', quantity: 0.4, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/09/26 - Oram, Jon - Conf call with working group', quantity: 0.3, unitCost: '2,525.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+      { description: '09/15/26 - Deutsch, Ben - Review of partner add-on deck.', quantity: 0.5, unitCost: '1,828.00', totalPrice: null, hasDiscount: false, tableNumber: 2 },
+    ];
+    const undatedEntries = datedEntries.map(row => ({ ...row, description: row.description.replace(/^\d\d\/\d\d\/\d\d - /, '') }));
+    const lawFirmCharges = { amountDue: '$2,402.70' };
+    const lawFirmSubtotal = { label: 'Total Legal Fees', amount: '$2,402.70' };
+
+    it('keeps the dated time entries and drops the summary, as logged', () => {
+      const result = removeRepeatedLineTables([...summaryRows, ...datedEntries], lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal });
+      expect(result.lines).toEqual(datedEntries);
+      expect(result.removed).toEqual(summaryRows);
+      expect(result.keptTable).toBe(2);
+      expect(result.keepReason).toBe('service_period');
+      expect(result.note).toBe(
+        'Removed lines "Deutsch, Ben" ($1,645.20), "Oram, Jon" ($757.50) because table 1 repeats the charges in table 2: each table totals $2,402.70, the amount due less freight and tax. Kept table 2 because its lines state the service period.'
+      );
+    });
+
+    it('keeps the time entries when they carry no dates but itemize the same hours at the same rates', () => {
+      const result = removeRepeatedLineTables([...summaryRows, ...undatedEntries], lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal });
+      expect(result.lines).toEqual(undatedEntries);
+      expect(result.removed).toEqual(summaryRows);
+      expect(result.keepReason).toBe('hours_by_rate');
+      expect(result.note).toBe(
+        'Removed lines "Deutsch, Ben" ($1,645.20), "Oram, Jon" ($757.50) because table 1 repeats the charges in table 2: each table totals $2,402.70, the amount due less freight and tax. Kept table 2 because its rows itemize the same hours at the same rates as table 1.'
+      );
+    });
+
+    it('keeps the most itemized table whichever number it has', () => {
+      const entries = undatedEntries.map(row => ({ ...row, tableNumber: 1 }));
+      const summary = summaryRows.map(row => ({ ...row, tableNumber: 2 }));
+      const result = removeRepeatedLineTables([...entries, ...summary], lawFirmCharges);
+      expect(result.lines).toEqual(entries);
+      expect(result.keepReason).toBe('hours_by_rate');
+    });
+
+    it('needs no printed line total, but never overrides one that disagrees or cannot be read', () => {
+      const rows = [...summaryRows, ...undatedEntries];
+      expect(removeRepeatedLineTables(rows, lawFirmCharges).keepReason).toBe('hours_by_rate');
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: '', amount: '' } }).keepReason).toBe('hours_by_rate');
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Fees', amount: '$3,000.00' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Fees', amount: 'see attached' } }).removed).toEqual([]);
+    });
+
+    it('removes nothing from dated tables when the printed line total disagrees with the tables', () => {
+      const rows = [...summaryRows, ...datedEntries];
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Total', amount: '$4,805.40' } })).toEqual({ lines: rows, removed: [] });
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: { label: 'Total', amount: 'see attached' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables(rows, lawFirmCharges, [], { lineSubtotal: lawFirmSubtotal }).keepReason).toBe('service_period');
+    });
+
+    it('removes nothing from LevelBlue-style tables when the printed line total disagrees', () => {
+      expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines, { lineSubtotal: { label: 'Total', amount: '$11,000.00' } }).removed).toEqual([]);
+      expect(removeRepeatedLineTables([consultant, monthly], levelBlueCharges, levelBluePoLines, { lineSubtotal: { label: 'Total', amount: '$5,500.00' } }).keepReason).toBe('purchase_order');
+    });
+
+    it('removes nothing when the hours at a rate differ, even though both tables total the amount due', () => {
+      const lines = [
+        { description: 'Partner time', quantity: 2, unitCost: '100.00', totalPrice: null, tableNumber: 1 },
+        { description: 'Associate time A', quantity: 0.5, unitCost: '200.00', totalPrice: null, tableNumber: 2 },
+        { description: 'Associate time B', quantity: 0.5, unitCost: '200.00', totalPrice: null, tableNumber: 2 },
+      ];
+      expect(removeRepeatedLineTables(lines, { amountDue: '$200.00' })).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when the tables have the same number of rows', () => {
+      const other = undatedEntries.slice(0, 2).map((row, index) => ({ ...row, quantity: [0.9, 0.3][index], tableNumber: 2 }));
+      const lines = [...summaryRows, ...other];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    // Each table gets rows the per-row checks reject. Both tables then score the same share of clean rows, so the
+    // older tie-breaks stay tied and only hours_by_rate decides; the totals still match the amount due.
+    const withBadRows = (summaryBad: ExtractedInvoiceLine[], entryBad: ExtractedInvoiceLine[], amountDue: string) => ({
+      lines: [...summaryRows, ...summaryBad.map(row => ({ ...row, tableNumber: 1 })), ...undatedEntries, ...entryBad.map(row => ({ ...row, tableNumber: 2 }))],
+      charges: { amountDue },
+    });
+    const bad = (description: string, quantity: number | null, unitCost: string | null, totalPrice: string): ExtractedInvoiceLine =>
+      ({ description, quantity, unitCost, totalPrice, hasDiscount: false, tableNumber: 1 });
+
+    it('removes nothing when each table has a row with no hours', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Flat fee', null, '$10.00', '$11.00'), bad('Flat fee 2', null, '$10.00', '$11.00')],
+        [bad('Flat fee', null, '$10.00', '$7.00'), bad('Flat fee 2', null, '$10.00', '$7.00'), bad('Flat fee 3', null, '$10.00', '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when each table has a zero-hour row', () => {
+      const { lines, charges } = withBadRows(
+        [bad('No charge', 0, '$10.00', '$0.00'), bad('No charge 2', 0, '$10.00', '$0.00')],
+        [bad('No charge', 0, '$10.00', '$0.00'), bad('No charge 2', 0, '$10.00', '$0.00'), bad('No charge 3', 0, '$10.00', '$0.00')],
+        '$2,402.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when each table has a row with no printed rate', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Disbursement', 1, null, '$11.00'), bad('Disbursement 2', 1, null, '$11.00')],
+        [bad('Disbursement', 1, null, '$7.00'), bad('Disbursement 2', 1, null, '$7.00'), bad('Disbursement 3', 1, null, '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when a printed total is not hours times rate, though the hours at each rate match', () => {
+      const { lines, charges } = withBadRows(
+        [bad('Copies', 1, '$10.00', '$11.00'), bad('Copies 2', 1, '$10.00', '$11.00')],
+        [bad('Copies', 0.5, '$10.00', '$7.00'), bad('Copies 2', 0.5, '$10.00', '$7.00'), bad('Copies 3', 1, '$10.00', '$8.00')],
+        '$2,424.70'
+      );
+      expect(removeRepeatedLineTables(lines, charges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when a rate is worked back from the total instead of printed', () => {
+      const backComputed = (row: ExtractedInvoiceLine) => ({ ...row, unitCost: row.unitCost!.replace('.00', '.004') });
+      const lines = [...summaryRows, ...undatedEntries].map(backComputed);
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when the tables bill different months', () => {
+      const august = summaryRows.map(row => ({ ...row, description: `${row.description} - 08/14/26` }));
+      const lines = [...august, ...datedEntries];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
+
+    it('removes nothing when the time entries carry no prices, leaving the table total unknown', () => {
+      const unpriced = datedEntries.map(row => ({ ...row, unitCost: null }));
+      const lines = [...summaryRows, ...unpriced];
+      expect(removeRepeatedLineTables(lines, lawFirmCharges)).toEqual({ lines, removed: [] });
+    });
   });
 });
 
@@ -3814,5 +3986,163 @@ describe('positivePoQuantityNote', () => {
     expect(positivePoQuantityNote(before, normalizeSupplierInvoiceLineAmounts(before, true))).toBeUndefined();
     const plain: FinalInvoiceLine[] = [{ lineOrder: 1, description: 'Fee', quantity: null, unitCost: null, extendedAmount: 5 }];
     expect(positivePoQuantityNote(plain, normalizeSupplierInvoiceLineAmounts(plain, true))).toBeUndefined();
+  });
+});
+
+describe('single price read as a unit price (SUPIN-471803)', () => {
+  const base = { lineOrder: 1, description: 'Bank of America x Golf with Us/First Tee Programming Participant Fees' };
+
+  it('submits quantity 9 at $75.00 once the line total is $675.00', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, quantity: 9, unitCost: 75, extendedAmount: 675 }], true);
+    expect(line).toMatchObject({ quantity: 9, unitCost: 75, extendedAmount: 675 });
+  });
+
+  it('still goes amount-only when only the single price was read', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, quantity: 9, unitCost: null, extendedAmount: 75 }], true);
+    expect(line).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 75 });
+  });
+});
+
+describe('unit price beside a line total that is not their product (SUPIN-472062)', () => {
+  const base = { lineOrder: 1, description: 'eSign Non 8879', quantity: 23, unitCost: 1.25 };
+
+  it('submits quantity 23 at $1.25 once the line total is $28.75', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, extendedAmount: 28.75 }], true);
+    expect(line).toMatchObject({ quantity: 23, unitCost: 1.25, extendedAmount: 28.75 });
+  });
+
+  it('still goes amount-only at the printed total when it is not the product', () => {
+    const [line] = normalizeSupplierInvoiceLineAmounts([{ ...base, extendedAmount: 30.65 }], true);
+    expect(line).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 30.65 });
+  });
+});
+
+describe('free rows', () => {
+  const row = (description: string, unitCost: string | null, totalPrice: string | null, extra: Partial<ExtractedInvoiceLine> = {}): ExtractedInvoiceLine => (
+    { description, quantity: 1, unitCost, totalPrice, hasDiscount: null, ...extra }
+  );
+  const free = row('Business Approved Free Diagnostics', null, '$0.00');
+  const priced = row('Display', null, '$659.00');
+
+  it.each([
+    ['a $0.00 total', row('Free diagnostics', null, '$0.00')],
+    ['a zero total and unit cost', row('Free diagnostics', '0', '0.00')],
+    ['a zero unit cost alone', row('Free diagnostics', '$0.00', null)],
+    ['N/C', row('Forks', null, 'N/C')],
+    ['a parenthesised zero', row('Free diagnostics', null, '($0.00)')],
+    ['a plain 0', row('Free diagnostics', null, '0')],
+    ['Included', row('Setup', null, 'Included')],
+  ])('treats a row printed with %s as free', (_name, candidate) => {
+    expect(isFreeRow(candidate)).toBe(true);
+  });
+
+  it.each([
+    ['a priced row', priced],
+    ['a comped row that prints a positive unit cost', row('Comped repair', '$50.00', '$0.00')],
+    ['a row with no price', row('Note', null, null)],
+    ['a row with an unreadable price', row('Misc', null, 'TBD')],
+    ['text that merely contains a zero', row('Misc', null, 'TBD 0')],
+    ['a tiny positive total', row('Pennies', null, '$0.0004')],
+    ['a tiny positive unit cost', row('Pennies', '$0.0004', null)],
+    ['a $0.00 freight row', row('Freight', null, '$0.00')],
+    ['a $0.00 sales tax row', row('Sales Tax', null, '$0.00')],
+    ['a discount-marked row', row('Courtesy discount', null, '$0.00', { hasDiscount: true })],
+  ])('keeps %s', (_name, candidate) => {
+    expect(isFreeRow(candidate)).toBe(false);
+  });
+
+  it('removes the free rows and names them', () => {
+    const result = removeFreeRows([free, priced]);
+    expect(result.rows).toEqual([priced]);
+    expect(result.removed).toEqual([free]);
+    expect(freeRowsNote(result.removed)).toBe(
+      'Row "Business Approved Free Diagnostics" was left off the invoice lines because it prints no charge. '
+      + 'It adds nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.'
+    );
+  });
+
+  it('keeps every row when all of them are free', () => {
+    expect(removeFreeRows([free, row('Setup', null, 'N/C')])).toEqual({ rows: [free, row('Setup', null, 'N/C')], removed: [] });
+  });
+
+  it('keeps every row when the only others print no price', () => {
+    const unpriced = row('Note', null, null);
+    expect(removeFreeRows([free, unpriced]).removed).toEqual([]);
+  });
+
+  it('lists a few rows and counts the rest', () => {
+    const many = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(name => ({ description: name }));
+    expect(freeRowsNote(many)).toContain('"A", "B", "C", "D", "E", 2 more');
+    expect(freeRowsNote([])).toBeUndefined();
+  });
+});
+
+describe('lines that bill nothing', () => {
+  const PO_LINE = 'ITEM_ORDER_LINE-3-30291';
+  const line = (lineOrder: number, description: string, quantity: number | null, unitCost: number | null, extendedAmount: number | null, extra: Partial<FinalInvoiceLine> = {}): FinalInvoiceLine => ({
+    lineOrder, description, quantity, unitCost, extendedAmount, hasDiscount: false, purchaseOrderLineId: PO_LINE, purchaseOrderLineQuantity: 1, ...extra,
+  });
+
+  it('a $0.00 PO-linked row aligns to quantity 0, which is what removeZeroAmountLines takes out', () => {
+    const aligned = normalizeSupplierInvoiceLineAmounts([line(1, 'Free diagnostics', 1, null, 0), line(2, 'Display', 1, null, 659)], true);
+    expect(aligned[0]).toMatchObject({ quantity: 0, unitCost: 0, extendedAmount: 0 });
+    expect(aligned[1]).toMatchObject({ quantity: 1, unitCost: 659, extendedAmount: 659 });
+
+    const result = removeZeroAmountLines(aligned);
+    expect(result.lines.map(kept => kept.description)).toEqual(['Display']);
+    expect(result.removed.map(removed => removed.description)).toEqual(['Free diagnostics']);
+  });
+
+  it('keeps a $0.00 tax line', () => {
+    const lines = [line(1, 'Display', 1, 659, 659), line(2, 'Sales Tax', 1, null, 0)];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
+  it('keeps a line with a nonzero three-decimal amount', () => {
+    const lines = [line(1, 'Display', 1, 659, 659), line(2, 'Fraction of a cent', 1, null, 0.001)];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
+  it('describes merged zero lines as billing $0.00 as read', () => {
+    expect(zeroAmountLinesNote([{ description: 'Comped repair' }])).toBe(
+      'Line "Comped repair" bills $0.00 as read, so it was left off the invoice lines. '
+      + 'It adds nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.'
+    );
+    expect(zeroAmountLinesNote([])).toBeUndefined();
+  });
+
+  it('positive-quantity retry keeps a credit while leaving off the $0.00 line', () => {
+    const credit = line(3, 'Credit', 1, null, -10, { hasDiscount: true, purchaseOrderLineId: null });
+    const result = applyPositivePoQuantityRetry([line(1, 'Free diagnostics', 0, 0, 0), line(2, 'Surcharge', 0, 0, 100), credit], new Set([1, 2]));
+    expect(result.map(kept => kept.description)).toEqual(['Surcharge', 'Credit']);
+  });
+
+  it('leaves the invoice alone when no priced line would remain', () => {
+    const lines = [line(1, 'Free diagnostics', 0, 0, 0), line(2, 'Setup', 0, 0, 0)];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
+  it('keeps credits, discount-marked lines, freight, and lines with an amount', () => {
+    const lines = [
+      line(1, 'Display', 1, 659, 659),
+      line(2, 'Credit', 1, null, -10),
+      line(3, 'Courtesy', 0, 0, 0, { hasDiscount: true }),
+      line(4, 'Freight', 0, 0, 0),
+      line(5, 'Unknown amount', null, null, null),
+    ];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
+  it('positive-quantity retry leaves off a zero-amount line and keeps the priced ones', () => {
+    const zeroFree = line(1, 'Free diagnostics', 0, 0, 0);
+    const surcharge = line(2, 'Surcharge', 0, 0, 100);
+    const result = applyPositivePoQuantityRetry([zeroFree, surcharge], new Set([1, 2]));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ description: 'Surcharge', quantity: 1, unitCost: 100, extendedAmount: 100, forcePositivePoQuantity: true });
+  });
+
+  it('positive-quantity retry keeps a zero-amount line when no priced line would remain', () => {
+    const lines = [line(1, 'Free diagnostics', 0, 0, 0)];
+    expect(applyPositivePoQuantityRetry(lines, new Set([1]))).toEqual(lines);
   });
 });

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { findSuppliersTool, findCompaniesTool, findCostCentersTool, findPaymentTermsTool, findEventsTool, findLobsTool, findFundsTool, findSpendCategoriesTool } from './rag.js';
 import { resolveReferenceCodeTool } from './reference_ids.js';
 import { defaultModel } from './models.js';
+import { deadlineErrorFromSignal } from './deadline.js';
 
 // Main AI function with RAG tool integration
 export async function getAiResponse({
@@ -81,6 +82,9 @@ export async function getAiResponse({
 
   } catch (error) {
     debug(`AI call error: ${error}`);
+    if (abortSignal?.aborted) {
+      throw deadlineErrorFromSignal(abortSignal);
+    }
     if (NoObjectGeneratedError.isInstance(error)) {
       debug(`NoObjectGeneratedError: ${error}`);
       debug('Cause:', error.cause);

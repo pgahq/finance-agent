@@ -71,6 +71,19 @@ describe('notifyResult', () => {
     expect(texts).not.toContain('*Full error*');
   });
 
+  it('shows a readable deadline message instead of the SDK abort text', async () => {
+    const { ProcessorDeadlineError } = jest.requireActual('../lib/deadline.js');
+    const error = new ProcessorDeadlineError('Processor deadline reached; aborting AI calls', { cause: new Error('Delay was aborted') });
+
+    await notifyResult('create_invoice', 'error', 399070, { fileName: 'invoice.pdf' }, error);
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('ran out of time after 399.07s');
+    expect(texts).toContain('The run ran out of time and stopped before finishing. Check Workday for any partial result before re-running it.');
+    expect(texts).not.toContain('Delay was aborted');
+    expect(texts).not.toContain('function ran *with error*');
+  });
+
   it('renders the shadow clustering plan as readable lines instead of JSON', async () => {
     await notifyResult('create_invoice_shadow', 'success', 2000, {
       mode: 'shadow',
@@ -206,6 +219,73 @@ describe('notifyResult', () => {
     expect(texts).toContain('⚠️ *create_invoice* created `SUPIN-467011` with an amount mismatch (review before approving)');
     expect(texts).not.toContain('✅');
     expect(texts).toContain('*Amount Check*');
+  });
+
+  describe('multiple invoices in one PDF', () => {
+    const message = 'PO-412640.pdf appears to contain 7 invoices (LBL20428245, LBL20453710, LBL20475512, LBL20488608, LBL20499004, LBL20508800, LBL20518206); only LBL20428245 was entered. Enter the rest manually.';
+    const multipleInvoices = { fileName: 'PO-412640.pdf', invoiceNumbers: ['LBL20428245', 'LBL20453710'], message };
+
+    it('flags a created invoice and shows the review note after Changes', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('⚠️ *create_invoice* created `SUPIN-467351` from a PDF with more than one invoice (enter the rest manually)');
+      expect(texts).not.toContain('✅');
+      expect(texts).toContain(`*Multiple invoices in one PDF*\n${message}`);
+      expect(texts.indexOf('*Changes*')).toBeLessThan(texts.indexOf('*Multiple invoices in one PDF*'));
+    });
+
+    it('keeps the amount mismatch headline and still shows the note', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        amountMismatch: true,
+        chargeCheck: ['Lines $1.00 + freight $0.00 + tax $0.00 = $1.00, but the amount due is $2.00. Review lines and header charges.'],
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('with an amount mismatch (review before approving)');
+      expect(texts).toContain('*Multiple invoices in one PDF*');
+    });
+
+    it('shows the note on a resend that was skipped for manual review', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-467351',
+        skipped: true,
+        needsManualReview: true,
+        skipReason: 'Invoice SUPIN-467351 is Approved (paid); re-sent documents need manual review.',
+        multipleInvoices,
+      });
+
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).toContain('needs manual review for `SUPIN-467351` (resend not applied)');
+      expect(texts).toContain(`*Multiple invoices in one PDF*\n${message}`);
+    });
+
+    it('escapes supplier-controlled text and shows nothing without a message', async () => {
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-1',
+        multipleInvoices: { message: 'a<b>&c.pdf appears to contain 2 invoices (<1>, <2>); only <1> was entered. Enter the rest manually.' },
+      });
+      expect(postedSlackTexts(global.fetch as jest.Mock)).toContain('a&lt;b&gt;&amp;c.pdf appears to contain 2 invoices (&lt;1&gt;, &lt;2&gt;)');
+
+      (global.fetch as jest.Mock).mockClear();
+      await notifyResult('create_invoice', 'success', 12000, {
+        invoiceWID: 'new-invoice-wid',
+        invoiceNumber: 'SUPIN-2',
+        multipleInvoices: { message: ' ' },
+      });
+      const texts = postedSlackTexts(global.fetch as jest.Mock);
+      expect(texts).not.toContain('Multiple invoices in one PDF');
+      expect(texts).toContain('✅ *create_invoice* created `SUPIN-2`');
+    });
   });
 
   it('renders create success as Changes, not a JSON dump', async () => {
@@ -389,6 +469,20 @@ describe('notifyResult', () => {
     expect(texts).toContain('*Deposit*\n• Deposit or partial payment not applied: no PO line is for $34,429.50.');
   });
 
+  it('shows a remaining-balance invoice under Amount Due and in its own section', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-471692',
+      extracted: { amountDue: '$5,909.50', amountDueNote: 'remaining balance of $23,887.00' },
+      balanceInvoice: ['Remaining-balance invoice not applied: no PO line is for $5,909.50.'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Amount Due* → $5,909.50 (remaining balance of $23,887.00)');
+    expect(texts).toContain('*Balance invoice*\n• Remaining-balance invoice not applied: no PO line is for $5,909.50.');
+    expect(texts).not.toContain('"balanceInvoice"');
+  });
+
   it('lists each budget the invoice was split into on create success', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
@@ -480,6 +574,31 @@ describe('notifyResult', () => {
     expect(texts).toContain('invoice.pdf (supplier_invoice)');
     expect(texts).toContain('packing-slip.pdf (supporting)');
     expect(texts).toContain('"unrelatedAttachments"');
+  });
+
+  it('names older copies of a document that were not attached', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      supersededAttachments: ['invoice-old.pdf'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('"supersededAttachments"');
+    expect(texts).toContain('invoice-old.pdf');
+  });
+
+  it('names attached files the agent could not open', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412727',
+      attachment: { fileName: 'invoice.pdf', contentType: 'application/pdf', sizeBytes: 100, includedInline: true },
+      unreadableAttachments: ['backup.xlsx'],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('*Not read*');
+    expect(texts).toContain('backup.xlsx could not be opened; nothing was read from it');
   });
 
   it('announces resend updates with an updated headline', async () => {

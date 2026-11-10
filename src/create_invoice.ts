@@ -18,6 +18,8 @@ import {
   formatDueDateNotes,
   formatInvoiceLinesNotes,
   formatInvoiceNumberNotes,
+  formatFreeRowsNotes,
+  formatLinePriceReviewNotes,
   formatLineTotalReviewNotes,
   formatPositivePoQuantityNotes,
   formatMemoIdentifierNotes,
@@ -76,12 +78,17 @@ import {
   removeRepeatedLineTables,
   resolveHeaderChargeAmounts,
   restoreClearedFreightFromRows,
+  freeRowsNote,
+  zeroAmountLinesNote,
+  removeFreeRows,
+  removeZeroAmountLines,
   resolveInvoiceLineQuantityDisplayed,
   splitFreightLines,
   withComposedLineDescriptions,
+  type FinalInvoiceLine,
 } from './lib/invoice_lines.js';
-import { applyPrintedTaxCharges, placeSummaryCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planPartialPayment, secondReadRowsNote } from './lib/partial_payment.js';
+import { applyPrintedTaxCharges, hasPrintedSettlement, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
+import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import {
   findNotePurchaseOrders,
   findNotePurchaseOrdersForOtherInvoices,
@@ -89,12 +96,15 @@ import {
   findPurchaseOrderNumbers,
   findSolePurchaseOrderNumber,
   normalizePurchaseOrderNumber,
+  noteLineForInvoice,
   selectNotePurchaseOrder,
   type NotePurchaseOrder,
   type PurchaseOrderEnrichmentContext,
 } from './lib/purchase_order.js';
+import { isUnreadableOffice } from './lib/office_to_pdf.js';
 import { getBinaryFromS3, getPresignedUrl } from './lib/s3.js';
 import { notifyResult } from './lib/slack.js';
+import { formatMultiInvoiceNotes, multiInvoiceReview } from './lib/multi_invoice_pdf.js';
 import type { InvoiceData, WorkdayInvoice } from './lib/types.js';
 import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
@@ -302,7 +312,7 @@ function pinNotePurchaseOrderLine(
   lineNumber: number | undefined
 ): { purchaseOrder?: ParsedPurchaseOrder; lineMissing: boolean } {
   if (!purchaseOrder || !lineNumber) return { purchaseOrder, lineMissing: false };
-  const lines = purchaseOrder.lines.filter((line) => line.lineOrder === lineNumber);
+  const lines = purchaseOrder.lines.filter((line) => Number(line.lineOrder) === lineNumber);
   if (!lines.length) {
     debug(`Intercom note names line ${lineNumber}, which is not on ${purchaseOrder.documentNumber}; matching against every PO line`);
     return { purchaseOrder, lineMissing: true };
@@ -317,9 +327,13 @@ function formatPurchaseOrderSelectionNotes(input: {
   emailPurchaseOrderNumber?: string;
   /** The note line the invoice lines were coded from; unset when PO lines were not used. */
   appliedLineNumber?: number;
+  /** The line the notes give this invoice, even when it is not on the PO. */
+  noteLineNumber?: number;
   noteLineMissing: boolean;
+  /** The notes give this invoice a line they contradict ("Line 7, not Line 8"), so none was pinned. */
+  noteLineConflict: boolean;
 }): string {
-  const { selected, invoicePurchaseOrderNumber, emailPurchaseOrderNumber, appliedLineNumber, noteLineMissing } = input;
+  const { selected, invoicePurchaseOrderNumber, emailPurchaseOrderNumber, appliedLineNumber, noteLineNumber, noteLineMissing, noteLineConflict } = input;
   const loadedPurchaseOrderNumber = selected.purchaseOrder?.documentNumber;
   if (selected.notePurchaseOrderNotFound) {
     return `\n\nPurchase order: ${selected.notePurchaseOrderNotFound} from the Intercom note was not found in Workday; ${loadedPurchaseOrderNumber ? `used ${loadedPurchaseOrderNumber} instead` : 'no PO was loaded'}.`;
@@ -341,17 +355,20 @@ function formatPurchaseOrderSelectionNotes(input: {
   }
   const { fromNote } = selected;
   if (!fromNote || !loadedPurchaseOrderNumber) return '';
-  if (!appliedLineNumber && !noteLineMissing && invoicePurchaseOrderNumber === loadedPurchaseOrderNumber) return '';
+  if (!appliedLineNumber && !noteLineMissing && !noteLineConflict && invoicePurchaseOrderNumber === loadedPurchaseOrderNumber) return '';
   const used = `${loadedPurchaseOrderNumber}${appliedLineNumber ? ` Line ${appliedLineNumber}` : ''}`;
   const instead = invoicePurchaseOrderNumber
     ? (invoicePurchaseOrderNumber !== loadedPurchaseOrderNumber ? ` instead of ${invoicePurchaseOrderNumber} on the invoice` : '')
     : (emailPurchaseOrderNumber && emailPurchaseOrderNumber !== loadedPurchaseOrderNumber
       ? ` instead of ${emailPurchaseOrderNumber} in the email`
       : '');
-  const missingLine = noteLineMissing && fromNote.lineNumber
-    ? ` The note names Line ${fromNote.lineNumber}, which is not on ${loadedPurchaseOrderNumber}, so every PO line was considered.`
+  const missingLine = noteLineMissing && noteLineNumber
+    ? ` The note names Line ${noteLineNumber}, which is not on ${loadedPurchaseOrderNumber}, so every PO line was considered.`
     : '';
-  return `\n\nPurchase order: Used ${used} from the Intercom note${instead}.${missingLine}`;
+  const conflictingLine = noteLineConflict
+    ? ' The note gives this invoice conflicting PO lines, so no line was pinned and every PO line was considered.'
+    : '';
+  return `\n\nPurchase order: Used ${used} from the Intercom note${instead}.${missingLine}${conflictingLine}`;
 }
 
 const DEFAULT_SUPPLIER_WID = process.env.WORKDAY_DEFAULT_SUPPLIER_WID;
@@ -411,6 +428,8 @@ export interface CreateInvoiceRequest {
   latestMessageAt?: number;
   /** Newest `receivedAt` among files grouped into the conversation's other invoice clusters. */
   otherClustersLatestReceivedAt?: number;
+  /** File names of older copies of a document left out of this cluster; reported in Slack only. */
+  supersededFileNames?: string[];
   /** Cluster plan row this fanned-out record processes (`invoice_cluster_plans`). */
   planId?: string;
   clusterIndex?: number;
@@ -460,7 +479,7 @@ async function fanOutCluster(
   clusterFiles: CreateInvoiceAttachment[],
   shared: Pick<
     CreateInvoiceRequest,
-    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'planId' | 'clusterIndex'
+    'emailContext' | 'conversationId' | 'intercomAppId' | 'assigneeEmail' | 'conversationCreatedAt' | 'conversationPdf' | 'latestMessageAt' | 'otherClustersLatestReceivedAt' | 'supersededFileNames' | 'planId' | 'clusterIndex'
   >
 ): Promise<void> {
   if (!process.env.AWS_STACK_NAME) {
@@ -500,6 +519,7 @@ async function reportShadowClustering(
       clusters: clustering.clusters.map((cluster) => ({
         invoice: describe(cluster.primary),
         ...(cluster.supporting.length ? { supporting: cluster.supporting.map(describe) } : {}),
+        ...(cluster.superseded?.length ? { superseded: cluster.superseded.map(describe) } : {}),
         ...(cluster.fallback ? { fallback: true } : {}),
       })),
       ...(clustering.unrelated.length ? { unrelated: clustering.unrelated.map(describe) } : {}),
@@ -543,6 +563,7 @@ async function processNewInvoice(
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    supersededFileNames,
     planId: requestPlanId,
     clusterIndex: requestClusterIndex,
   } = request;
@@ -568,6 +589,7 @@ async function processNewInvoice(
   if (clusteringEnabled && attachments?.length && !clustered) {
     let firstClusterFiles: CreateInvoiceAttachment[] = [];
     let firstOtherClustersLatestReceivedAt: number | undefined;
+    let firstSupersededFileNames: string[] = [];
     let unrelated: ClassifiedAttachment[] = [];
     const preloadedBuffers = new Map<string, Buffer>();
     const planId = randomUUID();
@@ -589,7 +611,9 @@ async function processNewInvoice(
       const clusterFiles = clustering.clusters.map((cluster) => [cluster.primary, ...cluster.supporting]);
       const othersLatest = (index: number) =>
         clusterMaxReceivedAt(clusterFiles.filter((_, other) => other !== index).flat());
+      const supersededNames = (index: number) => (clustering.clusters[index].superseded ?? []).map((file) => file.fileName);
       firstClusterFiles = clusterFiles[0];
+      firstSupersededFileNames = supersededNames(0);
       firstOtherClustersLatestReceivedAt = othersLatest(0);
       unrelated = clustering.unrelated;
       clusterCount = clusterFiles.length;
@@ -609,6 +633,7 @@ async function processNewInvoice(
             ...shared,
             planId,
             clusterIndex: offset + 1,
+            ...(supersededNames(offset + 1).length ? { supersededFileNames: supersededNames(offset + 1) } : {}),
             ...(otherLatest != null ? { otherClustersLatestReceivedAt: otherLatest } : {}),
           });
         })
@@ -649,6 +674,7 @@ async function processNewInvoice(
         conversationPdf,
         latestMessageAt,
         otherClustersLatestReceivedAt: firstOtherClustersLatestReceivedAt,
+        supersededFileNames: firstSupersededFileNames,
         preloadedBuffers,
         plan: { planId, clusterIndex: 0 },
         startTime,
@@ -688,6 +714,7 @@ async function processNewInvoice(
       conversationPdf,
       latestMessageAt,
       otherClustersLatestReceivedAt,
+      supersededFileNames,
       ...(clustered && requestPlanId && requestClusterIndex != null
         ? { plan: { planId: requestPlanId, clusterIndex: requestClusterIndex } }
         : {}),
@@ -751,6 +778,7 @@ interface ClusterInvoiceInput {
   };
   latestMessageAt?: number;
   otherClustersLatestReceivedAt?: number;
+  supersededFileNames?: string[];
   /** Buffers already downloaded for classification in this invocation, keyed by S3 key. */
   preloadedBuffers?: Map<string, Buffer>;
   /** Cluster plan row this run owns; claimed before any work so a duplicate delivery does nothing. */
@@ -865,6 +893,7 @@ async function processInvoiceCluster(
     conversationPdf,
     latestMessageAt,
     otherClustersLatestReceivedAt,
+    supersededFileNames,
     preloadedBuffers,
     startTime,
     clustered,
@@ -889,6 +918,14 @@ async function processInvoiceCluster(
       ]);
       return { ...file, buffer, presignedUrl };
     }));
+    // A Word or Excel file that cannot be opened is never read by the model. Without its invoice file the
+    // agent would draft from the email text alone, so stop and let AP handle it; unreadable backup files are
+    // still attached and are named in the Slack post.
+    const unreadableFlags = await Promise.all(loaded.map((file) => isUnreadableOffice(file)));
+    if (unreadableFlags[0]) {
+      throw new Error(`${loaded[0].fileName} could not be opened (it may be corrupt or password-protected); nothing was read from it, so no invoice was created`);
+    }
+    const unreadableAttachments = loaded.filter((_, index) => unreadableFlags[index]).map((file) => file.fileName);
     const conversationPdfBuffer = conversationPdf
       ? await getBinaryFromS3(context.s3Config, conversationPdf.s3Key)
       : undefined;
@@ -952,6 +989,13 @@ async function processInvoiceCluster(
       throw new Error(`Invoice enrichment returned error status: ${result.supplier.reason}`);
     }
 
+    const multiInvoice = multiInvoiceReview({
+      fileName,
+      enteredInvoiceNumber: result.extractedSuppliersInvoiceNumber,
+      invoiceNumbersInDocument: result.invoiceNumbersInDocument,
+    });
+    if (multiInvoice) debug(`Multiple invoices in one PDF: ${multiInvoice.message}`);
+
     const extractedInvoiceDate = result.extractedInvoiceDate || undefined;
     const extractedDueDate = normalizePrintedDate(result.extractedDueDate) ?? undefined;
 
@@ -986,7 +1030,10 @@ async function processInvoiceCluster(
       enrichmentPoNumber,
       result.extractedSuppliersInvoiceNumber
     );
-    const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, selectedPo.fromNote?.lineNumber);
+    const noteLine = selectedPo.fromNote
+      ? noteLineForInvoice(selectedPo.fromNote, result.extractedSuppliersInvoiceNumber)
+      : { conflict: false };
+    const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, noteLine.lineNumber);
     const matchedPo = pinnedPo.purchaseOrder;
     const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
       purchaseOrderNumber: matchedPo?.documentNumber,
@@ -1022,13 +1069,15 @@ async function processInvoiceCluster(
     const purchaseOrderLineFallbackLabel = (label: string) =>
       purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     // The default company codes no PO lines, so a note line is honored only when PO lines are used.
-    const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : selectedPo.fromNote?.lineNumber;
+    const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : noteLine.lineNumber;
     const purchaseOrderSelectionNotes = formatPurchaseOrderSelectionNotes({
       selected: selectedPo,
       invoicePurchaseOrderNumber: enrichmentPoNumber,
       emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber,
       appliedLineNumber: notePoLineNumber,
+      noteLineNumber: noteLine.lineNumber,
       noteLineMissing: pinnedPo.lineMissing && !usedDefaultCompany,
+      noteLineConflict: noteLine.conflict && Boolean(matchedPoLines?.length),
     });
     const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
@@ -1039,8 +1088,10 @@ async function processInvoiceCluster(
     debug(`Supplier resolution: status=${result.supplier.status}, targetSupplierWID=${targetSupplierWID ?? 'none'}, submitSupplierWID=${submitSupplierWID ?? 'none'}`);
     debug(`Company resolution: status=${result.companyVerification?.status}, emailCompany=${emailCompany?.referenceId ?? emailCompany?.workdayId ?? 'none'}, poCompany=${poCompanyWID ?? 'none'}, companyWID=${companyWID} (${companyReferenceType})`);
 
-    const extractedRows = result.extractedInvoiceLines ?? [];
-    const extractedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
+    // A row that bills nothing never reaches the PO line match, and does not count as a row dropped from its table.
+    const { rows: extractedRows, removed: freeRows } = removeFreeRows(result.extractedInvoiceLines ?? []);
+    if (freeRows.length) debug(`Free rows left off: ${freeRowsNote(freeRows)}`);
+    const printedLines = extractedRows.filter(l => l.description && (l.totalPrice || l.unitCost));
     // Header amounts follow the printed labels first (tax read as freight, withheld or cleared values);
     // freight-as-lines and duplicate removal then work from those amounts.
     const {
@@ -1055,8 +1106,30 @@ async function processInvoiceCluster(
       extractedFreightLabel: result.extractedFreightLabel,
       extractedTaxAmount: result.extractedTaxAmount,
       extractedTaxLabel: result.extractedTaxLabel,
-      freightAmountFromLines: splitFreightLines(extractedLines).freightAmountFromLines,
+      freightAmountFromLines: splitFreightLines(printedLines).freightAmountFromLines,
     });
+    // A quantity beside one price may be a unit price whose line total was left off, and a unit price beside a
+    // line total that is not quantity x unit price may have a misread total; each is read that way only when
+    // that is what makes the lines match the amount due.
+    const { lines: extractedLines, note: linePriceNote } = reinterpretSinglePriceLinesForCharges(printedLines, {
+      amountDue: extractedAmountDue,
+      freight: resolvedFreightAmount,
+      tax: resolvedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      freightCleared: headerFreightCleared,
+      taxCleared: headerTaxCleared,
+      chargeWithheld,
+      summaryChargesPlaceable: printedLines.length === extractedRows.length,
+      printedTaxCharges: result.extractedOtherCharges,
+      printedSummaryCharges: result.extractedSummaryCharges,
+      settlementPrinted: hasPrintedSettlement({
+        extractedPartialPayment: result.extractedPartialPayment,
+        extractedPriorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+      }),
+      lineSubtotal: result.extractedLineSubtotal,
+    });
+    if (linePriceNote) debug(`Line price review: ${linePriceNote}`);
     const restoredFreight = restoreClearedFreightFromRows(extractedLines, {
       amountDue: extractedAmountDue,
       tax: resolvedTaxAmount,
@@ -1115,17 +1188,44 @@ async function processInvoiceCluster(
         taxAmount: extractedTaxAmount,
         freightCleared,
         taxCleared,
-      }, poClosedForInvoicing ? undefined : poLines);
+      }, poClosedForInvoicing ? undefined : poLines, { lineSubtotal: result.extractedLineSubtotal });
     if (repeatedLines.note) debug(`Repeated line review: ${repeatedLines.note}`);
     // Rows are compared as read, before freight, tax, and repeated tables are taken out; a removed repeated table
     // would otherwise look like rows read twice.
-    const lineSubtotalNote = [
+    // The amount due is the better judge of missing rows when the printed total covers only part of the table, but
+    // it says nothing on an invoice that bills a deposit, an advance, or what is left after payments.
+    const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+      ? undefined
+      : reviewAmountDueGapCents({
+        lines: charges.lines,
+        amountDue: extractedAmountDue,
+        freight: freightCleared ? undefined : extractedFreightAmount,
+        tax: taxCleared ? undefined : extractedTaxAmount,
+        taxLabel: result.extractedTaxLabel,
+        otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+        summaryCharges: result.extractedSummaryCharges,
+        creditCents,
+      });
+    const subtotalFreight = freightCleared ? 0 : subtotalFreightCents({
+      subtotal: result.extractedLineSubtotal,
+      amountDue: extractedAmountDue,
+      // Only freight the document printed in its header: freight taken from a row is still one of the rows.
+      freight: result.extractedFreightAmount ?? undefined,
+      tax: taxCleared ? undefined : extractedTaxAmount,
+      taxLabel: result.extractedTaxLabel,
+      otherCharges: taxCharges.message ? undefined : result.extractedOtherCharges,
+      creditCents,
+    }) ?? 0;
+    const subtotalMismatch = repeatedLines.note
+      ? undefined
+      : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal, amountDueGap, subtotalFreight, result.extractedSecondReadOutcome);
+    const lineSubtotalBaseNote = [
       secondReadRowsNote(result.extractedRowsAddedOnSecondRead),
-      repeatedLines.note ? undefined : lineSubtotalReviewNote(extractedLines, result.extractedLineSubtotal),
+      subtotalMismatch,
     ].filter(Boolean).join(' ') || undefined;
-    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     // A fee or discount printed only in the totals block becomes an invoice line when it exactly explains the gap.
-    const summaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
+    const placedSummaryCharges: PlacedSummaryCharges = depositApplied || chargeWithheld || freightAsLines || extractedLines.length < extractedRows.length
       ? { lines: [] }
       : placeSummaryCharges({
         charges: result.extractedSummaryCharges,
@@ -1136,13 +1236,38 @@ async function processInvoiceCluster(
         freightCleared,
         taxCleared,
       });
+    // A remaining-balance invoice prints the full contract but bills only what is still unpaid, so one balance line replaces the lines.
+    // It runs after repeated tables and totals charges so their explanations of the gap win.
+    const balancePlan = depositPlan || chargeWithheld || freightAsLines
+      ? undefined
+      : planBalanceInvoice({
+        priorPayments: result.extractedPriorPayments,
+        emailBalanceDue: result.emailBalanceDue,
+        lineSubtotal: result.extractedLineSubtotal,
+        amountDue: extractedAmountDue,
+        freightAmount: extractedFreightAmount,
+        taxAmount: extractedTaxAmount,
+        lines: [...repeatedLines.lines, ...placedSummaryCharges.lines],
+        poLines,
+      });
+    const balanceApplied = Boolean(balancePlan?.applied);
+    if (balancePlan) debug(`Balance invoice: ${balancePlan.note}`);
+    if (balanceApplied) chargeCheck = [];
+    const summaryCharges: PlacedSummaryCharges = balanceApplied ? { lines: [] } : placedSummaryCharges;
+    const billedPlan = depositPlan ?? balancePlan;
+    const billedPlanApplied = depositApplied || balanceApplied;
+    const lineSubtotalNote = [
+      lineSubtotalBaseNote,
+      subtotalMismatch && !billedPlanApplied && !chargeWithheld && !freightAsLines ? poTotalReviewNote(poLines, extractedAmountDue, extractedLines.length) : undefined,
+    ].filter(Boolean).join(' ') || undefined;
+    if (lineSubtotalNote) debug(`Line subtotal review: ${lineSubtotalNote}`);
     if (summaryCharges.lines.length || summaryCharges.reviewNote) {
       debug('Totals charges', { placed: summaryCharges.lines.length, reviewNote: Boolean(summaryCharges.reviewNote) });
     }
-    const candidateLines = depositPlan?.line ? [depositPlan.line] : [...repeatedLines.lines, ...summaryCharges.lines];
+    const candidateLines = billedPlan?.line ? [billedPlan.line] : [...repeatedLines.lines, ...summaryCharges.lines];
 
-    // The deposit line is a quantity 1 line at the deposit amount, so it counts as one unit on its PO line.
-    const invoiceLineQuantityDisplayed = depositApplied
+    // The deposit or balance line is a quantity 1 line at the billed amount, so it counts as one unit on its PO line.
+    const invoiceLineQuantityDisplayed = billedPlanApplied
       ? true
       : resolveInvoiceLineQuantityDisplayed(result.invoiceLineQuantityDisplayed, candidateLines);
 
@@ -1183,7 +1308,7 @@ async function processInvoiceCluster(
       getCostCenterRelatedLobsByCodes(context.dbConnection, costCenterIds);
     const merged = await buildFinalInvoiceLines(
       candidateLines,
-      depositPlan?.poLines ?? poLines,
+      billedPlan?.poLines ?? poLines,
       emailContext?.plainTextBody,
       fallbackIds,
       emailWorktags,
@@ -1302,13 +1427,18 @@ async function processInvoiceCluster(
     if (chargesInLines) chargeCheck = [];
 
     let poQuantityNote: string | undefined;
+    let zeroAmountLines: FinalInvoiceLine[] = [];
     if (finalLines.length > 0) {
       finalLines = applyInvoiceMemoIdentifiersToLines(finalLines, memoIdentifiers);
       const printedLines = finalLines;
       finalLines = normalizeSupplierInvoiceLineAmounts(finalLines, invoiceLineQuantityDisplayed);
       poQuantityNote = [positivePoQuantityNote(printedLines, finalLines), unitCostFromLineTotalNote(finalLines)].filter(Boolean).join(' ') || undefined;
       if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
+      // A line that still bills nothing would need a PO quantity of its own, which Workday counts against the priced lines.
+      ({ lines: finalLines, removed: zeroAmountLines } = removeZeroAmountLines(finalLines));
     }
+    const freeRowsReview = [freeRowsNote(freeRows), zeroAmountLinesNote(zeroAmountLines)].filter(Boolean).join(' ') || undefined;
+    if (zeroAmountLines.length) debug(`Free lines left off: ${zeroAmountLinesNote(zeroAmountLines)}`);
     // A withheld charge leaves the submitted header unknown, and its own review note already asks AP to check it.
     // Freight sent as lines is not on the header; the submit-time Amount check reconciles that payload instead.
     const lineTotalReviewNote = chargeWithheld || freightAsLines ? undefined : lineTotalMismatchNote(finalLines, {
@@ -1323,6 +1453,7 @@ async function processInvoiceCluster(
       lineSubtotalNote && `Line subtotal review: ${lineSubtotalNote}`,
       repeatedLines.note && `Repeated line review: ${repeatedLines.note}`,
       totalsChargeReview && `Totals charge review: ${totalsChargeReview}`,
+      linePriceNote && `Line price review: ${linePriceNote}`,
       lineTotalReviewNote && `Line total review: ${lineTotalReviewNote}`,
       poQuantityNote && `PO line quantity: ${poQuantityNote}`,
       emailBudgetSplit?.review && `Budget split review: ${emailBudgetSplit.review}`,
@@ -1356,7 +1487,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(depositPlan?.note) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1431,6 +1562,9 @@ async function processInvoiceCluster(
       },
       ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
       ...(unrelated.length ? { unrelatedAttachments: unrelated.map((doc) => doc.fileName) } : {}),
+      ...(supersededFileNames?.length ? { supersededAttachments: supersededFileNames } : {}),
+      ...(unreadableAttachments.length ? { unreadableAttachments } : {}),
+      ...(multiInvoice ? { multipleInvoices: { fileName: multiInvoice.fileName, invoiceNumbers: multiInvoice.invoiceNumbers, message: multiInvoice.message } } : {}),
       ...(conversationPdf ? { conversationTranscriptFileName: conversationPdf.fileName } : {}),
       supplier: purchaseOrderSupplier && purchaseOrderSupplier.relation !== 'same' ? {
         status: 'po',
@@ -1448,7 +1582,7 @@ async function processInvoiceCluster(
         invoiceDate: extractedInvoiceDate,
         dueDate: extractedDueDate,
         amountDue: extractedAmountDue,
-        ...(depositPlan?.amountDueNote && depositApplied ? { amountDueNote: depositPlan.amountDueNote } : {}),
+        ...(billedPlan?.amountDueNote && billedPlanApplied ? { amountDueNote: billedPlan.amountDueNote } : {}),
         suppliersInvoiceNumber: extractedSuppliersInvoiceNumber,
         freightAmount: extractedFreightAmount,
         taxAmount: extractedTaxAmount,
@@ -1474,6 +1608,7 @@ async function processInvoiceCluster(
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),
       ...(depositPlan?.slackLines.length ? { deposit: depositPlan.slackLines } : {}),
+      ...(balancePlan?.slackLines.length ? { balanceInvoice: balancePlan.slackLines } : {}),
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 

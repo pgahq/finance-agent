@@ -643,6 +643,60 @@ describe('intercom', () => {
       await expect(fetchConversationInvoiceData(config, 'missing')).rejects.toBeInstanceOf(IntercomNotFoundError);
     });
 
+    it('selects Word and Excel attachments by MIME type or extension and ignores legacy formats', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          source: {
+            subject: 'Invoice',
+            body: 'Files attached',
+            author: { email: 'a@b.com' },
+            attachments: [
+              {
+                name: 'invoice.docx',
+                url: 'https://downloads.intercomcdn.com/invoice.docx',
+                content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              },
+              { name: 'Timesheet.XLSX', url: 'https://downloads.intercomcdn.com/timesheet.xlsx', content_type: 'application/octet-stream' },
+              { name: 'old.doc', url: 'https://downloads.intercomcdn.com/old.doc', content_type: 'application/msword' },
+              { name: 'old.xls', url: 'https://downloads.intercomcdn.com/old.xls', content_type: 'application/octet-stream' },
+            ],
+          },
+          conversation_parts: { conversation_parts: [] },
+        }),
+      }) as unknown as typeof fetch;
+
+      const data = await fetchConversationInvoiceData(config, '123');
+
+      expect(data.attachments.map((attachment) => [attachment.name, attachment.contentType])).toEqual([
+        ['invoice.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        ['Timesheet.XLSX', 'application/octet-stream'],
+      ]);
+    });
+
+    it('throws IntercomNoAttachmentError when only legacy Office files are present', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          id: '123',
+          source: {
+            subject: 'Hi',
+            body: 'Old files',
+            author: { email: 'a@b.com' },
+            attachments: [
+              { name: 'old.doc', url: 'https://downloads.intercomcdn.com/old.doc', content_type: 'application/msword' },
+            ],
+          },
+          conversation_parts: { conversation_parts: [] },
+        }),
+      }) as unknown as typeof fetch;
+
+      await expect(fetchConversationInvoiceData(config, '123')).rejects.toBeInstanceOf(IntercomNoAttachmentError);
+    });
+
     it('throws IntercomNoAttachmentError when no PDF is present', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 200,

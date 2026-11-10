@@ -39,6 +39,7 @@ export const InvoiceOcrSchema = z.object({
   extractedDueDate: printedText(enrichment.extractedDueDate),
   extractedAmountDue: printedText(enrichment.extractedAmountDue),
   extractedSuppliersInvoiceNumber: printedText(enrichment.extractedSuppliersInvoiceNumber),
+  invoiceNumbersInDocument: z.array(z.string()).describe('The supplier invoice number of every separate invoice printed in the supplier invoice document, in document order, including the one in extractedSuppliersInvoiceNumber. Not numbers that an invoice only references (prior invoices, credited invoices, statement aging rows). Return an empty array when no invoice number is printed.'),
   extractedFreightAmount: printedText(enrichment.extractedFreightAmount),
   extractedFreightLabel: printedText(enrichment.extractedFreightLabel),
   extractedTaxAmount: printedText(enrichment.extractedTaxAmount),
@@ -60,6 +61,10 @@ export const InvoiceOcrSchema = z.object({
     percent: z.string().describe('The percentage printed for the deposit (e.g. "90%"). Empty string when none is printed.'),
     amount: z.string().describe('The deposit amount as printed (e.g. "$34,429.50").'),
   }).describe('A deposit, advance, or partial payment this invoice bills instead of the full contract total. Use empty strings when the invoice bills its full total.'),
+  extractedPriorPayments: z.array(z.object({
+    label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
+    amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
+  })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -87,6 +92,10 @@ export interface InvoiceOcrPartialPayment {
   percent: string | null;
   amount: string;
 }
+export interface InvoiceOcrPriorPayment {
+  label: string;
+  amount: string;
+}
 export interface InvoiceOcrSummaryCharge {
   label: string;
   /** Null when the row prints only a rate. */
@@ -98,11 +107,16 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
+  /** Every separate invoice number the model saw in the supplier invoice document; null when none. */
+  invoiceNumbersInDocument?: string[] | null;
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
   /** Set by extractInvoiceDocuments when a second read supplied rows the first read missed. */
   extractedRowsAddedOnSecondRead?: Array<{ description: string; totalPrice: string | null }> | null;
+  /** Set by extractInvoiceDocuments when a missing-row second read ran or was skipped and its rows were not used. */
+  extractedSecondReadOutcome?: 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
+  extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
@@ -179,7 +193,7 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
-    extractedLineSubtotal, extractedPartialPayment,
+    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
     ...headerFields
   } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -192,6 +206,9 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
   const lineSubtotal = textOrNull(extractedLineSubtotal?.amount)
     ? { label: (extractedLineSubtotal?.label ?? '').trim(), amount: (extractedLineSubtotal?.amount ?? '').trim() }
     : null;
+  const priorPayments = (extractedPriorPayments ?? [])
+    .filter(payment => payment.amount.trim())
+    .map(payment => ({ label: payment.label.trim(), amount: payment.amount.trim() }));
   const partialPayment = textOrNull(extractedPartialPayment?.amount)
     ? {
       label: (extractedPartialPayment?.label ?? '').trim(),
@@ -199,10 +216,13 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
       amount: (extractedPartialPayment?.amount ?? '').trim(),
     }
     : null;
+  const invoiceNumbers = (invoiceNumbersInDocument ?? []).map(number => number.trim()).filter(Boolean);
   return {
     ...nullableTextFields(headerFields),
+    invoiceNumbersInDocument: invoiceNumbers.length ? invoiceNumbers : null,
     extractedLineSubtotal: lineSubtotal,
     extractedPartialPayment: partialPayment,
+    extractedPriorPayments: priorPayments.length ? priorPayments : null,
     extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     extractedSummaryCharges: summaryCharges.length ? summaryCharges : null,
@@ -272,9 +292,11 @@ Read the invoice attachment and extract the amount due or invoice total as it ap
 
 ## Part 4.5: Line Total and Deposits
 
-Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total.
+Populate \`extractedLineSubtotal\` with the total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment, using its exact printed label (for example "Total Cost of Contracted Services" or "Sub Total"). Return empty strings when the document prints no such total. A document can print several subtotals, one per section and also a combined one that covers only some of the rows. Report the combined total of the line table, even when it leaves a separately printed row out. For example, an invoice with "Rental Subtotal $3,067.00", "Sales/Misc Subtotal $680.88", and "Agreement Subtotal $3,591.67", where a separately printed "Fuel" row of $156.21 follows the Agreement Subtotal, must return extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }. When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together. Extract every row of every section whether or not the reported total includes it.
 
 When the invoice bills a deposit, advance, or partial payment instead of the full contract total, populate \`extractedPartialPayment\` with the printed label of the deposit row, the percentage when one is printed (for example "90%"), and the deposit amount as printed. For example, an invoice with Total Cost of Contracted Services $38,255.00, Deposit Required Upon Signing 90%, and Advance Deposit Due $34,429.50 must return extractedLineSubtotal { label: "Total Cost of Contracted Services", amount: "$38,255.00" }, extractedPartialPayment { label: "Advance Deposit Due", percent: "90%", amount: "$34,429.50" }, and extractedAmountDue "$34,429.50". Never compute an amount from a percentage. Leave extractedPartialPayment empty for a final invoice that only shows a deposit already paid ("Less deposit paid"), for retainers, and for ordinary invoices.
+
+When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
 
 ---
 
@@ -282,7 +304,9 @@ When the invoice bills a deposit, advance, or partial payment instead of the ful
 
 Read the invoice attachment and extract the freight amount. It may be labeled as "Freight", "Shipping", "Handling", "Shipping & Handling", "Delivery", or similar. Populate \`extractedFreightAmount\` with this value (e.g. "$150.00") and populate \`extractedFreightLabel\` with the exact label you read.
 
-If the invoice presents freight/shipping/handling as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
+If the invoice presents a single freight/shipping/handling charge as a line item rather than a summary field, still capture it here — do NOT include it in \`extractedInvoiceLines\`. If no freight amount could be found or if it is ambiguous, omit both \`extractedFreightAmount\` and \`extractedFreightLabel\`.
+
+When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows in an itemized table (for example \`DELIVERY CHARGE 1 EACH 208.660 208.66\` and \`PICKUP CHARGE 1 EACH 208.660 208.66\` under SALES/MISCELLANEOUS ITEMS), there is no single freight amount: return each of those rows in \`extractedInvoiceLines\` with its printed description and amount, and leave \`extractedFreightAmount\` and \`extractedFreightLabel\` empty. Do not merge the rows into one line or one freight amount; the system decides afterward which of them are freight. When the totals block also prints its own freight, shipping, or delivery amount, populate \`extractedFreightAmount\` with it only when it is a separate charge that no table row accounts for; when it restates the table rows (it equals one row or the sum of several), leave \`extractedFreightAmount\` empty so the charge is not billed twice.
 
 ---
 
@@ -327,6 +351,20 @@ Many invoices print priced rows in the totals block (next to Sub Total and Total
 ## Part 6: Supplier's Invoice Number
 
 Read the invoice attachment and extract the supplier's invoice number as it appears on the document. Populate \`extractedSuppliersInvoiceNumber\`. Prefer letters, digits, hyphen, period, and slash. Do not use pipe \`|\`, \`>\`, or \`<\`. If no invoice number is visible or the value is ambiguous, omit the field.
+
+---
+
+## Part 6.5: Invoices in the document
+
+Populate \`invoiceNumbersInDocument\` with the supplier invoice number of every separate invoice printed in the supplier invoice document, in document order, including the one in \`extractedSuppliersInvoiceNumber\`. A separate invoice has its own invoice number, invoice date, and amount due, for example a PDF that bundles one invoice per month, one per page, or one per order.
+
+- A multi-page invoice, or an invoice with its own remittance slip or payment stub, is one invoice.
+- Do not list a number that an invoice only mentions: a prior or original invoice, an invoice a credit memo applies to, rows of a statement or aging table, or a number printed on supporting files.
+- List invoices only. Do not list the number of a credit memo, statement, quote, packing slip, delivery ticket, or receipt, even when it has its own date and amount.
+- A statement or invoice that includes receipts, charge slips, or other backup pages, each with its own reference number, is one invoice. Do not list those reference numbers.
+- The same invoice number printed more than once is listed once.
+- Return an empty array when no invoice number is printed.
+- When the document holds several separate invoices, extract Parts 1 through 9 from the first invoice only. Do not combine header values or rows from different invoices.
 
 ---
 
@@ -376,7 +414,7 @@ Extract the individual line items from the invoice document:
 Extract every printed row, in document order. Two rows with the same description, quantity, and price are two separate charges when they are printed under different dates, events, or section headings, or in different places; return both. Only skip a row that is clearly the same printed row repeated, such as a page header or a table carried over onto the next page.
 
 Exclude any lines that represent tax charges (e.g. "VAT", "GST", "HST", "Sales Tax") — capture the main tax in \`extractedTaxAmount\` and any additional tax row in \`extractedOtherCharges\` instead.
-Exclude any lines that represent freight, shipping, handling, or delivery charges — capture those in \`extractedFreightAmount\` instead.
+Exclude a single freight, shipping, handling, or delivery charge from the lines — capture it in \`extractedFreightAmount\` instead. When several separate delivery, pickup, or similar rows are printed as priced table rows (Part 5), return every one of them as a line.
 
 Populate \`extractedInvoiceLines\` with all remaining line items found. If no line items can be extracted, omit the field.
 

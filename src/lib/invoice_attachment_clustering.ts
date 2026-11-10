@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
+import { isUnreadableOffice, toModelDocument } from './office_to_pdf.js';
 import type { InvoiceData } from './types.js';
 import {
   InvoiceAttachmentParseSchema,
@@ -29,6 +31,8 @@ export interface ClusterableAttachment {
   intercomAppId?: string;
   assigneeEmail?: string;
   conversationCreatedAt?: string;
+  /** SHA-256 of the file bytes; lets a byte-identical resend be recognized as the same document. */
+  contentHash?: string;
 }
 
 export interface ClassifiedAttachment extends ClusterableAttachment {
@@ -46,6 +50,8 @@ export interface ClassifiedAttachment extends ClusterableAttachment {
 export interface InvoiceAttachmentCluster {
   primary: ClassifiedAttachment;
   supporting: ClassifiedAttachment[];
+  /** Older copies of a document that also appears later in this cluster; never loaded or sent to Workday. */
+  superseded?: ClassifiedAttachment[];
   fallback: boolean;
 }
 
@@ -148,7 +154,58 @@ export function clusterMaxReceivedAt(files: Array<{ receivedAt?: number }>): num
   return max;
 }
 
+function isSameBytes(file: ClassifiedAttachment, other: ClassifiedAttachment): boolean {
+  return Boolean(file.contentHash && file.contentHash === other.contentHash);
+}
+
+type ConversationOrder = Map<ClassifiedAttachment, number>;
+
+/** Latest means highest `receivedAt` (missing counts as oldest); a tie goes to the later conversation position. */
+function isLater(candidate: ClassifiedAttachment, file: ClassifiedAttachment, order: ConversationOrder): boolean {
+  const candidateAt = candidate.receivedAt ?? Number.NEGATIVE_INFINITY;
+  const fileAt = file.receivedAt ?? Number.NEGATIVE_INFINITY;
+  if (candidateAt !== fileAt) return candidateAt > fileAt;
+  return (order.get(candidate) ?? 0) > (order.get(file) ?? 0);
+}
+
+function splitLatestCopies(
+  files: ClassifiedAttachment[],
+  order: ConversationOrder
+): { kept: ClassifiedAttachment[]; superseded: ClassifiedAttachment[] } {
+  const kept: ClassifiedAttachment[] = [];
+  const superseded: ClassifiedAttachment[] = [];
+  for (const file of files) {
+    const hasLaterCopy = files.some((other) => other !== file && isSameBytes(file, other) && isLater(other, file, order));
+    (hasLaterCopy ? superseded : kept).push(file);
+  }
+  return { kept, superseded };
+}
+
+/**
+ * Splits a cluster's non-primary files into those to keep and older copies of a document that also
+ * appears later in the cluster. The primary is never dropped. A file is superseded when:
+ * - it is an invoice PDF strictly older than the primary (same-message PDFs are pages, not versions), or
+ * - a later file in the cluster has identical bytes.
+ */
+function dedupeClusterFiles(cluster: InvoiceAttachmentCluster, order: ConversationOrder): InvoiceAttachmentCluster {
+  const primaryAt = cluster.primary.receivedAt ?? Number.NEGATIVE_INFINITY;
+  const members = [cluster.primary, ...cluster.supporting];
+  const supporting: ClassifiedAttachment[] = [];
+  const superseded: ClassifiedAttachment[] = [];
+  for (const file of cluster.supporting) {
+    const olderInvoiceVersion = !cluster.fallback
+      && file.kind === 'supplier_invoice'
+      && (file.receivedAt ?? Number.NEGATIVE_INFINITY) < primaryAt;
+    const hasLaterCopy = members.some(
+      (other) => other !== file && isSameBytes(file, other) && (other === cluster.primary || isLater(other, file, order))
+    );
+    (olderInvoiceVersion || hasLaterCopy ? superseded : supporting).push(file);
+  }
+  return superseded.length ? { ...cluster, supporting, superseded } : cluster;
+}
+
 export function clusterClassifiedAttachments(classified: ClassifiedAttachment[]): InvoiceAttachmentClustering {
+  const conversationOrder = new Map(classified.map((attachment, index) => [attachment, index]));
   const invoices = classified.filter((attachment) => attachment.kind === 'supplier_invoice');
   const supporting = classified.filter((attachment) => attachment.kind === 'supporting');
   const unrelated = classified.filter((attachment) => attachment.kind === 'unrelated');
@@ -156,7 +213,9 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
   if (invoices.length === 0) {
     if (classified.length === 0) return { clusters: [], unrelated: [] };
     // Confidence is confidence in the kind, so a confident "unrelated" file must not outrank a supporting one.
-    const ranked = [...classified].sort((a, b) => {
+    // Older byte-identical copies are set aside first so the primary is never an older copy.
+    const { kept, superseded } = splitLatestCopies(classified, conversationOrder);
+    const ranked = [...kept].sort((a, b) => {
       const aSupporting = a.kind === 'supporting' ? 0 : 1;
       const bSupporting = b.kind === 'supporting' ? 0 : 1;
       if (aSupporting !== bSupporting) return aSupporting - bSupporting;
@@ -164,7 +223,7 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     });
     const [primary, ...rest] = ranked;
     return {
-      clusters: [{ primary, supporting: rest, fallback: true }],
+      clusters: [{ primary, supporting: rest, ...(superseded.length ? { superseded } : {}), fallback: true }],
       unrelated: [],
     };
   }
@@ -188,7 +247,7 @@ export function clusterClassifiedAttachments(classified: ClassifiedAttachment[])
     if (target) target.supporting.push(doc);
   }
 
-  return { clusters, unrelated };
+  return { clusters: clusters.map((cluster) => dedupeClusterFiles(cluster, conversationOrder)), unrelated };
 }
 
 export interface ClassifiableDocument {
@@ -197,12 +256,21 @@ export interface ClassifiableDocument {
   buffer: Buffer;
 }
 
-function classificationFileParts(documents: ClassifiableDocument[]) {
-  return documents.map((doc, index) => ({
-    type: 'file' as const,
-    data: doc.buffer,
-    mediaType: doc.contentType,
-    filename: `${index + 1}-${doc.fileName}`,
+// Word and Excel files are shown to the model as PDFs converted in memory; the stored original is unchanged.
+// A file that cannot be converted becomes a text part so every later file keeps its number.
+async function classificationFileParts(documents: ClassifiableDocument[]) {
+  return Promise.all(documents.map(async (original, index) => {
+    const filename = `${index + 1}-${original.fileName}`;
+    const doc = await toModelDocument(original);
+    if (!doc) {
+      return { type: 'text' as const, text: `${filename}: unreadable document (could not be opened)` };
+    }
+    return {
+      type: 'file' as const,
+      data: doc.buffer,
+      mediaType: doc.contentType,
+      filename,
+    };
   }));
 }
 
@@ -228,7 +296,7 @@ export async function classifyInvoiceAttachments(
             type: 'text',
             text: `Classify these ${documents.length} attachment(s) for AP invoice clustering:\n${fileList}${emailText}`,
           },
-          ...classificationFileParts(documents),
+          ...(await classificationFileParts(documents)),
         ],
       },
     ],
@@ -300,7 +368,28 @@ export async function parseAndClusterInvoiceAttachments(
     buffer: buffers[index],
   }));
   const classifications = await classifyInvoiceAttachments(documents, attachments[0]?.emailContext, options?.abortSignal);
-  const classified = joinClassifications(attachments, classifications.documents);
+  // The model never saw an unreadable Word or Excel file, so whatever it guessed from the name is not evidence.
+  const unreadable = await Promise.all(documents.map((doc) => isUnreadableOffice(doc)));
+  const hashed = attachments.map((attachment, index) => ({
+    ...attachment,
+    contentHash: createHash('sha256').update(buffers[index]).digest('hex'),
+  }));
+  const classified = joinClassifications(hashed, classifications.documents).map((file, index) => (
+    unreadable[index]
+      ? {
+        ...file,
+        kind: 'supporting' as const,
+        supportingKind: 'other' as const,
+        supplierName: null,
+        invoiceNumber: null,
+        purchaseOrderNumber: null,
+        invoiceDate: null,
+        amountDue: null,
+        confidence: 0,
+        reason: 'Document could not be opened',
+      }
+      : file
+  ));
   const clustering = clusterClassifiedAttachments(classified);
   debug('Clustered invoice attachments', {
     attachmentCount: attachments.length,
@@ -309,6 +398,7 @@ export async function parseAndClusterInvoiceAttachments(
     clusters: clustering.clusters.map((cluster) => ({
       primary: cluster.primary.fileName,
       supporting: cluster.supporting.map((doc) => doc.fileName),
+      superseded: (cluster.superseded ?? []).map((doc) => doc.fileName),
       fallback: cluster.fallback,
     })),
   });

@@ -1,5 +1,6 @@
 import { debug } from '@pga/logger';
 import { buildWorkdayObjectDeeplink } from './workday_deeplink.js';
+import { isDeadlineError } from './deadline.js';
 
 // TypeScript types for Slack blocks
 interface SlackTextElement {
@@ -55,9 +56,11 @@ function truncateEscapedSlackText(text: string, limit: number): string {
 }
 
 function appendErrorBlocks(blocks: SlackBlock[], error: any, details?: any): void {
-  const errorMessage = typeof error?.message === 'string' && error.message.trim()
-    ? error.message.trim()
-    : 'Unknown error';
+  const errorMessage = isDeadlineError(error)
+    ? error.userMessage()
+    : typeof error?.message === 'string' && error.message.trim()
+      ? error.message.trim()
+      : 'Unknown error';
   blocks.push({
     type: 'section',
     text: { type: 'mrkdwn', text: truncateSlackText(`*Error*\n${errorMessage}`) }
@@ -156,6 +159,11 @@ function appendChargeCheckBlock(blocks: SlackBlock[], chargeCheck: string[]): vo
       text: { type: 'mrkdwn', text: index === 0 ? `*Amount Check*\n${bullet}` : bullet }
     });
   });
+}
+
+function multipleInvoicesMessage(value: unknown): string | undefined {
+  const message = (value as { message?: unknown } | undefined)?.message;
+  return typeof message === 'string' && message.trim() ? message : undefined;
 }
 
 function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
@@ -274,6 +282,13 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       text: { type: 'mrkdwn', text: truncateSlackText(`*Changes*\n${changeLines.map((line) => `• ${line}`).join('\n')}`) }
     });
   }
+  const multipleInvoices = multipleInvoicesMessage(details.multipleInvoices);
+  if (multipleInvoices) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Multiple invoices in one PDF*\n${escapeSlackText(multipleInvoices)}`) }
+    });
+  }
   if (fallbackLines.length) {
     blocks.push({
       type: 'section',
@@ -317,6 +332,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const balanceInvoice = Array.isArray(details.balanceInvoice)
+    ? details.balanceInvoice.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : [];
+  if (balanceInvoice.length && details.skipped !== true) {
+    const lines = balanceInvoice.map((line) => `• ${escapeSlackText(line)}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Balance invoice*\n${lines.join('\n')}`) }
+    });
+  }
+
   const budgetSplit = Array.isArray(details.budgetSplit)
     ? details.budgetSplit.filter((line): line is string => typeof line === 'string' && line.length > 0)
     : [];
@@ -335,6 +361,17 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     });
   }
 
+  const unreadableFiles = Array.isArray(details.unreadableAttachments)
+    ? (details.unreadableAttachments as unknown[]).filter((name): name is string => typeof name === 'string' && name.length > 0)
+    : [];
+  if (unreadableFiles.length && details.skipped !== true) {
+    const lines = unreadableFiles.map((name) => `• ${escapeSlackText(name)} could not be opened; nothing was read from it`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Not read*\n${lines.join('\n')}`) }
+    });
+  }
+
   const attachment = details.attachment as { fileName?: string } | undefined;
   const clusterFiles = Array.isArray(details.attachments)
     ? (details.attachments as Array<{ fileName?: string; kind?: string }>)
@@ -344,12 +381,16 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
   const unrelatedFiles = Array.isArray(details.unrelatedAttachments)
     ? (details.unrelatedAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
     : [];
+  const supersededFiles = Array.isArray(details.supersededAttachments)
+    ? (details.supersededAttachments as unknown[]).filter((name): name is string => typeof name === 'string')
+    : [];
   const slackDetails: Record<string, unknown> = {
     ...(typeof details.invoiceNumber === 'string' && details.invoiceNumber ? { invoiceNumber: details.invoiceNumber } : {}),
     ...(typeof details.invoiceWID === 'string' ? { invoiceWID: details.invoiceWID } : {}),
     ...(attachment?.fileName ? { fileName: attachment.fileName } : {}),
     ...(clusterFiles.length > 1 ? { files: clusterFiles } : {}),
     ...(unrelatedFiles.length ? { unrelatedAttachments: unrelatedFiles } : {}),
+    ...(supersededFiles.length ? { supersededAttachments: supersededFiles } : {}),
     ...(typeof details.conversationTranscriptFileName === 'string' && details.conversationTranscriptFileName
       ? { conversationTranscriptFileName: details.conversationTranscriptFileName }
       : {}),
@@ -681,7 +722,9 @@ export async function notifyResult(
   const shadowPdfCount = Array.isArray(shadowDetails?.attachments) ? shadowDetails.attachments.length : 0;
 
   // Build the main message
-  let mainMessage = shadowPlan
+  let mainMessage = error && isDeadlineError(error)
+    ? `⏱️ *${lambdaName}* ran out of time after ${timeText}`
+    : shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
     : needsManualReview
     ? `⚠️ *${lambdaName}* needs manual review${invoiceRef} (resend not applied) in ${timeText}`
@@ -692,7 +735,9 @@ export async function notifyResult(
         : createdInvoiceNumber
           ? ((details as { amountMismatch?: unknown } | undefined)?.amountMismatch === true
             ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` with an amount mismatch (review before approving) in ${timeText}`
-            : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
+            : multipleInvoicesMessage((details as { multipleInvoices?: unknown } | undefined)?.multipleInvoices)
+              ? `⚠️ *${lambdaName}* created \`${createdInvoiceNumber}\` from a PDF with more than one invoice (enter the rest manually) in ${timeText}`
+              : `${statusEmoji} *${lambdaName}* created \`${createdInvoiceNumber}\` in ${timeText}`)
           : `${statusEmoji} *${lambdaName}* function ran *${statusText}* in ${timeText}`;
 
   if (context) {

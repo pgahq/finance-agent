@@ -11,6 +11,7 @@ import { getDatabaseConnection, type DatabaseConnection } from './database.js';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import type { Context } from 'aws-lambda';
 import { notifyResult } from './slack.js';
+import { ProcessorDeadlineError } from './deadline.js';
 
 /** Milliseconds to reserve before the Lambda hard limit so the error path can run. */
 const PROCESSOR_DEADLINE_BUFFER_MS = 20_000;
@@ -131,15 +132,15 @@ export const withQueryHandler = (query: string | ((context: ProcessingContext) =
 
 function createDeadlineAbortSignal(context: Context): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController();
-  const remaining = context.getRemainingTimeInMillis();
-  if (remaining <= PROCESSOR_DEADLINE_BUFFER_MS) {
-    controller.abort(new Error('Lambda invocation entered the deadline buffer; aborting AI calls'));
+  const budgetMs = context.getRemainingTimeInMillis();
+  if (budgetMs <= PROCESSOR_DEADLINE_BUFFER_MS) {
+    controller.abort(new ProcessorDeadlineError('Lambda invocation entered the deadline buffer; aborting AI calls'));
     return { signal: controller.signal, dispose: () => {} };
   }
   const timer = setTimeout(() => {
-    debug(`Lambda deadline approaching (${remaining}ms remaining); aborting AI calls`);
-    controller.abort(new Error('Processor deadline reached; aborting AI calls'));
-  }, remaining - PROCESSOR_DEADLINE_BUFFER_MS);
+    debug(`Lambda deadline approaching (${context.getRemainingTimeInMillis()}ms remaining of the ${budgetMs}ms budget); aborting AI calls`);
+    controller.abort(new ProcessorDeadlineError('Processor deadline reached; aborting AI calls'));
+  }, budgetMs - PROCESSOR_DEADLINE_BUFFER_MS);
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 

@@ -117,7 +117,7 @@ jest.mock('../lib/ai.js', () => {
   const toOcrResult = (full: any) => {
     const headerText = Object.fromEntries(
       Object.entries(full ?? {})
-        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment'].includes(key))
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment', 'extractedPriorPayments'].includes(key))
         .map(([key, value]) => [key, text(value)])
     );
     return {
@@ -128,6 +128,7 @@ jest.mock('../lib/ai.js', () => {
       extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
       extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
       extractedPartialPayment: full?.extractedPartialPayment ?? { label: '', percent: '', amount: '' },
+      extractedPriorPayments: full?.extractedPriorPayments ?? [],
       extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
       invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
       extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
@@ -538,6 +539,104 @@ describe('enrich_invoice', () => {
     const mismatch = 'Lines $115.00 + freight $0.00 + tax $0.00 = $115.00, but the amount due is $100.00. Review lines and header charges.';
     expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).toContain(`Amount check: ${mismatch}`);
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([mismatch]);
+  });
+
+  it('keeps the printed single price and the Amount check when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const { notifyEnrichmentResult } = require('../lib/slack.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Participant fees', quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Participant fees' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$675.00',
+      extractedInvoiceLines: [
+        { description: 'Participant fees', quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false }
+      ]
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    const notes = annotateSupplierInvoice.mock.calls.at(-1)[1].notes;
+    expect(notes).not.toContain('Line price review');
+    expect(notes).toContain('Amount check:');
+    expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toHaveLength(1);
+  });
+
+  it('does not claim a $0.00 line was left off when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 },
+        { lineOrder: 2, description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: 0, extendedAmount: 0 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Display repair' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$659.00',
+      extractedInvoiceLines: [
+        { description: 'Display', quantity: 1, unitCost: null, totalPrice: '$659.00', hasDiscount: false },
+        { description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: null, totalPrice: '$0.00', hasDiscount: false }
+      ]
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).not.toContain('Free rows');
   });
 
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
@@ -1446,6 +1545,168 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toEqual([note]);
   });
 
+  it('reads the SUPIN-471803 single price as the unit price on update when quantity x price is the amount due', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const description = 'Bank of America x Golf with Us/First Tee Programming Participant Fees';
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'First Tee - Greater Detroit', memo: 'golf programming participant fees' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$675.00',
+      extractedFreightAmount: null,
+      extractedTaxAmount: null,
+      invoiceLineQuantityDisplayed: true,
+      extractedInvoiceLines: [
+        { description, quantity: 9, unitCost: null, totalPrice: '$75.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description, quantity: 9, unitCost: 75, extendedAmount: 675 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ description, quantity: 9, unitCost: '$75.00', totalPrice: '$675.00' })
+    ]);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Line price review: "Bank of America x Golf with Us/First Tee Programming Part..." prints quantity 9 and one price of $75.00.');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
+  });
+
+  it('sets the SUPIN-472062 line total to quantity x unit price on update when that makes the lines match the amount due', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin472062CorrectedEsignRow, supin472062Header, supin472062Rows } = require('./fixtures/supin_472062.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'CCH INCORPORATED', memo: 'eSign usage' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin472062Header,
+      extractedInvoiceLines: supin472062Rows
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'eSign Non 8879', quantity: 23, unitCost: 1.25, extendedAmount: 28.75 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([supin472062CorrectedEsignRow]);
+    const notes = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1].buildNotes([]);
+    expect(notes).toContain('Line price review: "eSign Non 8879" prints quantity 23 at $1.25 ($28.75) but a line total of $30.65.');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
+    expect(notes).not.toContain('Line subtotal review');
+  });
+
+  it('leaves the free row off and books the pre-tax subtotal on update (Mobile Kangaroo 2007056)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { mobileKangarooCorrectedDisplayRow, mobileKangarooHeader, mobileKangarooRows } = require('./fixtures/mobile_kangaroo_2007056.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'MKPAYTX LLC', memo: 'Display repair' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...mobileKangarooHeader,
+      extractedInvoiceLines: mobileKangarooRows
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 },
+        { lineOrder: 2, description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: 0, extendedAmount: 0 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooCorrectedDisplayRow]);
+    const updateArgs = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(updateArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
+    const notes = updateArgs.buildNotes([]);
+    expect(notes).toContain('Free rows: Row "Business Approved Free Diagnostics" was left off the invoice lines');
+    expect(notes).toContain('Line price review: "Display" prints $713.37, the amount due, as its price');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
+  });
+
   it('adds the SUPIN-470485 totals-block Decoration $5.00 as a line on update', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -1555,6 +1816,58 @@ describe('enrich_invoice', () => {
     const notes = params.buildNotes([]);
     expect(notes).toContain('Deposit invoice: "Advance Deposit Due" $34,429.50 is 90% of $38,255.00 for the contract total (28 printed lines).');
     expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
+  });
+
+  it('replaces the printed lines with one balance line on update (SUPIN-471692)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin471692Header, supin471692Rows } = require('./fixtures/supin_471692.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'The Convention Store', memo: 'transportation' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin471692Header,
+      extractedInvoiceLines: supin471692Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 5909.5, extendedAmount: 5909.5 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Total Contract Price (balance due of $23,887.00)', quantity: 1, totalPrice: '$5,909.50' })]);
+    expect(built[6]).toBe(true);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines).toHaveLength(1);
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Balance invoice: "Total Contract Price" is $23,887.00 but the amount due is $5,909.50');
     expect(notes).not.toContain('Line total review');
   });
 
@@ -1830,7 +2143,7 @@ describe('enrich_invoice', () => {
     const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
     expect(params.finalLines[0].description).toBe('Ryan Poland - Project Management');
     expect(params.finalLines[0].memo).toBe(
-      'Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
+      'PO-413898 Svc Prd 09/07/26 - 09/13/26 project management services for Ryan Poland'
     );
   });
 
@@ -2571,6 +2884,61 @@ describe('enrich_invoice', () => {
     expect(params.memo).toBeUndefined();
     expect(params.finalLines).toEqual([
       expect.objectContaining({ memo: 'widget purchase' }),
+    ]);
+  });
+
+  it('passes a composed header memo and line memos when the only identifier is the PO', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: {
+          supplierName: 'Test Supplier',
+          memo: 'Test invoice'
+        },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: {
+          action: 'no_action',
+          reason: 'Supplier matches existing assignment'
+        },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-414498',
+      extractedInvoiceLines: [
+        { description: 'Widgets', quantity: 2, unitCost: '50.00', totalPrice: '100.00', hasDiscount: false }
+      ]
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [{ lineOrder: 1, description: 'Widgets', memo: 'Widget purchase', quantity: 2, unitCost: 50 }],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false }
+    });
+
+    await expect(processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any)).resolves.not.toThrow();
+
+    const [[, params]] = (submitSupplierInvoiceUpdate as jest.Mock).mock.calls;
+    expect(params.memo).toBe('PO-414498 test invoice');
+    expect(params.finalLines).toEqual([
+      expect.objectContaining({ memo: 'PO-414498 widget purchase' }),
     ]);
   });
 });

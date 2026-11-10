@@ -1,6 +1,8 @@
 import {
   chargeAmount,
   formatChargeDollars,
+  isFreightOrHandlingLine,
+  isTaxChargeDescription,
   labelMatchesFreight,
   labelMatchesTax,
   normalizeLabel,
@@ -9,6 +11,8 @@ import {
   parseExtractedUnitCost,
   printable,
   reconcileSubmittedCharges,
+  restatesHeaderTax,
+  restoreClearedFreightFromRows,
   signedChargeLineAmount,
   splitFreightLines,
   TAX_CORE_WORDS,
@@ -95,11 +99,7 @@ export function applyPrintedTaxCharges(input: {
     const amount = parseCanonicalChargeAmount(charge.amount);
     if (amount == null || amount <= 0) continue;
     const cents = toCents(amount);
-    // A row that restates the header tax (same label, or a total row) is not a second tax; two different
-    // taxes with the same amount (State Tax and County Tax) both count.
-    const label = normalizeLabel(charge.label) ?? '';
-    const restatesHeaderTax = label === normalizeLabel(input.taxLabel) || /\btotal\b/.test(label);
-    if (cents === currentTaxCents && restatesHeaderTax) continue;
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, currentTaxCents)) continue;
     const key = `${normalizeLabel(charge.label)}|${cents}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -292,6 +292,75 @@ function notAddedNotes(rows: {
   return notes;
 }
 
+interface SummaryCandidates {
+  candidates: SummaryCandidate[];
+  withoutAmount: string[];
+  settlements: SettlementRow[];
+}
+
+function collectSummaryCandidates(
+  charges: PrintedSummaryCharge[],
+  lines: ExtractedInvoiceLine[],
+  lineCentsList: number[],
+  freightCents: number,
+  taxCents: number
+): SummaryCandidates {
+  const discountInLines = lineDiscountCents(lines);
+  const lineEntries = lines.map((line, index) => ({
+    tokens: new Set(labelTokens(line.description ?? '')),
+    cents: lineCentsList[index] ?? 0,
+  }));
+  const seen = new Set<string>();
+  const candidates: SummaryCandidate[] = [];
+  const withoutAmount: string[] = [];
+  const settlements: SettlementRow[] = [];
+  for (const charge of charges) {
+    const tokens = labelTokens(charge.label);
+    if (tokens.length === 0 || isSummaryLabel(tokens)) continue;
+    if (labelMatchesFreight(charge.label) || isShippingAbbreviation(tokens) || isTaxLikeChargeLabel(charge.label)) continue;
+    const parsed = parseSummaryAmount(charge.amount);
+    if (isSettlementLabel(tokens)) {
+      if (parsed?.cents !== 0) settlements.push({ label: charge.label, cents: parsed?.cents, printedCredit: Boolean(parsed?.printedCredit) });
+      continue;
+    }
+    if (!parsed) {
+      withoutAmount.push(charge.label);
+      continue;
+    }
+    if (parsed.cents === 0) continue;
+    const discount = isDiscountLabel(tokens);
+    // `Less Early Pay $3.00` says the row reduces the bill, the same as a printed minus sign.
+    const printedCredit = parsed.printedCredit || tokens[0] === 'less';
+    const sign: SummarySign = printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
+    // A charge row for the same amount as header freight or tax is that charge under a label the matchers miss.
+    if (sign === 'charge' && (parsed.cents === freightCents || parsed.cents === taxCents)) continue;
+    const significant = significantTokens(tokens);
+    const alreadyLine = lineEntries.some(entry => Math.abs(entry.cents) === parsed.cents
+      && ((sign !== 'charge' && entry.cents < 0) || significant.some(token => entry.tokens.has(token))));
+    if (alreadyLine) continue;
+    if (sign !== 'charge' && discountInLines === parsed.cents) continue;
+    const key = `${tokens.join(' ')}|${parsed.cents}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ label: charge.label, cents: parsed.cents, sign });
+  }
+  return { candidates, withoutAmount, settlements };
+}
+
+/**
+ * Cents of totals-block rows that reduce the bill and are not on a line yet: a printed minus sign or parentheses,
+ * a leading `Less`, or a discount-style label printed without a sign (a credit only when the amounts then add up,
+ * which the caller checks).
+ */
+export function summaryCreditCents(
+  charges: PrintedSummaryCharge[] | null | undefined,
+  lines: ExtractedInvoiceLine[]
+): number {
+  if (!charges?.length) return 0;
+  const { candidates } = collectSummaryCandidates(charges, lines, lines.map(line => toCents(signedChargeLineAmount(line) ?? 0)), 0, 0);
+  return candidates.filter(candidate => candidate.sign !== 'charge').reduce((total, candidate) => total + candidate.cents, 0);
+}
+
 /**
  * Adds priced totals-block rows (a decoration fee, a merchandise discount) as invoice lines, but only when
  * lines + freight + tax miss the amount due by exactly those rows. An unsigned discount is a credit only when
@@ -323,45 +392,13 @@ export function placeSummaryCharges(input: {
   const gapCents = amountDueCents - submittedCents;
   if (gapCents === 0) return none;
 
-  const discountInLines = lineDiscountCents(input.lines);
-  const lineEntries = input.lines.map((line, index) => ({
-    tokens: new Set(labelTokens(line.description ?? '')),
-    cents: toCents(lineAmounts[index] ?? 0),
-  }));
-  const seen = new Set<string>();
-  const candidates: SummaryCandidate[] = [];
-  const withoutAmount: string[] = [];
-  const settlements: SettlementRow[] = [];
-  for (const charge of input.charges) {
-    const tokens = labelTokens(charge.label);
-    if (tokens.length === 0 || isSummaryLabel(tokens)) continue;
-    if (labelMatchesFreight(charge.label) || isShippingAbbreviation(tokens) || isTaxLikeChargeLabel(charge.label)) continue;
-    const parsed = parseSummaryAmount(charge.amount);
-    if (isSettlementLabel(tokens)) {
-      if (parsed?.cents !== 0) settlements.push({ label: charge.label, cents: parsed?.cents, printedCredit: Boolean(parsed?.printedCredit) });
-      continue;
-    }
-    if (!parsed) {
-      withoutAmount.push(charge.label);
-      continue;
-    }
-    if (parsed.cents === 0) continue;
-    const discount = isDiscountLabel(tokens);
-    // `Less Early Pay $3.00` says the row reduces the bill, the same as a printed minus sign.
-    const printedCredit = parsed.printedCredit || tokens[0] === 'less';
-    const sign: SummarySign = printedCredit ? 'credit' : discount ? 'unsignedDiscount' : 'charge';
-    // A charge row for the same amount as header freight or tax is that charge under a label the matchers miss.
-    if (sign === 'charge' && (parsed.cents === freightCents || parsed.cents === taxCents)) continue;
-    const significant = significantTokens(tokens);
-    const alreadyLine = lineEntries.some(entry => Math.abs(entry.cents) === parsed.cents
-      && ((sign !== 'charge' && entry.cents < 0) || significant.some(token => entry.tokens.has(token))));
-    if (alreadyLine) continue;
-    if (sign !== 'charge' && discountInLines === parsed.cents) continue;
-    const key = `${tokens.join(' ')}|${parsed.cents}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push({ label: charge.label, cents: parsed.cents, sign });
-  }
+  const { candidates, withoutAmount, settlements } = collectSummaryCandidates(
+    input.charges,
+    input.lines,
+    lineAmounts.map(amount => toCents(amount ?? 0)),
+    freightCents,
+    taxCents
+  );
   if (candidates.length === 0 && withoutAmount.length === 0 && settlements.length === 0) return none;
 
   const allCents = sumSignedCents(candidates);
@@ -491,4 +528,297 @@ export function settlePlacedSummaryLines(
     : `${describeExtractedLines(missing)} from the invoice totals ${plural ? 'were' : 'was'} added before line coding, but the submitted lines do not show ${plural ? 'them' : 'it'}. Check the lines before approving.${unlinkedSentence}`;
   const reviewNote = [missingNote, codingNote].filter(Boolean).join(' ') || undefined;
   return { lines, ...(message && { message }), ...(reviewNote && { reviewNote }) };
+}
+
+export interface SinglePriceReinterpretation {
+  lines: ExtractedInvoiceLine[];
+  /** Review sentence naming the lines whose single price was read as a unit price. */
+  note?: string;
+}
+
+// Eligible lines are searched as subsets, so the cap bounds the work (2^8 candidates).
+const SINGLE_PRICE_MAX_ELIGIBLE_LINES = 8;
+
+function wholeCents(amount: number): number | undefined {
+  const cents = amount * 100;
+  return Math.abs(cents - Math.round(cents)) < 1e-6 ? Math.round(cents) : undefined;
+}
+
+type LinePriceReadingKind = 'unitPrice' | 'extension' | 'subtotal';
+
+interface LinePriceReading {
+  kind: LinePriceReadingKind;
+  /** The line total in cents under the alternative reading. */
+  cents: number;
+}
+
+function isChargeRowDescription(description: string): boolean {
+  return isFreightOrHandlingLine(description) || isTaxChargeDescription(description);
+}
+
+// Quantity above 1, no unit price, one positive price printed as the total, and a product that is a whole-cent amount.
+function singlePriceReading(line: ExtractedInvoiceLine): LinePriceReading | undefined {
+  const quantity = line.quantity;
+  if (quantity == null || !Number.isFinite(quantity) || quantity <= 1) return undefined;
+  if (line.unitCost?.trim() || line.hasDiscount === true) return undefined;
+  if (isChargeRowDescription(line.description)) return undefined;
+  const price = line.totalPrice ? chargeAmount(line.totalPrice) : undefined;
+  if (price == null || price <= 0) return undefined;
+  const cents = wholeCents(quantity * price);
+  return cents == null ? undefined : { kind: 'unitPrice', cents };
+}
+
+// A positive quantity and unit price whose whole-cent product differs from the printed positive line total.
+function extensionReading(line: ExtractedInvoiceLine): LinePriceReading | undefined {
+  const quantity = line.quantity;
+  if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return undefined;
+  if (!line.unitCost?.trim() || !line.totalPrice || line.hasDiscount === true) return undefined;
+  if (isChargeRowDescription(line.description)) return undefined;
+  const unitCost = parseExtractedUnitCost(line.unitCost);
+  const total = chargeAmount(line.totalPrice);
+  if (unitCost == null || unitCost <= 0 || total == null || total <= 0) return undefined;
+  const cents = wholeCents(quantity * unitCost);
+  if (cents == null || cents <= 0) return undefined;
+  // A unit price printed rounded to the cent is off by at most half a cent per unit, so a gap that small is the
+  // vendor's rounding and the printed total stands (3 x $33.33 printed as $100.00).
+  const totalCents = Math.round(total * 100);
+  return Math.abs(totalCents - cents) <= Math.ceil(quantity / 2) ? undefined : { kind: 'extension', cents };
+}
+
+// The only priced row prints the amount due as its price while the invoice prints a pre-tax subtotal that, with the
+// header tax, makes the amount due: OCR took the tax-inclusive total for the line. A unit price beside a different
+// total, and a quantity above one, are left to the readings above.
+function subtotalReading(line: ExtractedInvoiceLine, pretax: PretaxSubtotal | undefined): LinePriceReading | undefined {
+  if (!pretax || line.hasDiscount === true || isChargeRowDescription(line.description)) return undefined;
+  if (line.quantity != null && line.quantity !== 1) return undefined;
+  const total = line.totalPrice ? chargeAmount(line.totalPrice) : undefined;
+  if (total == null || Math.round(total * 100) !== pretax.amountDueCents) return undefined;
+  const unitCost = line.unitCost?.trim() ? parseExtractedUnitCost(line.unitCost) : undefined;
+  if (line.unitCost?.trim() && (unitCost == null || Math.round(unitCost * 100) !== pretax.amountDueCents)) return undefined;
+  return { kind: 'subtotal', cents: pretax.cents };
+}
+
+function linePriceReading(line: ExtractedInvoiceLine, allowExtension: boolean, pretax?: PretaxSubtotal): LinePriceReading | undefined {
+  return singlePriceReading(line) ?? (allowExtension ? extensionReading(line) : undefined) ?? subtotalReading(line, pretax);
+}
+
+function describeSubtotalLines(lines: ExtractedInvoiceLine[], pretax: PretaxSubtotal): string {
+  return lines
+    .map(line => `"${printable(line.description)}" prints ${formatChargeDollars(chargeAmount(line.totalPrice) ?? 0)}, the amount due, as its price, but the invoice prints "${printable(pretax.label)}" ${formatChargeDollars(pretax.cents / 100)} and ${formatChargeDollars(pretax.taxCents / 100)} of tax`)
+    .join('; ');
+}
+
+function subtotalNote(changed: ExtractedInvoiceLine[], pretax: PretaxSubtotal): string {
+  return `${describeSubtotalLines(changed, pretax)}. Counted with that tax, the line overshoots the amount due, but the printed subtotal plus tax equals it, so the line total was set to ${formatChargeDollars(pretax.cents / 100)} and the tax is not counted twice.`;
+}
+
+function describeSinglePriceLines(lines: ExtractedInvoiceLine[]): string {
+  return lines
+    .map(line => {
+      const price = chargeAmount(line.totalPrice) ?? 0;
+      return `"${printable(line.description)}" prints quantity ${line.quantity} and one price of ${formatChargeDollars(price)}`;
+    })
+    .join('; ');
+}
+
+function describeExtensionLines(lines: ExtractedInvoiceLine[], readings: Map<ExtractedInvoiceLine, number>): string {
+  return lines
+    .map(line => {
+      const unitCost = parseExtractedUnitCost(line.unitCost ?? '') ?? 0;
+      const total = chargeAmount(line.totalPrice) ?? 0;
+      const product = (readings.get(line) ?? 0) / 100;
+      return `"${printable(line.description)}" prints quantity ${line.quantity} at ${formatChargeDollars(unitCost)} (${formatChargeDollars(product)}) but a line total of ${formatChargeDollars(total)}`;
+    })
+    .join('; ');
+}
+
+function singlePriceNote(changed: ExtractedInvoiceLine[]): string {
+  const many = changed.length > 1;
+  return `${describeSinglePriceLines(changed)}. Read as ${many ? 'line totals' : 'a line total'}, the lines do not add up to the amount due, but reading ${many ? 'those prices' : 'that price'} as ${many ? 'unit prices' : 'a unit price'} does, so the line ${many ? 'totals were' : 'total was'} set to quantity x price.`;
+}
+
+function extensionNote(changed: ExtractedInvoiceLine[], readings: Map<ExtractedInvoiceLine, number>): string {
+  const many = changed.length > 1;
+  return `${describeExtensionLines(changed, readings)}. With the printed ${many ? 'line totals' : 'line total'}, the lines do not add up to the amount due, but with quantity x unit price they do, so the line ${many ? 'totals were' : 'total was'} set to quantity x unit price.`;
+}
+
+/** A printed pre-tax subtotal that, with header freight and tax, adds up to the amount due. */
+export interface PretaxSubtotal {
+  label: string;
+  cents: number;
+  taxCents: number;
+  amountDueCents: number;
+}
+
+export interface LinePriceReadingOptions {
+  /** Set when a single priced line may be the tax-inclusive total of an invoice that prints its subtotal and tax. */
+  pretaxSubtotal?: PretaxSubtotal;
+  /**
+   * Whether a line whose printed total differs from quantity x unit price may take the product as its total.
+   * Callers turn it off when a deposit, prior payment, or balance due is printed, because the lines then
+   * legitimately exceed the amount due and a coincidental match proves nothing.
+   */
+  allowExtension?: boolean;
+}
+
+/**
+ * Two readings of a line whose quantity and prices disagree with the amount due:
+ * - A line that prints a quantity and one price may print that price per unit, with the line total
+ *   left off. OCR then reads it as the line total (unit cost null), and the line submits amount-only
+ *   at the unit price. The line total becomes quantity x price.
+ * - A line that prints a quantity, a unit price, and a line total that is not their product (OCR took
+ *   the tax-inclusive amount due as the total). The line total becomes quantity x unit price.
+ * Either reading is taken only when the lines as read do not reconcile with the amount due and the
+ * reading does. `reconciles` is the caller's check against the amount due; the search takes a reading
+ * only when exactly one set of lines reconciles, so an ambiguous or unreconcilable invoice keeps its
+ * mismatch flag.
+ */
+export function reinterpretSinglePriceLines(
+  lines: ExtractedInvoiceLine[],
+  reconciles: (candidate: ExtractedInvoiceLine[]) => boolean,
+  options: LinePriceReadingOptions = {}
+): SinglePriceReinterpretation {
+  const unchanged: SinglePriceReinterpretation = { lines };
+  const allowExtension = options.allowExtension ?? true;
+  const pretax = lines.length === 1 ? options.pretaxSubtotal : undefined;
+  const eligible = lines.flatMap((line, index) => {
+    const reading = linePriceReading(line, allowExtension, pretax);
+    return reading == null ? [] : [{ index, reading }];
+  });
+  // Quantity x unit price rows share the cap with single-price rows, so too many of them must not switch off the
+  // single-price reading, which has always worked on its own.
+  if (eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES && allowExtension) {
+    return reinterpretSinglePriceLines(lines, reconciles, { ...options, allowExtension: false });
+  }
+  if (eligible.length === 0 || eligible.length > SINGLE_PRICE_MAX_ELIGIBLE_LINES) return unchanged;
+  if (reconciles(lines)) return unchanged;
+
+  const apply = (mask: number): ExtractedInvoiceLine[] => {
+    const chosen = new Map(eligible.filter((_, bit) => mask & (1 << bit)).map(entry => [entry.index, entry.reading]));
+    return lines.map((line, index) => {
+      const reading = chosen.get(index);
+      if (reading == null) return line;
+      const totalPrice = formatChargeDollars(reading.cents / 100);
+      if (reading.kind === 'unitPrice') return { ...line, unitCost: line.totalPrice, totalPrice };
+      if (reading.kind === 'subtotal') return { ...line, totalPrice, ...(line.unitCost?.trim() && { unitCost: totalPrice }) };
+      return { ...line, totalPrice };
+    });
+  };
+  const matches: number[] = [];
+  for (let mask = 1; mask < 1 << eligible.length; mask += 1) {
+    if (reconciles(apply(mask))) matches.push(mask);
+  }
+  if (matches.length !== 1) return unchanged;
+
+  const reinterpreted = apply(matches[0]);
+  const changedEntries = eligible.filter((_, bit) => matches[0] & (1 << bit));
+  const ofKind = (kind: LinePriceReadingKind) => changedEntries.filter(entry => entry.reading.kind === kind).map(entry => lines[entry.index]);
+  const singlePrice = ofKind('unitPrice');
+  const extension = ofKind('extension');
+  const subtotal = ofKind('subtotal');
+  const products = new Map(changedEntries.map(entry => [lines[entry.index], entry.reading.cents]));
+  return {
+    lines: reinterpreted,
+    note: [
+      ...(singlePrice.length ? [singlePriceNote(singlePrice)] : []),
+      ...(extension.length ? [extensionNote(extension, products)] : []),
+      ...(subtotal.length && pretax ? [subtotalNote(subtotal, pretax)] : []),
+    ].join(' '),
+  };
+}
+
+export interface SinglePriceChargeContext {
+  amountDue?: string | null;
+  /** Header freight and tax as resolveHeaderChargeAmounts returned them, before any restore or added charge. */
+  freight?: string;
+  tax?: string;
+  taxLabel?: string | null;
+  freightCleared: boolean;
+  taxCleared: boolean;
+  chargeWithheld?: boolean;
+  /** False when the caller will not place totals-block charges (a printed row was dropped), so one cannot close the gap. */
+  summaryChargesPlaceable: boolean;
+  printedTaxCharges?: PrintedCharge[] | null;
+  printedSummaryCharges?: PrintedSummaryCharge[] | null;
+  /** A deposit, prior payment, or balance due is printed, so a line total is not replaced by quantity x unit price. */
+  settlementPrinted?: boolean;
+  /** The pre-tax total the document prints for its line rows (`Before taxes`), as OCR read it. */
+  lineSubtotal?: { label: string; amount: string } | null;
+}
+
+// The printed subtotal counts only when it is labeled, no deposit, payment, or balance is printed, and it plus the
+// header freight and tax is exactly the amount due, so it cannot be a subtotal that leaves a charge out or one that
+// already contains the tax.
+function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | undefined {
+  const label = context.lineSubtotal?.label?.trim();
+  if (!label || context.settlementPrinted) return undefined;
+  const amountDue = chargeAmount(context.amountDue);
+  const subtotal = chargeAmount(context.lineSubtotal?.amount);
+  const tax = context.taxCleared ? undefined : chargeAmount(context.tax);
+  if (amountDue == null || subtotal == null || tax == null || subtotal <= 0 || tax <= 0) return undefined;
+  const freight = context.freightCleared ? 0 : chargeAmount(context.freight) ?? 0;
+  const cents = Math.round(subtotal * 100);
+  const taxCents = Math.round(tax * 100);
+  const amountDueCents = Math.round(amountDue * 100);
+  if (cents + taxCents + Math.round(freight * 100) !== amountDueCents) return undefined;
+  return { label, cents, taxCents, amountDueCents };
+}
+
+/** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */
+export function hasPrintedSettlement(result: {
+  extractedPartialPayment: unknown;
+  extractedPriorPayments: unknown[] | null | undefined;
+  emailBalanceDue: unknown;
+}): boolean {
+  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.emailBalanceDue);
+}
+
+/**
+ * reinterpretSinglePriceLines against the same gap-closing steps create and enrich run next:
+ * restored freight, duplicate freight and tax lines, printed tax-like charges, and totals-block
+ * charges. A reading counts as reconciled only when none of those is still needed.
+ */
+export function reinterpretSinglePriceLinesForCharges(
+  lines: ExtractedInvoiceLine[],
+  context: SinglePriceChargeContext
+): SinglePriceReinterpretation {
+  if (context.chargeWithheld || chargeAmount(context.amountDue) == null) return { lines };
+  const reconciles = (candidate: ExtractedInvoiceLine[]): boolean => {
+    const restored = restoreClearedFreightFromRows(candidate, {
+      amountDue: context.amountDue ?? undefined,
+      tax: context.tax,
+      freightCleared: context.freightCleared,
+    });
+    const freight = restored.freight ?? context.freight;
+    const taxCharges = applyPrintedTaxCharges({
+      charges: context.printedTaxCharges,
+      amountDue: context.amountDue,
+      lines: candidate,
+      freight,
+      tax: context.tax,
+      taxLabel: context.taxLabel,
+      taxCleared: context.taxCleared,
+    });
+    const { merchandiseLines } = splitFreightLines(candidate);
+    const reconciliation = reconcileSubmittedCharges(
+      merchandiseLines,
+      { amountDue: context.amountDue, freight, tax: taxCharges.taxAmount },
+      { allowSingleLineFreight: true, removeDuplicates: true }
+    );
+    if (!reconciliation.unreconciled) return true;
+    if (!context.summaryChargesPlaceable) return false;
+    return placeSummaryCharges({
+      charges: context.printedSummaryCharges,
+      amountDue: context.amountDue,
+      lines: reconciliation.lines,
+      freight,
+      tax: taxCharges.taxAmount,
+      freightCleared: context.freightCleared && restored.freight == null,
+      taxCleared: taxCharges.taxCleared,
+    }).lines.length > 0;
+  };
+  return reinterpretSinglePriceLines(lines, reconciles, {
+    allowExtension: !context.settlementPrinted,
+    pretaxSubtotal: pretaxSubtotalFor(context),
+  });
 }

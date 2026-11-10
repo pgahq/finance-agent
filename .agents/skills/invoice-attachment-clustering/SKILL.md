@@ -55,7 +55,7 @@ Shadow exists to prove the classifier on real traffic with no write risk:
    records a cluster plan (`invoice_cluster_plans`, one `pending` row per
    cluster, `src/lib/invoice_cluster_plans.ts`), then Event-invokes itself
    (`clustered: true`, `planId`, `clusterIndex`, no re-parse) for each leftover
-   cluster, then processes the first cluster inline, keeping the 420s timeout
+   cluster, then processes the first cluster inline, keeping the 480s timeout
    per invocation. The first cluster reuses the PDFs already downloaded for
    classification; fanned-out clusters download their own.
    - `withProcessorHandler` starts a deadline signal 20s before the Lambda
@@ -74,17 +74,22 @@ Shadow exists to prove the classifier on real traffic with no write risk:
      `done` posts a Slack error, since the row becomes claimable again after
      the TTL.
    - The 15-minute takeover TTL (claims and plan rows) is longer than the
-     processor timeout (420s; `template.test.ts` guards this), so a row or
+     processor timeout (480s; `template.test.ts` guards this), so a row or
      claim is only taken over after its owner was stopped.
    - Fan-out dispatches settle independently: a failed dispatch marks that row
      `failed` only if it is still `pending`, the first cluster still runs, and Slack posts one error naming
      the clusters that were not processed so a re-trigger picks them up
      (clusters already created are deduped by the registry).
-4. Enrichment receives every PDF in the cluster with document roles (invoice vs
+4. Word and Excel attachments (`.docx`, `.xlsx`) cluster like PDFs. Classification and enrichment see them as PDFs converted in memory (`toModelDocument`); the stored original is what `Attachment_Data` sends. A file that cannot be opened is forced to `supporting` in code (whatever the model guessed from its name), so it is never a cluster primary unless nothing else is; when it still ends up first, the processor stops with an error Slack post instead of drafting from the email text. Unreadable backup files are listed in the Slack post under `*Not read*`.
+   Enrichment receives every PDF in the cluster with document roles (invoice vs
    supporting); header, lines, and amounts come from the invoice file only.
 5. `submitNewSupplierInvoice` sends the cluster's PDFs as `Attachment_Data`
    (invoice first), with the Intercom conversation transcript appended last.
+   `buildSubmitInvoiceData` reverses the list in `Attachment_Data` because Workday
+   lists attachments newest-first, so the invoice is shown first.
    Slack success lists cluster filenames plus kinds; errors list filenames.
+   Older copies of a repeated document are not attached (see "Superseded
+   copies" under the clustering rules); Slack lists them as `supersededAttachments`.
 
 ## Taxonomy (per file)
 
@@ -115,6 +120,29 @@ so a dropped classification never creates an extra supplier invoice.
   (`receivedAt` from the Intercom part `created_at`, source falls back to
   conversation `created_at`; missing counts as oldest, ties keep conversation
   order). Extraction, PO matching, and submit all key off the primary.
+- **Superseded copies** (`dedupeClusterFiles`, after supporting files are
+  assigned): when a document appears more than once in a cluster, only the
+  latest copy is kept in `[primary, ...supporting]`; older copies go to
+  `cluster.superseded` and are never loaded, enriched, or sent to Workday.
+  A file is superseded when it is an invoice PDF of the primary's invoice
+  that is **strictly older** than the primary (same-message PDFs, or PDFs
+  with no `receivedAt`, are pages of one invoice and are all kept), or when a
+  later file in the cluster has identical bytes (`contentHash`, SHA-256
+  computed in `parseAndClusterInvoiceAttachments`). File names are never
+  used, since scanners and phones reuse names such as `scan.pdf`. Latest means
+  highest `receivedAt`, a missing time counts as oldest, and a tie goes to the
+  later conversation position. In a cluster with a primary invoice the
+  primary is never dropped; in the fallback cluster (no invoice found)
+  byte-identical copies are set aside first, so the fallback primary is
+  chosen from the latest copies only. Nothing is deduped across clusters.
+  Classification still sees every file, and the conversation transcript
+  still records the history. Dropped files are older than a kept copy of
+  the same document, so the cluster's max `receivedAt` and the resend
+  watermark are unchanged. The one exception is a byte-identical copy of the
+  primary that the classifier called `supporting`: it is dropped even when
+  newer, so an identical resend does not count as a newer file. The processor passes the dropped names as
+  `supersededFileNames` (also on fan-out records) for Slack and shadow output
+  only.
 - `supporting` joins by invoice number, else PO
   (`normalizePurchaseOrderNumber`), else supplier; with exactly one invoice
   cluster it attaches there. With several clusters and no key match it falls
@@ -127,6 +155,10 @@ so a dropped classification never creates an extra supplier invoice.
   outranks a supporting one.
 - Parser throw: Slack-then-throw like other processor failures. Async retries
   stay off (`MaximumRetryAttempts: 0`).
+
+## One PDF, several invoices
+
+Clustering works per file: a PDF that bundles several supplier invoices (one per page) is one `supplier_invoice`, so one SUPIN is created from its first invoice and the rest are not entered. The classifier does not look inside the file. Instead OCR lists every invoice number in the primary file and `create_invoice` adds a review note to the Workday note and Slack telling AP to enter the rest manually (see `integrations-and-external-contracts`, "Several invoices in one PDF"). Splitting such a file into one SUPIN per invoice is not implemented.
 
 ## Resends: update instead of duplicating
 
@@ -187,7 +219,8 @@ invoice number, and concurrent double-fires.
   with the latest cluster (lines, memo, company; assignee is left untouched)
   and bump the watermark. Each `Submit_Supplier_Invoice` call sets the
   invoice's full `Attachment_Data` — anything left out is dropped — so the
-  update resends every cluster PDF (latest invoice version first) plus a fresh
+  update resends the latest copy of every cluster document (superseded older
+  copies are dropped, so they leave the draft) plus a fresh
   conversation transcript that records the back-and-forth with the supplier.
   Never send only the new files on an update. Work queue notes and Slack
   (`newAttachments`) name the files received since the last processing. Not

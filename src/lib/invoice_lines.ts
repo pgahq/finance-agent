@@ -227,9 +227,77 @@ export function parseExtractedLineAmount(raw: string): number | undefined {
   return parseExtractedNumber(raw, EXTENDED_AMOUNT_DECIMALS, true);
 }
 
+const NO_CHARGE_AMOUNTS = new Set(['nc', 'no charge', 'no cost', 'included', 'incl', 'free', 'waived', 'complimentary']);
+
+/** A row printed with a word instead of an amount (`N/C`, `Included`, `No Charge`): it bills nothing. */
+export function isNoChargeAmount(raw: string | null | undefined): boolean {
+  const text = raw?.toLowerCase().replace(/[/.*]/g, '').replace(/\s+/g, ' ').trim();
+  return text != null && NO_CHARGE_AMOUNTS.has(text);
+}
+
 // A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
 export function parseExtractedUnitCost(raw: string): number | undefined {
   return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
+}
+
+// true: printed as exactly zero or a no-charge word; false: a real or unreadable amount; undefined: nothing printed.
+// Only a whole numeric token counts (`$0.00`, `(0)`), so text that merely contains a zero (`TBD 0`) and a tiny
+// positive amount (`$0.0004`, which the line-amount rounding would turn into 0) are not free.
+function printedAmountIsZero(raw: string | null | undefined): boolean | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  if (isNoChargeAmount(text)) return true;
+  const digits = text.replace(/^\(\s*(.*?)\s*\)$/, '$1').replace(/^[-\u2212]?\s*\$?\s*/, '').replace(/\s*-$/, '');
+  return /^(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d+)?$/.test(digits) && /\d/.test(digits) && Number(digits.replace(/,/g, '')) === 0;
+}
+
+/**
+ * A printed row that bills nothing (`Business Approved Free Diagnostics $0.00`, `N/C`, `Included`): every price it
+ * prints is zero or a no-charge word. Freight and tax rows keep their own handling, a discount marker keeps a row,
+ * and a row that prints a positive unit cost is a comped charge, not a free row.
+ */
+export function isFreeRow(row: ExtractedInvoiceLine): boolean {
+  if (!row.description?.trim() || row.hasDiscount === true) return false;
+  if (isFreightOrHandlingLine(row.description) || isTaxChargeDescription(row.description)) return false;
+  const printed = [printedAmountIsZero(row.totalPrice), printedAmountIsZero(row.unitCost)].filter(zero => zero !== undefined);
+  return printed.length > 0 && printed.every(Boolean);
+}
+
+const FREE_ROWS_LISTED = 5;
+
+function listedDescriptions(rows: Array<{ description: string }>): string {
+  const listed = rows.slice(0, FREE_ROWS_LISTED).map(row => `"${row.description.replace(/\s+/g, ' ').trim()}"`);
+  const unlisted = rows.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return listed.join(', ');
+}
+
+/** The AP note for rows left off the invoice because they bill nothing. */
+export function freeRowsNote(rows: Array<{ description: string }>): string | undefined {
+  if (rows.length === 0) return undefined;
+  return `${rows.length === 1 ? 'Row' : 'Rows'} ${listedDescriptions(rows)} ${rows.length === 1 ? 'was' : 'were'} left off the invoice lines because`
+    + ` ${rows.length === 1 ? 'it prints' : 'they print'} no charge. ${rows.length === 1 ? 'It adds' : 'They add'} nothing to the total,`
+    + ` and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/** The AP note for merged lines left off because they bill $0.00 although the document may print a price for them. */
+export function zeroAmountLinesNote(lines: Array<{ description: string }>): string | undefined {
+  if (lines.length === 0) return undefined;
+  const many = lines.length > 1;
+  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 as read, so ${many ? 'they were' : 'it was'} left off the invoice lines.`
+    + ` ${many ? 'They add' : 'It adds'} nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/**
+ * Takes the free rows out of the printed rows so they never reach the PO line match. When every row is free the
+ * rows are left alone, so an all-$0 invoice still submits what it printed.
+ */
+export function removeFreeRows<T extends ExtractedInvoiceLine>(rows: T[]): { rows: T[]; removed: T[] } {
+  const removed = rows.filter(isFreeRow);
+  if (removed.length === 0 || removed.length === rows.length) return { rows, removed: [] };
+  const printsAPrice = (row: T) => Boolean(row.totalPrice?.trim() || row.unitCost?.trim());
+  if (!rows.some(row => !isFreeRow(row) && printsAPrice(row))) return { rows, removed: [] };
+  return { rows: rows.filter(row => !isFreeRow(row)), removed };
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
@@ -363,7 +431,7 @@ function isTaxChargeLine(description: string | undefined): boolean {
 }
 
 // Tax rows often print the rate (`Sales Tax 6%`, `VAT 20.00%`, `Tax 0.0825`); the rate is not a goods word.
-function isTaxChargeDescription(description: string | undefined): boolean {
+export function isTaxChargeDescription(description: string | undefined): boolean {
   return isTaxChargeLine(description?.replace(/\d+(?:\.\d+)?\s*%?/g, ' '));
 }
 
@@ -761,6 +829,16 @@ export function normalizeLabel(label: string | null | undefined): string | undef
     .replace(/\s+/g, ' ')
     .trim();
   return normalized || undefined;
+}
+
+/**
+ * Whether a printed charge repeats the header tax rather than adding a second one: same amount and either the tax's
+ * own label or a total row. Two different taxes with the same amount (State Tax and County Tax) both count.
+ */
+export function restatesHeaderTax(label: string | null | undefined, cents: number, taxLabel: string | null | undefined, taxCents: number): boolean {
+  if (cents !== taxCents) return false;
+  const normalized = normalizeLabel(label) ?? '';
+  return normalized === normalizeLabel(taxLabel) || /\btotal\b/.test(normalized);
 }
 
 const FREIGHT_LABEL_QUALIFIERS = new Set(['amount', 'total', 'due']);
@@ -1976,6 +2054,8 @@ const MONTH_THEN_YEAR = new RegExp(String.raw`\b${MONTH_TOKEN}\s*(?:['’]\s*(\d
 const YEAR_THEN_MONTH = new RegExp(String.raw`\b(20\d{2})\s*[-/\s]\s*${MONTH_TOKEN}`, 'i');
 // US dates (MM/DD/YYYY) are read before MM/YYYY, which must not start inside a date ("03/01/2026").
 const NUMERIC_DATE = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(20\d{2})(?![\d/])/;
+// A two-digit year ("09/09/26") needs all three parts, so a fraction or size ("1/2", "3/26") is never a date.
+const NUMERIC_DATE_SHORT_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(\d{2})(?![\d/])/;
 const NUMERIC_MONTH_YEAR = /(?<![\d/])(0?[1-9]|1[0-2])\/(20\d{2})(?![\d/])/;
 
 interface StatedMonth {
@@ -2003,6 +2083,11 @@ function statedMonth(raw: string | null | undefined): StatedMonth | undefined {
   const date = text.match(NUMERIC_DATE);
   if (date) {
     const [year, month, day] = [Number(date[3]), Number(date[1]), Number(date[2])];
+    return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
+  }
+  const shortYearDate = text.match(NUMERIC_DATE_SHORT_YEAR);
+  if (shortYearDate) {
+    const [year, month, day] = [2000 + Number(shortYearDate[3]), Number(shortYearDate[1]), Number(shortYearDate[2])];
     return day <= new Date(Date.UTC(year, month, 0)).getUTCDate() ? { year, month } : undefined;
   }
   const numeric = text.match(NUMERIC_MONTH_YEAR);
@@ -2035,7 +2120,7 @@ function extractedLineCents(line: ExtractedInvoiceLine): number | undefined {
   return unitCost == null ? undefined : toCents(unitCost * line.quantity);
 }
 
-export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost';
+export type RepeatedTableKeepReason = 'purchase_order' | 'service_period' | 'unit_cost' | 'hours_by_rate';
 
 export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
   lines: T[];
@@ -2045,11 +2130,21 @@ export interface RepeatedLineTables<T extends ExtractedInvoiceLine> {
   note?: string;
 }
 
-const KEEP_REASON_TEXT: Record<RepeatedTableKeepReason, string> = {
+const KEEP_REASON_TEXT: Record<Exclude<RepeatedTableKeepReason, 'hours_by_rate'>, string> = {
   purchase_order: 'its lines match open PO lines by amount and service period',
   service_period: 'its lines state the service period',
   unit_cost: 'its quantities and unit costs reproduce the line totals to the cent',
 };
+
+function keepReasonText(reason: RepeatedTableKeepReason, removedTables: number[]): string {
+  if (reason !== 'hours_by_rate') return KEEP_REASON_TEXT[reason];
+  return `its rows itemize the same hours at the same rates as ${removedTables.length === 1 ? 'table' : 'tables'} ${removedTables.join(', ')}`;
+}
+
+export interface RepeatedTableOptions {
+  /** The line-table total the document prints (`extractedLineSubtotal`), when it prints one. */
+  lineSubtotal?: { label?: string | null; amount?: string | null } | null;
+}
 
 interface TableCandidate<T> {
   tableNumber: number;
@@ -2084,6 +2179,36 @@ function maxPoLineMatches<T extends ExtractedInvoiceLine>(table: TableCandidate<
   return candidates.reduce((matches, _, row) => matches + (assign(row, new Set()) ? 1 : 0), 0);
 }
 
+// The hours a table bills at each printed rate, as one comparable string. Undefined unless every row has
+// a positive quantity and a rate with no more than two decimals whose product is the row's total to the
+// cent, so a back-computed rate or a row with no hours never counts as an itemization.
+function hoursByRateSignature<T extends ExtractedInvoiceLine>(table: TableCandidate<T>): string | undefined {
+  const hoursByRate = new Map<string, number>();
+  for (let index = 0; index < table.lines.length; index += 1) {
+    const { quantity, unitCost: printedRate } = table.lines[index];
+    const rate = printedRate ? parseExtractedUnitCost(printedRate) : undefined;
+    if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return undefined;
+    if (rate == null || roundToDecimals(rate, AMOUNT_DECIMALS) !== rate) return undefined;
+    if (toCents(quantity * rate) !== table.lineCents[index]) return undefined;
+    const key = rate.toFixed(AMOUNT_DECIMALS);
+    hoursByRate.set(key, (hoursByRate.get(key) ?? 0) + Math.round(quantity * 1e6));
+  }
+  return [...hoursByRate.entries()].sort(([a], [b]) => Number(a) - Number(b)).map(([rate, hours]) => `${rate}:${hours}`).join('|');
+}
+
+// A summary of timekeepers beside the dated time entries bills the same hours twice. Only when every table
+// itemizes identical hours at identical rates does the table with the most rows stand for the work; two real charges would not repeat each other's hours at each rate.
+function keepItemizedTable<T extends ExtractedInvoiceLine>(
+  tables: TableCandidate<T>[],
+  candidates: TableCandidate<T>[]
+): TableCandidate<T> | undefined {
+  const signatures = tables.map(hoursByRateSignature);
+  if (!signatures[0] || signatures.some(signature => signature !== signatures[0])) return undefined;
+  const mostRows = Math.max(...candidates.map(table => table.lines.length));
+  const itemized = candidates.filter(table => table.lines.length === mostRows);
+  return itemized.length === 1 ? itemized[0] : undefined;
+}
+
 function keepTable<T extends ExtractedInvoiceLine>(
   tables: TableCandidate<T>[],
   purchaseOrderLines: PurchaseOrderLine[]
@@ -2110,9 +2235,10 @@ function keepTable<T extends ExtractedInvoiceLine>(
     remaining = remaining.filter((_, index) => scores[index] === best);
     if (remaining.length === 1) return { table: remaining[0], reason };
   }
-  // When nothing tells the tables apart, a misread amount due could make two real charges look
-  // like a repeat, so no table is removed.
-  return undefined;
+  // When nothing else tells the tables apart, a misread amount due could make two real charges look
+  // like a repeat, so a table is removed only on proof that the tables bill the same hours at the same rates.
+  const itemized = keepItemizedTable(tables, remaining);
+  return itemized ? { table: itemized, reason: 'hours_by_rate' } : undefined;
 }
 
 // Some invoices print the same charges twice, for example an hourly line-item table plus a monthly
@@ -2122,7 +2248,8 @@ function keepTable<T extends ExtractedInvoiceLine>(
 export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   lines: T[],
   charges: LineTotalCharges,
-  purchaseOrderLines: PurchaseOrderLine[] = []
+  purchaseOrderLines: PurchaseOrderLine[] = [],
+  options: RepeatedTableOptions = {}
 ): RepeatedLineTables<T> {
   const unchanged: RepeatedLineTables<T> = { lines, removed: [] };
   if (lines.length < 2) return unchanged;
@@ -2152,6 +2279,13 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   if (tables.some((table, index) => table.tableNumber !== index + 1)) return unchanged;
   const tableTotals = tables.map(table => table.lineCents.reduce((sum, cents) => sum + cents, 0));
   if (tableTotals.some(cents => cents !== expected.expectedCents)) return unchanged;
+  // A printed line total that is not the tables' total says the amount due or the tables were misread, or that
+  // both tables are real charges, so nothing is removed.
+  const printedSubtotalText = options.lineSubtotal?.amount?.trim();
+  if (printedSubtotalText) {
+    const printedSubtotal = parseCanonicalChargeAmount(printedSubtotalText);
+    if (printedSubtotal == null || toCents(printedSubtotal) !== expected.expectedCents) return unchanged;
+  }
   // Tables that state different months (a prior month's balance beside this month's charge) are
   // separate charges, not a restatement. A table that states no month, like an hourly table, can
   // still restate one that does.
@@ -2179,7 +2313,7 @@ export function removeRepeatedLineTables<T extends ExtractedInvoiceLine>(
   const note = `Removed ${removed.length === 1 ? 'line' : 'lines'} ${listed.join(', ')} because`
     + ` ${removedTables.length === 1 ? `table ${removedTables[0]} repeats` : `tables ${removedTables.join(', ')} repeat`}`
     + ` the charges in table ${kept.tableNumber}: each table totals ${formatCents(expected.expectedCents)},`
-    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${KEEP_REASON_TEXT[reason]}.`;
+    + ` the amount due less freight and tax. Kept table ${kept.tableNumber} because ${keepReasonText(reason, removedTables)}.`;
 
   return { lines: keptLines, removed, keptTable: kept.tableNumber, keepReason: reason, note };
 }
@@ -2236,15 +2370,38 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
     + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost by less than a cent a unit; the total is unchanged.`;
 }
 
+// A line that bills nothing has no amount for Workday to count. Left on the invoice it needs a quantity of at least
+// one on its PO line, which would use up PO quantity the priced lines need, so it is left off while a priced line
+// remains. Freight rows and discount-marked lines keep their own handling.
+export function removeZeroAmountLines(lines: FinalInvoiceLine[]): { lines: FinalInvoiceLine[]; removed: FinalInvoiceLine[] } {
+  const isZero = (line: FinalInvoiceLine) => {
+    if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return false;
+    return submittedLineAmount(line) === 0;
+  };
+  const removed = lines.filter(isZero);
+  if (removed.length === 0) return { lines, removed: [] };
+  const remaining = lines.filter(line => !isZero(line));
+  const pricedRemains = remaining.some(line => {
+    const amount = submittedLineAmount(line);
+    return amount != null && amount !== 0;
+  });
+  return pricedRemains ? { lines: remaining, removed } : { lines, removed: [] };
+}
+
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
-// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead.
+// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead. A line with no
+// amount to submit is left off, unless that would leave no priced line.
 export function applyPositivePoQuantityRetry(lines: FinalInvoiceLine[], zeroQuantityLineOrders: Set<number>): FinalInvoiceLine[] {
-  return lines.map(line => {
-    if (!zeroQuantityLineOrders.has(line.lineOrder)) return line;
+  const hasNoAmount = (line: FinalInvoiceLine) => zeroQuantityLineOrders.has(line.lineOrder) && (line.extendedAmount ?? line.unitCost ?? 0) === 0;
+  const forced = lines.map(line => {
+    if (!zeroQuantityLineOrders.has(line.lineOrder) || hasNoAmount(line)) return line;
     const amount = line.extendedAmount ?? line.unitCost ?? null;
     if (amount == null || amount <= 0) return line;
     return { ...line, forcePositivePoQuantity: true, quantity: 1, unitCost: amount, extendedAmount: amount };
   });
+  const kept = forced.filter(line => !hasNoAmount(line));
+  const pricedRemains = kept.some(line => (line.extendedAmount ?? line.unitCost ?? 0) > 0);
+  return kept.length < forced.length && pricedRemains ? kept : forced;
 }
 
 export interface InvoiceDateContext {
