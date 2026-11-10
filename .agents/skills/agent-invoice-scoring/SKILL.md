@@ -203,16 +203,22 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
 - `invoiceCreatedBy` does not identify agent invoices: on them it is the AP
   teammate who started the Intercom action, and it is sometimes blank. It only
   splits the rest: `uncovered_ocr` (Workday OCR never enriched, with or
-  without a creator), `uncovered_manual` (a worker keyed it), and `automated`
-  (no creator: an integration loaded it, such as Amazon supplier XML and ODP
-  batches). The signal is the blank creator alone, not a supplier list; no
-  WQL source or integration field has been confirmed on `supplierInvoices`, so
-  check the digest's automated-by-supplier list before trusting the count.
+  without a creator), `uncovered_manual` (a worker keyed it), `automated`, and
+  `uncovered_integration`. `automated` needs both a blank creator and a supplier
+  on `AUTOMATED_SUPPLIER_WIDS` (comma-separated supplier WIDs as WQL `supplier`
+  returns them; defaults to Amazon Capital Services and ODP Business Solutions,
+  the XML feeds AP confirmed). A blank creator alone does not prove no person
+  prepared the invoice (EIB and bulk loads also have none), so any other
+  no-creator invoice is `uncovered_integration`: it stays in the share and is
+  also reported as a second share without those invoices. Add a supplier to the
+  list only after AP confirms its invoices are loaded by a feed; the digest's
+  automated-by-supplier list links one invoice per supplier so AP can check.
 - Canceled invoices are checked first and stay out of the share
   (`canceled`); companies outside the scope are `out_of_scope`. `automated`
   invoices are out of the share too: no person keyed them, so they are not
   work the agent could have taken from AP. The share is agent supported over
-  agent supported plus `uncovered_ocr` and `uncovered_manual`.
+  agent supported plus `uncovered_ocr`, `uncovered_manual`, and
+  `uncovered_integration`.
 - Supplier Invoice Requests had no invoices in any company since 2025-01-01, so
   there is no category for them.
 - `agent_invoice_coverage_daily` (`ensureCoverageReporting`, created at cold
@@ -222,23 +228,14 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   never alerts on the daily run. A failed refresh is reported after posting
   and fails the run, like the touch rollup: on the weekly run that is a
   Workday or token problem, and the post itself went out.
-- Days stored before `automated` left the share had an `uncovered_integration`
-  column in `invoices` and a `coverage_share_without_integrations` column.
-  `ensureCoverageReporting` migrates them once, in place, from their own
-  counts: `invoices` drops the integration count, `coverage_share` takes the
-  old without-integrations share, and the columns become `automated` and are
-  dropped. A migrated table takes no lock at cold start; the migration locks
-  the table before rewriting it, so concurrent cold starts wait instead of
-  deadlocking.
-- Rolling back past that migration: the old code writes `uncovered_integration`
-  and `coverage_share_without_integrations`, which a migrated table no longer
-  has, so every weekly coverage refresh would fail. After the revert deploys,
-  run `DROP TABLE agent_invoice_coverage_daily` in each account, let a cold
-  start recreate it, and invoke `ScoreDigest` with `{"coverageBackfill":true}`
-  (an empty table rebuilds 90 days). Nothing in this repo reads the table
-  besides the refresh.
+- `automated` is an additive column (`DEFAULT 0`): `ensureCoverageReporting`
+  adds it to a table that lacks it, checking `information_schema` first so a
+  table that has it takes no lock at cold start. Reverting needs no table
+  repair: the older code never names the column, so its upsert still works.
+  Days written before the column existed count automated invoices in `invoices`
+  and `uncovered_integration` until a backfill restates them.
 - Rows older than 15 days keep the scope they were computed with. After
-  changing `COVERAGE_COMPANY_WIDS`, invoke `ScoreDigest` with
+  changing `COVERAGE_COMPANY_WIDS` or `AUTOMATED_SUPPLIER_WIDS`, invoke `ScoreDigest` with
   `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate
   needed). The run posts the weekly digest as usual; adding
   `"mode":"daily"` posts the daily summary instead, which posts nothing when

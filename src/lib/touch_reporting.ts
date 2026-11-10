@@ -58,6 +58,7 @@ export const CREATE_AGENT_INVOICE_TOUCH_DAILY_TABLE = `
 /**
  * Agent coverage, one row per Central day an invoice was created in Workday (see `invoice_coverage.ts`).
  * `invoices` is the share's denominator: PGA Corp invoices that were not canceled and not `automated`.
+ * `uncovered_integration` counts no-creator invoices from suppliers that are not known XML feeds.
  */
 export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_invoice_coverage_daily (
@@ -68,36 +69,34 @@ export const CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE = `
     agent_notes_only INTEGER NOT NULL,
     uncovered_ocr INTEGER NOT NULL,
     uncovered_manual INTEGER NOT NULL,
-    automated INTEGER NOT NULL,
+    uncovered_integration INTEGER NOT NULL,
     canceled INTEGER NOT NULL,
     coverage_share NUMERIC(5, 4),
+    coverage_share_without_integrations NUMERIC(5, 4),
+    automated INTEGER NOT NULL DEFAULT 0,
     computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `;
 
 /**
- * Rows written before integration invoices left the share counted them as `uncovered_integration` in the
- * denominator. Their own counts give the new values (the old share without integrations is the new share), so old
- * days are rewritten in place. The check runs first so a migrated table takes no lock. The table lock comes before the
- * rewrite so two cold starts cannot deadlock: the one that waits then finds the column gone and skips the migration.
+ * Adds `automated` to a table created before it existed. The column is additive with a default, so an older
+ * deploy keeps working against it (its upsert never names the column) and a revert needs no table repair. The check
+ * runs first so a table that has the column takes no lock at cold start; if two cold starts both pass it, the
+ * second `ALTER` waits for the first and then skips on `duplicate_column`. Days written before the column existed keep
+ * their old counts until a `coverageBackfill` run restates them.
  */
-export const MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED = `
+export const ADD_AGENT_INVOICE_COVERAGE_AUTOMATED = `
   DO $$
   BEGIN
-    IF EXISTS (
+    IF NOT EXISTS (
       SELECT 1 FROM information_schema.columns
        WHERE table_schema = current_schema()
          AND table_name = 'agent_invoice_coverage_daily'
-         AND column_name = 'uncovered_integration'
+         AND column_name = 'automated'
     ) THEN
-      LOCK TABLE agent_invoice_coverage_daily IN ACCESS EXCLUSIVE MODE;
-      UPDATE agent_invoice_coverage_daily
-         SET invoices = invoices - uncovered_integration,
-             coverage_share = coverage_share_without_integrations;
-      ALTER TABLE agent_invoice_coverage_daily RENAME COLUMN uncovered_integration TO automated;
-      ALTER TABLE agent_invoice_coverage_daily DROP COLUMN coverage_share_without_integrations;
+      ALTER TABLE agent_invoice_coverage_daily ADD COLUMN automated INTEGER NOT NULL DEFAULT 0;
     END IF;
-  EXCEPTION WHEN undefined_column OR duplicate_column THEN
+  EXCEPTION WHEN duplicate_column THEN
     NULL;
   END
   $$;
@@ -107,7 +106,7 @@ export async function ensureCoverageReporting(
   query: (sql: string, params?: unknown[]) => Promise<unknown>
 ): Promise<void> {
   await query(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE);
-  await query(MIGRATE_AGENT_INVOICE_COVERAGE_AUTOMATED);
+  await query(ADD_AGENT_INVOICE_COVERAGE_AUTOMATED);
 }
 
 /**

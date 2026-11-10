@@ -10,8 +10,9 @@ import { executeWorkdayQuery, getWorkQueueTagWIDs } from './workday.js';
  * created or enriched. An invoice counts as agent supported when it carries the agent's work queue tag or has a row in
  * `agent_invoice_snapshots` (AP can replace the tag; older invoices predate snapshots). `invoiceCreatedBy` cannot
  * identify agent invoices (it names the AP teammate who started the Intercom action), so it only splits the rest.
- * Invoices with no creator were loaded by an integration (supplier XML such as Amazon, ODP batches), not keyed by a
- * person, so they are counted as `automated` and left out of the share.
+ * Invoices from a known supplier XML feed (`AUTOMATED_SUPPLIER_WIDS`) with no creator were not keyed by a person, so
+ * they are counted as `automated` and left out of the share. Any other invoice with no creator stays uncovered
+ * (`uncovered_integration`): a blank creator alone does not prove no person prepared it.
  */
 
 export const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -29,6 +30,20 @@ export const DEFAULT_COVERAGE_COMPANY_WIDS = [
   'cab0b1d2505a01bbec0c611a82276ded', // PGA Golf Properties, Inc.
   'cab0b1d2505a01086d9d4a1a822757ed', // PGA Golf Enterprises
 ];
+
+/**
+ * Suppliers whose invoices an integration loads (supplier XML), as Workday supplier WIDs as `supplier` returns them.
+ * Override with a comma-separated `AUTOMATED_SUPPLIER_WIDS`.
+ */
+export const DEFAULT_AUTOMATED_SUPPLIER_WIDS = [
+  'c3fdce78966e0130831180dbec011221', // AMAZON CAPITAL SERVICES INC
+  '4945efb5366901493845fe7fed012cde', // ODP BUSINESS SOLUTIONS LLC (Office Depot, S-017791)
+];
+
+export function automatedSupplierWids(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = (env.AUTOMATED_SUPPLIER_WIDS ?? '').split(',').map((wid) => wid.trim()).filter(Boolean);
+  return configured.length ? configured : DEFAULT_AUTOMATED_SUPPLIER_WIDS;
+}
 
 export function coverageCompanyWids(env: NodeJS.ProcessEnv = process.env): string[] {
   const configured = (env.COVERAGE_COMPANY_WIDS ?? '').split(',').map((wid) => wid.trim()).filter(Boolean);
@@ -51,16 +66,18 @@ export type CoverageCategory =
   | 'agent_notes_only'
   | 'uncovered_ocr'
   | 'uncovered_manual'
+  | 'uncovered_integration'
   | 'automated';
 
 const AGENT_CATEGORIES: CoverageCategory[] = ['agent_created', 'agent_enriched', 'agent_notes_only'];
-const UNCOVERED_CATEGORIES: CoverageCategory[] = ['uncovered_ocr', 'uncovered_manual'];
+const UNCOVERED_CATEGORIES: CoverageCategory[] = ['uncovered_ocr', 'uncovered_manual', 'uncovered_integration'];
 
 export interface CoverageRow {
   workdayInvoiceWid: string;
   workdayInvoiceNumber?: string;
   companyWid?: string;
   supplier?: string;
+  supplierWid?: string;
   creator?: string;
   hasAgentTag: boolean;
   isOcr: boolean;
@@ -171,6 +188,7 @@ export async function loadCoverageRows(
       ...(typeof record.invoiceNumber === 'string' ? { workdayInvoiceNumber: record.invoiceNumber } : {}),
       ...(reference(record.company1)?.id ? { companyWid: reference(record.company1)!.id } : {}),
       ...(reference(record.supplier)?.descriptor ? { supplier: reference(record.supplier)!.descriptor } : {}),
+      ...(reference(record.supplier)?.id ? { supplierWid: reference(record.supplier)!.id } : {}),
       ...(reference(record.invoiceCreatedBy)?.descriptor ? { creator: reference(record.invoiceCreatedBy)!.descriptor } : {}),
       hasAgentTag: tags.some((tag) => tagWids.has(reference(tag)?.id ?? '')),
       isOcr: Array.isArray(ocr) ? ocr.length > 0 : Boolean(ocr),
@@ -225,15 +243,18 @@ const ENRICH_SOURCES = new Set(['enrich']);
 
 /**
  * Labels each invoice, checking in this order: outside the scoped companies, canceled (kept out of the share), agent
- * supported (tag or snapshot), then how the rest got into Workday. An empty creator is not agent support by itself;
- * a Workday OCR invoice with no creator stays `uncovered_ocr`, because the agent should have enriched it.
+ * supported (tag or snapshot), then how the rest got into Workday. An empty creator is not agent support by itself.
+ * A Workday OCR invoice with no creator stays `uncovered_ocr`, because the agent should have enriched it. Only a
+ * known XML supplier with no creator is `automated`; any other invoice with no creator is `uncovered_integration`.
  */
 export function classifyCoverage(
   rows: CoverageRow[],
   snapshotSources: ReadonlyMap<string, string[]>,
-  companyWids: Iterable<string> = coverageCompanyWids()
+  companyWids: Iterable<string> = coverageCompanyWids(),
+  automatedWids: Iterable<string> = automatedSupplierWids()
 ): ClassifiedInvoice[] {
   const inScope = new Set(companyWids);
+  const automatedSuppliers = new Set(automatedWids);
   return rows.map((row): ClassifiedInvoice => {
     const sources = snapshotSources.get(row.workdayInvoiceWid);
     let category: CoverageCategory;
@@ -244,7 +265,8 @@ export function classifyCoverage(
     } else if (row.hasAgentTag) category = 'agent_notes_only';
     else if (row.isOcr) category = 'uncovered_ocr';
     else if (row.creator) category = 'uncovered_manual';
-    else category = 'automated';
+    else if (row.supplierWid && automatedSuppliers.has(row.supplierWid)) category = 'automated';
+    else category = 'uncovered_integration';
     return { ...row, category };
   });
 }
@@ -258,6 +280,8 @@ export interface CoverageTotals {
   supported: number;
   /** supported / invoices; undefined when there were no invoices. */
   share?: number;
+  /** The same share with the other no-creator invoices (`uncovered_integration`) left out of the denominator. */
+  shareWithoutIntegrations?: number;
 }
 
 const ROUND = 10_000;
@@ -272,17 +296,20 @@ export function coverageTotals(invoices: ClassifiedInvoice[]): CoverageTotals {
     agent_notes_only: 0,
     uncovered_ocr: 0,
     uncovered_manual: 0,
+    uncovered_integration: 0,
     automated: 0,
   };
   for (const invoice of invoices) counts[invoice.category] += 1;
   const supported = AGENT_CATEGORIES.reduce((sum, category) => sum + counts[category], 0);
   const uncovered = UNCOVERED_CATEGORIES.reduce((sum, category) => sum + counts[category], 0);
   const share = ratio(supported, supported + uncovered);
+  const shareWithoutIntegrations = ratio(supported, supported + uncovered - counts.uncovered_integration);
   return {
     counts,
     invoices: supported + uncovered,
     supported,
     ...(share !== undefined ? { share } : {}),
+    ...(shareWithoutIntegrations !== undefined ? { shareWithoutIntegrations } : {}),
   };
 }
 
@@ -304,7 +331,7 @@ export interface CoverageSummary {
   totals: CoverageTotals;
   previous?: CoverageTotals;
   topSuppliers: Array<{ name: string; count: number }>;
-  /** Suppliers of the automated invoices, each with one invoice to open, so AP can check only integration feeds land there. */
+  /** Suppliers of the automated invoices, each with one invoice to open, so AP can check that only supplier feeds land there. */
   automatedSuppliers: Array<{ name: string; count: number; sample?: CoverageLink }>;
   /** AP teammates who keyed invoices by hand, with how many of their invoices went through the agent. */
   creators: CoverageCreator[];
@@ -438,7 +465,8 @@ export function dailyCoverage(invoices: ClassifiedInvoice[], startDay: string, e
 
 const COVERAGE_DAILY_COLUMNS = [
   'created_day', 'invoices', 'agent_created', 'agent_enriched', 'agent_notes_only', 'uncovered_ocr',
-  'uncovered_manual', 'automated', 'canceled', 'coverage_share',
+  'uncovered_manual', 'uncovered_integration', 'canceled', 'coverage_share', 'coverage_share_without_integrations',
+  'automated',
 ];
 
 /** Multi-row upsert for `rows` days, with `COVERAGE_DAILY_COLUMNS` placeholders per row. */
@@ -463,9 +491,11 @@ export function coverageDayParams(days: CoverageDay[]): unknown[] {
     totals.counts.agent_notes_only,
     totals.counts.uncovered_ocr,
     totals.counts.uncovered_manual,
-    totals.counts.automated,
+    totals.counts.uncovered_integration,
     totals.counts.canceled,
     totals.share ?? null,
+    totals.shareWithoutIntegrations ?? null,
+    totals.counts.automated,
   ]);
 }
 

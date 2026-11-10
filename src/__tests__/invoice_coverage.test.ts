@@ -11,10 +11,12 @@ import {
   centralDayKey,
   classifyCoverage,
   countOutOfScopeInvoices,
+  automatedSupplierWids,
   coverageCompanyWids,
   coverageDayParams,
   COVERAGE_BACKFILL_DAYS,
   COVERAGE_ROLLUP_DAYS,
+  DEFAULT_AUTOMATED_SUPPLIER_WIDS,
   DEFAULT_COVERAGE_COMPANY_WIDS,
   dailyCoverage,
   loadCoverageRows,
@@ -30,6 +32,7 @@ import { digestWindow } from '../lib/score_digest.js';
 import * as workday from '../lib/workday.js';
 
 const PGA = DEFAULT_COVERAGE_COMPANY_WIDS[0];
+const XML = DEFAULT_AUTOMATED_SUPPLIER_WIDS[0];
 const SECTION = 'cab0b1d2505a0000000000000000sect';
 const config = {} as never;
 
@@ -43,6 +46,15 @@ describe('coverage company scope', () => {
     expect(DEFAULT_COVERAGE_COMPANY_WIDS).toHaveLength(6);
     expect(coverageCompanyWids({ COVERAGE_COMPANY_WIDS: ' a, b ,,' })).toEqual(['a', 'b']);
     expect(coverageCompanyWids({ COVERAGE_COMPANY_WIDS: ' , ' })).toEqual(DEFAULT_COVERAGE_COMPANY_WIDS);
+  });
+});
+
+describe('automated supplier scope', () => {
+  it('defaults to Amazon and ODP and can be overridden', () => {
+    expect(automatedSupplierWids({})).toEqual(DEFAULT_AUTOMATED_SUPPLIER_WIDS);
+    expect(DEFAULT_AUTOMATED_SUPPLIER_WIDS).toHaveLength(2);
+    expect(automatedSupplierWids({ AUTOMATED_SUPPLIER_WIDS: ' x, y ,,' })).toEqual(['x', 'y']);
+    expect(automatedSupplierWids({ AUTOMATED_SUPPLIER_WIDS: ' , ' })).toEqual(DEFAULT_AUTOMATED_SUPPLIER_WIDS);
   });
 });
 
@@ -96,7 +108,13 @@ describe('classifyCoverage', () => {
       row({ workdayInvoiceWid: 'ocr', isOcr: true, creator: 'Tristan Miller' }),
       row({ workdayInvoiceWid: 'ocr-no-creator', isOcr: true }),
       row({ workdayInvoiceWid: 'hand', creator: 'Tiffany Mead [C]' }),
-      row({ workdayInvoiceWid: 'integration', supplier: 'AMAZON CAPITAL SERVICES INC' }),
+      row({ workdayInvoiceWid: 'integration', supplier: 'Mystery Supplies', supplierWid: 'not-listed' }),
+      row({ workdayInvoiceWid: 'no-supplier' }),
+      row({ workdayInvoiceWid: 'xml', supplier: 'AMAZON CAPITAL SERVICES INC', supplierWid: XML }),
+      row({ workdayInvoiceWid: 'xml-keyed', supplierWid: XML, creator: 'Lisa Esposito' }),
+      row({ workdayInvoiceWid: 'xml-ocr', supplierWid: XML, isOcr: true }),
+      row({ workdayInvoiceWid: 'xml-agent', supplierWid: XML, hasAgentTag: true }),
+      row({ workdayInvoiceWid: 'xml-canceled', supplierWid: XML, isCanceled: true }),
     ];
     expect(Object.fromEntries(classifyCoverage(rows, none).map((invoice) => [invoice.workdayInvoiceWid, invoice.category]))).toEqual({
       other: 'out_of_scope',
@@ -108,7 +126,13 @@ describe('classifyCoverage', () => {
       ocr: 'uncovered_ocr',
       'ocr-no-creator': 'uncovered_ocr',
       hand: 'uncovered_manual',
-      integration: 'automated',
+      integration: 'uncovered_integration',
+      'no-supplier': 'uncovered_integration',
+      xml: 'automated',
+      'xml-keyed': 'uncovered_manual',
+      'xml-ocr': 'uncovered_ocr',
+      'xml-agent': 'agent_notes_only',
+      'xml-canceled': 'canceled',
     });
   });
 
@@ -133,7 +157,7 @@ describe('classifyCoverage', () => {
   });
 
   it('does not treat an empty creator as agent support', () => {
-    expect(classifyCoverage([row({ workdayInvoiceWid: 'a' })], none)[0].category).toBe('automated');
+    expect(classifyCoverage([row({ workdayInvoiceWid: 'a' })], none)[0].category).toBe('uncovered_integration');
   });
 });
 
@@ -164,34 +188,39 @@ describe('summarizeCoverage', () => {
       ...Array.from({ length: 4 }, (_, index) => row({ workdayInvoiceWid: `tiffany-${index}`, creator: 'Tiffany Mead [C]', supplier: `Payee ${index}`, workdayInvoiceNumber: `SUPIN-T${index}` })),
       row({ workdayInvoiceWid: 'mckyra-hand', creator: 'McKyra Jones', supplier: 'UPS', workdayInvoiceNumber: 'SUPIN-M' }),
       row({ workdayInvoiceWid: 'ups-2', creator: 'Lauren Schilling', supplier: 'UPS', workdayInvoiceNumber: 'SUPIN-U' }),
-      row({ workdayInvoiceWid: 'amazon-1', supplier: 'Amazon', workdayInvoiceNumber: 'SUPIN-A1' }),
-      row({ workdayInvoiceWid: 'amazon-2', supplier: 'Amazon', workdayInvoiceNumber: 'SUPIN-A2' }),
+      row({ workdayInvoiceWid: 'mystery', supplier: 'Mystery', workdayInvoiceNumber: 'SUPIN-X' }),
+      row({ workdayInvoiceWid: 'amazon-1', supplier: 'Amazon', supplierWid: XML, workdayInvoiceNumber: 'SUPIN-A1' }),
+      row({ workdayInvoiceWid: 'amazon-2', supplier: 'Amazon', supplierWid: XML, workdayInvoiceNumber: 'SUPIN-A2' }),
       row({ workdayInvoiceWid: 'canceled', isCanceled: true }),
       row({ workdayInvoiceWid: 'section', companyWid: SECTION }),
     ];
     return classifyCoverage(rows, new Map([['enriched', ['enrich']]]));
   }
 
-  it('leaves automated, canceled, and out-of-scope invoices out of the share', () => {
+  it('leaves automated, canceled, and out-of-scope invoices out of the share, and reports it without the other no-creator invoices too', () => {
     const { totals } = summarizeCoverage(invoices());
     expect(totals.counts).toMatchObject({
       agent_created: 0,
       agent_enriched: 1,
       agent_notes_only: 3,
       uncovered_manual: 6,
+      uncovered_integration: 1,
       automated: 2,
       canceled: 1,
       out_of_scope: 1,
     });
     expect(totals.supported).toBe(4);
-    expect(totals.invoices).toBe(10);
-    expect(totals.share).toBe(0.4);
+    expect(totals.invoices).toBe(11);
+    expect(totals.share).toBe(0.3636);
+    expect(totals.shareWithoutIntegrations).toBe(0.4);
   });
 
   it('has no share for an empty period or one with only automated invoices', () => {
-    expect(summarizeCoverage([]).totals).toMatchObject({ invoices: 0 });
-    expect(summarizeCoverage([]).totals.share).toBeUndefined();
-    const onlyAutomated = summarizeCoverage(classifyCoverage([row({ workdayInvoiceWid: 'xml', supplier: 'Amazon' })], new Map()));
+    const { totals } = summarizeCoverage([]);
+    expect(totals.invoices).toBe(0);
+    expect(totals.share).toBeUndefined();
+    expect(totals.shareWithoutIntegrations).toBeUndefined();
+    const onlyAutomated = summarizeCoverage(classifyCoverage([row({ workdayInvoiceWid: 'xml', supplier: 'Amazon', supplierWid: XML })], new Map()));
     expect(onlyAutomated.totals).toMatchObject({ invoices: 0, counts: expect.objectContaining({ automated: 1 }) });
     expect(onlyAutomated.totals.share).toBeUndefined();
     expect(onlyAutomated.automatedSuppliers).toMatchObject([{ name: 'Amazon', count: 1, sample: { workdayInvoiceWid: 'xml' } }]);
@@ -203,12 +232,13 @@ describe('summarizeCoverage', () => {
     expect(summarizeCoverage(invoices()).previous).toBeUndefined();
   });
 
-  it('ranks uncovered suppliers apart from automated ones, and the people keying by hand, with their agent counts', () => {
+  it('ranks uncovered suppliers and the people keying by hand, with their agent counts', () => {
     const summary = summarizeCoverage(invoices());
-    expect(summary.topSuppliers.slice(0, 2)).toEqual([{ name: 'UPS', count: 2 }, { name: 'Payee 0', count: 1 }]);
+    expect(summary.topSuppliers.slice(0, 2)).toEqual([{ name: 'UPS', count: 2 }, { name: 'Mystery', count: 1 }]);
     expect(summary.topSuppliers.map((supplier) => supplier.name)).not.toContain('Amazon');
     expect(summary.automatedSuppliers).toEqual([{
-      name: 'Amazon', count: 2, sample: { workdayInvoiceWid: 'amazon-1', workdayInvoiceNumber: 'SUPIN-A1', supplier: 'Amazon', category: 'automated' },
+      name: 'Amazon', count: 2,
+      sample: { workdayInvoiceWid: 'amazon-1', workdayInvoiceNumber: 'SUPIN-A1', supplier: 'Amazon', category: 'automated' },
     }]);
     expect(summary.topSuppliers[0]).not.toHaveProperty('sample');
     expect(summary.creators).toEqual([
@@ -222,11 +252,12 @@ describe('summarizeCoverage', () => {
   it('spreads the invoice links across creators instead of filling them with one batch, and skips automated invoices', () => {
     const { links } = summarizeCoverage(invoices(), undefined, { links: 4 });
     expect(links).toHaveLength(4);
-    expect(links.map((link) => link.creator)).toEqual(['Tiffany Mead [C]', 'McKyra Jones', 'Lauren Schilling', 'Tiffany Mead [C]']);
+    expect(links.map((link) => link.creator)).toEqual(['Tiffany Mead [C]', 'McKyra Jones', 'Lauren Schilling', undefined]);
     expect(links[0]).toMatchObject({ workdayInvoiceNumber: 'SUPIN-T0', supplier: 'Payee 0', category: 'uncovered_manual' });
     const all = summarizeCoverage(invoices(), undefined, { links: 100 }).links;
-    expect(all).toHaveLength(6);
+    expect(all).toHaveLength(7);
     expect(all.some((link) => link.category === 'automated')).toBe(false);
+    expect(all.some((link) => link.category === 'uncovered_integration')).toBe(true);
   });
 });
 
@@ -263,7 +294,7 @@ describe('loadCoverageRows', () => {
     expect(query).toHaveBeenCalledWith(config, expect.stringContaining('company1 in ('), { requireCompleteTotal: true });
     expect(rows).toEqual([
       {
-        workdayInvoiceWid: 'a', workdayInvoiceNumber: 'SUPIN-1', companyWid: PGA, supplier: 'UPS', creator: 'McKyra Jones',
+        workdayInvoiceWid: 'a', workdayInvoiceNumber: 'SUPIN-1', companyWid: PGA, supplier: 'UPS', supplierWid: 's1', creator: 'McKyra Jones',
         hasAgentTag: true, isOcr: false, isCanceled: false, day: '2026-10-12',
       },
       { workdayInvoiceWid: 'b', companyWid: PGA, hasAgentTag: false, isOcr: true, isCanceled: true, day: '2026-10-14' },
@@ -355,17 +386,16 @@ describe('dailyCoverage and the rollup SQL', () => {
   it('upserts every day in one statement with a placeholder per value', () => {
     const days = dailyCoverage(classified, '2026-10-12', '2026-10-13');
     const params = coverageDayParams(days);
-    expect(params).toHaveLength(20);
-    expect(params.slice(0, 10)).toEqual(['2026-10-12', 2, 0, 0, 1, 0, 1, 0, 0, 0.5]);
-    expect(params.slice(10)).toEqual(['2026-10-13', 0, 0, 0, 0, 0, 0, 0, 0, null]);
+    expect(params).toHaveLength(24);
+    expect(params.slice(0, 12)).toEqual(['2026-10-12', 2, 0, 0, 1, 0, 1, 0, 0, 0.5, 0.5, 0]);
+    expect(params.slice(12)).toEqual(['2026-10-13', 0, 0, 0, 0, 0, 0, 0, 0, null, null, 0]);
     const sql = buildUpsertCoverageDaily(2);
     expect(sql).toContain('INSERT INTO agent_invoice_coverage_daily');
     expect(sql).toContain('automated = EXCLUDED.automated');
-    expect(sql).toContain('$20, CURRENT_TIMESTAMP)');
+    expect(sql).toContain('$24, CURRENT_TIMESTAMP)');
     expect(sql).toContain('ON CONFLICT (created_day) DO UPDATE SET');
     expect(sql).toContain('coverage_share = EXCLUDED.coverage_share');
-    expect(sql).not.toContain('$21');
-    expect(sql).not.toContain('uncovered_integration');
+    expect(sql).not.toContain('$25');
   });
 });
 
@@ -389,8 +419,8 @@ describe('refreshCoverageDaily', () => {
     const upsert = dbQuery.mock.calls.find(([sql]) => sql.includes('INSERT INTO agent_invoice_coverage_daily'));
     const params = (upsert as unknown as [string, unknown[]])[1];
     expect(params[0]).toBe('2026-10-05');
-    expect(params[params.length - 10]).toBe('2026-10-19');
-    expect(params.slice(-10)).toEqual(['2026-10-19', 1, 0, 0, 1, 0, 0, 0, 0, 1]);
+    expect(params[params.length - 12]).toBe('2026-10-19');
+    expect(params.slice(-12)).toEqual(['2026-10-19', 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0]);
     expect(String((query.mock.calls[0] as unknown[])[1])).toContain("createdOn >= '2026-10-04'");
   });
 

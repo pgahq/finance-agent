@@ -226,7 +226,8 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
       record(enriched),
       record('t'.repeat(32), { workQueueTags: [{ id: 'tag-wid' }] }),
       record('h'.repeat(32), { invoiceCreatedBy: { descriptor: 'Someone' } }),
-      record('i'.repeat(32)),
+      record('i'.repeat(32), { supplier: { descriptor: 'Mystery Supplies', id: 'not-listed' } }),
+      record('m'.repeat(32), { supplier: { descriptor: 'AMAZON CAPITAL SERVICES INC', id: 'c3fdce78966e0130831180dbec011221' } }),
       record('x'.repeat(32), { isCanceled: true }),
       { ...record('s'.repeat(32)), company1: { id: 'section' } },
     ];
@@ -239,14 +240,13 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     expect(rows).toHaveLength(90);
     const day = rows[rows.length - 1];
     expect(day).toMatchObject({
-      invoices: 5, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 1,
-      uncovered_manual: 1, automated: 1, canceled: 1, coverage_share: '0.6000',
+      invoices: 6, agent_created: 1, agent_enriched: 1, agent_notes_only: 1, uncovered_ocr: 1,
+      uncovered_manual: 1, uncovered_integration: 1, automated: 1, canceled: 1, coverage_share: '0.5000', coverage_share_without_integrations: '0.6000',
     });
-    expect(day).not.toHaveProperty('coverage_share_without_integrations');
     expect(rows[0]).toMatchObject({ invoices: 0, coverage_share: null });
   });
 
-  it('migrates coverage days stored before automated invoices left the share, once', async () => {
+  it('adds the automated column to a coverage table from before it existed, additively, so an older deploy still writes to it', async () => {
     await pool.query('DROP TABLE IF EXISTS agent_invoice_coverage_daily');
     await pool.query(`
       CREATE TABLE agent_invoice_coverage_daily (
@@ -256,11 +256,8 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
         coverage_share NUMERIC(5, 4), coverage_share_without_integrations NUMERIC(5, 4),
         computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
-    await pool.query(`INSERT INTO agent_invoice_coverage_daily VALUES
-      ('2026-10-20', 312, 54, 0, 0, 0, 139, 119, 4, 0.1731, 0.2798, CURRENT_TIMESTAMP),
-      ('2026-10-21', 3, 0, 0, 0, 0, 0, 3, 0, 0, NULL, CURRENT_TIMESTAMP)`);
     await pool.query(`INSERT INTO agent_invoice_coverage_daily
-      SELECT DATE '2026-11-01' + n, 4, 1, 0, 0, 0, 1, 2, 0, 0.25, 0.5, CURRENT_TIMESTAMP FROM generate_series(0, 399) AS n`);
+      SELECT DATE '2026-10-20' + n, 312, 54, 0, 0, 0, 139, 119, 4, 0.1731, 0.2798, CURRENT_TIMESTAMP FROM generate_series(0, 399) AS n`);
 
     const coldStarts = [await pool.connect(), await pool.connect()];
     try {
@@ -271,12 +268,19 @@ describeWithPostgres('agent invoice scoring against Postgres', () => {
     await ensureCoverageReporting((sql, params) => pool.query(sql, params));
 
     const { rows } = await pool.query('SELECT * FROM agent_invoice_coverage_daily ORDER BY created_day');
-    expect(rows[0]).toMatchObject({ invoices: 193, automated: 119, uncovered_manual: 139, coverage_share: '0.2798' });
-    expect(rows[1]).toMatchObject({ invoices: 0, automated: 3, coverage_share: null });
-    expect(rows).toHaveLength(402);
-    expect(rows[401]).toMatchObject({ invoices: 2, automated: 2, coverage_share: '0.5000' });
-    expect(rows[0]).not.toHaveProperty('uncovered_integration');
-    expect(rows[0]).not.toHaveProperty('coverage_share_without_integrations');
+    expect(rows).toHaveLength(400);
+    expect(rows[0]).toMatchObject({ invoices: 312, uncovered_integration: 119, coverage_share: '0.1731', automated: 0 });
+
+    // The statement an older deploy runs: it never names `automated`, so a revert needs no table repair.
+    await pool.query(
+      `INSERT INTO agent_invoice_coverage_daily
+         (created_day, invoices, agent_created, agent_enriched, agent_notes_only, uncovered_ocr, uncovered_manual,
+          uncovered_integration, canceled, coverage_share, coverage_share_without_integrations, computed_at)
+       VALUES ('2026-10-20', 10, 1, 0, 0, 0, 5, 4, 0, 0.1, 0.1667, CURRENT_TIMESTAMP)
+       ON CONFLICT (created_day) DO UPDATE SET invoices = EXCLUDED.invoices, uncovered_integration = EXCLUDED.uncovered_integration`
+    );
+    const after = await pool.query("SELECT invoices, uncovered_integration, automated FROM agent_invoice_coverage_daily WHERE created_day = '2026-10-20'");
+    expect(after.rows[0]).toEqual({ invoices: 10, uncovered_integration: 4, automated: 0 });
   });
 
   it('stores when the daily audit post last went out', async () => {
