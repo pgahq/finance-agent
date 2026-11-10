@@ -590,6 +590,55 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toHaveLength(1);
   });
 
+  it('does not claim a $0.00 line was left off when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 },
+        { lineOrder: 2, description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: 0, extendedAmount: 0 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Display repair' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$659.00',
+      extractedInvoiceLines: [
+        { description: 'Display', quantity: 1, unitCost: null, totalPrice: '$659.00', hasDiscount: false },
+        { description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: null, totalPrice: '$0.00', hasDiscount: false }
+      ]
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).not.toContain('Free rows');
+  });
+
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
@@ -1601,6 +1650,61 @@ describe('enrich_invoice', () => {
     expect(notes).not.toContain('Amount check');
     expect(notes).not.toContain('Line total review');
     expect(notes).not.toContain('Line subtotal review');
+  });
+
+  it('leaves the free row off and books the pre-tax subtotal on update (Mobile Kangaroo 2007056)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { mobileKangarooCorrectedDisplayRow, mobileKangarooHeader, mobileKangarooRows } = require('./fixtures/mobile_kangaroo_2007056.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'MKPAYTX LLC', memo: 'Display repair' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...mobileKangarooHeader,
+      extractedInvoiceLines: mobileKangarooRows
+    });
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 },
+        { lineOrder: 2, description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: 0, extendedAmount: 0 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooCorrectedDisplayRow]);
+    const updateArgs = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(updateArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
+    const notes = updateArgs.buildNotes([]);
+    expect(notes).toContain('Free rows: Row "Business Approved Free Diagnostics" was left off the invoice lines');
+    expect(notes).toContain('Line price review: "Display" prints $713.37, the amount due, as its price');
+    expect(notes).not.toContain('Amount check');
+    expect(notes).not.toContain('Line total review');
   });
 
   it('adds the SUPIN-470485 totals-block Decoration $5.00 as a line on update', async () => {

@@ -544,7 +544,7 @@ function wholeCents(amount: number): number | undefined {
   return Math.abs(cents - Math.round(cents)) < 1e-6 ? Math.round(cents) : undefined;
 }
 
-type LinePriceReadingKind = 'unitPrice' | 'extension';
+type LinePriceReadingKind = 'unitPrice' | 'extension' | 'subtotal';
 
 interface LinePriceReading {
   kind: LinePriceReadingKind;
@@ -585,8 +585,31 @@ function extensionReading(line: ExtractedInvoiceLine): LinePriceReading | undefi
   return Math.abs(totalCents - cents) <= Math.ceil(quantity / 2) ? undefined : { kind: 'extension', cents };
 }
 
-function linePriceReading(line: ExtractedInvoiceLine, allowExtension: boolean): LinePriceReading | undefined {
-  return singlePriceReading(line) ?? (allowExtension ? extensionReading(line) : undefined);
+// The only priced row prints the amount due as its price while the invoice prints a pre-tax subtotal that, with the
+// header tax, makes the amount due: OCR took the tax-inclusive total for the line. A unit price beside a different
+// total, and a quantity above one, are left to the readings above.
+function subtotalReading(line: ExtractedInvoiceLine, pretax: PretaxSubtotal | undefined): LinePriceReading | undefined {
+  if (!pretax || line.hasDiscount === true || isChargeRowDescription(line.description)) return undefined;
+  if (line.quantity != null && line.quantity !== 1) return undefined;
+  const total = line.totalPrice ? chargeAmount(line.totalPrice) : undefined;
+  if (total == null || Math.round(total * 100) !== pretax.amountDueCents) return undefined;
+  const unitCost = line.unitCost?.trim() ? parseExtractedUnitCost(line.unitCost) : undefined;
+  if (line.unitCost?.trim() && (unitCost == null || Math.round(unitCost * 100) !== pretax.amountDueCents)) return undefined;
+  return { kind: 'subtotal', cents: pretax.cents };
+}
+
+function linePriceReading(line: ExtractedInvoiceLine, allowExtension: boolean, pretax?: PretaxSubtotal): LinePriceReading | undefined {
+  return singlePriceReading(line) ?? (allowExtension ? extensionReading(line) : undefined) ?? subtotalReading(line, pretax);
+}
+
+function describeSubtotalLines(lines: ExtractedInvoiceLine[], pretax: PretaxSubtotal): string {
+  return lines
+    .map(line => `"${printable(line.description)}" prints ${formatChargeDollars(chargeAmount(line.totalPrice) ?? 0)}, the amount due, as its price, but the invoice prints "${printable(pretax.label)}" ${formatChargeDollars(pretax.cents / 100)} and ${formatChargeDollars(pretax.taxCents / 100)} of tax`)
+    .join('; ');
+}
+
+function subtotalNote(changed: ExtractedInvoiceLine[], pretax: PretaxSubtotal): string {
+  return `${describeSubtotalLines(changed, pretax)}. Counted with that tax, the line overshoots the amount due, but the printed subtotal plus tax equals it, so the line total was set to ${formatChargeDollars(pretax.cents / 100)} and the tax is not counted twice.`;
 }
 
 function describeSinglePriceLines(lines: ExtractedInvoiceLine[]): string {
@@ -619,7 +642,17 @@ function extensionNote(changed: ExtractedInvoiceLine[], readings: Map<ExtractedI
   return `${describeExtensionLines(changed, readings)}. With the printed ${many ? 'line totals' : 'line total'}, the lines do not add up to the amount due, but with quantity x unit price they do, so the line ${many ? 'totals were' : 'total was'} set to quantity x unit price.`;
 }
 
+/** A printed pre-tax subtotal that, with header freight and tax, adds up to the amount due. */
+export interface PretaxSubtotal {
+  label: string;
+  cents: number;
+  taxCents: number;
+  amountDueCents: number;
+}
+
 export interface LinePriceReadingOptions {
+  /** Set when a single priced line may be the tax-inclusive total of an invoice that prints its subtotal and tax. */
+  pretaxSubtotal?: PretaxSubtotal;
   /**
    * Whether a line whose printed total differs from quantity x unit price may take the product as its total.
    * Callers turn it off when a deposit, prior payment, or balance due is printed, because the lines then
@@ -647,8 +680,9 @@ export function reinterpretSinglePriceLines(
 ): SinglePriceReinterpretation {
   const unchanged: SinglePriceReinterpretation = { lines };
   const allowExtension = options.allowExtension ?? true;
+  const pretax = lines.length === 1 ? options.pretaxSubtotal : undefined;
   const eligible = lines.flatMap((line, index) => {
-    const reading = linePriceReading(line, allowExtension);
+    const reading = linePriceReading(line, allowExtension, pretax);
     return reading == null ? [] : [{ index, reading }];
   });
   // Quantity x unit price rows share the cap with single-price rows, so too many of them must not switch off the
@@ -665,7 +699,9 @@ export function reinterpretSinglePriceLines(
       const reading = chosen.get(index);
       if (reading == null) return line;
       const totalPrice = formatChargeDollars(reading.cents / 100);
-      return reading.kind === 'unitPrice' ? { ...line, unitCost: line.totalPrice, totalPrice } : { ...line, totalPrice };
+      if (reading.kind === 'unitPrice') return { ...line, unitCost: line.totalPrice, totalPrice };
+      if (reading.kind === 'subtotal') return { ...line, totalPrice, ...(line.unitCost?.trim() && { unitCost: totalPrice }) };
+      return { ...line, totalPrice };
     });
   };
   const matches: number[] = [];
@@ -679,12 +715,14 @@ export function reinterpretSinglePriceLines(
   const ofKind = (kind: LinePriceReadingKind) => changedEntries.filter(entry => entry.reading.kind === kind).map(entry => lines[entry.index]);
   const singlePrice = ofKind('unitPrice');
   const extension = ofKind('extension');
+  const subtotal = ofKind('subtotal');
   const products = new Map(changedEntries.map(entry => [lines[entry.index], entry.reading.cents]));
   return {
     lines: reinterpreted,
     note: [
       ...(singlePrice.length ? [singlePriceNote(singlePrice)] : []),
       ...(extension.length ? [extensionNote(extension, products)] : []),
+      ...(subtotal.length && pretax ? [subtotalNote(subtotal, pretax)] : []),
     ].join(' '),
   };
 }
@@ -704,6 +742,26 @@ export interface SinglePriceChargeContext {
   printedSummaryCharges?: PrintedSummaryCharge[] | null;
   /** A deposit, prior payment, or balance due is printed, so a line total is not replaced by quantity x unit price. */
   settlementPrinted?: boolean;
+  /** The pre-tax total the document prints for its line rows (`Before taxes`), as OCR read it. */
+  lineSubtotal?: { label: string; amount: string } | null;
+}
+
+// The printed subtotal counts only when it is labeled, no deposit, payment, or balance is printed, and it plus the
+// header freight and tax is exactly the amount due, so it cannot be a subtotal that leaves a charge out or one that
+// already contains the tax.
+function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | undefined {
+  const label = context.lineSubtotal?.label?.trim();
+  if (!label || context.settlementPrinted) return undefined;
+  const amountDue = chargeAmount(context.amountDue);
+  const subtotal = chargeAmount(context.lineSubtotal?.amount);
+  const tax = context.taxCleared ? undefined : chargeAmount(context.tax);
+  if (amountDue == null || subtotal == null || tax == null || subtotal <= 0 || tax <= 0) return undefined;
+  const freight = context.freightCleared ? 0 : chargeAmount(context.freight) ?? 0;
+  const cents = Math.round(subtotal * 100);
+  const taxCents = Math.round(tax * 100);
+  const amountDueCents = Math.round(amountDue * 100);
+  if (cents + taxCents + Math.round(freight * 100) !== amountDueCents) return undefined;
+  return { label, cents, taxCents, amountDueCents };
 }
 
 /** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */
@@ -759,5 +817,8 @@ export function reinterpretSinglePriceLinesForCharges(
       taxCleared: taxCharges.taxCleared,
     }).lines.length > 0;
   };
-  return reinterpretSinglePriceLines(lines, reconciles, { allowExtension: !context.settlementPrinted });
+  return reinterpretSinglePriceLines(lines, reconciles, {
+    allowExtension: !context.settlementPrinted,
+    pretaxSubtotal: pretaxSubtotalFor(context),
+  });
 }
