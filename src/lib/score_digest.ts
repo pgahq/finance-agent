@@ -304,13 +304,26 @@ const COVERAGE_LINES: Array<[keyof CoverageSummary['totals']['counts'], string]>
   ['agent_notes_only', 'tagged by the agent (notes only)'],
   ['uncovered_manual', 'keyed by hand'],
   ['uncovered_ocr', 'Workday OCR invoices not enriched'],
-  ['uncovered_integration', 'created with no creator (integrations)'],
+  ['uncovered_integration', 'created with no creator (not a known supplier feed)'],
 ];
 
 function coverageBlocks(coverage: CoverageSummary): SlackBlock[] {
   const { totals, previous } = coverage;
+  const { automated } = totals.counts;
+  const automatedLines = automated
+    ? [
+      `*${automated}* automated ${automated === 1 ? 'invoice' : 'invoices'} left out of the share (supplier XML feeds, no person keyed them)`,
+      ...(coverage.automatedSuppliers.length
+        ? ['_Automated, by supplier_', ...coverage.automatedSuppliers.map((supplier) =>
+          `• ${quote(supplier.name)}: ${supplier.count}${supplier.sample ? `, such as ${invoiceLink(supplier.sample)}` : ''}`)]
+        : []),
+    ]
+    : [];
   if (!totals.invoices || totals.share === undefined) {
-    return [section('*Agent coverage* · no PGA Corp supplier invoices were created last week.')];
+    return [section([
+      '*Agent coverage* · no PGA Corp supplier invoices to count last week.',
+      ...automatedLines,
+    ].join('\n'))];
   }
   const was = previous?.share !== undefined ? ` (was ${percent(previous.share)} the week before)` : '';
   const footnotes = [
@@ -321,8 +334,9 @@ function coverageBlocks(coverage: CoverageSummary): SlackBlock[] {
     `*Agent coverage* · *${percent(totals.share)}* of PGA Corp supplier invoices went through the agent last week (${totals.supported} of ${totals.invoices})${was}`,
     ...COVERAGE_LINES.filter(([category]) => totals.counts[category]).map(([category, label]) => `• ${totals.counts[category]} ${label}`),
     ...(totals.shareWithoutIntegrations !== undefined && totals.counts.uncovered_integration
-      ? [`Without integration invoices: ${percent(totals.shareWithoutIntegrations)}`]
+      ? [`Without the no-creator invoices: ${percent(totals.shareWithoutIntegrations)}`]
       : []),
+    ...automatedLines,
     ...(footnotes.length ? [`_${footnotes.join(' · ')}_`] : []),
   ].join('\n'))];
 

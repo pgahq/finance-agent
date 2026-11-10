@@ -202,13 +202,23 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   snapshots, `agent_notes_only` the tag alone.
 - `invoiceCreatedBy` does not identify agent invoices: on them it is the AP
   teammate who started the Intercom action, and it is sometimes blank. It only
-  splits the rest: `uncovered_ocr` (Workday OCR never enriched),
-  `uncovered_manual` (a worker keyed it), `uncovered_integration` (no creator,
-  such as Amazon and ODP batches).
+  splits the rest: `uncovered_ocr` (Workday OCR never enriched, with or
+  without a creator), `uncovered_manual` (a worker keyed it), `automated`, and
+  `uncovered_integration`. `automated` needs both a blank creator and a supplier
+  on `AUTOMATED_SUPPLIER_WIDS` (comma-separated supplier WIDs as WQL `supplier`
+  returns them; defaults to Amazon Capital Services and ODP Business Solutions,
+  the XML feeds AP confirmed). A blank creator alone does not prove no person
+  prepared the invoice (EIB and bulk loads also have none), so any other
+  no-creator invoice is `uncovered_integration`: it stays in the share and is
+  also reported as a second share without those invoices. Add a supplier to the
+  list only after AP confirms its invoices are loaded by a feed; the digest's
+  automated-by-supplier list links one invoice per supplier so AP can check.
 - Canceled invoices are checked first and stay out of the share
-  (`canceled`); companies outside the scope are `out_of_scope`. The headline
-  share counts everything else; a second share leaves the integration invoices
-  out of the denominator.
+  (`canceled`); companies outside the scope are `out_of_scope`. `automated`
+  invoices are out of the share too: no person keyed them, so they are not
+  work the agent could have taken from AP. The share is agent supported over
+  agent supported plus `uncovered_ocr`, `uncovered_manual`, and
+  `uncovered_integration`.
 - Supplier Invoice Requests had no invoices in any company since 2025-01-01, so
   there is no category for them.
 - `agent_invoice_coverage_daily` (`ensureCoverageReporting`, created at cold
@@ -218,16 +228,40 @@ Corp companies in `DEFAULT_COVERAGE_COMPANY_WIDS`, without PGA Golf Club).
   never alerts on the daily run. A failed refresh is reported after posting
   and fails the run, like the touch rollup: on the weekly run that is a
   Workday or token problem, and the post itself went out.
+- `automated` is an additive column (`DEFAULT 0`): `ensureCoverageReporting`
+  adds it to a table that lacks it, checking `information_schema` first so a
+  table that has it takes no lock at cold start.
+- Rollout: after the deploy, invoke `ScoreDigest` with `{"coverageBackfill":true}`.
+  A normal run rewrites only the last 15 days, so without the backfill the
+  stored series changes meaning where the rewrite stops (older days count
+  automated invoices in `invoices` and `uncovered_integration`).
+- Rollback: the older code never names `automated`, so its upsert still works
+  and the table needs no repair to keep refreshing. But its
+  `ON CONFLICT ... DO UPDATE` never resets the column, so a day this code wrote
+  keeps its `automated` count while the older code also counts those invoices in
+  `invoices` and `uncovered_integration`; summing the columns would double-count
+  them. After the revert deploys, run `UPDATE agent_invoice_coverage_daily SET
+  automated = 0`.
 - Rows older than 15 days keep the scope they were computed with. After
-  changing `COVERAGE_COMPANY_WIDS`, invoke `ScoreDigest` with
-  `{"coverageBackfill":true}` to rewrite the last 90 days in place (no truncate
-  needed). The run posts the weekly digest as usual; adding
-  `"mode":"daily"` posts the daily summary instead, which posts nothing when
-  no invoice was scored since the last daily post.
+  changing `COVERAGE_COMPANY_WIDS` or `AUTOMATED_SUPPLIER_WIDS`, invoke
+  `ScoreDigest` with `{"coverageBackfill":true}` to rewrite the last 90 days in
+  place (no truncate needed). The run posts the weekly digest as usual; adding
+  `"mode":"daily"` posts the daily summary instead, which posts nothing when no
+  invoice was scored since the last daily post.
+- `DEFAULT_AUTOMATED_SUPPLIER_WIDS` were read from the `supplier` reference of
+  Amazon (`SUPIN-468084`) and ODP (`SUPIN-468900`) invoices in the production
+  tenant. A wrong WID fails safe (that supplier's invoices stay
+  `uncovered_integration`) but silently, so after the first weekly post check
+  that "Automated, by supplier" lists both Amazon and ODP. If one is missing,
+  look up its WID: `SELECT workdayID, supplier FROM supplierInvoices
+  (dataSourceFilter = supplierInvoicesFilter) WHERE invoiceNumber = '<SUPIN
+  number of one of its invoices>'`, then set `AUTOMATED_SUPPLIER_WIDS`.
 - The weekly digest shows the share against the week before, the counts per
-  category, the invoices created for other companies, the top suppliers the
-  agent missed, who keyed by hand with their agent counts, and up to ten
-  uncovered invoice links, one per person in turn. It is skipped on the sandbox
+  category, the automated count with its top suppliers, the invoices created
+  for other companies, the top suppliers the agent missed, who keyed by hand
+  with their agent counts, and up to ten uncovered invoice links, one per
+  person in turn. Automated invoices are never in the missed suppliers or the
+  links. It is skipped on the sandbox
   refresh weekday, and says coverage is unavailable when the Workday query
   fails.
 

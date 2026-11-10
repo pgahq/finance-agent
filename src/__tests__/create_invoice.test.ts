@@ -5,8 +5,19 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import {
+  DELIVERY_LINE,
+  PICKUP_LINE,
+  SURCHARGE_LINE,
+  supin472110Header,
+  supin472110PoLines,
+  supin472110ProductionHeader,
+  supin472110ProductionRows,
+  supin472110Rows,
+} from './fixtures/supin_472110.js';
 import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
+import { mobileKangarooCorrectedDisplayRow, mobileKangarooDisplayRow, mobileKangarooFreeRow, mobileKangarooHeader, mobileKangarooRows } from './fixtures/mobile_kangaroo_2007056.js';
 import { supin472062CorrectedEsignRow, supin472062EsignRow, supin472062Header, supin472062Rows } from './fixtures/supin_472062.js';
 import { supin470584Header, supin470584PoLines, supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470584.js';
 
@@ -724,6 +735,46 @@ describe('create_invoice', () => {
       }]);
     });
 
+    it('creates the invoice from a reimbursement workbook that has blank merged cells', async () => {
+      const { processor, workday, s3, invoiceEnrichment, invoiceLines, reimbursementPacket } = freshRequire();
+      reimbursementPacket.readReimbursementPacket.mockResolvedValue(undefined);
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Reimbursement');
+      sheet.getCell('A1').value = 'Hotel - Courtyard Marriott - 10/29 - 11/2';
+      sheet.getCell('B1').value = 1000;
+      sheet.getCell('A3').value = 'Notes';
+      sheet.mergeCells('B3:E5');
+      const original = Buffer.from(await workbook.xlsx.writeBuffer());
+      s3.getBinaryFromS3.mockResolvedValue(original);
+
+      await processor({
+        data: [{ s3Key: 'new-invoices/req-merged/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any);
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice).toHaveBeenCalledTimes(1);
+      expect(workday.submitNewSupplierInvoice.mock.calls[0][1].attachments).toEqual([{
+        fileName: 'Vogel Reimbursement.xlsx',
+        contentType: xlsxType,
+        base64Content: original.toString('base64'),
+      }]);
+    });
+
+    it('stops with an error and creates nothing when the Excel invoice file is corrupt', async () => {
+      const { processor, workday, s3, invoiceEnrichment } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
+      s3.getBinaryFromS3.mockResolvedValue(Buffer.from('not a workbook'));
+
+      await expect(processor({
+        data: [{ s3Key: 'new-invoices/req-bad-xlsx/1-Vogel Reimbursement.xlsx', fileName: 'Vogel Reimbursement.xlsx', contentType: xlsxType }],
+      } as any)).rejects.toThrow('Vogel Reimbursement.xlsx could not be opened');
+
+      expect(invoiceEnrichment.enrichInvoiceFromAttachments).not.toHaveBeenCalled();
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+    });
+
     it('stops with an error and creates nothing when the invoice file cannot be opened', async () => {
       const { processor, workday, slack, invoiceEnrichment } = freshRequire();
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(baseEnrichmentResult);
@@ -1087,6 +1138,98 @@ describe('create_invoice', () => {
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([participants]);
       expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('Line price review');
+    });
+  });
+
+  describe('free $0.00 row beside a priced row whose total includes tax (Mobile Kangaroo 2007056)', () => {
+    const builtLine = (lineOrder: number, description: string, quantity: number, unitCost: number, extendedAmount: number) => ({
+      lineOrder, description, quantity, unitCost, extendedAmount, purchaseOrderLineId: 'ITEM_ORDER_LINE-3-30291'
+    });
+    const built = (lines: any[]) => ({
+      lines,
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+    const enrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...mobileKangarooHeader,
+      extractedInvoiceLines: mobileKangarooRows,
+      ...overrides
+    });
+
+    it('leaves the free row off and books Display at the pre-tax subtotal', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment());
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 659, 659)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooCorrectedDisplayRow]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(1);
+      expect(submitArgs.finalLines[0]).toMatchObject({ description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Free rows: Row "Business Approved Free Diagnostics" was left off the invoice lines');
+      expect(notes).toContain('Line price review: "Display" prints $713.37, the amount due, as its price, but the invoice prints "Before taxes" $659.00 and $54.37 of tax');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
+    });
+
+    it('sets the pre-tax subtotal when the OCR gives Display no unit price', async () => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedInvoiceLines: [mobileKangarooFreeRow, { ...mobileKangarooDisplayRow, unitCost: null }]
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 659, 659)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-no-unit/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([{ ...mobileKangarooCorrectedDisplayRow, unitCost: null }]);
+    });
+
+    it('keeps the amount mismatch when no pre-tax subtotal is printed', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({ extractedLineSubtotal: null }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 713.37, 713.37)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-no-subtotal/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooDisplayRow]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Free rows:');
+      expect(notes).not.toContain('Line price review');
+    });
+
+    it.each([
+      ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$5.00' }] }],
+      ['an email balance due', { emailBalanceDue: '$713.37' }],
+    ])('keeps the printed Display price when %s is printed', async (_name, overrides) => {
+      const { processor, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment(overrides));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([builtLine(1, 'Display', 1, 713.37, 713.37)]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-row-settlement/invoice.pdf')] } as any);
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([mobileKangarooDisplayRow]);
+    });
+
+    it('leaves off a merged line that still bills nothing so it does not take PO quantity', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment({
+        extractedInvoiceLines: [mobileKangarooCorrectedDisplayRow, { ...mobileKangarooFreeRow, unitCost: '$50.00' }],
+        extractedAmountDue: '$713.37'
+      }));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(built([
+        builtLine(1, 'Display', 1, 659, 659),
+        builtLine(2, 'Business Approved Free Diagnostics', 1, 50, 0)
+      ]));
+
+      await processor({ data: [attachmentRequest('new-invoices/req-free-line/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
+      expect(submitArgs.buildNotes([])).toContain('Free rows: Line "Business Approved Free Diagnostics" bills $0.00 as read, so it was left off the invoice lines.');
     });
   });
 
@@ -2866,6 +3009,80 @@ describe('create_invoice', () => {
       expect(notes).not.toContain('Deposit invoice');
       expect(notes).not.toContain('Line subtotal review');
       expect(mocks.slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('deposit');
+    });
+  });
+
+  describe('PO service lines (SUPIN-472110)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const parsedPo = {
+      documentNumber: 'PO-414149',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      lines: supin472110PoLines,
+    };
+    const enrichment = (header: Record<string, unknown>, rows: any[]) => ({
+      ...baseEnrichmentResult,
+      ...header,
+      extractedInvoiceLines: rows,
+    });
+    const mergeAsExtracted = (lines: any[]) => Promise.resolve({
+      lines: lines.map((line, index) => ({
+        lineOrder: index + 1,
+        description: line.description,
+        quantity: line.quantity,
+        unitCost: Number(String(line.unitCost ?? line.totalPrice).replace(/[$,]/g, '')),
+        extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        ...(line.pinnedPurchaseOrderLineId ? { purchaseOrderLineId: line.pinnedPurchaseOrderLineId, pinnedPurchaseOrderLineId: line.pinnedPurchaseOrderLineId } : {}),
+      })),
+      appliedFallbacks,
+    });
+    const run = async (header: Record<string, unknown>, rows: any[]) => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(parsedPo);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment(header, rows));
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation(mergeAsExtracted);
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-service-lines/invoice.pdf')] } as any);
+      return mocks;
+    };
+
+    it('bills delivery, pickup, and the surcharge on their PO lines with no header freight and untouched header tax', async () => {
+      const { workday, invoiceLines, slack } = await run(supin472110Header, supin472110Rows);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      expect(candidates).toHaveLength(11);
+      expect(Object.fromEntries(candidates.filter((line: any) => line.pinnedPurchaseOrderLineId).map((line: any) => [line.description, line.pinnedPurchaseOrderLineId]))).toMatchObject({
+        'DELIVERY CHARGE': DELIVERY_LINE,
+        'PICKUP CHARGE': PICKUP_LINE,
+        'PROPERTY TAX SURCHARGE [DRSURAZ/MCI]': SURCHARGE_LINE,
+      });
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toHaveLength(11);
+      expect(submitArgs.finalLines.find((line: any) => line.description === 'DELIVERY CHARGE')).toMatchObject({ purchaseOrderLineId: DELIVERY_LINE, extendedAmount: 228.16 });
+      expect(submitArgs.extractedFreightAmount).toBeUndefined();
+      expect(submitArgs.extractedTaxAmount).toBe('$156.95');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line subtotal review');
+      expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('chargeCheck');
+    });
+
+    it('places the surcharge OCR read as a tax row on its PO line and keeps freight and tax untouched', async () => {
+      const { workday, invoiceLines } = await run(supin472110ProductionHeader, supin472110ProductionRows);
+
+      const candidates = invoiceLines.buildFinalInvoiceLines.mock.calls[0][0];
+      expect(candidates).toHaveLength(9);
+      expect(candidates[candidates.length - 1]).toMatchObject({
+        description: 'PROPERTY TAX SURCHARGE [DRSURAZ/MCI]',
+        totalPrice: '$20.22',
+        pinnedPurchaseOrderLineId: SURCHARGE_LINE,
+      });
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.extractedTaxAmount).toBe('$156.95');
+      expect(submitArgs.extractedFreightAmount).toBe('$456.32');
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).not.toContain('Added "PROPERTY TAX SURCHARGE');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('may be a row that was not read');
     });
   });
 

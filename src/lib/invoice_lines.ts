@@ -11,6 +11,7 @@ import {
   type RelatedLob,
 } from './related_worktags.js';
 import { isQuantityDistributedSplits, worktagIdentity, type PurchaseOrderLineSplit } from './po_worktags.js';
+import { sharesDescriptiveWord } from './po_service_lines.js';
 
 export interface ExtractedInvoiceLine {
   description: string;
@@ -21,6 +22,8 @@ export interface ExtractedInvoiceLine {
   hasDiscount?: boolean | null;
   tableNumber?: number | null;
   sectionLabel?: string | null;
+  /** The PO service line this row was matched to in code; the row stays an invoice line on that PO line. */
+  pinnedPurchaseOrderLineId?: string | null;
 }
 
 export const INVOICE_LINE_DESCRIPTION_SEPARATOR = ' - ';
@@ -145,6 +148,8 @@ export interface FinalInvoiceLine {
   omitPurchaseOrderLineReference?: boolean;
   poPassthroughWorktagsReference?: any[];
   supplierInvoiceSplitLineData?: PurchaseOrderLineSplit[];
+  /** The PO service line code matched this row to; the line is never moved to header freight or tax. */
+  pinnedPurchaseOrderLineId?: string | null;
 }
 
 // Extraction sets hasDiscount on merchandise rows that print a discounted net price.
@@ -174,6 +179,10 @@ export interface BuiltInvoiceLines {
   appliedFallbacks: LineFallbacks;
   relatedLobByCostCenter: Map<string, RelatedLob>;
   emailBudgetSplit?: EmailBudgetSplitOutcome;
+  /** Rows the merge left without a PO line although the PO has open lines. */
+  modelUnlinkedPoRows?: Array<{ lineOrder: number; description: string }>;
+  /** Rows the merge linked to a PO line that does not describe them; the guard left them unlinked. */
+  unlinkedPoRows?: Array<{ lineOrder: number; description: string }>;
 }
 
 export interface LineFallbacks {
@@ -238,6 +247,66 @@ export function isNoChargeAmount(raw: string | null | undefined): boolean {
 // A unit cost keeps sub-cent precision (e.g. $224.9488753/h); rounding it to cents breaks quantity * unit cost.
 export function parseExtractedUnitCost(raw: string): number | undefined {
   return parseExtractedNumber(raw, UNIT_COST_DECIMALS, true);
+}
+
+// true: printed as exactly zero or a no-charge word; false: a real or unreadable amount; undefined: nothing printed.
+// Only a whole numeric token counts (`$0.00`, `(0)`), so text that merely contains a zero (`TBD 0`) and a tiny
+// positive amount (`$0.0004`, which the line-amount rounding would turn into 0) are not free.
+function printedAmountIsZero(raw: string | null | undefined): boolean | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  if (isNoChargeAmount(text)) return true;
+  const digits = text.replace(/^\(\s*(.*?)\s*\)$/, '$1').replace(/^[-\u2212]?\s*\$?\s*/, '').replace(/\s*-$/, '');
+  return /^(?:\d{1,3}(?:,\d{3})+|\d*)(?:\.\d+)?$/.test(digits) && /\d/.test(digits) && Number(digits.replace(/,/g, '')) === 0;
+}
+
+/**
+ * A printed row that bills nothing (`Business Approved Free Diagnostics $0.00`, `N/C`, `Included`): every price it
+ * prints is zero or a no-charge word. Freight and tax rows keep their own handling, a discount marker keeps a row,
+ * and a row that prints a positive unit cost is a comped charge, not a free row.
+ */
+export function isFreeRow(row: ExtractedInvoiceLine): boolean {
+  if (!row.description?.trim() || row.hasDiscount === true) return false;
+  if (isFreightOrHandlingLine(row.description) || isTaxChargeDescription(row.description)) return false;
+  const printed = [printedAmountIsZero(row.totalPrice), printedAmountIsZero(row.unitCost)].filter(zero => zero !== undefined);
+  return printed.length > 0 && printed.every(Boolean);
+}
+
+const FREE_ROWS_LISTED = 5;
+
+function listedDescriptions(rows: Array<{ description: string }>): string {
+  const listed = rows.slice(0, FREE_ROWS_LISTED).map(row => `"${row.description.replace(/\s+/g, ' ').trim()}"`);
+  const unlisted = rows.length - listed.length;
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  return listed.join(', ');
+}
+
+/** The AP note for rows left off the invoice because they bill nothing. */
+export function freeRowsNote(rows: Array<{ description: string }>): string | undefined {
+  if (rows.length === 0) return undefined;
+  return `${rows.length === 1 ? 'Row' : 'Rows'} ${listedDescriptions(rows)} ${rows.length === 1 ? 'was' : 'were'} left off the invoice lines because`
+    + ` ${rows.length === 1 ? 'it prints' : 'they print'} no charge. ${rows.length === 1 ? 'It adds' : 'They add'} nothing to the total,`
+    + ` and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/** The AP note for merged lines left off because they bill $0.00 although the document may print a price for them. */
+export function zeroAmountLinesNote(lines: Array<{ description: string }>): string | undefined {
+  if (lines.length === 0) return undefined;
+  const many = lines.length > 1;
+  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 as read, so ${many ? 'they were' : 'it was'} left off the invoice lines.`
+    + ` ${many ? 'They add' : 'It adds'} nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
+}
+
+/**
+ * Takes the free rows out of the printed rows so they never reach the PO line match. When every row is free the
+ * rows are left alone, so an all-$0 invoice still submits what it printed.
+ */
+export function removeFreeRows<T extends ExtractedInvoiceLine>(rows: T[]): { rows: T[]; removed: T[] } {
+  const removed = rows.filter(isFreeRow);
+  if (removed.length === 0 || removed.length === rows.length) return { rows, removed: [] };
+  const printsAPrice = (row: T) => Boolean(row.totalPrice?.trim() || row.unitCost?.trim());
+  if (!rows.some(row => !isFreeRow(row) && printsAPrice(row))) return { rows, removed: [] };
+  return { rows: rows.filter(row => !isFreeRow(row)), removed };
 }
 
 const FREIGHT_CORE_WORDS = new Set(['freight', 'shipping', 'handling', 'delivery', 'deliveries', 'postage']);
@@ -333,11 +402,13 @@ export function splitFreightLines<T extends {
   Extended_Amount?: number | string | null;
   quantity?: number | null;
   Quantity?: number | string | null;
+  pinnedPurchaseOrderLineId?: string | null;
 }>(lines: T[]): { merchandiseLines: T[]; freightLines: T[]; freightAmountFromLines?: number } {
   const merchandiseLines: T[] = [];
   const freightLines: T[] = [];
   for (const line of lines) {
-    if (isFreightOrHandlingLine(lineDescription(line))) {
+    // A row matched to a PO service line is billed against that line, not moved to header freight.
+    if (!line.pinnedPurchaseOrderLineId && isFreightOrHandlingLine(lineDescription(line))) {
       freightLines.push(line);
     } else {
       merchandiseLines.push(line);
@@ -378,6 +449,7 @@ export function isTaxChargeDescription(description: string | undefined): boolean
 type ChargeLine = Parameters<typeof lineAmount>[0] & {
   description?: string | null;
   Item_Description?: string | null;
+  pinnedPurchaseOrderLineId?: string | null;
 };
 
 type ChargeAmount = string | number | null | undefined;
@@ -487,8 +559,8 @@ export function reconcileSubmittedCharges<T extends ChargeLine>(
     return { ...unchanged, unreconciled: { lineTotal: sumCents(entries) / 100, freight, tax, amountDue } };
   }
 
-  const isFreightEntry = (entry: CentsLine<T>) => isFreightOrHandlingLine(lineDescription(entry.line));
-  const isTaxEntry = (entry: CentsLine<T>) => isTaxChargeDescription(lineDescription(entry.line));
+  const isFreightEntry = (entry: CentsLine<T>) => !entry.line.pinnedPurchaseOrderLineId && isFreightOrHandlingLine(lineDescription(entry.line));
+  const isTaxEntry = (entry: CentsLine<T>) => !entry.line.pinnedPurchaseOrderLineId && isTaxChargeDescription(lineDescription(entry.line));
   let freightDuplicates: CentsLine<T>[] | undefined;
   let taxDuplicates: CentsLine<T>[] | undefined;
   if (freightCents > 0 && excessCents === freightCents) {
@@ -1147,6 +1219,7 @@ export interface ParsedPoLineWorktags {
   splitLineData: PurchaseOrderLineSplit[];
   quantity?: number | null;
   unitCost?: number | null;
+  extendedAmount?: number | null;
   startDate?: string | null;
   endDate?: string | null;
   availableForInvoicing?: boolean;
@@ -1174,6 +1247,9 @@ function parsePoLineWorktags(poLines: PurchaseOrderLine[] | undefined): ParsedPo
       splitLineData: line.splitLineData ?? [],
       quantity: line.quantity != null && Number.isFinite(line.quantity) && line.quantity > 0 ? line.quantity : null,
       unitCost: line.unitCost != null && Number.isFinite(line.unitCost) && line.unitCost > 0 ? line.unitCost : null,
+      extendedAmount: line.extendedAmount != null && Number.isFinite(Number(line.extendedAmount)) && Number(line.extendedAmount) > 0
+        ? Number(line.extendedAmount)
+        : null,
       startDate: line.startDate ?? null,
       endDate: line.endDate ?? null,
       availableForInvoicing: line.availableForInvoicing !== false,
@@ -2310,15 +2386,38 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
     + ` and a unit cost taken from the line total, because the total differs from quantity x PO unit cost by less than a cent a unit; the total is unchanged.`;
 }
 
+// A line that bills nothing has no amount for Workday to count. Left on the invoice it needs a quantity of at least
+// one on its PO line, which would use up PO quantity the priced lines need, so it is left off while a priced line
+// remains. Freight rows and discount-marked lines keep their own handling.
+export function removeZeroAmountLines(lines: FinalInvoiceLine[]): { lines: FinalInvoiceLine[]; removed: FinalInvoiceLine[] } {
+  const isZero = (line: FinalInvoiceLine) => {
+    if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return false;
+    return submittedLineAmount(line) === 0;
+  };
+  const removed = lines.filter(isZero);
+  if (removed.length === 0) return { lines, removed: [] };
+  const remaining = lines.filter(line => !isZero(line));
+  const pricedRemains = remaining.some(line => {
+    const amount = submittedLineAmount(line);
+    return amount != null && amount !== 0;
+  });
+  return pricedRemains ? { lines: remaining, removed } : { lines, removed: [] };
+}
+
 // Workday rejected quantity 0 on a PO-linked line, which proves its PO line is ordered by quantity.
-// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead.
+// Every PO-linked merchandise line sent as quantity 0 submits one unit at its line amount instead. A line with no
+// amount to submit is left off, unless that would leave no priced line.
 export function applyPositivePoQuantityRetry(lines: FinalInvoiceLine[], zeroQuantityLineOrders: Set<number>): FinalInvoiceLine[] {
-  return lines.map(line => {
-    if (!zeroQuantityLineOrders.has(line.lineOrder)) return line;
+  const hasNoAmount = (line: FinalInvoiceLine) => zeroQuantityLineOrders.has(line.lineOrder) && (line.extendedAmount ?? line.unitCost ?? 0) === 0;
+  const forced = lines.map(line => {
+    if (!zeroQuantityLineOrders.has(line.lineOrder) || hasNoAmount(line)) return line;
     const amount = line.extendedAmount ?? line.unitCost ?? null;
     if (amount == null || amount <= 0) return line;
     return { ...line, forcePositivePoQuantity: true, quantity: 1, unitCost: amount, extendedAmount: amount };
   });
+  const kept = forced.filter(line => !hasNoAmount(line));
+  const pricedRemains = kept.some(line => (line.extendedAmount ?? line.unitCost ?? 0) > 0);
+  return kept.length < forced.length && pricedRemains ? kept : forced;
 }
 
 export interface InvoiceDateContext {
@@ -2471,7 +2570,7 @@ export async function buildFinalInvoiceLines(
       invoiceDate: invoiceContext?.invoiceDate?.trim() || null,
       invoiceServicePeriod,
     } : {}),
-    extractedInvoiceLines: extractedLines,
+    extractedInvoiceLines: extractedLines.map(({ pinnedPurchaseOrderLineId: _pinned, ...row }) => row),
     purchaseOrderLines: parsedPoLines.map(line => ({
       lineOrder: line.lineOrder,
       purchaseOrderLineId: line.purchaseOrderLineId,
@@ -2509,17 +2608,21 @@ export async function buildFinalInvoiceLines(
     }
     debug('Failed to merge invoice lines via AI, falling back to extracted lines with fallback worktags:', error);
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+    return finalizeInvoiceLines(applyPinnedPoLines(fallback.lines, extractedLines, parsedPoLines), fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   if (!mergeResult?.lines?.length) {
     debug('AI merge returned no lines, falling back to extracted lines with fallback worktags');
     const fallback = buildFallbackLines(extractedLines, fallbackIds);
-    return finalizeInvoiceLines(fallback.lines, fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
+    return finalizeInvoiceLines(applyPinnedPoLines(fallback.lines, extractedLines, parsedPoLines), fallback.appliedFallbacks, parsedPoLines, emailWorktags, relatedLobLookup, fallbackIds);
   }
 
   const { lines, appliedFallbacks } = applyFallbacks(mergeResult.lines, fallbackIds);
-  const pinnedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  const describedLines = pinExtractedLineDescriptions(lines, extractedLines);
+  const { lines: pinnedLines, unlinked: unlinkedPoRows } = unlinkRowsOutsideTheirPoLine(
+    applyPinnedPoLines(describedLines, extractedLines, parsedPoLines),
+    parsedPoLines
+  );
   // invoiceServicePeriod covers every line that states no period of its own, so when it
   // names a period no line is left for the invoice-date fallback.
   const selectedLines = !poLineSelection
@@ -2530,7 +2633,7 @@ export async function buildFinalInvoiceLines(
         : alignPoLinesToInvoiceDate(pinnedLines, parsedPoLines, invoiceContext?.invoiceDate),
       parsedPoLines
     );
-  return finalizeInvoiceLines(
+  const built = await finalizeInvoiceLines(
     selectedLines,
     appliedFallbacks,
     parsedPoLines,
@@ -2538,6 +2641,109 @@ export async function buildFinalInvoiceLines(
     relatedLobLookup,
     fallbackIds
   );
+  const modelUnlinkedPoRows = modelUnlinkedRows(pinnedLines, unlinkedPoRows, parsedPoLines);
+  return unlinkedPoRows.length > 0 || modelUnlinkedPoRows.length > 0
+    ? { ...built, ...(unlinkedPoRows.length > 0 ? { unlinkedPoRows } : {}), ...(modelUnlinkedPoRows.length > 0 ? { modelUnlinkedPoRows } : {}) }
+    : built;
+}
+
+// A row code matched to a PO service line is linked to it whatever the merge returned, and takes that line's coding.
+function applyPinnedPoLines(
+  lines: FinalInvoiceLine[],
+  extractedLines: ExtractedInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): FinalInvoiceLine[] {
+  if (lines.length !== extractedLines.length || !extractedLines.some(row => row.pinnedPurchaseOrderLineId)) return lines;
+  const byId = new Map(poLines.filter(line => line.purchaseOrderLineId).map(line => [line.purchaseOrderLineId as string, line]));
+  return lines.map((line, index) => {
+    const pinnedId = extractedLines[index].pinnedPurchaseOrderLineId;
+    const poLine = pinnedId ? byId.get(pinnedId) : undefined;
+    if (!pinnedId || !poLine) return line;
+    return {
+      ...line,
+      pinnedPurchaseOrderLineId: pinnedId,
+      purchaseOrderLineId: pinnedId,
+      shipToAddressId: poLine.shipToAddressId ?? line.shipToAddressId ?? null,
+      costCenterId: poLine.costCenterId ?? line.costCenterId,
+      fundId: poLine.fundId ?? line.fundId,
+      spendCategoryId: poLine.spendCategoryId ?? line.spendCategoryId,
+      lineOfBusinessId: poLine.lineOfBusinessId ?? line.lineOfBusinessId,
+    };
+  });
+}
+
+/**
+ * The merge links a row to a PO line even when nothing on the PO describes it (fuel on a light tower line).
+ * A link is removed only when the row shares no descriptive word with its PO line and the rows on that line
+ * bill more than the PO line's amount; either signal alone leaves the model's choice in place. The row keeps its
+ * coding, so only the link to the PO line goes.
+ */
+export function unlinkRowsOutsideTheirPoLine(
+  lines: FinalInvoiceLine[],
+  poLines: ParsedPoLineWorktags[]
+): { lines: FinalInvoiceLine[]; unlinked: Array<{ lineOrder: number; description: string }> } {
+  const byId = new Map(poLines.filter(line => line.purchaseOrderLineId).map(line => [line.purchaseOrderLineId as string, line]));
+  const billedByPoLine = new Map<string, number>();
+  for (const line of lines) {
+    if (!line.purchaseOrderLineId || isDiscountLine(line)) continue;
+    billedByPoLine.set(line.purchaseOrderLineId, (billedByPoLine.get(line.purchaseOrderLineId) ?? 0) + (submittedLineAmount(line) ?? 0));
+  }
+  // A PO line is only trusted to judge its rows when at least one row on it does describe it; a line that no row
+  // describes (one broad line such as "Annual maintenance") keeps every link so Workday's PO match still sees the overbilling.
+  const describedPoLines = new Set<string>();
+  for (const line of lines) {
+    const poLine = line.purchaseOrderLineId ? byId.get(line.purchaseOrderLineId) : undefined;
+    if (poLine && !isDiscountLine(line) && sharesDescriptiveWord(line.description, poLine)) {
+      describedPoLines.add(poLine.purchaseOrderLineId as string);
+    }
+  }
+  const unlinked: Array<{ lineOrder: number; description: string }> = [];
+  const result = lines.map(line => {
+    const poLine = line.purchaseOrderLineId ? byId.get(line.purchaseOrderLineId) : undefined;
+    if (!poLine || line.pinnedPurchaseOrderLineId || isDiscountLine(line)) return line;
+    const poAmount = poLine.extendedAmount;
+    const billed = billedByPoLine.get(poLine.purchaseOrderLineId as string) ?? 0;
+    if (poAmount == null || billed <= poAmount + 0.005) return line;
+    if (!describedPoLines.has(poLine.purchaseOrderLineId as string)) return line;
+    if (sharesDescriptiveWord(line.description, poLine)) return line;
+    debug(`Invoice line ${line.lineOrder} "${line.description}" shares no wording with PO line ${poLine.purchaseOrderLineId} ("${poLine.description}") and the rows on it exceed its ${poAmount}; leaving it unlinked`);
+    unlinked.push({ lineOrder: line.lineOrder, description: line.description });
+    return { ...line, purchaseOrderLineId: null };
+  });
+  return { lines: result, unlinked };
+}
+
+/** Rows the merge left without a PO line although the PO has open lines (the guard's own unlinks are reported separately). */
+function modelUnlinkedRows(
+  lines: FinalInvoiceLine[],
+  guarded: Array<{ lineOrder: number }>,
+  poLines: ParsedPoLineWorktags[]
+): Array<{ lineOrder: number; description: string }> {
+  if (!poLines.some(line => line.purchaseOrderLineId && line.availableForInvoicing !== false)) return [];
+  const guardedOrders = new Set(guarded.map(row => row.lineOrder));
+  return lines
+    .filter(line => !line.purchaseOrderLineId && !isDiscountLine(line) && !guardedOrders.has(line.lineOrder))
+    .map(line => ({ lineOrder: line.lineOrder, description: line.description }));
+}
+
+export function unlinkedPoRowsNote(
+  guarded: Array<{ description: string }> | undefined,
+  leftUnlinked?: Array<{ description: string }>
+): string | undefined {
+  const sentences: string[] = [];
+  const describe = (rows: Array<{ description: string }>) => {
+    const plural = rows.length > 1;
+    return { named: rows.map(row => `"${printable(row.description)}"`).join(', '), plural };
+  };
+  if (guarded?.length) {
+    const { named, plural } = describe(guarded);
+    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no line on the PO describes ${plural ? 'them' : 'it'}, and the rows on the PO line chosen for ${plural ? 'them' : 'it'} bill more than its amount.`);
+  }
+  if (leftUnlinked?.length) {
+    const { named, plural } = describe(leftUnlinked);
+    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no open line on the PO matched ${plural ? 'them' : 'it'}. Check ${plural ? 'their' : 'its'} coding.`);
+  }
+  return sentences.length ? sentences.join(' ') : undefined;
 }
 
 async function finalizeInvoiceLines(
