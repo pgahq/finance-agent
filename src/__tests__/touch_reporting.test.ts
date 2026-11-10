@@ -5,6 +5,7 @@ import type { DatabaseConnection } from '../lib/database.js';
 import { buildUpsertCoverageDaily } from '../lib/invoice_coverage.js';
 import { TOUCH_BUCKETS } from '../lib/score_touches.js';
 import {
+  ADD_AGENT_INVOICE_COVERAGE_AUTOMATED,
   CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE,
   CREATE_AGENT_INVOICE_TOUCHES_VIEW,
   ensureCoverageReporting,
@@ -76,12 +77,22 @@ describe('ensureCoverageReporting', () => {
   it('creates the coverage rollup table, keyed by day, with the columns the refresh writes', async () => {
     const calls: string[] = [];
     await ensureCoverageReporting((sql) => { calls.push(sql); return Promise.resolve({ rows: [] }); });
-    expect(calls).toEqual([CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE]);
+    expect(calls).toEqual([CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE, ADD_AGENT_INVOICE_COVERAGE_AUTOMATED]);
     expect(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE).toContain('CREATE TABLE IF NOT EXISTS agent_invoice_coverage_daily');
     expect(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE).toContain('created_day DATE PRIMARY KEY');
-    expect(buildUpsertCoverageDaily(1).match(/\$\d+/g)).toHaveLength(11);
+    expect(buildUpsertCoverageDaily(1).match(/\$\d+/g)).toHaveLength(12);
     for (const column of buildUpsertCoverageDaily(1).split('(')[1].split(')')[0].split(', ')) {
       expect(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE).toContain(column);
     }
+  });
+
+  it('adds the automated column only when it is missing, without locking a table that has it or rewriting rows', () => {
+    const sql = ADD_AGENT_INVOICE_COVERAGE_AUTOMATED;
+    expect(sql).toContain("column_name = 'automated'");
+    expect(sql.indexOf('IF NOT EXISTS')).toBeLessThan(sql.indexOf('ALTER TABLE'));
+    expect(sql).toContain('ADD COLUMN automated INTEGER NOT NULL DEFAULT 0');
+    expect(sql).toContain('EXCEPTION WHEN duplicate_column');
+    for (const destructive of ['LOCK TABLE', 'UPDATE ', 'DROP ', 'RENAME']) expect(sql).not.toContain(destructive);
+    expect(CREATE_AGENT_INVOICE_COVERAGE_DAILY_TABLE).toContain('automated INTEGER NOT NULL DEFAULT 0');
   });
 });
