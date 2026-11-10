@@ -141,13 +141,12 @@ function nameWords(value: string | null): Set<string> {
   );
 }
 
-// "Morgan Ellery" and "MORGAN T ELLERY" are one person; two people differ in a word on both sides.
+// Single letters are dropped, so "Morgan Ellery" and "MORGAN T ELLERY" are one person. A dropped whole word
+// ("Jane Doe" and "Jane Doe Smith") is not: the first read's name picks the supplier, so it must be the name both saw.
 function sameName(left: string | null, right: string | null): boolean {
   const a = nameWords(left);
   const b = nameWords(right);
-  if (a.size === 0 || b.size === 0) return a.size === b.size;
-  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
-  return [...smaller].every((word) => larger.has(word));
+  return a.size === b.size && [...a].every((word) => b.has(word));
 }
 
 function comparableId(value: string | null): string | null {

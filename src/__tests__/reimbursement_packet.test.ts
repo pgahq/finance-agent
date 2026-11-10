@@ -158,8 +158,9 @@ describe('packetDisagreement', () => {
     )).toBeUndefined();
   });
 
-  it('treats a missing middle name or initial as the same person, but not a different first name', () => {
+  it('treats a missing middle initial as the same person, but not a dropped name or a different one', () => {
     expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'MORGAN T ELLERY' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ payeeName: 'Jane Doe' }), packet({ payeeName: 'Jane Doe Smith' }))).toBe('the payee');
     expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'Morgan Ellory' }))).toBe('the payee');
   });
 
