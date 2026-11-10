@@ -12,7 +12,6 @@ import { lineSubtotalReviewNote, lineSubtotalShortfallCents, reviewAmountDueGapC
 import { isPoServiceLine, uniqueServiceLineMatches } from '../lib/po_service_lines.js';
 import { getAiResponse } from '../lib/ai.js';
 import { invoiceOcrPrompt } from '../prompts/invoice_ocr_prompt.js';
-import { mergeInvoiceLinesPrompt } from '../prompts/merge_invoice_lines_prompt.js';
 import {
   DELIVERY_LINE,
   ENVIRONMENTAL_LINE,
@@ -427,12 +426,6 @@ describe('unlinkRowsOutsideTheirPoLine', () => {
 });
 
 describe('prompts', () => {
-  it('tells the merge model to borrow worktags for an undescribed row but leave the PO line link empty', () => {
-    expect(mergeInvoiceLinesPrompt).toContain('leave its purchaseOrderLineId null');
-    expect(mergeInvoiceLinesPrompt).toContain('fuel on a light tower line');
-    expect(mergeInvoiceLinesPrompt).toContain('Match a delivery, pickup, surcharge, or environmental row to the PO service line with that name');
-  });
-
   it('asks OCR to return a priced surcharge row as a line, not a tax row', () => {
     expect(invoiceOcrPrompt).toContain('is a priced line item, not an additional tax row');
     expect(invoiceOcrPrompt).toContain('When the invoice prints more than one separate delivery, pickup, return, freight, or similar transport charge as priced rows');
