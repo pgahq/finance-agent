@@ -324,6 +324,7 @@ If the invoice presents the tax as a line item rather than a summary field, stil
 
 An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5% EnvChg Tax". Put the main sales tax in \`extractedTaxAmount\`. List every additional row whose printed label says tax in \`extractedOtherCharges\` with its exact printed label and printed amount, even when the row is printed in the line table, and do not put it in \`extractedInvoiceLines\`.
 
+- A row in the line table that prints a quantity, a unit price, and its own extended amount (for example \`1 PROPERTY TAX SURCHARGE 20.220 EACH 20.22\`) is a priced line item, not an additional tax row, even when its label contains the word tax. Return it in \`extractedInvoiceLines\`. Rows that print only a label and an amount (\`Sales Tax\`, \`5% EnvChg Tax\`) are tax rows.
 - Only rows whose label says tax (tax, VAT, GST, HST). Do not list any other fee or charge here: fuel surcharges, service charges, convenience fees, and similar rows stay exactly where Parts 5 and 9 put them (freight in the freight fields, everything else as a line item).
 - Copy the label exactly as printed. Do not rename a row or add the word "Tax" to a label that does not print it.
 - Copy the printed amount. If a rate is printed (for example "EnvChg Tax 5%") and the amount is not, leave that row out. Never compute an amount from a rate.
