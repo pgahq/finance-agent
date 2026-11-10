@@ -4093,14 +4093,19 @@ describe('lines that bill nothing', () => {
     expect(result.removed.map(removed => removed.description)).toEqual(['Free diagnostics']);
   });
 
+  it('keeps a $0.00 tax line', () => {
+    const lines = [line(1, 'Display', 1, 659, 659), line(2, 'Sales Tax', 1, null, 0)];
+    expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
+  });
+
   it('keeps a line with a nonzero three-decimal amount', () => {
     const lines = [line(1, 'Display', 1, 659, 659), line(2, 'Fraction of a cent', 1, null, 0.001)];
     expect(removeZeroAmountLines(lines)).toEqual({ lines, removed: [] });
   });
 
-  it('describes merged zero lines as free or comped', () => {
+  it('describes merged zero lines as billing $0.00 as read', () => {
     expect(zeroAmountLinesNote([{ description: 'Comped repair' }])).toBe(
-      'Line "Comped repair" bills $0.00 (free or comped), so it was left off the invoice lines. '
+      'Line "Comped repair" bills $0.00 as read, so it was left off the invoice lines. '
       + 'It adds nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.'
     );
     expect(zeroAmountLinesNote([])).toBeUndefined();

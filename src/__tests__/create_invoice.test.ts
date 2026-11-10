@@ -1102,7 +1102,7 @@ describe('create_invoice', () => {
 
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.finalLines.map((line: any) => line.description)).toEqual(['Display']);
-      expect(submitArgs.buildNotes([])).toContain('Free rows: Line "Business Approved Free Diagnostics" bills $0.00 (free or comped), so it was left off the invoice lines.');
+      expect(submitArgs.buildNotes([])).toContain('Free rows: Line "Business Approved Free Diagnostics" bills $0.00 as read, so it was left off the invoice lines.');
     });
   });
 

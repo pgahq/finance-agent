@@ -284,7 +284,7 @@ export function freeRowsNote(rows: Array<{ description: string }>): string | und
 export function zeroAmountLinesNote(lines: Array<{ description: string }>): string | undefined {
   if (lines.length === 0) return undefined;
   const many = lines.length > 1;
-  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 (free or comped), so ${many ? 'they were' : 'it was'} left off the invoice lines.`
+  return `${many ? 'Lines' : 'Line'} ${listedDescriptions(lines)} bill${many ? '' : 's'} $0.00 as read, so ${many ? 'they were' : 'it was'} left off the invoice lines.`
     + ` ${many ? 'They add' : 'It adds'} nothing to the total, and a zero-quantity line cannot be invoiced against a PO line ordered by quantity.`;
 }
 
@@ -2375,7 +2375,7 @@ export function unitCostFromLineTotalNote(lines: FinalInvoiceLine[]): string | u
 // remains. Freight rows and discount-marked lines keep their own handling.
 export function removeZeroAmountLines(lines: FinalInvoiceLine[]): { lines: FinalInvoiceLine[]; removed: FinalInvoiceLine[] } {
   const isZero = (line: FinalInvoiceLine) => {
-    if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description)) return false;
+    if (line.hasDiscount === true || isDiscountLine(line) || isFreightOrHandlingLine(line.description) || isTaxChargeDescription(line.description)) return false;
     return submittedLineAmount(line) === 0;
   };
   const removed = lines.filter(isZero);

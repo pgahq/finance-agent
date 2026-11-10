@@ -590,6 +590,55 @@ describe('enrich_invoice', () => {
     expect(notifyEnrichmentResult.mock.calls.at(-1)[0].chargeCheck).toHaveLength(1);
   });
 
+  it('does not claim a $0.00 line was left off when it only annotates the invoice', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+      lines: [
+        { lineOrder: 1, description: 'Display', quantity: 1, unitCost: 659, extendedAmount: 659 },
+        { lineOrder: 2, description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: 0, extendedAmount: 0 }
+      ],
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    });
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'not_found',
+        confidence: 0.2,
+        extractedInformation: { supplierName: 'Unknown Supplier', memo: 'Display repair' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'No supplier match' },
+        reason: 'No match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedAmountDue: '$659.00',
+      extractedInvoiceLines: [
+        { description: 'Display', quantity: 1, unitCost: null, totalPrice: '$659.00', hasDiscount: false },
+        { description: 'Business Approved Free Diagnostics', quantity: 1, unitCost: null, totalPrice: '$0.00', hasDiscount: false }
+      ]
+    });
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    expect(submitSupplierInvoiceUpdate).not.toHaveBeenCalled();
+    expect(annotateSupplierInvoice.mock.calls.at(-1)[1].notes).not.toContain('Free rows');
+  });
+
   it('flags freight-only extracted totals that do not reconcile when it only annotates the invoice', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { annotateSupplierInvoice, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

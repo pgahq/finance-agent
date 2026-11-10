@@ -615,7 +615,7 @@ async function processInvoice(
       poQuantityNote = [positivePoQuantityNote(printedLines, finalLines), unitCostFromLineTotalNote(finalLines)].filter(Boolean).join(' ') || undefined;
       if (poQuantityNote) debug(`PO line quantity: ${poQuantityNote}`);
       // A line that still bills nothing would need a PO quantity of its own, which Workday counts against the priced lines.
-      ({ lines: finalLines, removed: zeroAmountLines } = removeZeroAmountLines(finalLines));
+      if (submitsLines) ({ lines: finalLines, removed: zeroAmountLines } = removeZeroAmountLines(finalLines));
     }
     const freeRowsReview = [freeRowsNote(freeRows), zeroAmountLinesNote(zeroAmountLines)].filter(Boolean).join(' ') || undefined;
     if (zeroAmountLines.length) debug(`Free lines left off: ${zeroAmountLinesNote(zeroAmountLines)}`);
