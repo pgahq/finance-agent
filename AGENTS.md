@@ -8,12 +8,12 @@ This agent never submits an invoice for approval or payment. `buildSubmitInvoice
 
 A change that sets `Submit: true` or adds another submit path changes this and should be called out in its PR.
 
-### Limits of the draft guarantee
+### AP reviews every draft, and what the draft guarantee does not cover
 
-- Nothing in this code makes AP review a draft before AP submits it. Review is a team process, not something the agent enforces.
+- AP reviews every invoice before submitting it. That is a standing team process and applies to every invoice this agent creates. The code does not enforce it, because nothing in this code submits a draft.
 - A supplier resend can overwrite AP's edits. The resend path calls `submitSupplierInvoiceUpdate` on a Draft, unpaid, uncancelled invoice and replaces its lines, so a fix AP made by hand can be lost and AP may have to correct the same defect again. `agent-invoice-scoring` describes this ("A resend update still overwrites AP edits on a Draft invoice") and `invoice-attachment-clustering` covers the resend flow.
 
-So a draft is not a guarantee that AP corrects a defect. Notes on the invoice must describe what was actually submitted, because AP relies on them. Fallback labels come from the payload Workday accepted. Review notes are built before submit, so keep their claims true even if a repair retry changes the line.
+So AP's review is what catches a defect in a draft, and a draft alone does not guarantee that a correction AP makes survives a resend. Notes on the invoice must describe what was actually submitted, because AP relies on them. Fallback labels come from the payload Workday accepted. Review notes are built before submit, so keep their claims true even if a repair retry changes the line.
 
 ### Reimbursement packets and the default supplier
 
