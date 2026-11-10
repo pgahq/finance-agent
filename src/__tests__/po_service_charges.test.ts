@@ -177,6 +177,28 @@ describe('placeChargesOnPoServiceLines', () => {
     expect(placed.freightLabel).toBeNull();
   });
 
+  it('drops combined header freight when only delivery matches a PO line and pickup stays an unplaced row', () => {
+    const placed = place({
+      lines: [...supin472110TowerRows, supin472110DeliveryRow, supin472110PickupRow],
+      poLines: poLines.filter(line => line.purchaseOrderLineId !== PICKUP_LINE),
+      freightAmount: '$456.32',
+      freightLabel: 'DELIVERY CHARGE and PICKUP CHARGE',
+    });
+    expect(placed.placed.map(item => item.purchaseOrderLineId)).toEqual([DELIVERY_LINE]);
+    expect(placed.freightAmount).toBeNull();
+    expect(placed.freightLabel).toBeNull();
+  });
+
+  it('keeps header freight that matches none of the freight rows even when one row is placed', () => {
+    const placed = place({
+      lines: [...supin472110TowerRows, supin472110DeliveryRow, supin472110PickupRow],
+      poLines: poLines.filter(line => line.purchaseOrderLineId !== PICKUP_LINE),
+      freightAmount: '$300.00',
+      freightLabel: 'Freight',
+    });
+    expect(placed.freightAmount).toBe('$300.00');
+  });
+
   it('does not place a charge that restates the header tax or a credit row', () => {
     const credit = { ...supin472110DeliveryRow, totalPrice: '-$228.16' };
     const placed = place({
@@ -210,12 +232,24 @@ describe('subtotal explained by printed charges', () => {
 
   it('is explained by the header freight and the printed surcharge, so no row looks unread', () => {
     expect(subtotalExplainedByCharges(supin472110ProductionRows, subtotal, productionCharges)).toBe(true);
-    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal, productionCharges)).toBeUndefined();
+    expect(lineSubtotalReviewNote(supin472110ProductionRows, subtotal, productionCharges)).toContain(
+      '"DIESEL FUEL [DSL/MCI]", "DYED DIESEL [DYEDDSL/MCI]", "DIESEL FUEL [DSL/MCI]" are not part of the $1,851.50 the document prints as "Agreement Subtotal"'
+    );
     expect(lineSubtotalShortfallCents(supin472110ProductionRows, subtotal, productionCharges)).toBeUndefined();
   });
 
-  it('is explained for the eleven printed rows, whose fuel rows sit outside the subtotal', () => {
-    expect(lineSubtotalReviewNote(supin472110Rows, subtotal, {})).toBeUndefined();
+  it('names the fuel rows that sit outside the subtotal for the eleven printed rows, without saying a row is unread', () => {
+    const note = lineSubtotalReviewNote(supin472110Rows, subtotal, {});
+    expect(note).toContain('are not part of the $1,851.50 the document prints as "Agreement Subtotal"');
+    expect(note).not.toContain('not read');
+  });
+
+  it('names a row left out of the only subset that fits, even with no freight or other charges', () => {
+    const labor = { description: 'Labor', quantity: 1, unitCost: '$400.00', totalPrice: '$400.00' };
+    const cont = { description: 'Labor (cont.)', quantity: 1, unitCost: '$100.00', totalPrice: '$100.00' };
+    const note = lineSubtotalReviewNote([labor, cont], { label: 'Subtotal', amount: '$400.00' });
+    expect(note).toContain('"Labor (cont.)" is not part of the $400.00 the document prints as "Subtotal"');
+    expect(lineSubtotalShortfallCents([labor, cont], { label: 'Subtotal', amount: '$400.00' })).toBeUndefined();
   });
 
   it('keeps the note when the charges do not account for the gap', () => {
@@ -304,8 +338,19 @@ describe('buildFinalInvoiceLines for SUPIN-472110', () => {
     expect(diesel.every(line => line.costCenterId === 'CC-Member_Championships' && line.spendCategoryId === 'SC-Equipment_Rental')).toBe(true);
     expect(built.unlinkedPoRows).toHaveLength(3);
     expect(unlinkedPoRowsNote(built.unlinkedPoRows)).toBe(
-      '"DIESEL FUEL [DSL/MCI]", "DYED DIESEL [DYEDDSL/MCI]", "DIESEL FUEL [DSL/MCI]" are not linked to a PO line: no line on the PO describes them, and the PO line chosen for them is billed past its amount by other rows.'
+      '"DIESEL FUEL [DSL/MCI]", "DYED DIESEL [DYEDDSL/MCI]", "DIESEL FUEL [DSL/MCI]" are not linked to a PO line: no line on the PO describes them, and the rows on the PO line chosen for them bill more than its amount.'
     );
+  });
+
+  it('reports rows the model left unlinked while the PO has open lines, and none when the PO has no open line', async () => {
+    mockGetAiResponse.mockResolvedValue({ lines: [merged('Setup fee', 50, null, { lineOrder: 1 })] } as any);
+    const row = { description: 'Setup fee', quantity: 1, unitCost: '$50.00', totalPrice: '$50.00' };
+
+    const open = await buildFinalInvoiceLines([row], poLines, undefined, {}, undefined, undefined, true, { invoiceDate: '2026-10-27', servicePeriod: null });
+    expect(open.modelUnlinkedPoRows).toEqual([{ lineOrder: 1, description: 'Setup fee' }]);
+
+    const none = await buildFinalInvoiceLines([row], [], undefined, {}, undefined, undefined, true, { invoiceDate: '2026-10-27', servicePeriod: null });
+    expect(none.modelUnlinkedPoRows).toBeUndefined();
   });
 
   it('keeps the pinned links even when the merge returns no PO line at all', async () => {
@@ -374,12 +419,26 @@ describe('unlinkRowsOutsideTheirPoLine', () => {
     expect(result.unlinked).toEqual([]);
   });
 
+  it('keeps every link on a single broad PO line that no row describes, so Workday still sees the overbilling', () => {
+    const broad = parsed({ description: 'Annual maintenance', extendedAmount: 1000 });
+    const lines = [line('Labor', 600), line('Parts', 500)];
+    const result = unlinkRowsOutsideTheirPoLine(lines, [broad]);
+    expect(result.unlinked).toEqual([]);
+    expect(result.lines.map(item => item.purchaseOrderLineId)).toEqual([GOODS_LINE, GOODS_LINE]);
+  });
+
   it('keeps a PO line with no amount and never touches a pinned row or a credit', () => {
     expect(unlinkRowsOutsideTheirPoLine([line('DIESEL FUEL', 5000)], [parsed({ extendedAmount: null })]).unlinked).toEqual([]);
     const pinned = { ...line('DIESEL FUEL', 5000), pinnedPurchaseOrderLineId: GOODS_LINE };
     expect(unlinkRowsOutsideTheirPoLine([pinned], [parsed()]).unlinked).toEqual([]);
     const credit = { ...line('DIESEL FUEL', -5000), hasDiscount: true };
     expect(unlinkRowsOutsideTheirPoLine([credit], [parsed()]).unlinked).toEqual([]);
+  });
+
+  it('writes a note for rows the merge left without a link when the PO has open lines', () => {
+    expect(unlinkedPoRowsNote([], [{ description: 'Setup fee' }])).toBe(
+      '"Setup fee" is not linked to a PO line: no open line on the PO matched it, so it was coded from the closest PO line without a link.'
+    );
   });
 
   it('returns no note when nothing was unlinked', () => {

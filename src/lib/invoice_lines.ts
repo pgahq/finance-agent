@@ -179,7 +179,9 @@ export interface BuiltInvoiceLines {
   appliedFallbacks: LineFallbacks;
   relatedLobByCostCenter: Map<string, RelatedLob>;
   emailBudgetSplit?: EmailBudgetSplitOutcome;
-  /** Rows the merge linked to a PO line that does not describe them; they were left unlinked. */
+  /** Rows the merge left without a PO line although the PO has open lines. */
+  modelUnlinkedPoRows?: Array<{ lineOrder: number; description: string }>;
+  /** Rows the merge linked to a PO line that does not describe them; the guard left them unlinked. */
   unlinkedPoRows?: Array<{ lineOrder: number; description: string }>;
 }
 
@@ -2538,7 +2540,10 @@ export async function buildFinalInvoiceLines(
     relatedLobLookup,
     fallbackIds
   );
-  return unlinkedPoRows.length > 0 ? { ...built, unlinkedPoRows } : built;
+  const modelUnlinkedPoRows = modelUnlinkedRows(pinnedLines, unlinkedPoRows, parsedPoLines);
+  return unlinkedPoRows.length > 0 || modelUnlinkedPoRows.length > 0
+    ? { ...built, ...(unlinkedPoRows.length > 0 ? { unlinkedPoRows } : {}), ...(modelUnlinkedPoRows.length > 0 ? { modelUnlinkedPoRows } : {}) }
+    : built;
 }
 
 // A row code matched to a PO service line is linked to it whatever the merge returned, and takes that line's coding.
@@ -2582,6 +2587,15 @@ export function unlinkRowsOutsideTheirPoLine(
     if (!line.purchaseOrderLineId || isDiscountLine(line)) continue;
     billedByPoLine.set(line.purchaseOrderLineId, (billedByPoLine.get(line.purchaseOrderLineId) ?? 0) + (submittedLineAmount(line) ?? 0));
   }
+  // A PO line is only trusted to judge its rows when at least one row on it does describe it; a line that no row
+  // describes (one broad line such as "Annual maintenance") keeps every link so Workday's PO match still sees the overbilling.
+  const describedPoLines = new Set<string>();
+  for (const line of lines) {
+    const poLine = line.purchaseOrderLineId ? byId.get(line.purchaseOrderLineId) : undefined;
+    if (poLine && !isDiscountLine(line) && sharesDescriptiveWord(line.description, poLine)) {
+      describedPoLines.add(poLine.purchaseOrderLineId as string);
+    }
+  }
   const unlinked: Array<{ lineOrder: number; description: string }> = [];
   const result = lines.map(line => {
     const poLine = line.purchaseOrderLineId ? byId.get(line.purchaseOrderLineId) : undefined;
@@ -2589,6 +2603,7 @@ export function unlinkRowsOutsideTheirPoLine(
     const poAmount = poLine.extendedAmount;
     const billed = billedByPoLine.get(poLine.purchaseOrderLineId as string) ?? 0;
     if (poAmount == null || billed <= poAmount + 0.005) return line;
+    if (!describedPoLines.has(poLine.purchaseOrderLineId as string)) return line;
     if (sharesDescriptiveWord(line.description, poLine)) return line;
     debug(`Invoice line ${line.lineOrder} "${line.description}" shares no wording with PO line ${poLine.purchaseOrderLineId} ("${poLine.description}") and the rows on it exceed its ${poAmount}; leaving it unlinked`);
     unlinked.push({ lineOrder: line.lineOrder, description: line.description });
@@ -2597,11 +2612,37 @@ export function unlinkRowsOutsideTheirPoLine(
   return { lines: result, unlinked };
 }
 
-export function unlinkedPoRowsNote(rows: Array<{ description: string }> | undefined): string | undefined {
-  if (!rows?.length) return undefined;
-  const named = rows.map(row => `"${printable(row.description)}"`).join(', ');
-  const plural = rows.length > 1;
-  return `${named} ${plural ? 'are' : 'is'} not linked to a PO line: no line on the PO describes ${plural ? 'them' : 'it'}, and the PO line chosen for ${plural ? 'them' : 'it'} is billed past its amount by other rows.`;
+/** Rows the merge left without a PO line although the PO has open lines (the guard's own unlinks are reported separately). */
+function modelUnlinkedRows(
+  lines: FinalInvoiceLine[],
+  guarded: Array<{ lineOrder: number }>,
+  poLines: ParsedPoLineWorktags[]
+): Array<{ lineOrder: number; description: string }> {
+  if (!poLines.some(line => line.purchaseOrderLineId && line.availableForInvoicing !== false)) return [];
+  const guardedOrders = new Set(guarded.map(row => row.lineOrder));
+  return lines
+    .filter(line => !line.purchaseOrderLineId && !isDiscountLine(line) && !guardedOrders.has(line.lineOrder))
+    .map(line => ({ lineOrder: line.lineOrder, description: line.description }));
+}
+
+export function unlinkedPoRowsNote(
+  guarded: Array<{ description: string }> | undefined,
+  leftUnlinked?: Array<{ description: string }>
+): string | undefined {
+  const sentences: string[] = [];
+  const describe = (rows: Array<{ description: string }>) => {
+    const plural = rows.length > 1;
+    return { named: rows.map(row => `"${printable(row.description)}"`).join(', '), plural };
+  };
+  if (guarded?.length) {
+    const { named, plural } = describe(guarded);
+    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no line on the PO describes ${plural ? 'them' : 'it'}, and the rows on the PO line chosen for ${plural ? 'them' : 'it'} bill more than its amount.`);
+  }
+  if (leftUnlinked?.length) {
+    const { named, plural } = describe(leftUnlinked);
+    sentences.push(`${named} ${plural ? 'are' : 'is'} not linked to a PO line: no open line on the PO matched ${plural ? 'them' : 'it'}, so ${plural ? 'they were' : 'it was'} coded from the closest PO line without a link.`);
+  }
+  return sentences.length ? sentences.join(' ') : undefined;
 }
 
 async function finalizeInvoiceLines(

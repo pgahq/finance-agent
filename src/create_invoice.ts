@@ -1275,7 +1275,7 @@ async function processInvoiceCluster(
     let relatedLobByCostCenter = merged.relatedLobByCostCenter;
     let finalLines = merged.lines;
     let emailBudgetSplit = merged.emailBudgetSplit;
-    const poLineNote = unlinkedPoRowsNote(merged.unlinkedPoRows);
+    const poLineNote = unlinkedPoRowsNote(merged.unlinkedPoRows, merged.modelUnlinkedPoRows);
     if (poLineNote) debug(`PO line review: ${poLineNote}`);
 
     // An all-freight invoice must keep its coded freight line; if the PO merge returned none,

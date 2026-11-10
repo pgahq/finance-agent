@@ -69,24 +69,28 @@ export interface SubtotalCharges {
 const MAX_SUBTOTAL_ITEMS = 20;
 
 /**
- * True when exactly one combination of the rows, the header freight, and the printed other charges adds up to the
- * printed line-table total. A document can print freight or a surcharge inside its subtotal and leave fuel or
- * another section out of it, so the rows alone need not match. Rows that repeat the same description and amount
- * move together, so a row read twice never looks like a section left out.
+ * The rows left out when exactly one combination of the rows, the header freight, and the printed other charges adds
+ * up to the printed line-table total; undefined when none or several combinations do. A document can print freight
+ * or a surcharge inside its subtotal and leave fuel or another section out of it, so the rows alone need not match.
+ * Rows that repeat the same description and amount move together, so a row read twice never looks like a section
+ * left out.
  */
-export function subtotalExplainedByCharges(
+function explainSubtotal(
   lines: ExtractedInvoiceLine[],
   subtotal: PrintedAmount | null | undefined,
   charges?: SubtotalCharges
-): boolean {
+): { leftOut: ExtractedInvoiceLine[] } | undefined {
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
-  if (printed == null) return false;
-  const items = new Map<string, number>();
+  if (printed == null) return undefined;
+  const groups = new Map<string, { cents: number; rows: ExtractedInvoiceLine[] }>();
   for (const line of lines) {
     const amount = line.totalPrice ? parseExtractedLineAmount(line.totalPrice) : undefined;
-    if (amount == null) return false;
+    if (amount == null) return undefined;
     const key = `${normalizeLabel(line.description) ?? ''}|${toCents(amount)}`;
-    items.set(key, (items.get(key) ?? 0) + toCents(amount));
+    const group = groups.get(key) ?? { cents: 0, rows: [] };
+    group.cents += toCents(amount);
+    group.rows.push(line);
+    groups.set(key, group);
   }
   const freight = parseCanonicalChargeAmount(charges?.freight);
   const extras = [
@@ -96,19 +100,33 @@ export function subtotalExplainedByCharges(
       return amount != null && amount > 0 ? [toCents(amount)] : [];
     }),
   ];
-  const values = [...items.values(), ...extras].filter(value => value !== 0);
-  if (values.length === 0 || values.length > MAX_SUBTOTAL_ITEMS) return false;
+  const rowGroups = [...groups.values()].filter(group => group.cents !== 0);
+  const values = [...rowGroups.map(group => group.cents), ...extras.filter(value => value !== 0)];
+  if (values.length === 0 || values.length > MAX_SUBTOTAL_ITEMS) return undefined;
   const target = toCents(printed);
   let solutions = 0;
+  let solution = 0;
   const total = 1 << values.length;
   for (let mask = 1; mask < total && solutions < 2; mask++) {
     let sum = 0;
     for (let bit = 0; bit < values.length; bit++) {
       if (mask & (1 << bit)) sum += values[bit];
     }
-    if (sum === target) solutions++;
+    if (sum === target) {
+      solutions++;
+      solution = mask;
+    }
   }
-  return solutions === 1;
+  if (solutions !== 1) return undefined;
+  return { leftOut: rowGroups.filter((_, bit) => !(solution & (1 << bit))).flatMap(group => group.rows) };
+}
+
+export function subtotalExplainedByCharges(
+  lines: ExtractedInvoiceLine[],
+  subtotal: PrintedAmount | null | undefined,
+  charges?: SubtotalCharges
+): boolean {
+  return explainSubtotal(lines, subtotal, charges) != null;
 }
 
 /**
@@ -143,8 +161,14 @@ export function lineSubtotalReviewNote(
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
   const printedCents = toCents(printed);
-  if (printedCents === summed || subtotalExplainedByCharges(lines, subtotal, charges)) return undefined;
+  if (printedCents === summed) return undefined;
   const label = printable(subtotal?.label) || 'line total';
+  const explained = explainSubtotal(lines, subtotal, charges);
+  if (explained) {
+    if (explained.leftOut.length === 0) return undefined;
+    const many = explained.leftOut.length > 1;
+    return `${describeLines(explained.leftOut.slice(0, 5))} ${many ? 'are' : 'is'} not part of the ${centsDollars(printedCents)} the document prints as "${label}" and ${many ? 'were' : 'was'} kept as ${many ? 'lines' : 'a line'}. Check that ${many ? 'they belong' : 'it belongs'} outside that total and ${many ? 'are' : 'is'} not printed more than once.`;
+  }
   const gap = printedCents - summed;
   const head = `The extracted lines total ${centsDollars(summed)}, but the document prints ${centsDollars(printedCents)} as "${label}".`;
   if (gap < 0) return `${head} Check for a row that was read twice or a charge that is not a line.`;

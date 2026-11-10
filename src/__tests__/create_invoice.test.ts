@@ -2488,7 +2488,8 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedTaxAmount).toBe('$156.95');
       const notes = submitArgs.buildNotes([]);
       expect(notes).not.toContain('Amount check');
-      expect(notes).not.toContain('Line subtotal review');
+      expect(notes).toContain('are not part of the $1,851.50 the document prints as "Agreement Subtotal"');
+      expect(notes).not.toContain('may be a row that was not read');
       expect(slack.notifyResult.mock.calls[0][3]).not.toHaveProperty('chargeCheck');
     });
 

@@ -545,7 +545,7 @@ async function processInvoice(
       finalLines = built.lines;
       emailBudgetSplit = built.emailBudgetSplit;
       lineFallbacks = built.appliedFallbacks;
-      poLineNote = unlinkedPoRowsNote(built.unlinkedPoRows);
+      poLineNote = unlinkedPoRowsNote(built.unlinkedPoRows, built.modelUnlinkedPoRows);
       if (poLineNote) debug(`PO line review: ${poLineNote}`);
       relatedLobByCostCenter = built.relatedLobByCostCenter;
       debug(`Built ${finalLines.length} final invoice line(s)`);

@@ -28,6 +28,8 @@ export interface PrintedCharge {
   amount: string;
 }
 
+const PICKUP_OR_DELIVERY = /\b(pick ?up|delivery|return)\b/i;
+
 export interface PlacedPoServiceCharges {
   lines: ExtractedInvoiceLine[];
   /** The printed other charges that were not placed as lines. */
@@ -106,13 +108,19 @@ export function placeChargesOnPoServiceLines(input: {
     });
   });
 
-  // Header freight that equals the freight-like rows now placed is those same rows read twice.
-  const placedFreightCents = input.lines.reduce((total, line, index) => {
-    const pinned = matches.has(index) && isFreightOrHandlingLine(line.description);
-    return pinned ? total + toCents(rowAmounts[index] ?? 0) : total;
+  // Header freight that equals the delivery, pickup, or freight rows on the invoice (placed or not, once any is
+  // placed) is those same rows read twice. A partial match still counts: delivery pinned, pickup unmatched.
+  const isPlacedFreight = (index: number) => matches.has(index) && isFreightOrHandlingLine(input.lines[index].description);
+  const placedFreightCents = input.lines.reduce((total, _, index) => (isPlacedFreight(index) ? total + toCents(rowAmounts[index] ?? 0) : total), 0);
+  const allFreightRowCents = input.lines.reduce((total, line, index) => {
+    const looksLikeFreight = isFreightOrHandlingLine(line.description) || PICKUP_OR_DELIVERY.test(line.description);
+    return looksLikeFreight ? total + toCents(rowAmounts[index] ?? 0) : total;
   }, 0);
   const headerFreight = chargeAmount(input.freightAmount);
-  const freightRepeatsPlacedRows = placedFreightCents > 0 && headerFreight != null && toCents(headerFreight) === placedFreightCents;
+  const headerFreightCents = headerFreight != null ? toCents(headerFreight) : undefined;
+  const freightRepeatsPlacedRows = placedFreightCents > 0
+    && headerFreightCents != null
+    && (headerFreightCents === placedFreightCents || headerFreightCents === allFreightRowCents);
 
   return {
     lines: [...lines, ...addedLines],
