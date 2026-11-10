@@ -1,4 +1,4 @@
-import { debug } from '@pga/logger';
+import { debug, warn } from '@pga/logger';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import PDFDocument from 'pdfkit';
@@ -430,7 +430,21 @@ function dateText(value: Date): string {
   return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso.replace('T', ' ').slice(0, 16);
 }
 
-function cellText(cell: ExcelJS.Cell): string {
+// ExcelJS throws from `cell.text` on the non-master cells of a blank merged range (it calls `.toString()` on the
+// merge's null master value) and returns "[object Object]" when the master holds rich text or a hyperlink. A merged
+// cell therefore reads as its master. The catch is a fallback for any other cell that throws: it reads as blank so
+// one odd cell does not fail the workbook, and the caller logs the count at warn level.
+function safeCellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
+  try {
+    return cell.text ?? '';
+  } catch {
+    stats.blanked += 1;
+    return '';
+  }
+}
+
+function cellText(cell: ExcelJS.Cell, stats: { blanked: number }): string {
+  if (cell.isMerged && cell.master !== cell) return cellText(cell.master, stats);
   let raw: unknown = cell.value;
   if (raw && typeof raw === 'object' && !(raw instanceof Date) && 'result' in raw) {
     raw = (raw as { result?: unknown }).result;
@@ -438,7 +452,7 @@ function cellText(cell: ExcelJS.Cell): string {
   let text: string;
   if (raw instanceof Date) text = dateText(raw);
   else if (typeof raw === 'number') text = formatNumberCell(raw, cell.numFmt);
-  else text = cell.text ?? '';
+  else text = safeCellText(cell, stats);
   return text.length > MAX_CELL_CHARS ? text.slice(0, MAX_CELL_CHARS) : text;
 }
 
@@ -449,6 +463,7 @@ async function xlsxBlocks(buffer: Buffer): Promise<Block[]> {
   for (const sheet of workbook.worksheets) {
     if (sheet.state && sheet.state !== 'visible') continue;
     const rows: string[][] = [];
+    const stats = { blanked: 0 };
     let truncated = false;
     sheet.eachRow({ includeEmpty: false }, (row) => {
       if (rows.length >= MAX_SHEET_ROWS) {
@@ -457,11 +472,12 @@ async function xlsxBlocks(buffer: Buffer): Promise<Block[]> {
       }
       const values: string[] = [];
       row.eachCell({ includeEmpty: true }, (cell, column) => {
-        if (column <= MAX_SHEET_COLUMNS) values[column - 1] = cellText(cell);
+        if (column <= MAX_SHEET_COLUMNS) values[column - 1] = cellText(cell, stats);
       });
       const filled = Array.from(values, (value) => value ?? '');
       if (filled.some((value) => value.trim() !== '')) rows.push(filled);
     });
+    if (stats.blanked > 0) warn('Read unexpectedly unreadable xlsx cells as blank', { sheet: sheet.name, cells: stats.blanked });
     if (rows.length === 0) continue;
     const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
     if (blocks.length > 0) blocks.push({ type: 'pageBreak' });
@@ -513,9 +529,9 @@ async function convertForModel(doc: ModelDocument, kind: OfficeKind): Promise<Bu
     });
     return buffer;
   } catch (error) {
-    debug('Office attachment could not be converted for the model; skipping it', {
+    warn('Office attachment could not be converted for the model; skipping it', {
       fileName: doc.fileName,
-      error: error instanceof Error ? error.message : String(error),
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
     });
     return undefined;
   }

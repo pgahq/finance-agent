@@ -10,7 +10,7 @@ import {
   toModelDocument,
 } from '../lib/office_to_pdf.js';
 
-jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
+jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -39,6 +39,25 @@ async function sampleXlsx(sheets: Array<{ name: string; rows: Array<Array<string
     const worksheet = workbook.addWorksheet(sheet.name, { state: sheet.state ?? 'visible' });
     sheet.rows.forEach((row) => worksheet.addRow(row));
   }
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+/** A reimbursement form like the one that failed in production: merged titles plus blank merged blocks. */
+async function reimbursementFormXlsx(): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Reimbursement');
+  sheet.getCell('A1').value = 'Expense Reimbursement';
+  sheet.mergeCells('A1:E1');
+  sheet.getCell('A3').value = 'Payee';
+  sheet.getCell('B3').value = 'Courtney Vogel';
+  sheet.getCell('A4').value = 'Notes';
+  sheet.mergeCells('B4:E6');
+  sheet.getCell('A8').value = 'Hotel - Courtyard Marriott - 10/29 - 11/2';
+  sheet.mergeCells('A8:C8');
+  sheet.getCell('D8').value = 1000;
+  sheet.getCell('D8').numFmt = '$#,##0.00';
+  sheet.getCell('A10').value = 'Approved by';
+  sheet.mergeCells('B10:E11');
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
@@ -214,9 +233,70 @@ describe('convertOfficeToPdf', () => {
     expect(pdfText(pdf)).toContain('no readable content');
   });
 
+  it('reads past blank merged cells instead of failing the workbook', async () => {
+    const buffer = await reimbursementFormXlsx();
+    const reloaded = new ExcelJS.Workbook();
+    await reloaded.xlsx.load(buffer as unknown as ArrayBuffer);
+    // Guards the fixture: ExcelJS itself throws on these cells, which is what used to fail the whole file.
+    expect(() => reloaded.getWorksheet('Reimbursement')!.getCell('C5').text).toThrow();
+
+    const warn = jest.requireMock<{ warn: jest.Mock }>('@pga/logger').warn;
+    warn.mockClear();
+
+    const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
+
+    expect(text).toContain('Expense Reimbursement');
+    expect(text).toContain('Courtney Vogel');
+    expect(text).toContain('Hotel - Courtyard Marriott - 10/29 - 11/2');
+    expect(text).toContain('$1,000.00');
+    expect(warn).not.toHaveBeenCalledWith('Read unexpectedly unreadable xlsx cells as blank', expect.anything());
+  });
+
+  it('still reads merged cells that have a value, formulas without a cached result, and error values', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Odd');
+    sheet.getCell('A1').value = 'Merged heading';
+    sheet.mergeCells('A1:B2');
+    sheet.getCell('A4').value = { formula: '1/0' } as ExcelJS.CellFormulaValue;
+    sheet.getCell('B4').value = { error: '#N/A' } as ExcelJS.CellErrorValue;
+    sheet.getCell('C4').value = 'after the odd cells';
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
+
+    expect(text).toContain('Merged heading');
+    expect(text).toContain('#N/A');
+    expect(text).toContain('after the odd cells');
+  });
+
+  it('reads merged cells under a rich-text or hyperlink master as that text, not "[object Object]"', async () => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Rich');
+    sheet.getCell('A1').value = { richText: [{ text: 'Rich ' }, { text: 'Heading' }] };
+    sheet.mergeCells('A1:C1');
+    sheet.getCell('A3').value = { text: 'Receipt link', hyperlink: 'https://example.com/receipt' };
+    sheet.mergeCells('A3:B3');
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+
+    const text = pdfText(await convertOfficeToPdf(buffer, 'xlsx', { compress: false }));
+
+    expect(text).toContain('Rich Heading');
+    expect(text).toContain('Receipt link');
+    expect(text).not.toContain('[object Object]');
+  });
+
   it('throws OfficeConversionError for corrupt files', async () => {
     await expect(convertOfficeToPdf(Buffer.from('not a zip'), 'docx')).rejects.toBeInstanceOf(OfficeConversionError);
     await expect(convertOfficeToPdf(Buffer.from('not a zip'), 'xlsx')).rejects.toBeInstanceOf(OfficeConversionError);
+  });
+
+  it('throws OfficeConversionError for a truncated workbook and a password-protected (OLE container) workbook', async () => {
+    const valid = await reimbursementFormXlsx();
+    const truncated = valid.subarray(0, Math.floor(valid.length / 2));
+    const encrypted = Buffer.concat([Buffer.from('D0CF11E0A1B11AE1', 'hex'), Buffer.alloc(512)]);
+
+    await expect(convertOfficeToPdf(truncated, 'xlsx')).rejects.toBeInstanceOf(OfficeConversionError);
+    await expect(convertOfficeToPdf(encrypted, 'xlsx')).rejects.toBeInstanceOf(OfficeConversionError);
   });
 });
 
@@ -258,6 +338,8 @@ describe('isUnreadableOffice', () => {
   it('is true only for an Office file that cannot be opened', async () => {
     expect(await isUnreadableOffice({ fileName: 'bad.docx', contentType: DOCX_MIME, buffer: Buffer.from('nope') })).toBe(true);
     expect(await isUnreadableOffice({ fileName: 'ok.xlsx', contentType: XLSX_MIME, buffer: await sampleXlsx([{ name: 'S', rows: [['a']] }]) })).toBe(false);
+    expect(await isUnreadableOffice({ fileName: 'Vogel Reimbursement.xlsx', contentType: XLSX_MIME, buffer: await reimbursementFormXlsx() })).toBe(false);
+    expect(await isUnreadableOffice({ fileName: 'bad.xlsx', contentType: XLSX_MIME, buffer: Buffer.from('not a zip') })).toBe(true);
     expect(await isUnreadableOffice({ fileName: 'a.pdf', contentType: 'application/pdf', buffer: Buffer.from('pdf') })).toBe(false);
   });
 });

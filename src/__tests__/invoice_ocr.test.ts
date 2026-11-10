@@ -11,7 +11,7 @@ import { supin470584ProductionRows, supin470584Rows } from './fixtures/supin_470
 import { supin472322Header, supin472322MissedRows, supin472322ProductionRows, supin472322Rows } from './fixtures/supin_472322.js';
 import { supin472108DeliveryRow, supin472108Header, supin472108PickupRow, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 
-jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
+jest.mock('@pga/logger', () => ({ debug: jest.fn(), warn: jest.fn() }));
 
 jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
 
@@ -967,6 +967,17 @@ describe('invoice OCR pass', () => {
       expect(merged.extractedLineSubtotal).toEqual(withFields.extractedLineSubtotal);
       expect(merged.extractedPartialPayment).toEqual(withFields.extractedPartialPayment);
       expect(mergeInvoiceEnrichment(matchingResult, undefined)).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
+    });
+
+    it('keeps several separate delivery and pickup rows as lines and a lone freight charge in the freight fields (SUPIN-472108)', () => {
+      expect(invoiceOcrPrompt).toContain('return each of those rows in `extractedInvoiceLines`');
+      expect(invoiceOcrPrompt).toContain('`PICKUP CHARGE 1 EACH 208.660 208.66`');
+      expect(invoiceOcrPrompt).toContain('leave `extractedFreightAmount` and `extractedFreightLabel` empty');
+      expect(invoiceOcrPrompt).toContain('Do not merge the rows into one line or one freight amount');
+      expect(invoiceOcrPrompt).toContain('Exclude a single freight, shipping, handling, or delivery charge from the lines');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Agreement Subtotal", amount: "$3,591.67" }');
+      expect(invoiceOcrPrompt).toContain('When the document prints only per-section subtotals and no combined total, return empty strings; never add section subtotals together.');
+      expect(invoiceOcrPrompt).toContain('when it restates the table rows');
     });
 
     it('asks for every printed row, the section label, the printed line total, and the deposit with the SUPIN-470584 example', () => {
