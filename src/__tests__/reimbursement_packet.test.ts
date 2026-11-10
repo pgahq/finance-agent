@@ -122,6 +122,8 @@ describe('readReimbursementPacket', () => {
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(aiResponse).toHaveBeenCalledTimes(2);
     expect(read).not.toHaveProperty('unconfirmed');
+    expect(aiResponse.mock.calls[0][0]).not.toHaveProperty('model');
+    expect(aiResponse.mock.calls[1][0]).toMatchObject({ model: expect.anything(), temperature: null });
   });
 
   it('marks the read unconfirmed when the second read picks a different amount', async () => {
@@ -154,6 +156,24 @@ describe('packetDisagreement', () => {
       packet(),
       packet({ payeeName: 'Morgan T. Ellery', formAmountToPay: '1000', payeeSupplierId: null }),
     )).toBeUndefined();
+  });
+
+  it('treats a missing middle name or initial as the same person, but not a different first name', () => {
+    expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'MORGAN T ELLERY' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'Morgan Ellory' }))).toBe('the payee');
+  });
+
+  it('flags a different form date, including the same date in another format only when it differs', () => {
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: 'Nov 2, 2026' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11/03/2026' }))).toBe('the form date');
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: null }))).toBe('the form date');
+  });
+
+  it('flags a different reading of whether the email amount is a limit', () => {
+    const exact = packet({ emailAmount: '$1,000.00', emailAmountIsCap: false });
+    expect(packetDisagreement(exact, packet({ emailAmount: '$1,000.00', emailAmountIsCap: true })))
+      .toBe("whether the email's amount is a limit");
+    expect(packetDisagreement(packet(), packet({ emailAmountIsCap: true }))).toBeUndefined();
   });
 
   it('flags a different payee, Supplier ID, or email amount', () => {

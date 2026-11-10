@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { DatabaseConnection } from './database.js';
+import { getOcrModel } from './models.js';
 import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
@@ -89,7 +90,8 @@ async function readPacketOnce(
   fileList: string,
   parts: PacketParts,
   emailContext: EmailContextInput,
-  abortSignal: AbortSignal | undefined
+  abortSignal: AbortSignal | undefined,
+  verifier = false
 ): Promise<ReimbursementPacket> {
   let lastFailure: unknown;
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
@@ -100,6 +102,9 @@ async function readPacketOnce(
         schema: ReimbursementPacketSchema,
         tools: {},
         abortSignal,
+        // The confirming read uses the document-reading model from another vendor, so a consistent misread by
+        // the first model is not simply repeated.
+        ...(verifier ? { model: getOcrModel(), temperature: null } : {}),
         messages: [
           {
             role: 'user',
@@ -130,25 +135,44 @@ function amountCents(value: string | null): number | null {
   return amount === undefined ? null : Math.round(amount * 100);
 }
 
-function comparableText(value: string | null): string {
-  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function nameWords(value: string | null): Set<string> {
+  return new Set(
+    (value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1)
+  );
 }
 
-/** What the two reads of one packet disagree on, if anything. The facts that decide who is paid and how much must match. */
+// "Morgan Ellery" and "MORGAN T ELLERY" are one person; two people differ in a word on both sides.
+function sameName(left: string | null, right: string | null): boolean {
+  const a = nameWords(left);
+  const b = nameWords(right);
+  if (a.size === 0 || b.size === 0) return a.size === b.size;
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  return [...smaller].every((word) => larger.has(word));
+}
+
+function comparableId(value: string | null): string | null {
+  return value?.match(SUPPLIER_ID_PATTERN)?.[0].toUpperCase() ?? null;
+}
+
+/** What the two reads of one packet disagree on, if anything. Every fact that decides who is paid, how much, and under what number must match. */
 export function packetDisagreement(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
   if (first.kind !== second.kind) return 'whether it is a reimbursement';
-  if (comparableText(first.payeeName) !== comparableText(second.payeeName)) return 'the payee';
-  if (comparableText(first.payeeSupplierId) !== comparableText(second.payeeSupplierId)) return 'the payee Supplier ID';
+  if (!sameName(first.payeeName, second.payeeName)) return 'the payee';
+  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) return 'the payee Supplier ID';
   if (amountCents(first.formAmountToPay) !== amountCents(second.formAmountToPay)) return "the form's Amount to Pay";
   if (amountCents(first.emailAmount) !== amountCents(second.emailAmount)) return "the email's amount";
+  if (amountCents(first.emailAmount) !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
+    return "whether the email's amount is a limit";
+  }
+  if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) return 'the form date';
   return undefined;
 }
 
 /**
  * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
  * no document can be read. A model or schema failure throws (after one retry), so a packet that may be a reimbursement
- * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time,
- * and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
+ * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time
+ * by a different model, and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
  */
 export async function readReimbursementPacket(
   attachments: PresignedAttachment[],
@@ -166,7 +190,7 @@ export async function readReimbursementPacket(
   const first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
   if (first.kind !== 'reimbursement') return first;
 
-  const second = await readPacketOnce(fileList, parts, emailContext, abortSignal);
+  const second = await readPacketOnce(fileList, parts, emailContext, abortSignal, true);
   const disagreement = packetDisagreement(first, second);
   if (disagreement) debug('Reimbursement packet reads disagree', { disagreement, first, second });
   return disagreement ? { ...first, unconfirmed: disagreement } : first;
