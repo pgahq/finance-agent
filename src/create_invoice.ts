@@ -57,6 +57,12 @@ import {
   supplierNameForInvoiceNumber,
   memoIdentifiersFromEnrichment,
 } from './lib/invoice_memo.js';
+import {
+  decideReimbursement,
+  readReimbursementPacket,
+  reimbursementNote,
+  reimbursementSlackLines,
+} from './lib/reimbursement_packet.js';
 import { getCostCenterRelatedLobsByCodes, getCostCenterWorkdayIdsByCodes, getOrgWorktagKindsByIds } from './lib/database.js';
 import { employeeDisplayName, getEmployeeWidByEmail, type EmployeeLookupResult } from './lib/employees.js';
 import {
@@ -969,9 +975,28 @@ async function processInvoiceCluster(
     // decide the supplier. Prefer the PO company when a matching PO is found;
     // otherwise use Default OCR Company.
     const stubInvoice: WorkdayInvoice = {};
-    const notePurchaseOrders = findNotePurchaseOrders(emailContext?.adminConversationParts);
-    const emailPurchaseOrders = findEmailPurchaseOrders(emailContext, fileName, notePurchaseOrders);
-    const prefetchedPo = await resolvePurchaseOrder(context, emailPurchaseOrders, notePurchaseOrders);
+    // A reimbursement packet pays the person the form names, so the folio inside it is never read as a supplier invoice.
+    const reimbursementDecision = await decideReimbursement(
+      context.dbConnection,
+      await readReimbursementPacket(processedAttachments, emailContext, abortSignal),
+      { defaultSupplierWid: DEFAULT_SUPPLIER_WID }
+    );
+    if (reimbursementDecision.outcome === 'manual_entry') {
+      debug('Reimbursement packet not booked', reimbursementDecision.manual);
+      await notifyResult('create_invoice', 'success', Date.now() - startTime, slackInvoiceDetails({
+        attachment: { fileName, contentType, sizeBytes: buffer.length, includedInline: true },
+        ...(clustered ? { attachments: clusterSlackAttachments(loaded) } : {}),
+        reimbursementManualEntry: reimbursementDecision.manual,
+      }, conversationId, intercomAppId));
+      return;
+    }
+    const reimbursement = reimbursementDecision.outcome === 'apply' ? reimbursementDecision.reimbursement : undefined;
+    // A PO named in a reimbursement email does not apply: the payment is to a person, not against an order.
+    const notePurchaseOrders = reimbursement ? [] : findNotePurchaseOrders(emailContext?.adminConversationParts);
+    const emailPurchaseOrders = reimbursement ? {} : findEmailPurchaseOrders(emailContext, fileName, notePurchaseOrders);
+    const prefetchedPo = reimbursement
+      ? { notFoundPurchaseOrderNumbers: new Set<string>() }
+      : await resolvePurchaseOrder(context, emailPurchaseOrders, notePurchaseOrders);
     const parsedPo = prefetchedPo.purchaseOrder;
     const stubCompany = enrichmentStubCompany(parsedPo);
 
@@ -983,7 +1008,9 @@ async function processInvoiceCluster(
       emailContext,
       parsedPo ? toPurchaseOrderEnrichmentContext(parsedPo) : undefined,
       attachmentRoles,
-      abortSignal
+      abortSignal,
+      undefined,
+      reimbursement
     );
     debug('Enrichment result:', result);
 
@@ -1504,7 +1531,7 @@ async function processInvoiceCluster(
       });
     }
 
-    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
+    const baseNotes = (appliedFallbacks: AppliedFallback[]) => formatMultiInvoiceNotes(multiInvoice) + formatSupplierNotes(result) + (reimbursement ? `\n\n${reimbursementNote(reimbursement)}` : '') + formatPurchaseOrderSupplierNotes(purchaseOrderSupplier) + formatCompanyNotes(result, undefined, { appliedRecommended, overriddenByEmail: selectedCompany.source === 'email' }) + emailCompanyNotes + formatInvoiceDateNotes(result) + formatDueDateNotes(result, appliedFallbacks) + formatAmountNotes(result) + formatFreightAmountNotes(extractedFreightAmount, freightCleared) + formatTaxAmountNotes(extractedTaxAmount, taxCleared, taxCharges.breakdown) + formatChargeReviewNotes(chargeReviewNote) + formatInvoiceNumberNotes(result) + formatPurchaseOrderNotes(result) + purchaseOrderSelectionNotes + formatMemoIdentifierNotes(result) + formatInvoiceLinesNotes(result, invoiceLineQuantityDisplayed) + formatPartialPaymentNotes(billedPlan?.note, billedPlan?.noteLabel) + formatLineSubtotalNotes(lineSubtotalNote) + formatRepeatedLineNotes(repeatedLines.note) + formatTotalsChargeReviewNotes(totalsChargeReview) + formatFreeRowsNotes(freeRowsReview) + formatLinePriceReviewNotes(linePriceNote) + formatLineTotalReviewNotes(lineTotalReviewNote) + formatPoLineReviewNotes(poLineNote) + formatPositivePoQuantityNotes(poQuantityNote) + formatPaymentTermsNotes(result) + emailOrDefaultWorktagNotes + formatEmailBudgetSplitNotes(emailBudgetSplit);
     const isAmountCheck = (f: AppliedFallback) => f.field === CHARGE_RECONCILIATION_FALLBACK_FIELD;
     const amountCheckLines = (appliedFallbacks: AppliedFallback[]) => mergeAmountCheckMessages(
       chargeCheck,
@@ -1626,6 +1653,7 @@ async function processInvoiceCluster(
       ...(lineReview.length ? { lineReview } : {}),
       ...(depositPlan?.slackLines.length ? { deposit: depositPlan.slackLines } : {}),
       ...(balancePlan?.slackLines.length ? { balanceInvoice: balancePlan.slackLines } : {}),
+      ...(reimbursement ? { reimbursement: reimbursementSlackLines(reimbursement) } : {}),
       ...(emailBudgetSplit?.applied ? { budgetSplit: describeEmailBudgetSplit(emailBudgetSplit) } : {}),
     };
 
@@ -1879,6 +1907,7 @@ async function processInvoiceCluster(
       ...(assigneeMatch ? { assigneeWID: assigneeMatch.workdayId } : {}),
       ...(poClosedForInvoicing ? { omitPurchaseOrderLineReference: true } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
+      ...(reimbursement ? { keepSupplier: true } : {}),
     });
 
     const processingTime = Date.now() - startTime;

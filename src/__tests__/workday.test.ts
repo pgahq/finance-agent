@@ -7878,6 +7878,25 @@ describe('Workday utilities', () => {
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
     });
 
+    it('never retries on the default supplier when the supplier must be kept (reimbursement payee)', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+          detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+        }), null);
+      });
+
+      await expect(submitNewSupplierInvoiceForTest({ keepSupplier: true })).rejects.toMatchObject({
+        message: 'Validation_Fault: supplier is invalid',
+      });
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      expect(mockClient.Submit_Supplier_Invoice.mock.calls[0][0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
+        .toBe(mockSupplierID);
+    });
+
     describe('PO supplier', () => {
       const supplierNotAllowedForPo = () => new Error(
         'faultcode: SOAP-ENV:Client.validationError faultstring: Validation error occurred. You can\'t select this supplier to invoice this purchase order. detail: {"Validation_Fault":{"Validation_Error":{"Message":"You can\'t select this supplier to invoice this purchase order.","Detail_Message":"Parm Supplier Invoice Line Replacement Data Restricted by Supplier Invoice Line Replacement Data-You can\'t select this supplier to invoice this purchase order.{+1}- on Supplier Invoice Line Replacement Data","Xpath":"/wd:Submit_Supplier_Invoice_Request[1]/wd:Supplier_Invoice_Data[1]/wd:Invoice_Line_Replacement_Data[1]"}}}'

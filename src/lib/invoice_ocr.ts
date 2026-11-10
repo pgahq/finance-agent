@@ -45,7 +45,7 @@ export function attachmentContentParts(processedAttachments: PresignedAttachment
 
 // Word and Excel attachments are read as PDFs converted in memory; the stored original is unchanged.
 // One that cannot be converted is skipped so the rest of the invoice can still be read.
-async function convertOfficeAttachmentsForModel(attachments: PresignedAttachment[]): Promise<PresignedAttachment[]> {
+export async function convertOfficeAttachmentsForModel(attachments: PresignedAttachment[]): Promise<PresignedAttachment[]> {
   const converted = await Promise.all(attachments.map(async (att) => {
     if (!att.buffer || !officeKind(att.fileName, att.contentType)) return att;
     const doc = await toModelDocument({ fileName: att.fileName, contentType: att.contentType, buffer: att.buffer });

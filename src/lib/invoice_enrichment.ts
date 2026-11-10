@@ -27,6 +27,12 @@ import {
 } from './supplier_match.js';
 import { queryDocuments } from './rag.js';
 import type { InvoiceData, PresignedAttachment, WorkdayInvoice } from './types.js';
+import {
+  applyReimbursementToEnrichment,
+  reimbursementMatchingContext,
+  reimbursementOcr,
+  type AppliedReimbursement,
+} from './reimbursement_packet.js';
 
 async function buildSupplierHintText(emailContext: InvoiceData['emailContext']): Promise<string> {
   const hints = extractSupplierNoteHints(emailContext?.subject, emailContext?.plainTextBody);
@@ -63,12 +69,16 @@ export async function enrichInvoiceFromAttachments(
   purchaseOrder?: PurchaseOrderEnrichmentContext,
   attachmentRoles?: InvoiceAttachmentRole[],
   abortSignal?: AbortSignal,
-  ocrOptions?: ExtractInvoiceDocumentsOptions
+  ocrOptions?: ExtractInvoiceDocumentsOptions,
+  /** The payee and approved amount of a reimbursement packet: they stand in for reading the documents as an invoice. */
+  reimbursement?: AppliedReimbursement
 ): Promise<InvoiceEnrichmentResult> {
   debug('Enriching invoice:', invoice.Invoice_Number);
 
   try {
-    const ocr = await extractInvoiceDocuments(processedAttachments, attachmentRoles, abortSignal, ocrOptions);
+    const ocr = reimbursement
+      ? reimbursementOcr(reimbursement)
+      : await extractInvoiceDocuments(processedAttachments, attachmentRoles, abortSignal, ocrOptions);
 
     const company = existingCompany
       ? { name: existingCompany.descriptor, id: existingCompany.id }
@@ -109,7 +119,8 @@ export async function enrichInvoiceFromAttachments(
     const emailContextText = emailContext
       ? `\n\nAdditional context from inbound email:\nFrom: ${emailContext.emailFrom || 'N/A'}\nSubject: ${emailContext.subject || 'N/A'}\nBody: ${emailContext.plainTextBody || 'N/A'}${referenceDirectoryText}`
       : '';
-    const supplierHintText = await buildSupplierHintText(emailContext);
+    const supplierHintText = (await buildSupplierHintText(emailContext))
+      + (reimbursement ? reimbursementMatchingContext(reimbursement) : '');
 
     const purchaseOrderText = purchaseOrder
       ? `\n\nMatching Workday purchase order ${purchaseOrder.documentNumber}:${purchaseOrder.company ? `\nPO Company: ${purchaseOrder.company.name} (WID: ${purchaseOrder.company.workdayId})` : ''}\nPO Lines: ${JSON.stringify(purchaseOrder.lines, null, 2)}`
@@ -162,6 +173,7 @@ export async function enrichInvoiceFromAttachments(
     }) as InvoiceMatchingResult;
 
     const merged = mergeInvoiceEnrichment(matching, ocr);
+    if (reimbursement) return applyReimbursementToEnrichment(merged, reimbursement);
     return existingSupplier ? merged : await resolveSupplierByNameEvidence(merged, ocr?.printedSupplier.remitToAddress);
 
   } catch (error) {
