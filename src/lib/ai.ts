@@ -67,7 +67,7 @@ export async function getAiResponse({
         model,
         messages: [
           ...messages,
-          ...textResult.response.messages,
+          ...textResult.responseMessages,
           { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
         ],
         system: prompt,
