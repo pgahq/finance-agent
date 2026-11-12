@@ -13,21 +13,37 @@ import type { InvoiceData, PresignedAttachment } from './types.js';
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { normalizePrintedDate, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import {
-  ReimbursementFormTotalSchema,
+  ReimbursementFormMathSchema,
   ReimbursementPacketSchema,
-  reimbursementFormTotalPrompt,
+  reimbursementFormMathPrompt,
   reimbursementPacketPrompt,
-  type ReimbursementFormTotal,
+  type ReimbursementFormMath,
   type ReimbursementPacket,
 } from '../prompts/reimbursement_packet_prompt.js';
 
 export type { ReimbursementPacket };
 
-/** The packet as read. `unconfirmed` is set when a second, independent read of a reimbursement disagreed with the first. */
+/** A fact the alert must not present as read from the form, because the reads did not agree on it. */
+export type NotConfirmedFact = 'payeeName' | 'formAmount' | 'emailAmount';
+
+/** What the form's own arithmetic was checked against, for the invoice note and the Slack post. */
+export interface FormMathSummary {
+  /** The words the form prints beside its total, such as "TOTALS". */
+  label: string;
+  columns: { label: string; total: string }[];
+}
+
+/**
+ * The packet as read. `unconfirmed` names what the reads could not settle (set when a second, independent read of a
+ * reimbursement disagreed with the first, or when no total was confirmed). `notConfirmed` lists the facts the manual-entry
+ * alert must leave out, and `unconfirmedDetail` is the amount-free reason the form's own totals gave.
+ */
 export type ReimbursementRead = ReimbursementPacket & {
   unconfirmed?: string;
-  /** One read found the form total and the other did not; a focused look at the form confirmed it. */
-  checkedByFocusedLook?: true;
+  unconfirmedDetail?: string;
+  notConfirmed?: NotConfirmedFact[];
+  /** The reads did not agree on a readable total; the form's own arithmetic confirmed this one. */
+  confirmedByFormMath?: FormMathSummary;
 };
 
 /**
@@ -44,10 +60,12 @@ export interface AppliedReimbursement {
   };
   amount: number;
   amountLabel: string;
+  /** The label the form prints beside the total, when it is a recognized payable-total label. */
+  totalLabel?: string;
   /** The email's own limit when it worded its amount as "up to"; the form amount was checked against it. */
   emailCap?: number;
-  /** The form total came from one full read plus a focused look at the form, not from two agreeing reads. */
-  checkedByFocusedLook?: true;
+  /** The form total was confirmed by the form's own arithmetic, not by two agreeing reads. */
+  confirmedByFormMath?: FormMathSummary;
   invoiceDate: string;
   description: string;
 }
@@ -57,6 +75,8 @@ export interface ReimbursementManualEntry {
   payeeName?: string;
   formAmount?: string;
   emailAmount?: string;
+  /** Facts left out above because the reads did not agree on them. The alert says they are not confirmed. */
+  notConfirmed?: NotConfirmedFact[];
 }
 
 export type ReimbursementDecision =
@@ -73,9 +93,23 @@ const READ_ATTEMPTS = 2;
 const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
 // A totals or subtotal row listed as a category would make the rows add up to the total by itself.
-const AGGREGATE_ROW = /\bsub[-\s]*totals?\b|\b(?:grand\s+)?totals?\b|\bamount\s+to\s+pay\b/i;
-// The figure the focused look reports must sit beside a label for the payable total, never a category or subtotal.
-const PAYABLE_TOTAL_LABEL = /^\s*(?:grand\s+)?totals?\s*:?\s*$|\bamount\s+to\s+pay\b|\btotal\s+(?:reimbursement|to\s+be\s+reimbursed)\b/i;
+const AGGREGATE_ROW = /\bsub[-\s]*totals?\b|\b(?:grand\s+)?totals?\b|\bamount\s+to\s+pay\b|\bsum\s+of\s+all\s+columns\b/i;
+// The whole label beside the figure must be one of these, never a category or subtotal and never a label with other
+// words added ("Total Reimbursement estimate"). It is tested on the label with whitespace collapsed.
+const PAYABLE_TOTAL_LABEL = /^(?:(?:grand\s+)?totals?(?:\s*[-:\u2013]\s*sum\s+of\s+all\s+columns)?|sum\s+of\s+all\s+columns|(?:total\s+)?amount\s+to\s+pay|total\s+reimbursement|total\s+to\s+be\s+reimbursed)\s*:?$/i;
+// The most a form-math look may return before it is rejected (not truncated): columns, line items per column, and
+// characters in any label or amount.
+const MAX_COLUMNS = 12;
+const MAX_ENTRIES = 60;
+const MAX_TEXT = 80;
+// Looks at one form before giving up: two run together, then one at a time while no two passing looks agree. Each look
+// is one model call, so the provider calls for the looks never exceed this.
+const MAX_LOOKS = 4;
+// The processor has 480 s for the reads, the looks, OCR, matching and the Workday write. The live runs took 11-47 s end
+// to end; no look starts once this much of the run is gone, and the packet stops in manual entry instead of timing out.
+const LOOK_BUDGET_MS = 150_000;
+// A look that starts inside the budget is still cut off here, so a slow provider cannot carry the run into the timeout.
+const LOOK_DEADLINE_MS = 210_000;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -108,10 +142,11 @@ async function readWithRetries<T>(
   text: string,
   parts: PacketParts,
   abortSignal: AbortSignal | undefined,
-  model?: LanguageModel
+  model?: LanguageModel,
+  attempts = READ_ATTEMPTS
 ): Promise<T> {
   let lastFailure: unknown;
-  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (abortSignal?.aborted) break;
     try {
       const response = await getAiResponse({
@@ -157,19 +192,23 @@ function readPacketOnce(
   );
 }
 
-function readFormTotal(
+function readFormMath(
   fileList: string,
   parts: PacketParts,
-  abortSignal: AbortSignal | undefined
-): Promise<ReimbursementFormTotal> {
+  abortSignal: AbortSignal | undefined,
+  model: LanguageModel
+): Promise<ReimbursementFormMath> {
   return readWithRetries(
-    'Reimbursement form total',
-    ReimbursementFormTotalSchema,
-    reimbursementFormTotalPrompt,
-    `Read the total to pay and the expense category rows from the reimbursement form.\n\nDocuments: ${fileList}`,
+    'Reimbursement form math',
+    ReimbursementFormMathSchema,
+    reimbursementFormMathPrompt,
+    `Read the grand total, the column totals and the line items from the reimbursement form.\n\nDocuments: ${fileList}`,
     parts,
     abortSignal,
-    getOcrModel()
+    model,
+    // One call per look from this code: a look that fails is replaced by the next look, so retries here would double
+    // the calls. Retries inside the SDK or provider are outside this count; the deadline above bounds their time.
+    1
   );
 }
 
@@ -204,6 +243,17 @@ function readableText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+// Text copied off a document reaches the invoice note and Slack, so control characters go and whitespace collapses.
+function cleanText(value: string): string {
+  return readableText(value.replace(/\p{Cc}/gu, ' '));
+}
+
+/** The printed label beside a form total, when it is one of the recognized payable-total labels. */
+function payableTotalLabel(value: string | null | undefined): string | undefined {
+  const label = cleanText(value ?? '');
+  return label.length <= MAX_TEXT && PAYABLE_TOTAL_LABEL.test(label) ? label : undefined;
+}
+
 function nameWords(value: string | null): Set<string> {
   return new Set(
     (value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1)
@@ -224,107 +274,212 @@ function comparableId(value: string | null): string | null {
 
 const isBlank = (value: string | null | undefined): boolean => !value?.trim();
 
+interface Disagreement {
+  phrase: string;
+  /** The fact the alert must not show as read from the form. */
+  field?: NotConfirmedFact;
+}
+
 /**
- * One read found a positive Amount to Pay on the form and the other found none. That is a missing total, not a
- * different one, so it is not a disagreement: the caller takes a focused second look at the form's total instead.
- * An amount that is unreadable, zero, or negative on the finding side is not a gap.
+ * Every fact the two reads disagree on, in a fixed order. The form amount joins the list only when asked and only
+ * when both reads found one; a total found by one read and missing from the other is not a disagreement.
  */
-export function formAmountGap(first: ReimbursementPacket, second: ReimbursementPacket): { found: string } | undefined {
-  const found = isBlank(first.formAmountToPay) ? second.formAmountToPay : first.formAmountToPay;
-  if (isBlank(first.formAmountToPay) === isBlank(second.formAmountToPay) || !found) return undefined;
-  const amount = amountCents(parseFormAmountToPay(found));
-  return amount !== null && amount > 0 ? { found } : undefined;
+function disagreements(first: ReimbursementPacket, second: ReimbursementPacket, includeAmount: boolean): Disagreement[] {
+  const found: Disagreement[] = [];
+  if (first.kind !== second.kind) found.push({ phrase: 'whether it is a reimbursement' });
+  if (!sameName(first.payeeName, second.payeeName)) found.push({ phrase: 'the payee', field: 'payeeName' });
+  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) found.push({ phrase: 'the payee Supplier ID' });
+  if (includeAmount && !isBlank(first.formAmountToPay) && !isBlank(second.formAmountToPay)
+    && amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
+    found.push({ phrase: "the form's Amount to Pay", field: 'formAmount' });
+  }
+  const firstEmailCents = amountCents(parseEmailAmount(first.emailAmount));
+  if (firstEmailCents !== amountCents(parseEmailAmount(second.emailAmount))) {
+    found.push({ phrase: "the email's amount", field: 'emailAmount' });
+  } else if (firstEmailCents !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
+    found.push({ phrase: "whether the email's amount is a limit", field: 'emailAmount' });
+  }
+  if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) found.push({ phrase: 'the form date' });
+  return found;
 }
 
 /**
  * What the two reads of one packet disagree on, if anything. Every fact that decides who is paid, how much, and
- * under what number must match. A form total found by one read and missing from the other is not a disagreement;
- * see `formAmountGap`.
+ * under what number must match. A form total found by one read and missing from the other is not a disagreement here;
+ * `readReimbursementPacket` checks any total the reads do not both give against the form's own arithmetic.
  */
 export function packetDisagreement(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
-  if (first.kind !== second.kind) return 'whether it is a reimbursement';
-  if (!sameName(first.payeeName, second.payeeName)) return 'the payee';
-  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) return 'the payee Supplier ID';
-  if (!formAmountGap(first, second)
-    && amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
-    return "the form's Amount to Pay";
-  }
-  const firstEmailCents = amountCents(parseEmailAmount(first.emailAmount));
-  if (firstEmailCents !== amountCents(parseEmailAmount(second.emailAmount))) return "the email's amount";
-  if (firstEmailCents !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
-    return "whether the email's amount is a limit";
-  }
-  if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) return 'the form date';
-  return undefined;
+  return disagreements(first, second, true)[0]?.phrase;
+}
+
+/** The total both reads found, when it is the same readable, positive amount. Anything else needs the form's arithmetic. */
+function agreedFormAmount(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
+  const firstCents = amountCents(parseFormAmountToPay(first.formAmountToPay));
+  const secondCents = amountCents(parseFormAmountToPay(second.formAmountToPay));
+  return firstCents !== null && firstCents > 0 && firstCents === secondCents ? first.formAmountToPay ?? undefined : undefined;
+}
+
+type FormMathResult =
+  | { total: number; totalText: string; summary: FormMathSummary }
+  | { failure: string; noTotal?: true };
+
+/** A label for a failure reason. Digits and currency signs are dropped so an amount in a label never reaches the alert. */
+function diagnosticLabel(text: string | null | undefined): string {
+  return cleanText((text ?? '').normalize('NFKC')).replace(/[\p{N}\p{Sc}]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
+function oversized(look: ReimbursementFormMath): boolean {
+  // Amount fields are padded with spaces on some forms ("$      1,335.93"), so only their visible characters count.
+  const labels = [look.grandTotalLabel, ...look.columns.map((column) => column.label)];
+  const amounts = [look.grandTotal, ...look.columns.flatMap((column) => [column.total, ...column.entries])];
+  return look.columns.length > MAX_COLUMNS
+    || look.columns.some((column) => column.entries.length > MAX_ENTRIES)
+    || labels.some((text) => (text ?? '').length > MAX_TEXT)
+    || amounts.some((text) => (text ?? '').replace(/\s+/g, '').length > MAX_TEXT);
 }
 
 /**
- * Whether a focused look at the form backs the total one read found: it must read the same Amount to Pay, and the
- * form's category rows must be listed and add up to it. The rows only check the total; they are never booked.
+ * Whether the form's own arithmetic backs the total the look read: the total sits beside a payable-total label, the
+ * column totals add up to it, and each column's line items add up to that column's total. The code sums in cents;
+ * the model never does. Reasons name columns and labels but never amounts, because they reach the Slack alert. A look
+ * with more columns, entries, or characters than a form has is rejected, never trimmed to fit.
  */
-export function formTotalFailure(foundAmount: number, look: ReimbursementFormTotal): string | undefined {
-  const foundCents = cents(foundAmount);
-  const total = isBlank(look.amountToPay) ? undefined : parseFormAmountToPay(look.amountToPay);
-  if (total === undefined) {
-    return isBlank(look.amountToPay)
-      ? 'a focused look at the form found no Amount to Pay'
-      : `a focused look read the form's Amount to Pay "${readableText(look.amountToPay ?? '')}", which is not a dollar amount`;
+export function formMathResult(look: ReimbursementFormMath): FormMathResult {
+  if (isBlank(look.grandTotal)) return { failure: 'the form shows no total to check', noTotal: true };
+  if (oversized(look)) return { failure: 'the look returned more columns, line items, or text than a form holds' };
+  const total = parseFormAmountToPay(look.grandTotal);
+  if (total === undefined) return { failure: "the form's total could not be read as a dollar amount" };
+  if (cents(total) <= 0) return { failure: "the form's total is zero" };
+  if (isBlank(look.grandTotalLabel)) return { failure: 'no label was read for the form total' };
+  const totalLabel = payableTotalLabel(look.grandTotalLabel);
+  if (!totalLabel) {
+    return { failure: `the form total was read beside "${diagnosticLabel(look.grandTotalLabel)}", which is not a payable-total label` };
   }
-  if (cents(total) !== foundCents) {
-    return `a focused look at the form found ${formatChargeDollars(total)}`;
-  }
-  if (isBlank(look.totalsLabel)) return 'the focused look named no label for the form total';
-  if (!PAYABLE_TOTAL_LABEL.test(look.totalsLabel ?? '')) {
-    return `the focused look read the form total beside "${readableText(look.totalsLabel ?? '')}", which is not a payable-total label`;
-  }
-  if (look.categoryLines.length === 0) return 'the form lists no category lines to check the total against';
-  let sum = 0;
-  for (const line of look.categoryLines) {
-    if (isBlank(line.label)) return 'a category line has no label';
-    if (AGGREGATE_ROW.test(line.label)) return `the category line "${readableText(line.label)}" is a total, not an expense category`;
-    const amount = parseEmailAmount(line.amount);
-    if (amount === undefined) {
-      return `the form's category line "${readableText(line.label)}" has an amount "${readableText(line.amount)}" that could not be read`;
+  if (look.columns.length === 0) return { failure: 'the form lists no expense columns to check the total against' };
+
+  let columnSum = 0;
+  const columns: FormMathSummary['columns'] = [];
+  const seen = new Set<string>();
+  for (const column of look.columns) {
+    if (isBlank(column.label)) return { failure: 'a column has no label' };
+    const label = cleanText(column.label);
+    const shown = diagnosticLabel(label);
+    if (AGGREGATE_ROW.test(label)) return { failure: `the column "${shown}" is a total, not an expense category` };
+    const key = label.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    if (seen.has(key)) return { failure: `the column "${shown}" is listed more than once` };
+    seen.add(key);
+    if (isBlank(column.total)) return { failure: `the column "${shown}" has no printed total` };
+    const columnTotal = parseEmailAmount(column.total);
+    if (columnTotal === undefined) return { failure: `the total of column "${shown}" could not be read as a dollar amount` };
+    let entrySum = 0;
+    for (const entry of column.entries) {
+      const amount = parseEmailAmount(entry);
+      if (amount === undefined) return { failure: `an amount in column "${shown}" could not be read as a dollar amount` };
+      entrySum += cents(amount);
     }
-    sum += cents(amount);
+    if (entrySum !== cents(columnTotal)) return { failure: `the line items in column "${shown}" do not add up to its total` };
+    columnSum += cents(columnTotal);
+    columns.push({ label, total: formatChargeDollars(columnTotal) });
   }
-  if (sum !== foundCents) {
-    return `the form's category lines add up to ${formatChargeDollars(sum / 100)}, not ${formatChargeDollars(foundAmount)}`;
-  }
-  return undefined;
+  if (columnSum !== cents(total)) return { failure: 'the column totals do not add up to the form total' };
+  return { total, totalText: cleanText(look.grandTotal ?? ''), summary: { label: totalLabel, columns } };
 }
 
-async function confirmMissingFormTotal(
+type Look = { passed: { total: number; totalText: string; summary: FormMathSummary } } | { failed: string; noTotal: boolean };
+
+async function lookAtForm(
   first: ReimbursementPacket,
-  gap: { found: string },
+  second: ReimbursementPacket,
   fileList: string,
   parts: PacketParts,
-  abortSignal: AbortSignal | undefined
-): Promise<ReimbursementRead> {
-  const found = formatChargeDollars(parseFormAmountToPay(gap.found) ?? 0);
-  const unconfirmed = (reason: string): ReimbursementRead => ({
-    ...first,
-    unconfirmed: `the form's Amount to Pay: one read found ${found} and the other found none, and ${reason}`,
-  });
-  let look: ReimbursementFormTotal;
+  lookSignal: AbortSignal | undefined,
+  callerSignal: AbortSignal | undefined
+): Promise<Look> {
+  let look: ReimbursementFormMath;
   try {
-    look = await readFormTotal(fileList, parts, abortSignal);
+    look = await readFormMath(fileList, parts, lookSignal, getOcrModel());
   } catch (error) {
-    if (abortSignal?.aborted) throw error;
-    return unconfirmed('the focused look at the form could not be completed');
+    if (callerSignal?.aborted) throw error;
+    return { failed: 'a look at the form could not be completed', noTotal: false };
   }
-  const failure = formTotalFailure(parseFormAmountToPay(gap.found) ?? 0, look);
-  debug('Reimbursement form total focused look', { found: gap.found, look, failure });
-  return failure ? unconfirmed(failure) : { ...first, formAmountToPay: gap.found, checkedByFocusedLook: true };
+  const result = formMathResult(look);
+  debug('Reimbursement form math look', { first: first.formAmountToPay, second: second.formAmountToPay, look, result });
+  return 'total' in result
+    ? { passed: { total: result.total, totalText: result.totalText, summary: result.summary } }
+    : { failed: result.failure, noTotal: result.noTotal === true };
+}
+
+type PassedLook = Extract<Look, { passed: unknown }>['passed'];
+
+function settleLooks(looks: Look[]): { passed: PassedLook[]; agreeing?: PassedLook; conflicting: boolean; noTotal: boolean } {
+  const passed = looks.flatMap((look) => ('passed' in look ? [look.passed] : []));
+  return {
+    passed,
+    agreeing: passed.find((candidate) => passed.filter((other) => cents(other.total) === cents(candidate.total)).length >= 2),
+    conflicting: new Set(passed.map((look) => cents(look.total))).size > 1,
+    noTotal: looks.length > 0 && looks.every((look) => 'failed' in look && look.noTotal),
+  };
+}
+
+/**
+ * The reads did not both give the same readable total, so the form's own arithmetic decides. Arithmetic that holds is
+ * not enough on its own: a model that cannot read the scan can build a table that adds up from the receipts behind
+ * the form (the live check on the real packet did exactly that on gpt-5.4). So two independent looks, both on the
+ * document-reading model, must each pass the arithmetic and read the same total. Two looks run together; further
+ * looks (up to `MAX_LOOKS`) run one at a time until two passing looks agree, and stop early when passing looks
+ * conflict or the form shows no total. That model often misreads a digit on a scan and the arithmetic rejects it, so
+ * a failed look costs time, never a wrong total. The booked total can come from neither full read. A form that shows
+ * no total to either read or any look is left as it is, so the packet stops as one that prints no Amount to Pay.
+ */
+async function confirmFormTotal(
+  first: ReimbursementPacket,
+  second: ReimbursementPacket,
+  fileList: string,
+  parts: PacketParts,
+  abortSignal: AbortSignal | undefined,
+  startedAt: number
+): Promise<ReimbursementRead> {
+  const timeLeft = () => Date.now() - startedAt < LOOK_BUDGET_MS;
+  let lookSignal = abortSignal;
+  const startLook = () => lookAtForm(first, second, fileList, parts, lookSignal, abortSignal);
+  const looks: Look[] = [];
+  if (timeLeft()) {
+    const deadline = AbortSignal.timeout(Math.max(1, startedAt + LOOK_DEADLINE_MS - Date.now()));
+    lookSignal = abortSignal ? AbortSignal.any([abortSignal, deadline]) : deadline;
+    looks.push(...await Promise.all([startLook(), startLook()]));
+  }
+  let settled = settleLooks(looks);
+  while (looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal && timeLeft()) {
+    looks.push(await startLook());
+    settled = settleLooks(looks);
+  }
+  const outOfTime = looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal;
+  if (settled.agreeing) {
+    const { totalText, summary } = settled.agreeing;
+    return { ...first, formAmountToPay: totalText, formAmountLabel: summary.label, confirmedByFormMath: summary };
+  }
+  if (settled.noTotal && isBlank(first.formAmountToPay) && isBlank(second.formAmountToPay)) return first;
+
+  const failures = looks.flatMap((look) => ('failed' in look ? [look.failed] : []));
+  if (settled.passed.length > 0) failures.push('no two looks at the form both passed and read the same total');
+  if (outOfTime) failures.push('there was not enough time left to look at the form again');
+  return {
+    ...first,
+    formAmountToPay: null,
+    formAmountLabel: null,
+    unconfirmed: "the form's Amount to Pay",
+    unconfirmedDetail: [...new Set(failures)].join('; '),
+    notConfirmed: ['formAmount'],
+  };
 }
 
 /**
  * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
  * no document can be read. A model or schema failure throws (after one retry), so a packet that may be a reimbursement
  * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time
- * by a different model, and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
- * When only one read found the form's total, a focused look at the form's total and category lines decides whether it is
- * confirmed.
+ * by a different model, and the result is marked `unconfirmed` when the two reads disagree on who is paid or on the
+ * email's amount. A form total both reads found is booked as read. Otherwise (one read found none, the reads found
+ * different totals, or neither found one) the form's own arithmetic decides; see `confirmFormTotal`.
  */
 export async function readReimbursementPacket(
   attachments: PresignedAttachment[],
@@ -332,6 +487,7 @@ export async function readReimbursementPacket(
   abortSignal?: AbortSignal
 ): Promise<ReimbursementRead | undefined> {
   if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
+  const startedAt = Date.now();
   const readable = await convertOfficeAttachmentsForModel(attachments);
   const parts = attachmentContentParts(readable);
   if (parts.length === 0) {
@@ -343,29 +499,50 @@ export async function readReimbursementPacket(
   if (first.kind !== 'reimbursement') return first;
 
   const second = await readPacketOnce(fileList, parts, emailContext, abortSignal, true);
-  const disagreement = packetDisagreement(first, second);
-  if (disagreement) {
-    debug('Reimbursement packet reads disagree', { disagreement, first, second });
-    return { ...first, unconfirmed: disagreement };
+  const others = disagreements(first, second, false);
+  const amountAgreed = agreedFormAmount(first, second) !== undefined;
+  if (others.length > 0) {
+    debug('Reimbursement packet reads disagree', { disagreement: others.map((item) => item.phrase), first, second });
+    const notConfirmed = new Set<NotConfirmedFact>(others.flatMap((item) => (item.field ? [item.field] : [])));
+    if (!amountAgreed) notConfirmed.add('formAmount');
+    return {
+      ...first,
+      ...(amountAgreed ? {} : { formAmountToPay: null, formAmountLabel: null }),
+      unconfirmed: others[0].phrase,
+      notConfirmed: [...notConfirmed],
+    };
   }
-  const gap = formAmountGap(first, second);
-  return gap ? confirmMissingFormTotal(first, gap, fileList, parts, abortSignal) : first;
+  if (!amountAgreed) return confirmFormTotal(first, second, fileList, parts, abortSignal, startedAt);
+  const agreedLabel = payableTotalLabel(first.formAmountLabel);
+  const sameLabel = agreedLabel !== undefined && agreedLabel.toLowerCase() === payableTotalLabel(second.formAmountLabel)?.toLowerCase();
+  return sameLabel ? first : { ...first, formAmountLabel: null };
 }
 
 function cents(amount: number): number {
   return Math.round(amount * 100);
 }
 
-function manual(packet: ReimbursementPacket, reason: string): ReimbursementDecision {
+const ALL_FACTS: NotConfirmedFact[] = ['payeeName', 'formAmount', 'emailAmount'];
+
+// A fact the reads did not agree on is the first read's guess, so it never reaches AP as "on the form".
+function manual(packet: ReimbursementRead, reason: string): ReimbursementDecision {
+  const hidden = new Set<NotConfirmedFact>(packet.unconfirmed ? packet.notConfirmed ?? ALL_FACTS : []);
   return {
     outcome: 'manual_entry',
     manual: {
       reason,
-      ...(packet.payeeName?.trim() ? { payeeName: packet.payeeName.trim() } : {}),
-      ...(packet.formAmountToPay?.trim() ? { formAmount: readableText(packet.formAmountToPay) } : {}),
-      ...(packet.emailAmount?.trim() ? { emailAmount: readableText(packet.emailAmount) } : {}),
+      ...(packet.payeeName?.trim() && !hidden.has('payeeName') ? { payeeName: packet.payeeName.trim() } : {}),
+      ...(packet.formAmountToPay?.trim() && !hidden.has('formAmount') ? { formAmount: readableText(packet.formAmountToPay) } : {}),
+      ...(packet.emailAmount?.trim() && !hidden.has('emailAmount') ? { emailAmount: readableText(packet.emailAmount) } : {}),
+      ...(hidden.size > 0 ? { notConfirmed: [...hidden] } : {}),
     },
   };
+}
+
+function unconfirmedReason(packet: ReimbursementRead): string {
+  return packet.unconfirmedDetail === undefined
+    ? `two reads of the packet disagreed on ${packet.unconfirmed}`
+    : `the reads of the packet did not give one confirmed Amount to Pay, and the form's own totals could not confirm it (${packet.unconfirmedDetail})`;
 }
 
 type AmountResult = { amount: number; emailCap?: number } | { failure: string };
@@ -455,7 +632,7 @@ export async function decideReimbursement(
   }
 
   if (packet.unconfirmed) {
-    return manual(packet, `two reads of the packet disagreed on ${packet.unconfirmed}`);
+    return manual(packet, unconfirmedReason(packet));
   }
 
   const amount = approvedAmount(packet);
@@ -466,6 +643,7 @@ export async function decideReimbursement(
   const invoiceDate = normalizePrintedDate(packet.formDate);
   if (!invoiceDate) return manual(packet, 'the reimbursement form prints no readable date, so the invoice would have no number to stop a duplicate');
 
+  const totalLabel = packet.confirmedByFormMath?.label ?? payableTotalLabel(packet.formAmountLabel);
   const payee = await resolvePayee(db, packet, options.defaultSupplierWid);
   if ('failure' in payee) return manual(packet, payee.failure);
 
@@ -475,8 +653,9 @@ export async function decideReimbursement(
       payee,
       amount: amount.amount,
       amountLabel: formatChargeDollars(amount.amount),
+      ...(totalLabel ? { totalLabel } : {}),
       ...(amount.emailCap !== undefined ? { emailCap: amount.emailCap } : {}),
-      ...(packet.checkedByFocusedLook ? { checkedByFocusedLook: true as const } : {}),
+      ...(packet.confirmedByFormMath ? { confirmedByFormMath: packet.confirmedByFormMath } : {}),
       invoiceDate,
       description: reimbursementDescription(packet),
     },
@@ -592,8 +771,11 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
   const { payee } = reimbursement;
   const who = `${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName}`;
   const cap = reimbursement.emailCap !== undefined ? ` The email's limit of ${formatChargeDollars(reimbursement.emailCap)} was not exceeded.` : '';
-  const checked = reimbursement.checkedByFocusedLook ? " One of two reads of the form found no Amount to Pay; the total came from the other read and was confirmed by a focused second look at the form, whose category lines add up to it." : '';
-  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, the Amount to Pay on the reimbursement form.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
+  const math = reimbursement.confirmedByFormMath;
+  const columns = math?.columns.map((column) => `${column.label} ${column.total}`).join(', ');
+  const checked = math ? ` The reads of the form did not give one agreed total, so it was checked against the form's own arithmetic: the column totals (${columns}) add up to it, and each column's line items add up to its column total.` : '';
+  const named = `the ${reimbursement.totalLabel ?? 'Amount to Pay'} on the reimbursement form`;
+  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, ${named}.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
 }
 
 /** Lines for the Slack success post. */
@@ -601,9 +783,9 @@ export function reimbursementSlackLines(reimbursement: AppliedReimbursement): st
   const { payee } = reimbursement;
   return [
     `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'supplier_id' ? 'Supplier ID and name' : 'name'}`,
-    `Amount: ${reimbursement.amountLabel} from the form's Amount to Pay${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
-    ...(reimbursement.checkedByFocusedLook
-      ? ["Check the total first: one read found no Amount to Pay, and a focused second look confirmed it with the category lines adding up."]
+    `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.totalLabel ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
+    ...(reimbursement.confirmedByFormMath
+      ? ["Check the total first: the reads of the form did not give one agreed total, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
       : []),
     'Receipts and folios were not booked as invoice lines.',
   ];
