@@ -68,6 +68,13 @@ describe('emailCodingOverPurchaseOrder', () => {
     expect(emailCodingOverPurchaseOrder(input({ env: {} as NodeJS.ProcessEnv }))).toBeUndefined();
   });
 
+  it('compares supplier WIDs without regard to case or padding', () => {
+    expect(emailCodingOverPurchaseOrder(input({
+      invoiceSupplierWorkdayId: ' PBD-WID ',
+      env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'Pbd-Wid' } as NodeJS.ProcessEnv,
+    }))).toEqual({ matchedSupplier: 'invoice' });
+  });
+
   it('never sets aside a PO that an AP note chose', () => {
     expect(emailCodingOverPurchaseOrder(input({ purchaseOrderFromNote: true }))).toBeUndefined();
   });

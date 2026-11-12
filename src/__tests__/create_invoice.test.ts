@@ -4911,6 +4911,48 @@ describe('create_invoice', () => {
 
         expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
       });
+
+      it('sets a closed PO aside too, so no PO coding or closed-PO note applies', async () => {
+        const { workday, invoiceLines } = await run({
+          wids: PBD_WID,
+          po: { ...parsedPo(), documentStatus: { id: 'CLOSED', descriptor: 'Closed' } } as ReturnType<typeof parsedPo>,
+        });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+        const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+        expect(notes).toContain('Purchase order: PO-414088 on the invoice was not used.');
+        expect(notes).not.toMatch(/closed/i);
+      });
+
+      it('does not restore the PO when the split is rejected after it was set aside', async () => {
+        const mocks = freshRequire();
+        mocks.loadEnv.mockResolvedValue({ EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: PBD_WID });
+        mockCompany310();
+        mocks.workday.loadPurchaseOrder.mockResolvedValue(parsedPo());
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(pbdEnrichment());
+        const review = 'The email splits the cost across 2 budgets (A; B), but the lines total $34,000.00, not $35,000.00. The invoice was not split by budget; check the coding before approving.';
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+          lines: [{ lineOrder: 1, description: 'PBD', quantity: 0, unitCost: 0, extendedAmount: 34000 }],
+          appliedFallbacks: { fund: false, costCenter: true, spendCategory: false, lineOfBusiness: false },
+          relatedLobByCostCenter: new Map(),
+          emailBudgetSplit: { applied: false, review, budgets: [] },
+        });
+        await mocks.processor({
+          data: [{
+            ...attachmentRequest('new-invoices/req-pbd/invoice.pdf'),
+            emailContext: { emailFrom: 'kyle@pgahq.com', subject: 'PBD invoice', plainTextBody: 'Company 310. Split $15,000 / $20,000. PO-414088' },
+          }]
+        } as any);
+
+        expect(mocks.invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+        const submitArgs = mocks.workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.supplierWID).toBe(PBD_WID);
+        expect(submitArgs.memo).not.toContain('PO-414088');
+        const notes = submitArgs.buildNotes([]);
+        expect(notes).toContain('Purchase order: PO-414088 on the invoice was not used.');
+        expect(notes).toContain(`Budget split review: ${review}`);
+        expect(mocks.slack.notifyResult.mock.calls[0][3].lineReview).toEqual(expect.arrayContaining([`Budget split review: ${review}`]));
+      });
     });
 
     it('submits no header tax or freight when the email budgets total the amount due and the lines carry them', async () => {

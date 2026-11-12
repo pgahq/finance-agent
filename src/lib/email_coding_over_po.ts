@@ -11,7 +11,11 @@ export const EMAIL_CODING_OVERRIDES_PO_ENV_VAR = 'EMAIL_CODING_OVERRIDES_PO_SUPP
  * (and any other supplier) leaves the PO in charge.
  */
 export function emailCodingOverridesPoSupplierWids(env: NodeJS.ProcessEnv = process.env): Set<string> {
-  return new Set((env[EMAIL_CODING_OVERRIDES_PO_ENV_VAR] ?? '').split(/[\s,]+/).map(wid => wid.trim()).filter(Boolean));
+  return new Set((env[EMAIL_CODING_OVERRIDES_PO_ENV_VAR] ?? '').split(/[\s,]+/).map(normalizeWid).filter(Boolean));
+}
+
+function normalizeWid(wid: string | null | undefined): string {
+  return (wid ?? '').trim().toLowerCase();
 }
 
 export interface EmailCodingOverPurchaseOrderInput {
@@ -39,9 +43,11 @@ export function emailCodingOverPurchaseOrder(input: EmailCodingOverPurchaseOrder
   if (input.purchaseOrderFromNote) return undefined;
   const suppliers = emailCodingOverridesPoSupplierWids(input.env);
   if (suppliers.size === 0) return undefined;
-  const matchedSupplier = input.invoiceSupplierWorkdayId && suppliers.has(input.invoiceSupplierWorkdayId)
+  const invoiceSupplierWid = normalizeWid(input.invoiceSupplierWorkdayId);
+  const purchaseOrderSupplierWid = normalizeWid(input.purchaseOrderSupplierWorkdayId);
+  const matchedSupplier = invoiceSupplierWid && suppliers.has(invoiceSupplierWid)
     ? 'invoice' as const
-    : input.purchaseOrderSupplierWorkdayId && suppliers.has(input.purchaseOrderSupplierWorkdayId)
+    : purchaseOrderSupplierWid && suppliers.has(purchaseOrderSupplierWid)
       ? 'purchase_order' as const
       : undefined;
   if (!matchedSupplier) return undefined;
