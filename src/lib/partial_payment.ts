@@ -469,7 +469,7 @@ function readPrintedAmount(raw: string | null | undefined): number | undefined {
 /** A pay application's base line: "Total Completed and Stored to Date" (G702 line 4). */
 function isCompletedToDateLabel(label: string | null | undefined): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ');
-  return tokens.includes('completed') && tokens.includes('stored');
+  return tokens.includes('completed') && tokens.includes('stored') && tokens.includes('date');
 }
 
 /** Whether the document prints a readable amount, even $0.00, on a row labeled as retainage held: it is a pay application. */
@@ -523,7 +523,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const printedBase = parseCanonicalChargeAmount(input.lineSubtotal?.amount);
   const linesCents = sumExtractedLineCents(input.lines);
   const contractCents = printedBase != null ? toCents(printedBase) : linesCents;
-  if (contractCents == null || contractCents <= dueCents) return undefined;
+  if (contractCents == null || contractCents < dueCents) return undefined;
   if (linesCents != null && linesCents <= dueCents) return undefined;
 
   const paidCents = priorPaymentCents(input.priorPayments);
@@ -541,18 +541,23 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   }
   const settledCents = (paidCents ?? 0) + (retainedCents ?? 0);
   const settlementPrinted = paidCents != null || retainedCents != null;
+  // A first application prints no previous certificates (or $0.00) and no retainage, so the completed total is the payment due.
+  if (contractCents === dueCents && !(payApplication && settledCents === 0)) return undefined;
   // A pay application's lines can be one period's work, so its contract sum to date must be printed, not summed.
   if (payApplication && printedBase == null) {
     return balanceNotApplied('the document prints no contract sum to date to reconcile the retainage against', true);
   }
-  const paymentsExplainGap = settlementPrinted && contractCents - settledCents === dueCents;
+  const paymentsExplainGap = (settlementPrinted || payApplication) && contractCents - settledCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
   // The email alone must sit beside a printed contract total; a line sum can read high for other reasons. On a pay application
   // it never stands in for the retainage arithmetic: figures that do not add up are a warning sign, not something an email settles.
   const emailSaysBalance = !payApplication && printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
-    if (!settlementPrinted) return undefined;
+    if (!settlementPrinted && !payApplication) return undefined;
     if (payApplication) {
+      if (!settlementPrinted) {
+        return balanceNotApplied(`the work completed to date ${centsDollars(contractCents)} is not the current payment due ${centsDollars(dueCents)}, and no previous payments were read`, true);
+      }
       const parts = [...(retainedCents != null ? [`${centsDollars(retainedCents)} retainage`] : []), ...(paidCents != null ? [`${centsDollars(paidCents)} in previous payments`] : [])];
       return balanceNotApplied(`the ${centsDollars(contractCents)} contract total less ${parts.join(' and ')} is ${centsDollars(contractCents - settledCents)}, not the current payment due ${centsDollars(dueCents)}`, true);
     }
@@ -598,7 +603,8 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       ? ` ${formatPercent(percent)} of ${contractText} is ${centsDollars(Math.round(contractCents * percent / 100))}, not the printed retainage ${retainedText}; check the retainage against the PDF.`
       : '';
     const retainageClause = retainedText != null ? `, less "${retainageLabel}"${percentText} ${retainedText}` : '';
-    const paidClause = paidCents != null ? `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : '';
+    const noPaymentsClause = input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed';
+    const paidClause = paidCents != null ? `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : settledCents === 0 ? noPaymentsClause : '';
     const basis = `"${label}" is ${contractText}${retainageClause}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`;
     return {
       applied: true,
@@ -608,7 +614,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       note: `${basis} The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
-        `${label}: ${contractText} to date${retainedText != null ? `, less ${retainedText} retainage` : ''}${paidCents != null ? `, less ${centsDollars(paidCents)} previous payments` : ''}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
+        `${label}: ${contractText} to date${retainedText != null ? `, less ${retainedText} retainage` : ''}${paidCents != null ? `, less ${centsDollars(paidCents)} previous payments` : settledCents === 0 ? (input.priorPayments?.length ? ', previous payments $0.00' : ', no previous payments') : ''}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
         ...slackPoLines,
       ],
     };

@@ -644,6 +644,44 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     expect(plan.note).toContain('$591,532.00 contract total less $0.00 retainage and $402,241.76 in previous payments is $189,290.24');
   });
 
+  it('books a first application, which prints no previous certificates, at the current payment due', () => {
+    const first = { retainage: null, lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$130,137.04' } };
+    const plan = planBalanceInvoice(printed({ ...first, priorPayments: [] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line!.totalPrice).toBe('$130,137.04');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $130,137.04 and no previous payments are printed, which leaves the $130,137.04 current payment due');
+    expect(plan.slackLines[0]).toContain('$130,137.04 to date, no previous payments, $130,137.04 current payment due');
+    const zero = planBalanceInvoice(printed({ ...first, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }] }))!;
+    expect(zero.applied).toBe(true);
+    expect(zero.note).toContain('and the printed previous payments total $0.00, which leaves');
+    expect(zero.slackLines[0]).toContain('previous payments $0.00');
+    expect(planBalanceInvoice(printed({ ...first, priorPayments: supin474922Payments }))).toBeUndefined();
+  });
+
+  it('says no previous payments were read when the completed total is above the due and none were returned', () => {
+    const plan = planBalanceInvoice(printed({ retainage: null, priorPayments: [] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('the work completed to date $532,378.80 is not the current payment due $130,137.04, and no previous payments were read');
+  });
+
+  it('warns when a previous payment amount cannot be read', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+  });
+
+  it('does not book an unrelated payment row that fails to reconcile', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less deposit paid', amount: '$50,000.00' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+  });
+
+  it('keeps the plain remaining-balance rule for a subtotal that is not a completed-to-date total', () => {
+    const plan = planBalanceInvoice(printed({ retainage: null, lineSubtotal: { label: 'Completed and Stored Materials', amount: '$532,378.80' } }))!;
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
   it('does not treat the $59,153.20 Balance to Finish as retainage', () => {
     expect(59153.2).toBeCloseTo(591532 - 532378.8, 2);
     const plan = planBalanceInvoice(printed({ retainage: { label: 'Balance to Finish, including retainage', percent: null, amount: '$59,153.20' } }))!;

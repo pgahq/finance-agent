@@ -114,7 +114,7 @@ describe('AI utilities', () => {
     it('should use a supplied LanguageModel for both generation passes when tools are provided', async () => {
       const customModel = { specificationVersion: 'v3', provider: 'custom', modelId: 'custom-model' } as unknown as LanguageModel;
       mockGenerateText
-        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
+        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], responseMessages: [] })
         .mockResolvedValueOnce({ text: '', output: { ok: true } });
 
       await getAiResponse({
@@ -127,6 +127,28 @@ describe('AI utilities', () => {
       expect(mockGenerateText).toHaveBeenCalledTimes(2);
       expect(mockGenerateText.mock.calls[0][0].model).toBe(customModel);
       expect(mockGenerateText.mock.calls[1][0].model).toBe(customModel);
+    });
+
+    it('should pass the accumulated response messages of every step to the structured pass', async () => {
+      const toolCallMessage = { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'findLobs', input: {} }] };
+      const toolResultMessage = { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'findLobs', output: { type: 'json', value: [] } }] };
+      const finalMessage = { role: 'assistant', content: [{ type: 'text', text: 'analysis' }] };
+      mockGenerateText
+        .mockResolvedValueOnce({
+          text: 'analysis',
+          responseMessages: [toolCallMessage, toolResultMessage, finalMessage],
+          response: { messages: [finalMessage] },
+        })
+        .mockResolvedValueOnce({ text: '', output: { ok: true } });
+
+      await getAiResponse({
+        prompt: 'Test prompt',
+        schema: { _def: {} } as any,
+        messages: [{ role: 'user', content: 'Test message' }],
+      });
+
+      const secondPassMessages = mockGenerateText.mock.calls[1][0].messages;
+      expect(secondPassMessages).toEqual(expect.arrayContaining([toolCallMessage, toolResultMessage, finalMessage]));
     });
 
     it('should add system prompt if not present', async () => {
@@ -212,7 +234,7 @@ describe('AI utilities', () => {
         .mockResolvedValueOnce({
           text: 'JSON response with supplier data',
           toolResults: [],
-          response: { messages: [] }
+          responseMessages: []
         })
         .mockResolvedValueOnce({
           text: '',
@@ -281,7 +303,7 @@ describe('AI utilities', () => {
       expect(mockGenerateText.mock.calls[0][0].abortSignal).toBe(signal);
 
       mockGenerateText
-        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], response: { messages: [] } })
+        .mockResolvedValueOnce({ text: 'analysis', toolResults: [], responseMessages: [] })
         .mockResolvedValueOnce({ text: '', output: { ok: true } });
 
       await getAiResponse({

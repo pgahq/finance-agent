@@ -39,46 +39,45 @@ export async function getAiResponse({
     };
     const toolsToUse = tools === undefined ? defaultTools : tools;
     const hasTools = Object.keys(toolsToUse).length > 0;
-    const generateTextOptions: any = {
+    const baseOptions = {
       model,
       messages,
       system: prompt,
       stopWhen: stepCountIs(10),
       ...(temperature === null ? {} : { temperature }),
       abortSignal,
-      ...(hasTools
-        ? { tools: toolsToUse }
-        : schema
-          ? { output: Output.object({ schema }) }
-          : {})
     };
 
-    const textResult = await generateText(generateTextOptions);
+    if (!hasTools) {
+      if (!schema) {
+        const textResult = await generateText(baseOptions);
+        return textResult.text;
+      }
+      const objectResult = await generateText({ ...baseOptions, output: Output.object({ schema }) });
+      return objectResult.output;
+    }
 
-    // If no schema is provided, return the text result
+    const toolResult = await generateText({ ...baseOptions, tools: toolsToUse });
+
     if (!schema) {
-      return textResult.text;
+      return toolResult.text;
     }
 
-    // When tools are provided, the first pass runs the tool loop and returns analysis text.
+    // The first pass runs the tool loop and returns analysis text.
     // Run a second pass to coerce the analysis into the requested schema.
-    if (hasTools) {
-      const structuredResult = await generateText({
-        model,
-        messages: [
-          ...messages,
-          ...textResult.response.messages,
-          { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
-        ],
-        system: prompt,
-        output: Output.object({ schema }),
-        temperature: 0.1,
-        abortSignal,
-      });
-      return structuredResult.output;
-    }
-
-    return textResult.output;
+    const structuredResult = await generateText({
+      model,
+      messages: [
+        ...messages,
+        ...toolResult.responseMessages,
+        { role: 'user', content: 'Now return your analysis as structured JSON matching the required schema.' }
+      ],
+      system: prompt,
+      output: Output.object({ schema }),
+      temperature: 0.1,
+      abortSignal,
+    });
+    return structuredResult.output;
 
   } catch (error) {
     debug(`AI call error: ${error}`);
