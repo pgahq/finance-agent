@@ -1162,6 +1162,14 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment(matchingResult, undefined).extractedSummaryCharges).toBeNull();
     });
 
+    it('tells the model to read a pay application from the completed-to-date line, using the SUPIN-474922 figures', () => {
+      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $591,532.00, Total Completed and Stored to Date $532,378.80');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$532,378.80" } (not the contract sum)');
+      expect(invoiceOcrPrompt).toContain('(the $59,153.20 balance to finish is not listed)');
+      expect(invoiceOcrPrompt).toContain('never list them in `extractedPriorPayments`');
+      expect(invoiceOcrPrompt).toContain('extractedAmountDue "$130,137.04"');
+    });
+
     it('asks for totals-block fees and discounts with the SUPIN-470485 example, keeping printed signs', () => {
       expect(invoiceOcrPrompt).toContain('extractedSummaryCharges [{ label: "Decoration", amount: "$5.00" }]');
       expect(invoiceOcrPrompt).toContain('A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal');

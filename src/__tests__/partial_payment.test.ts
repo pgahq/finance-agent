@@ -27,6 +27,7 @@ import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin
 import { summaryCreditCents } from '../lib/header_charges.js';
 import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin474922Header, supin474922Payments, supin474922Rows } from './fixtures/supin_474922.js';
 
 const poLines = supin470584PoLines as any[];
 
@@ -588,5 +589,103 @@ describe('formatPartialPaymentNotes label', () => {
     expect(formatPartialPaymentNotes('Text.')).toContain('Deposit invoice: Text.');
     expect(formatPartialPaymentNotes('Text.', 'Balance invoice')).toContain('Balance invoice: Text.');
     expect(formatPartialPaymentNotes(undefined, 'Balance invoice')).toBe('');
+  });
+});
+
+describe('planBalanceInvoice for a construction pay application (SUPIN-474922)', () => {
+  const printed = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
+    priorPayments: supin474922Payments,
+    emailBalanceDue: null,
+    lineSubtotal: supin474922Header.extractedLineSubtotal,
+    amountDue: supin474922Header.extractedAmountDue,
+    lines: supin474922Rows,
+    poLines: undefined,
+    ...overrides,
+  });
+  const poLine = (id: string, amount: number, extra: Record<string, unknown> = {}) => ({ lineOrder: 1, purchaseOrderLineId: id, quantity: 1, unitCost: amount, extendedAmount: amount, ...extra }) as any;
+
+  it('has completed work less previous certificates that equals the current payment due', () => {
+    expect(532378.8 - 402241.76).toBeCloseTo(130137.04, 2);
+    expect(591532 - 532378.8).toBeCloseTo(59153.2, 2);
+  });
+
+  it('books $130,137.04 from the completed-to-date total', () => {
+    const plan = planBalanceInvoice(printed())!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.line).toMatchObject({ description: 'Pay application - current payment due (Total Completed and Stored to Date $532,378.80)', quantity: 1, totalPrice: '$130,137.04' });
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+    expect(plan.amountDueNote).toBe('pay application, $532,378.80 to date');
+    expect(plan.slackLines[0]).toBe('Total Completed and Stored to Date: $532,378.80 to date, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.');
+  });
+
+  it('pins the PO line that equals the current payment due first', () => {
+    const dueLine = poLine('L2', 130137.04);
+    expect(planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), dueLine] }))!.poLines).toEqual([dueLine]);
+  });
+
+  it('pins the single PO line for the $591,532.00 contract even though the base is the completed total', () => {
+    const contractLine = poLine('L1', 591532);
+    const plan = planBalanceInvoice(printed({ poLines: [contractLine] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toEqual([contractLine]);
+    expect(plan.note).not.toContain('PO line');
+  });
+
+  it('warns when the only PO line is fully invoiced or closed', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532, { availableForInvoicing: false })] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('The PO line for this pay application is already fully invoiced or closed; check whether this pay application was billed before approving.');
+  });
+
+  it('leaves the PO line to the merge, naming the base, when a several-line PO has no due-amount line', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $532,378.80 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
+  });
+
+  it('books without a PO link when the PO has no lines', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [] as any[] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+  });
+
+  it('is what the old contract-sum base got wrong: $591,532.00 less payments is $189,290.24, not the amount due', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'REPORT TOTALS', amount: '$591,532.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.note).toContain('$402,241.76, which leaves $189,290.24 of the $591,532.00 contract total, not the amount due $130,137.04');
+  });
+
+  it('does not apply when the completed total less payments misses the amount due', () => {
+    const plan = planBalanceInvoice(printed({ amountDue: '$130,137.05' }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('the work completed to date $532,378.80 less $402,241.76 in previous payments is $130,137.04, not the current payment due $130,137.05');
+    expect(plan.note).toContain('so the printed lines were submitted unchanged');
+  });
+
+  it('never lets an email balance book a pay application whose figures do not reconcile', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$300,000.00' }], emailBalanceDue: { amount: '$130,137.04', phrase: 'remaining balance' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+  });
+
+  it('keeps the plain balance rule and its PO line match for other subtotal labels', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'Subtotal', amount: '$532,378.80' }, poLines: [poLine('L1', 591532)] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('does not book a pay application with tax or freight printed', () => {
+    const plan = planBalanceInvoice(printed({ taxAmount: '$10.00' }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('pay applications with header charges are not booked automatically');
+  });
+
+  it('is silent when the completed total is not above the amount due', () => {
+    expect(planBalanceInvoice(printed({ amountDue: '$532,378.80' }))).toBeUndefined();
+    expect(planBalanceInvoice(printed({ lines: [{ ...supin474922Rows[0], totalPrice: '$130,137.04', unitCost: '$130,137.04' }] }))).toBeUndefined();
   });
 });
