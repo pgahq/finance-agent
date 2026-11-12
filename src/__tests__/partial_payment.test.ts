@@ -28,7 +28,7 @@ import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin
 import { summaryCreditCents } from '../lib/header_charges.js';
 import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
-import { supin474922Header, supin474922Payments, supin474922Retainage, supin474922Rows } from './fixtures/supin_474922.js';
+import { supin474922Header, supin474922Payments, supin474922PrintedHeader, supin474922PrintedRetainage, supin474922Retainage, supin474922Rows } from './fixtures/supin_474922.js';
 
 const poLines = supin470584PoLines as any[];
 
@@ -585,6 +585,65 @@ describe('planBalanceInvoice', () => {
   });
 });
 
+describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', () => {
+  // The PDF prints Total Completed and Stored to Date $532,378.80 (90% of the $591,532.00 contract), Total retainage $0.00,
+  // previous certificates $402,241.76, current payment due $130,137.04, and a $59,153.20 Balance to Finish.
+  const printed = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
+    priorPayments: supin474922Payments,
+    retainage: supin474922PrintedRetainage,
+    emailBalanceDue: null,
+    lineSubtotal: supin474922PrintedHeader.extractedLineSubtotal,
+    amountDue: '$130,137.04',
+    lines: supin474922Rows,
+    poLines: undefined,
+    ...overrides,
+  });
+  const poLine = (id: string, amount: number) => ({ lineOrder: 1, purchaseOrderLineId: id, quantity: 1, unitCost: amount, extendedAmount: amount }) as any;
+
+  it('books $130,137.04 from the completed-to-date total, with no retainage held back', () => {
+    const plan = planBalanceInvoice(printed())!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.line).toMatchObject({ quantity: 1, totalPrice: '$130,137.04' });
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+  });
+
+  it('pins the single PO line for the $591,532.00 contract even though the base is the completed total', () => {
+    const contractLine = poLine('L1', 591532);
+    const plan = planBalanceInvoice(printed({ poLines: [contractLine] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toEqual([contractLine]);
+  });
+
+  it('books the same when the model lists no $0.00 retainage row, and pins the contract-sum PO line', () => {
+    const contractLine = poLine('L1', 591532);
+    const plan = planBalanceInvoice(printed({ retainage: null, poLines: [contractLine] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.poLines).toEqual([contractLine]);
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+    expect(plan.slackLines[0]).toBe('Total Completed and Stored to Date: $532,378.80 to date, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.');
+  });
+
+  it('keeps the plain balance rule, and its PO line match, for other subtotal labels', () => {
+    const plan = planBalanceInvoice(printed({ retainage: null, lineSubtotal: { label: 'Subtotal', amount: '$532,378.80' }, poLines: [poLine('L1', 591532)] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('is what the old contract-sum base got wrong: $591,532.00 less payments is $189,290.24, not the amount due', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'REPORT TOTALS', amount: '$591,532.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('$591,532.00 contract total less $0.00 retainage and $402,241.76 in previous payments is $189,290.24');
+  });
+
+  it('does not treat the $59,153.20 Balance to Finish as retainage', () => {
+    expect(59153.2).toBeCloseTo(591532 - 532378.8, 2);
+    const plan = planBalanceInvoice(printed({ retainage: { label: 'Balance to Finish, including retainage', percent: null, amount: '$59,153.20' } }))!;
+    expect(plan.applied).toBe(false);
+  });
+});
+
 describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)', () => {
   const payAppInput = (overrides: Partial<BalanceInvoiceInput> = {}): BalanceInvoiceInput => ({
     priorPayments: supin474922Payments,
@@ -730,10 +789,11 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.note).toContain('less "Retainage" (10%) $59,153.20, which leaves the $532,378.80 current payment due');
   });
 
-  it('treats a printed $0.00 retainage as none, so the legacy balance rule decides', () => {
+  it('still reconciles a printed $0.00 retainage against the contract total', () => {
     const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: null, amount: '$0.00' } }))!;
     expect(plan.applied).toBe(false);
-    expect(plan.noteLabel).toBe('Balance invoice');
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('$591,532.00 contract total less $0.00 retainage and $402,241.76 in previous payments is $189,290.24');
   });
 
   it('books without a PO link when the PO has no lines', () => {
@@ -834,7 +894,7 @@ describe('hasPrintedRetainage', () => {
     [{ label: 'Retainage', percent: '10%', amount: '$59,153.20' }, true],
     [{ label: 'Less Retention Held', percent: null, amount: '($59,153.20)' }, true],
     [{ label: 'Retainage', percent: null, amount: 'TBD' }, false],
-    [{ label: 'Retainage', percent: null, amount: '$0.00' }, false],
+    [{ label: 'Retainage', percent: null, amount: '$0.00' }, true],
     [{ label: 'Tax', percent: null, amount: '$59,153.20' }, false],
     [{ label: 'Retainage Release', percent: null, amount: '$59,153.20' }, false],
     [null, false],

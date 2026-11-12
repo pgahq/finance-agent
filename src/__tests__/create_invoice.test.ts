@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
-import { supin474922Header, supin474922Rows } from './fixtures/supin_474922.js';
+import { supin474922Header, supin474922PrintedHeader, supin474922Rows } from './fixtures/supin_474922.js';
 import {
   DELIVERY_LINE,
   PICKUP_LINE,
@@ -3209,6 +3209,7 @@ describe('create_invoice', () => {
 
   describe('construction pay application with retainage (SUPIN-474922)', () => {
     const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const supin474922Printed = { extractedLineSubtotal: supin474922PrintedHeader.extractedLineSubtotal, extractedRetainage: supin474922PrintedHeader.extractedRetainage };
     const payAppEnrichment = (overrides: Record<string, unknown> = {}) => ({
       ...baseEnrichmentResult,
       ...supin474922Header,
@@ -3246,6 +3247,19 @@ describe('create_invoice', () => {
       await mocks.processor({ data: [attachmentRequest('new-invoices/req-pay-app/PGA App 3.pdf')] } as any);
       return mocks;
     };
+
+    it('books the PDF as printed: $130,137.04 from the $532,378.80 completed to date, with $0.00 retainage', async () => {
+      const { workday, invoiceLines } = await run(payAppEnrichment(supin474922Printed), po([poLine()]));
+
+      const [candidates, poLines] = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+      expect(candidates).toEqual([expect.objectContaining({ quantity: 1, totalPrice: '$130,137.04' })]);
+      expect(poLines).toEqual([expect.objectContaining({ purchaseOrderLineId: 'L1' })]);
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 130137.04 })]);
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+      expect(notes).not.toContain('Amount check');
+    });
 
     it('books the $130,137.04 current payment due on the PO line, not the $591,532.00 contract sum', async () => {
       const { workday, invoiceLines, slack } = await run(payAppEnrichment(), po([poLine()]));

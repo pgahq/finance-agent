@@ -65,11 +65,6 @@ export const InvoiceOcrSchema = z.object({
     label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
     amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
   })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
-  extractedRetainage: z.object({
-    label: z.string().describe('The exact printed label of the retainage row (e.g. "Retainage", "Less 10% Retainage", "Retention").'),
-    percent: z.string().describe('The retainage percentage printed (e.g. "10%"). Empty string when none is printed.'),
-    amount: z.string().describe('The retainage amount as printed (e.g. "$59,153.20"). Never compute it from a percentage.'),
-  }).describe('The retainage or retention the document holds back from the contract total to date (a construction pay application). Use empty strings when none is printed.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -117,7 +112,7 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments' | 'extractedRetainage'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
   /** Every separate invoice number the model saw in the supplier invoice document; null when none. */
   invoiceNumbersInDocument?: string[] | null;
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
@@ -127,6 +122,7 @@ export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNu
   extractedSecondReadOutcome?: 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
+  /** The retainage row of a pay application, split out of the printed payment rows by code (the schema has no room for another object). */
   extractedRetainage: InvoiceOcrRetainage | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
@@ -201,10 +197,14 @@ export function normalizePrintedDate(value: string | null | undefined): string |
   return null;
 }
 
+// A pay application's retainage is read as one of the printed payment rows (a deduction from the contract total), then split out here.
+const RETAINAGE_ROW_LABEL = /\b(?:retainage|retention|retained)\b/i;
+const RETAINAGE_RELEASE_LABEL = /\breleas(?:e|ed|es)\b/i;
+
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
-    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments, extractedRetainage,
+    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
     ...headerFields
   } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -217,9 +217,11 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
   const lineSubtotal = textOrNull(extractedLineSubtotal?.amount)
     ? { label: (extractedLineSubtotal?.label ?? '').trim(), amount: (extractedLineSubtotal?.amount ?? '').trim() }
     : null;
-  const priorPayments = (extractedPriorPayments ?? [])
+  const printedRows = (extractedPriorPayments ?? [])
     .filter(payment => payment.amount.trim())
     .map(payment => ({ label: payment.label.trim(), amount: payment.amount.trim() }));
+  const retainageRow = printedRows.find(row => RETAINAGE_ROW_LABEL.test(row.label) && !RETAINAGE_RELEASE_LABEL.test(row.label));
+  const priorPayments = printedRows.filter(row => row !== retainageRow);
   const partialPayment = textOrNull(extractedPartialPayment?.amount)
     ? {
       label: (extractedPartialPayment?.label ?? '').trim(),
@@ -227,12 +229,8 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
       amount: (extractedPartialPayment?.amount ?? '').trim(),
     }
     : null;
-  const retainage = textOrNull(extractedRetainage?.amount)
-    ? {
-      label: (extractedRetainage?.label ?? '').trim(),
-      percent: textOrNull(extractedRetainage?.percent)?.trim() ?? null,
-      amount: (extractedRetainage?.amount ?? '').trim(),
-    }
+  const retainage = retainageRow
+    ? { label: retainageRow.label, percent: retainageRow.label.match(/(\d+(?:\.\d+)?)\s*%/)?.[0].replace(/\s+/g, '') ?? null, amount: retainageRow.amount }
     : null;
   const invoiceNumbers = (invoiceNumbersInDocument ?? []).map(number => number.trim()).filter(Boolean);
   return {
@@ -317,7 +315,7 @@ When the invoice bills a deposit, advance, or partial payment instead of the ful
 
 When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
 
-A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") prints the contract sum to date, then retainage held back, then the certificates already paid, then the current payment due. Populate \`extractedRetainage\` with the printed label of the retainage row ("Retainage", "Less 10% Retainage", "Retention"), the percentage when one is printed, and the retainage amount as printed. Retainage is a settled row, so it never goes in \`extractedSummaryCharges\`, \`extractedOtherCharges\`, \`extractedPartialPayment\`, or \`extractedPriorPayments\`. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\`, put the work completed to date in \`extractedLineSubtotal\`: "Total Completed and Stored to Date" (G702 line 4) when the form prints it, because retainage is a percentage of the completed work, and "Contract Sum to Date" (line 3) only when no completed-to-date figure is printed (the two match only when the work is 100% done), and put "Current Payment Due" in \`extractedAmountDue\`. For example, a pay application with Contract Sum to Date $650,000.00, Total Completed and Stored to Date $591,532.00, Retainage 10% $59,153.20, Less Previous Certificates for Payment $402,241.76, and Current Payment Due $130,137.04 must return extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$591,532.00" } (not the contract sum), extractedRetainage { label: "Retainage", percent: "10%", amount: "$59,153.20" }, extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$402,241.76" }], and extractedAmountDue "$130,137.04". Never compute an amount, and leave extractedRetainage's strings empty when the document prints no retainage.
+A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") bills only what was earned since the last certificate, so the contract sum is never the amount to book. Its lines run: 3 Contract Sum to Date, 4 Total Completed and Stored to Date, 5 Retainage (a percentage of the completed work), 6 Total Earned Less Retainage, 7 Less Previous Certificates for Payment, 8 Current Payment Due, and 9 Balance to Finish. Put the work completed to date in \`extractedLineSubtotal\`: "Total Completed and Stored to Date" (line 4) when the form prints it, and "Contract Sum to Date" (line 3) only when no completed-to-date figure is printed; the two match only when the work is 100% done. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\`, and also list the retainage row there when it prints a retainage amount (keeping any percentage in the label; code separates it from the payments). Put "Current Payment Due" in \`extractedAmountDue\`. "Balance to Finish, including retainage" (line 9) and the per-line BALANCE column are what remains of the contract, never retainage or a payment, so never list them in \`extractedPriorPayments\`. Retainage never goes in \`extractedSummaryCharges\`, \`extractedOtherCharges\`, or \`extractedPartialPayment\`. For example, a pay application with Contract Sum to Date $591,532.00, Total Completed and Stored to Date $532,378.80, Total retainage $0.00, Less Previous Certificates for Payment $402,241.76, Current Payment Due $130,137.04, and Balance to Finish $59,153.20 must return extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$532,378.80" } (not the contract sum), extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$402,241.76" }] (the $59,153.20 balance to finish is not listed), and extractedAmountDue "$130,137.04". When the same form holds back 10% ($53,237.88), it also lists { label: "Retainage 10%", amount: "$53,237.88" }. Never compute an amount, and list no retainage row when the document prints none.
 
 ---
 
