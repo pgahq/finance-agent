@@ -317,11 +317,19 @@ type FormMathResult =
   | { total: number; totalText: string; summary: FormMathSummary }
   | { failure: string; noTotal?: true };
 
+/** A label for a failure reason. Digits and currency signs are dropped so an amount in a label never reaches the alert. */
+function diagnosticLabel(text: string | null | undefined): string {
+  return cleanText(text ?? '').replace(/[$\d]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function oversized(look: ReimbursementFormMath): boolean {
-  const texts = [look.grandTotal, look.grandTotalLabel, ...look.columns.flatMap((column) => [column.label, column.total, ...column.entries])];
+  // Amount fields are padded with spaces on some forms ("$      1,335.93"), so only their visible characters count.
+  const labels = [look.grandTotalLabel, ...look.columns.map((column) => column.label)];
+  const amounts = [look.grandTotal, ...look.columns.flatMap((column) => [column.total, ...column.entries])];
   return look.columns.length > MAX_COLUMNS
     || look.columns.some((column) => column.entries.length > MAX_ENTRIES)
-    || texts.some((text) => (text ?? '').length > MAX_TEXT);
+    || labels.some((text) => (text ?? '').length > MAX_TEXT)
+    || amounts.some((text) => (text ?? '').replace(/\s+/g, '').length > MAX_TEXT);
 }
 
 /**
@@ -339,7 +347,7 @@ export function formMathResult(look: ReimbursementFormMath): FormMathResult {
   if (isBlank(look.grandTotalLabel)) return { failure: 'no label was read for the form total' };
   const totalLabel = payableTotalLabel(look.grandTotalLabel);
   if (!totalLabel) {
-    return { failure: `the form total was read beside "${cleanText(look.grandTotalLabel ?? '')}", which is not a payable-total label` };
+    return { failure: `the form total was read beside "${diagnosticLabel(look.grandTotalLabel)}", which is not a payable-total label` };
   }
   if (look.columns.length === 0) return { failure: 'the form lists no expense columns to check the total against' };
 
@@ -349,19 +357,20 @@ export function formMathResult(look: ReimbursementFormMath): FormMathResult {
   for (const column of look.columns) {
     if (isBlank(column.label)) return { failure: 'a column has no label' };
     const label = cleanText(column.label);
-    if (AGGREGATE_ROW.test(label)) return { failure: `the column "${label}" is a total, not an expense category` };
-    if (seen.has(label.toLowerCase())) return { failure: `the column "${label}" is listed more than once` };
+    const shown = diagnosticLabel(label);
+    if (AGGREGATE_ROW.test(label)) return { failure: `the column "${shown}" is a total, not an expense category` };
+    if (seen.has(label.toLowerCase())) return { failure: `the column "${shown}" is listed more than once` };
     seen.add(label.toLowerCase());
-    if (isBlank(column.total)) return { failure: `the column "${label}" has no printed total` };
+    if (isBlank(column.total)) return { failure: `the column "${shown}" has no printed total` };
     const columnTotal = parseEmailAmount(column.total);
-    if (columnTotal === undefined) return { failure: `the total of column "${label}" could not be read as a dollar amount` };
+    if (columnTotal === undefined) return { failure: `the total of column "${shown}" could not be read as a dollar amount` };
     let entrySum = 0;
     for (const entry of column.entries) {
       const amount = parseEmailAmount(entry);
-      if (amount === undefined) return { failure: `an amount in column "${label}" could not be read as a dollar amount` };
+      if (amount === undefined) return { failure: `an amount in column "${shown}" could not be read as a dollar amount` };
       entrySum += cents(amount);
     }
-    if (entrySum !== cents(columnTotal)) return { failure: `the line items in column "${label}" do not add up to its total` };
+    if (entrySum !== cents(columnTotal)) return { failure: `the line items in column "${shown}" do not add up to its total` };
     columnSum += cents(columnTotal);
     columns.push({ label, total: formatChargeDollars(columnTotal) });
   }

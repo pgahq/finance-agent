@@ -385,6 +385,27 @@ describe('formMathResult', () => {
     });
   });
 
+  it('keeps an amount written inside a label out of every failure reason', () => {
+    const reasons = [
+      formMathResult(gridLook({ grandTotalLabel: 'Total Reimbursement $1,500.30 est' })),
+      formMathResult(withColumn('Meals', { label: 'Meals 1500.30 total' })),
+      formMathResult(withColumn('Meals', { label: 'Meals 1500.30', total: '' })),
+      formMathResult(withColumn('Meals', { label: 'Meals 1500.30', total: 'n/a' })),
+      formMathResult(withColumn('Meals', { label: 'Meals 1500.30', entries: ['$1.00'] })),
+    ].map((result) => ('failure' in result ? result.failure : ''));
+    for (const reason of reasons) {
+      expect(reason).not.toBe('');
+      expect(reason).not.toMatch(/\d/);
+    }
+  });
+
+  it('accepts amounts padded with spaces the way an accounting field prints them', () => {
+    expect(formMathResult(withColumn('Meals', { total: `$ ${' '.repeat(90)}39.70`, entries: ['0', `$${' '.repeat(90)}39.70`] }))).toMatchObject({ total: 1500.3 });
+    expect(formMathResult(withColumn('Meals', { entries: ['0', '39.'.concat('7'.repeat(80))] }))).toEqual({
+      failure: 'the look returned more columns, line items, or text than a form holds',
+    });
+  });
+
   it('never puts an amount in a failure reason, because the reason reaches the Slack alert', () => {
     const failures = [
       gridLook({ grandTotal: '$1,520.85' }),
