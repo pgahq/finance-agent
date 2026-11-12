@@ -67,7 +67,10 @@ const READ_ATTEMPTS = 2;
 const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
 // A totals or subtotal row listed as a category would make the rows add up to the total by itself.
-const AGGREGATE_ROW = /\b(?:sub\s*)?totals?\b|\bamount\s+to\s+pay\b|\bgrand\b/i;
+const AGGREGATE_ROW = /\bsub[-\s]*totals?\b|\b(?:grand\s+)?totals?\b|\bamount\s+to\s+pay\b/i;
+// The figure the focused look reports must sit beside a label for the payable total, never a category or subtotal.
+const PAYABLE_TOTAL_LABEL = /\btotals?\b|\bamount\s+to\s+pay\b|\breimburs/i;
+const SUBTOTAL_LABEL = /\bsub[-\s]*totals?\b/i;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -266,6 +269,9 @@ export function formTotalFailure(foundAmount: number, look: ReimbursementFormTot
     return `a focused look at the form found ${formatChargeDollars(total)}`;
   }
   if (isBlank(look.totalsLabel)) return 'the focused look named no label for the form total';
+  if (SUBTOTAL_LABEL.test(look.totalsLabel ?? '') || !PAYABLE_TOTAL_LABEL.test(look.totalsLabel ?? '')) {
+    return `the focused look read the form total beside "${readableText(look.totalsLabel ?? '')}", which is not a payable-total label`;
+  }
   if (look.categoryLines.length === 0) return 'the form lists no category lines to check the total against';
   let sum = 0;
   for (const line of look.categoryLines) {

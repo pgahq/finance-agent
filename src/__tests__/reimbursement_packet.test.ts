@@ -410,11 +410,25 @@ describe('formTotalFailure', () => {
     }))).toContain('could not be read');
   });
 
-  it.each(['TOTALS', 'Subtotal', 'Sub Total', 'Amount to Pay', 'Grand total'])(
+  it.each(['TOTALS', 'Subtotal', 'Sub Total', 'Sub-total', 'Amount to Pay', 'Grand total'])(
     'rejects the aggregate row "%s" as a category line even when the sum matches', (label) => {
       expect(formTotalFailure(1403.95, formLook({ categoryLines: [{ label, amount: '$1,403.95' }] })))
         .toContain('is a total, not an expense category');
     });
+
+  it.each(['Grand Ballroom rental', 'Grand Prix mileage'])('keeps "%s" as an ordinary category', (label) => {
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [{ label, amount: '$440.80' }, { label: 'SC-Lodging', amount: '$963.15' }],
+    }))).toBeUndefined();
+  });
+
+  it.each(['TOTALS', 'Amount to Pay', 'Total Reimbursement', 'Total to be reimbursed'])('accepts "%s" as the label of the form total', (totalsLabel) => {
+    expect(formTotalFailure(1403.95, formLook({ totalsLabel }))).toBeUndefined();
+  });
+
+  it.each(['Lodging', 'Subtotal', 'Sub-total', 'SC-Lodging'])('rejects "%s" as the label of the form total', (totalsLabel) => {
+    expect(formTotalFailure(1403.95, formLook({ totalsLabel }))).toContain('is not a payable-total label');
+  });
 
   it('accepts a zero category row, since forms print every category', () => {
     expect(formTotalFailure(1403.95, formLook({
