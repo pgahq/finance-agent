@@ -204,6 +204,8 @@ export function lineSubtotalReviewNote(
   subtotalFreight = 0,
   secondRead?: SecondReadOutcome | null
 ): string | undefined {
+  // A pay application's completed-to-date total is not a total of the table rows (they carry scheduled values), so there is nothing to compare.
+  if (isCompletedToDateLabel(subtotal?.label)) return undefined;
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
@@ -467,6 +469,12 @@ function paymentsText(payments: PrintedPriorPayment[] | null | undefined): strin
   return payments?.length === 1 ? `"${printable(payments[0].label)}"` : 'the previous payments';
 }
 
+/** "less X" for a deduction row, without repeating the word when the printed label already starts with it. */
+function lessText(payments: PrintedPriorPayment[] | null | undefined): string {
+  const text = paymentsText(payments);
+  return /^"\s*less\b/i.test(text) ? 'after' : 'less';
+}
+
 /**
  * The PO line a pay application's current payment is coded to. A line equal to the payment wins (the deposit rule);
  * a pay application is normally billed against one PO line for the whole contract, so a single open line equal to
@@ -479,8 +487,9 @@ function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, du
   const lines = poLines ?? [];
   const baseLines = lines.filter(line => poLineAmountCents(line) === baseCents && line.availableForInvoicing !== false);
   if (baseLines.length === 1) return { status: 'matched', line: baseLines[0], consumed: false };
-  if (lines.length === 1) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and none or several PO lines are for the ${centsDollars(baseCents)} total to date, so the PO line was left to the line merge` };
+  const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
+  if (onlyLineCents != null && onlyLineCents >= dueCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
+  return { status: 'unpinned', reason: `${exact.reason}, and no single open PO line is for the ${centsDollars(baseCents)} total to date or covers the payment due, so the PO line was left to the line merge` };
 }
 
 /**
@@ -567,7 +576,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       noteLabel: PAY_APPLICATION_NOTE_LABEL,
       line: { description: `Pay application - current payment due (${label} ${contractText})`, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
       ...poLines,
-      note: `"${label}" is ${contractText}${paidCents === 0 ? (input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed') : `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
+      note: `"${label}" is ${contractText}${paidCents === 0 ? (input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed') : `, ${lessText(input.priorPayments)} ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
         `${label}: ${contractText} to date${paidCents === 0 ? (input.priorPayments?.length ? ', previous payments $0.00' : ', no previous payments') : `, less ${centsDollars(paidCents as number)} previous payments`}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,

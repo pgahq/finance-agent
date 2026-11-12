@@ -604,17 +604,12 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
   });
   const poLine = (id: string, amount: number, extra: Record<string, unknown> = {}) => ({ lineOrder: 1, purchaseOrderLineId: id, quantity: 1, unitCost: amount, extendedAmount: amount, ...extra }) as any;
 
-  it('has completed work less previous certificates that equals the current payment due', () => {
-    expect(532378.8 - 402241.76).toBeCloseTo(130137.04, 2);
-    expect(591532 - 532378.8).toBeCloseTo(59153.2, 2);
-  });
-
   it('books $130,137.04 from the completed-to-date total', () => {
     const plan = planBalanceInvoice(printed())!;
     expect(plan.applied).toBe(true);
     expect(plan.noteLabel).toBe('Pay application');
     expect(plan.line).toMatchObject({ description: 'Pay application - current payment due (Total Completed and Stored to Date $532,378.80)', quantity: 1, totalPrice: '$130,137.04' });
-    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
     expect(plan.amountDueNote).toBe('pay application, $532,378.80 to date');
     expect(plan.slackLines[0]).toBe('Total Completed and Stored to Date: $532,378.80 to date, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.');
   });
@@ -642,7 +637,7 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $532,378.80 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
+    expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $532,378.80 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
   });
 
   it('books without a PO link when the PO has no lines', () => {
@@ -720,6 +715,17 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     const plan = planBalanceInvoice(printed({ priorPayments: [] }))!;
     expect(plan.applied).toBe(false);
     expect(plan.note).toContain('the work completed to date $532,378.80 is not the current payment due $130,137.04, and no previous payments were read');
+  });
+
+  it('leaves the PO line to the merge when the only line is below the current payment due', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 100000)] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('check the PO line coding before approving');
+  });
+
+  it('does not review the line subtotal against rows when the subtotal is a completed-to-date total', () => {
+    expect(lineSubtotalReviewNote(supin474922Rows, supin474922Header.extractedLineSubtotal)).toBeUndefined();
   });
 
   it('keeps the plain remaining-balance rule for a subtotal that is not a completed-to-date total', () => {

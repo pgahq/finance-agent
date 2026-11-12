@@ -3264,10 +3264,11 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedAmountDue).toBe('$130,137.04');
 
       const notes = submitArgs.buildNotes([]);
-      expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+      expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
       expect(notes).not.toContain('Balance invoice');
       expect(notes).not.toContain('Amount check');
       expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
 
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.balanceInvoice).toEqual(['Total Completed and Stored to Date: $532,378.80 to date, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.']);
