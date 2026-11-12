@@ -118,12 +118,12 @@ describe('readReimbursementPacket', () => {
       .rejects.toThrow('gateway timeout');
   });
 
-  it('reads a reimbursement once, on the default model', async () => {
+  it('reads a reimbursement once, on the document-reading model', async () => {
     aiResponse.mockReset().mockResolvedValue(packet());
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('reimbursement');
     expect(aiResponse).toHaveBeenCalledTimes(1);
-    expect(aiResponse.mock.calls[0][0]).not.toHaveProperty('model');
+    expect(aiResponse.mock.calls[0][0]).toMatchObject({ model: expect.anything(), temperature: null });
   });
 
   it('books a packet whose form amount reads with parentheses and padding', async () => {

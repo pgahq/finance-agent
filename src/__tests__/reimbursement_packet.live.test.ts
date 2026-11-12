@@ -1,4 +1,4 @@
-// Runs the real packet read (one read on GPT-5.4; no mocks) on fictional packets that put the
+// Runs the real packet read (one read on Haiku 5.5, the document-reading model; no mocks) on fictional packets that put the
 // "invoice the person for the form amount, never the folio" rule at risk. It is skipped unless
 // RUN_LIVE_REIMBURSEMENT_EVAL=1 and AI_GATEWAY_API_KEY are set, so CI never calls the model:
 //   RUN_LIVE_REIMBURSEMENT_EVAL=1 npx jest --ci src/__tests__/reimbursement_packet.live.test.ts

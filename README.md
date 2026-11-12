@@ -185,7 +185,7 @@ src/
 
 ### AI Processing
 
-- Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`) through the Vercel AI Gateway reads the invoice PDFs (OCR and field extraction only)
+- Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`) through the Vercel AI Gateway reads the invoice PDFs (OCR and field extraction) and the expense reimbursement packets
 - GPT-5.4 (`openai/gpt-5.4`) through the Vercel AI Gateway matches the supplier and company and codes the invoice from that extraction, with the lookup tools
 - Structured responses with confidence scoring
 - When the invoice prints an explicit due date, it is sent to Workday as `Due_Date_Override` (ISO `YYYY-MM-DD`, like `Invoice_Date`); see [Due date](#due-date)

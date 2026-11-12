@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { DatabaseConnection } from './database.js';
+import { getOcrModel } from './models.js';
 import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
@@ -97,6 +98,9 @@ async function readPacket(
         schema: ReimbursementPacketSchema,
         tools: {},
         abortSignal,
+        // A form is read like an invoice PDF, so it uses the document-reading model and omits temperature as OCR does.
+        model: getOcrModel(),
+        temperature: null,
         messages: [
           {
             role: 'user',
