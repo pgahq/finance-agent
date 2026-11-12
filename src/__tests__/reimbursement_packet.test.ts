@@ -4,6 +4,10 @@ jest.mock('../lib/database.js', () => ({
   findSuppliersByNameWord: jest.fn(),
 }));
 jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
+jest.mock('../lib/models.js', () => ({
+  ...jest.requireActual<Record<string, unknown>>('../lib/models.js'),
+  getOcrModel: jest.fn(() => 'ocr-model'),
+}));
 jest.mock('../lib/invoice_ocr.js', () => ({
   convertOfficeAttachmentsForModel: jest.fn(async (attachments: unknown[]) => attachments),
   attachmentContentParts: jest.fn(() => [{ type: 'file', data: 'pdf', mediaType: 'application/pdf' }]),
@@ -123,7 +127,7 @@ describe('readReimbursementPacket', () => {
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('reimbursement');
     expect(aiResponse).toHaveBeenCalledTimes(1);
-    expect(aiResponse.mock.calls[0][0]).toMatchObject({ model: expect.anything(), temperature: null });
+    expect(aiResponse.mock.calls[0][0]).toMatchObject({ model: 'ocr-model', temperature: null });
   });
 
   it('books a packet whose form amount reads with parentheses and padding', async () => {
@@ -140,8 +144,8 @@ describe('readReimbursementPacket', () => {
   });
 });
 
-// The Dustin Hull packet (2026-11-12): the form field extracted as an accounting-format string while the page shows
-// no parentheses, and the other read returned the plain amount.
+// A real packet (2026-11-12): the form field extracted as an accounting-format string while the page shows no
+// parentheses.
 const paddedParenthesized = `($${' '.repeat(70)}1,335.93)`;
 
 describe('parseFormAmountToPay', () => {
