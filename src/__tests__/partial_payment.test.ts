@@ -635,7 +635,7 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $532,378.80 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
+    expect(plan.note).toContain('No PO line is for $130,137.04, and no open PO line can be picked for the $532,378.80 total to date (an only line must cover it), so the PO line was left to the line merge; check the PO line coding before approving.');
   });
 
   it('is what the old contract-sum base got wrong: $591,532.00 less payments is $189,290.24, not the amount due', () => {
@@ -827,11 +827,18 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(planBalanceInvoice(payAppInput({ retainage: null, lines: [], poLines: undefined, ...plain }))).toBeUndefined();
   });
 
-  it('leaves the PO line to the merge when the only line is below the current payment due', () => {
-    const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 100000)] }))!;
-    expect(plan.applied).toBe(true);
-    expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('check the PO line coding before approving');
+  it('leaves the PO line to the merge when the only line cannot cover the contract total billed to date', () => {
+    for (const amount of [100000, 300000, 591531.99]) {
+      const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', amount)] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('check the PO line coding before approving');
+    }
+  });
+
+  it('pins an only line that covers the contract total billed to date', () => {
+    const line = poLine('L1', 700000);
+    expect(planBalanceInvoice(payAppInput({ poLines: [line] }))!.poLines).toEqual([line]);
   });
 
   it('does not review the line subtotal against rows when the subtotal is a completed-to-date total', () => {
@@ -953,7 +960,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
       const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 300000), poLine('L2', 291532)] }))!;
       expect(plan.applied).toBe(true);
       expect(plan.poLines).toBeUndefined();
-      expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $591,532.00 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
+      expect(plan.note).toContain('No PO line is for $130,137.04, and no open PO line can be picked for the $591,532.00 total to date (an only line must cover it), so the PO line was left to the line merge; check the PO line coding before approving.');
       expect(plan.slackLines).toHaveLength(2);
     });
   });

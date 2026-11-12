@@ -495,8 +495,9 @@ function retainageCents(retainage: PrintedRetainage | null | undefined): number 
  * The PO line a pay application's current payment is coded to. A line equal to the payment wins (the deposit rule);
  * a pay application is normally billed against one PO line for the whole contract, so a single open line equal to
  * the printed base (the work completed to date, or the contract sum when that is the base), or a PO with only one
- * line that covers the payment, is also used. Several candidates leave the line unpinned for the merge to code,
- * and the note says so.
+ * line that covers that total (what has been billed through this application), is also used. The PO data has no
+ * remaining-amount field, so covering the total is the check. Anything else leaves the line unpinned for the merge
+ * to code, and the note says so.
  */
 function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, baseCents: number): DepositPoSelection | { status: 'unpinned'; reason: string } {
   const exact = selectDepositPoLine(poLines, dueCents);
@@ -505,8 +506,8 @@ function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, du
   const baseLines = lines.filter(line => poLineAmountCents(line) === baseCents && line.availableForInvoicing !== false);
   if (baseLines.length === 1) return { status: 'matched', line: baseLines[0], consumed: false };
   const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
-  if (onlyLineCents != null && onlyLineCents >= dueCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and no single open PO line is for the ${centsDollars(baseCents)} total to date or covers the payment due, so the PO line was left to the line merge` };
+  if (onlyLineCents != null && onlyLineCents >= baseCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
+  return { status: 'unpinned', reason: `${exact.reason}, and no open PO line can be picked for the ${centsDollars(baseCents)} total to date (an only line must cover it), so the PO line was left to the line merge` };
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
