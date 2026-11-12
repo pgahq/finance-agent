@@ -686,14 +686,34 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
 
   it('books a first application, which prints no previous certificates, at the current payment due', () => {
     const first = { lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$130,137.04' } };
-    for (const priorPayments of [[], [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }]]) {
-      const plan = planBalanceInvoice(printed({ ...first, priorPayments }))!;
-      expect(plan.applied).toBe(true);
-      expect(plan.line!.totalPrice).toBe('$130,137.04');
-      expect(plan.note).toContain('"Total Completed and Stored to Date" is $130,137.04 and no previous payments are printed, which leaves the $130,137.04 current payment due');
-      expect(plan.slackLines[0]).toContain('$130,137.04 to date, no previous payments, $130,137.04 current payment due');
-    }
+    const plan = planBalanceInvoice(printed({ ...first, priorPayments: [] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line!.totalPrice).toBe('$130,137.04');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $130,137.04 and no previous payments are printed, which leaves the $130,137.04 current payment due');
+    expect(plan.slackLines[0]).toContain('$130,137.04 to date, no previous payments, $130,137.04 current payment due');
+    const zero = planBalanceInvoice(printed({ ...first, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }] }))!;
+    expect(zero.applied).toBe(true);
+    expect(zero.line!.totalPrice).toBe('$130,137.04');
     expect(planBalanceInvoice(printed({ ...first, priorPayments: supin474922Payments }))).toBeUndefined();
+  });
+
+  it('describes a printed $0.00 previous-certificates row as printed, not as absent', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$130,137.04' }, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }] }))!;
+    expect(plan.note).toContain('and the printed previous payments total $0.00, which leaves');
+    expect(plan.slackLines[0]).toContain('previous payments $0.00');
+  });
+
+  it('warns instead of staying silent when a previous payment amount cannot be read', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('a previous payment amount could not be read');
+  });
+
+  it('does not book an unrelated payment row that fails to reconcile', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [{ label: 'Less deposit paid', amount: '$50,000.00' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
   });
 
   it('says no previous payments were read when the completed total is above the due and no payments were returned', () => {

@@ -512,7 +512,11 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   // it never stands in for the payment arithmetic: figures that do not add up are a warning sign, not something an email settles.
   const emailSaysBalance = !payApplication && printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
-    if (paidCents == null) return undefined;
+    if (paidCents == null) {
+      return payApplication
+        ? balanceNotApplied('a previous payment amount could not be read, so the pay application arithmetic could not be checked', true)
+        : undefined;
+    }
     if (payApplication) {
       return balanceNotApplied(
         paidCents === 0 && !input.priorPayments?.length
@@ -563,10 +567,10 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       noteLabel: PAY_APPLICATION_NOTE_LABEL,
       line: { description: `Pay application - current payment due (${label} ${contractText})`, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
       ...poLines,
-      note: `"${label}" is ${contractText}${paidCents === 0 ? ' and no previous payments are printed' : `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
+      note: `"${label}" is ${contractText}${paidCents === 0 ? (input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed') : `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
-        `${label}: ${contractText} to date${paidCents === 0 ? ', no previous payments' : `, less ${centsDollars(paidCents as number)} previous payments`}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
+        `${label}: ${contractText} to date${paidCents === 0 ? (input.priorPayments?.length ? ', previous payments $0.00' : ', no previous payments') : `, less ${centsDollars(paidCents as number)} previous payments`}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
         ...slackPoLines,
       ],
     };

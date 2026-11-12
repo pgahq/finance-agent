@@ -55,7 +55,7 @@ export const InvoiceOcrSchema = z.object({
   extractedLineSubtotal: z.object({
     label: z.string().describe('The exact printed label of the line-table total (e.g. "Total Cost of Contracted Services", "Sub Total").'),
     amount: z.string().describe('The amount as printed (e.g. "$38,255.00").'),
-  }).describe('The total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment. Use empty strings when none is printed.'),
+  }).describe('The total the document prints for all of its line-table rows, before freight, tax, discounts, and any deposit or payment. On a construction pay application (AIA G702) it is the "Total Completed and Stored to Date" figure instead. Use empty strings when none is printed.'),
   extractedPartialPayment: z.object({
     label: z.string().describe('The exact printed label of the deposit or advance-payment row (e.g. "Advance Deposit Due").'),
     percent: z.string().describe('The percentage printed for the deposit (e.g. "90%"). Empty string when none is printed.'),
