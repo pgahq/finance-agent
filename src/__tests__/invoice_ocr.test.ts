@@ -1013,6 +1013,11 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment(matchingResult, undefined)).toMatchObject({ extractedLineSubtotal: null, extractedPartialPayment: null });
     });
 
+    it('tells the model to read a pay application from the completed-to-date line, with an example where it differs from the contract sum', () => {
+      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $650,000.00, Total Completed and Stored to Date $591,532.00, Retainage 10% $59,153.20');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$591,532.00" } (not the contract sum)');
+    });
+
     it('keeps several separate delivery and pickup rows as lines and a lone freight charge in the freight fields (SUPIN-472108)', () => {
       expect(invoiceOcrPrompt).toContain('return each of those rows in `extractedInvoiceLines`');
       expect(invoiceOcrPrompt).toContain('`PICKUP CHARGE 1 EACH 208.660 208.66`');

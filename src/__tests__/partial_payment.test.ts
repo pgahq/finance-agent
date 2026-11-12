@@ -765,7 +765,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.note).toContain('so the printed lines were submitted unchanged');
   });
 
-  it('books a partly finished job from Total Completed and Stored to Date, not the larger contract sum', () => {
+  it('books from the Total Completed and Stored to Date label and shows it in the line and note', () => {
     const plan = planBalanceInvoice(payAppInput({
       lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$591,532.00' },
       emailBalanceDue: null,
