@@ -3291,6 +3291,29 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual(['Pay application not applied: the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04.']);
     });
 
+    it.each([
+      ['an unreadable retainage amount', { label: 'Retainage', percent: '10%', amount: 'TBD' }, 'the printed retainage "TBD" is not a readable amount'],
+      ['a row that is not labeled retainage', { label: 'Tax', percent: '', amount: '$59,153.20' }, 'the printed row "Tax" is not labeled as retainage held'],
+    ])('keeps the printed lines, flags the invoice, and keeps the amount check with %s', async (_name, extractedRetainage, reason) => {
+      const { workday, invoiceLines, slack } = await run(payAppEnrichment({ extractedRetainage }), po([poLine()]));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ description: 'Contract Sum to Date', totalPrice: '$591,532.00' })]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain(`Pay application: This looks like a construction pay application with retainage, but ${reason}`);
+      expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual([expect.stringContaining('Pay application not applied')]);
+    });
+
+    it('reconciles a deposit-like row beside retainage as a pay application, not a deposit', async () => {
+      const { workday, invoiceLines } = await run(payAppEnrichment({
+        extractedPartialPayment: { label: 'Progress Payment', percent: '', amount: '$130,137.04' },
+      }), po([poLine()]));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ totalPrice: '$130,137.04' })]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20');
+      expect(notes).not.toContain('Deposit invoice');
+    });
+
     it('does not turn a retainage row read as a totals charge into an invoice line', async () => {
       const { invoiceLines } = await run(payAppEnrichment({
         extractedRetainage: null,

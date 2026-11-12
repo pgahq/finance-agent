@@ -345,7 +345,7 @@ describe('placeSummaryCharges', () => {
       });
 
       expect(placed.lines).toEqual([]);
-      expect(placed.reviewNote).toBe(`"${label}" $40.00 in the invoice totals looks like an applied credit, credit memo, retainer, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.`);
+      expect(placed.reviewNote).toBe(`"${label}" $40.00 in the invoice totals looks like an applied credit, credit memo, retainer, retainage, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.`);
     }
   );
 
@@ -366,7 +366,7 @@ describe('placeSummaryCharges', () => {
     expect(placed.lines).toEqual([expect.objectContaining({ description: 'Decoration', totalPrice: '5.00' })]);
     expect(placed.reviewNote).toBe(
       '"Setup Charge" $25.00 was printed in the invoice totals but not added: lines, freight, and tax equal the amount due without it.'
-      + ' "Credit Memo 88" $10.00 in the invoice totals looks like an applied credit, credit memo, retainer, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.'
+      + ' "Credit Memo 88" $10.00 in the invoice totals looks like an applied credit, credit memo, retainer, retainage, or refund, so it was not added as a line. Check whether the credit is already in Workday before approving.'
       + ' "Discount 10%" was printed in the invoice totals without an amount, so it was not added.'
     );
   });

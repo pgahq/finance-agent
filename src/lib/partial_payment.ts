@@ -25,7 +25,7 @@ export interface PrintedPartialPayment {
 
 const DEPOSIT_WORDS = new Set(['deposit', 'deposits', 'advance', 'down', 'downpayment', 'prepayment', 'installment', 'progress', 'partial']);
 // Rows that report a payment already made or an amount still to come are not the amount this invoice bills.
-export const NOT_BILLED_WORDS = new Set(['less', 'paid', 'applied', 'received', 'credit', 'credits', 'balance', 'remaining', 'previous', 'retainer', 'retainage', 'retention', 'refund']);
+export const NOT_BILLED_WORDS = new Set(['less', 'paid', 'applied', 'received', 'credit', 'credits', 'balance', 'remaining', 'previous', 'retainer', 'retainage', 'refund']);
 
 function toCents(amount: number): number {
   return Math.round(amount * 100);
@@ -88,7 +88,7 @@ interface AmountDueGapInput {
   summaryCharges?: Array<{ amount: string | null }> | null;
   partialPayment?: unknown;
   priorPayments?: unknown[] | null;
-  retainage?: unknown;
+  retainage?: PrintedRetainage | null;
   /**
    * Cents of unlined discounts and credits in the totals block (`summaryCreditCents`). Counted against the amount
    * due only when the rows overshoot it and the credit brings them back to it or below.
@@ -103,7 +103,7 @@ interface AmountDueGapInput {
  * of the rows.
  */
 export function amountDueGapCents(input: AmountDueGapInput): number | undefined {
-  if (input.partialPayment || input.priorPayments?.length || input.retainage) return undefined;
+  if (input.partialPayment || input.priorPayments?.length || hasPrintedRetainage(input.retainage)) return undefined;
   const amountDue = chargeAmount(input.amountDue);
   const rows = sumExtractedLineCents(input.lines);
   if (amountDue == null || rows == null) return undefined;
@@ -455,11 +455,26 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined): 
   return total;
 }
 
-/** The printed retainage in cents, or undefined when none is printed or the amount is unreadable or zero. */
+const RETAINAGE_LABEL_WORDS = new Set(['retainage', 'retention', 'retained']);
+
+/** Whether the row is labeled as a holdback and not as a release of one. */
+function isRetainageHeldLabel(label: string | null | undefined): boolean {
+  const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
+  return tokens.some(token => RETAINAGE_LABEL_WORDS.has(token)) && !tokens.some(token => token === 'release' || token === 'released');
+}
+
+/** Whether the document prints a readable, non-zero amount on a row labeled as retainage held. */
+export function hasPrintedRetainage(retainage: PrintedRetainage | null | undefined): boolean {
+  const cents = retainageCents(retainage);
+  return cents != null && !Number.isNaN(cents) && isRetainageHeldLabel(retainage?.label);
+}
+
+/** The printed retainage in cents, or undefined when none is printed or the amount is zero. NaN when it is printed but unreadable. */
 function retainageCents(retainage: PrintedRetainage | null | undefined): number | undefined {
   if (!retainage?.amount) return undefined;
   const amount = parseExtractedLineAmount(retainage.amount);
-  return amount == null || amount === 0 ? undefined : toCents(Math.abs(amount));
+  if (amount == null) return Number.NaN;
+  return amount === 0 ? undefined : toCents(Math.abs(amount));
 }
 
 /**
@@ -503,10 +518,24 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   if (linesCents != null && linesCents <= dueCents) return undefined;
 
   const paidCents = priorPaymentCents(input.priorPayments);
-  const retainedCents = retainageCents(input.retainage);
+  const retainageRead = retainageCents(input.retainage);
+  if (retainageRead != null && Number.isNaN(retainageRead)) {
+    return balanceNotApplied(`the printed retainage "${printable(input.retainage?.amount)}" is not a readable amount, so the figures cannot be checked`, true);
+  }
+  const retainedCents = retainageRead;
   const payApplication = retainedCents != null;
+  if (payApplication && !isRetainageHeldLabel(input.retainage?.label)) {
+    return balanceNotApplied(`the printed row "${printable(input.retainage?.label)}" is not labeled as retainage held, so the figures cannot be checked`, true);
+  }
+  if (payApplication && input.priorPayments?.some(payment => parseExtractedLineAmount(payment.amount) == null)) {
+    return balanceNotApplied('a printed previous payment is not a readable amount, so the figures cannot be checked', true);
+  }
   const settledCents = (paidCents ?? 0) + (retainedCents ?? 0);
   const settlementPrinted = paidCents != null || retainedCents != null;
+  // A pay application's lines can be one period's work, so its contract sum to date must be printed, not summed.
+  if (payApplication && printedBase == null) {
+    return balanceNotApplied('the document prints no contract sum to date to reconcile the retainage against', true);
+  }
   const paymentsExplainGap = settlementPrinted && contractCents - settledCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
   // The email alone must sit beside a printed contract total; a line sum can read high for other reasons.
@@ -534,7 +563,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const selection = payApplication
     ? selectPayApplicationPoLine(input.poLines, dueCents, contractCents)
     : selectDepositPoLine(input.poLines, dueCents);
-  if (selection.status === 'unmatched') return balanceNotApplied(selection.reason);
+  if (selection.status === 'unmatched') return balanceNotApplied(selection.reason, payApplication);
 
   const label = printable(input.lineSubtotal?.label) || printable(input.lines[0]?.description) || 'Contract total';
   const dueText = centsDollars(dueCents);
@@ -561,7 +590,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     const paidClause = paidCents != null ? `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : '';
     const basis = paymentsExplainGap
       ? `"${label}" is ${contractText}, less "${retainageLabel}"${percentText} ${retainedText}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`
-      : `"${label}" is ${contractText} but the current payment due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. The document prints ${retainedText} retainage${paidCents != null ? ` and ${centsDollars(paidCents)} in previous payments` : ''}, which leaves ${centsDollars(contractCents - settledCents)}, not the current payment due; check them against the PDF.`;
+      : `"${label}" is ${contractText} but the current payment due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. The document prints ${retainedText} retainage${paidCents != null ? ` and ${centsDollars(paidCents)} in previous payments` : ''}, which leaves ${centsDollars(contractCents - settledCents)}, not the current payment due; check them against the PDF.${percentCheck}`;
     return {
       applied: true,
       noteLabel: PAY_APPLICATION_NOTE_LABEL,

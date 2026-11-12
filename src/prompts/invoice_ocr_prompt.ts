@@ -422,7 +422,7 @@ First, set \`invoiceLineQuantityDisplayed\` from the document layout (column hea
 - **true** when the invoice shows a quantity column or per-line quantity values (Qty, Quantity, etc.)
 - **false** when there is no quantity column and no per-line quantity values on the merchandise lines
 
-Extract the individual line items from the invoice document:
+Extract the individual line items from the invoice document. A retainage or retention row of a pay application (Part 4.5) is never a line item:
 
 1. For each line item, extract:
    - **Description cells**: Every meaningful text cell on **that invoice row**, in left-to-right document order. Do not use only the column labeled Description / Item / Service. Include Activity, Resource, Consultant, Employee, Staff, Person, Role, SKU, Item #, Part #, Product, Service, Description, Project, Location, and any other identifying text on the row. Skip empty cells, quantity, rate, amount, Notes, and Comments. Populate \`descriptionCells\` with those values. Code concatenates \`descriptionCells\` into description and drops cells that match the line's printed quantity, unit cost, or amount.

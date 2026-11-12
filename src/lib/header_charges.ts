@@ -20,6 +20,7 @@ import {
   type ExtractedInvoiceLine,
   type FinalInvoiceLine,
 } from './invoice_lines.js';
+import { hasPrintedRetainage, type PrintedRetainage } from './partial_payment.js';
 import { uniqueServiceLineMatches } from './po_service_lines.js';
 import type { PurchaseOrderLine } from './workday.js';
 
@@ -267,7 +268,7 @@ const SUMMARY_ROW_WORDS = new Set([
   'due', 'balance', 'paid', 'payment', 'payments', 'deposit', 'deposits', 'prepayment', 'prepaid', 'prepay',
   'previous', 'remaining', 'owing',
 ]);
-// A credit memo, retainer, or refund applied to the bill settles it; it does not lower the cost of the goods,
+// A credit memo, retainer, retainage, or refund applied to the bill settles it; it does not lower the cost of the goods,
 // and the credit may already be its own document in Workday.
 const SETTLEMENT_WORDS = new Set(['credit', 'credits', 'memo', 'memos', 'retainer', 'retainers', 'retainage', 'retention', 'refund', 'refunds']);
 const TOTAL_WORDS = new Set(['total', 'totals', 'subtotal', 'subtotals']);
@@ -389,7 +390,7 @@ function notAddedNotes(rows: {
   }
   if (settlements.length) {
     const plural = settlements.length > 1;
-    notes.push(`${describeSettlementRows(settlements)} in the invoice totals ${plural ? 'look' : 'looks'} like an applied credit, credit memo, retainer, or refund, so ${plural ? 'they were' : 'it was'} not added as ${plural ? 'lines' : 'a line'}. Check whether the credit is already in Workday before approving.`);
+    notes.push(`${describeSettlementRows(settlements)} in the invoice totals ${plural ? 'look' : 'looks'} like an applied credit, credit memo, retainer, retainage, or refund, so ${plural ? 'they were' : 'it was'} not added as ${plural ? 'lines' : 'a line'}. Check whether the credit is already in Workday before approving.`);
   }
   if (withoutAmount.length) {
     const plural = withoutAmount.length > 1;
@@ -874,10 +875,10 @@ function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | 
 export function hasPrintedSettlement(result: {
   extractedPartialPayment: unknown;
   extractedPriorPayments: unknown[] | null | undefined;
-  extractedRetainage?: unknown;
+  extractedRetainage?: PrintedRetainage | null;
   emailBalanceDue: unknown;
 }): boolean {
-  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.extractedRetainage || result.emailBalanceDue);
+  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || hasPrintedRetainage(result.extractedRetainage) || result.emailBalanceDue);
 }
 
 /**

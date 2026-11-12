@@ -410,6 +410,18 @@ describe('invoice OCR pass', () => {
         expect(mockGetAiResponse.mock.calls[0][0].messages[0].content[0].text).not.toContain('A first read returned');
       });
 
+      it('keeps the first read when the second read reaches the printed total with a Retainage row, which is not a line', async () => {
+        const floral = fullRows.find(row => row.description === 'Fresh Cut Floral Centerpieces')!;
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseWith(productionRows))
+          .mockResolvedValueOnce(responseWith([...productionRows, { ...floral, description: 'Retainage' }]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(27);
+        expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
+      });
+
       it('keeps the first read when the second read still does not match the printed total', async () => {
         const stillShort = productionRows.slice(0, 20);
         mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(stillShort));

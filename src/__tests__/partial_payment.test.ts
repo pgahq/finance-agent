@@ -1,5 +1,6 @@
 import {
   amountDueGapCents,
+  hasPrintedRetainage,
   amountDueShortfallCents,
   formatLineSubtotalNotes,
   formatPartialPaymentNotes,
@@ -664,6 +665,69 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.note).toContain('5% of $591,532.00 is $29,576.60, not the printed retainage $59,153.20; check the retainage against the PDF.');
   });
 
+  it.each([['TBD'], ['see attached'], ['--']])('does not apply and names the unreadable retainage %s', (amount) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, amount } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.line).toBeUndefined();
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain(`the printed retainage "${amount}" is not a readable amount, so the figures cannot be checked, so the printed lines were submitted unchanged`);
+    expect(plan.slackLines).toEqual([`Pay application not applied: the printed retainage "${amount}" is not a readable amount, so the figures cannot be checked.`]);
+  });
+
+  it.each([['Tax'], [''], ['Retainage Release'], ['Less Retainage Released']])('does not apply when the retainage row is labeled "%s"', (label) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.line).toBeUndefined();
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain(`the printed row "${label}" is not labeled as retainage held, so the figures cannot be checked`);
+  });
+
+  it.each([['Retainage'], ['Less 10% Retainage'], ['Retention'], ['Less Retention Held'], ['Retainage Held']])('accepts the retainage label "%s"', (label) => {
+    expect(planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label } }))!.applied).toBe(true);
+  });
+
+  it('does not apply when the document prints no contract sum to date, which a line sum cannot stand in for', () => {
+    const plan = planBalanceInvoice(payAppInput({ lineSubtotal: null }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the document prints no contract sum to date to reconcile the retainage against');
+  });
+
+  it('does not apply when a printed previous payment is not a readable amount', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('a printed previous payment is not a readable amount, so the figures cannot be checked');
+  });
+
+  it('treats a printed $0.00 previous payment as none on a first pay application', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }],
+      amountDue: '$532,378.80',
+    }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('less "Retainage" (10%) $59,153.20, which leaves the $532,378.80 current payment due');
+  });
+
+  it('treats a printed $0.00 retainage as none, so the legacy balance rule decides', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: null, amount: '$0.00' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
+  it('reports a percent mismatch on the email-balance route too', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      retainage: { ...supin474922Retainage, percent: '5%', amount: '$50,000.00' },
+      emailBalanceDue: { amount: '$130,137.04', phrase: 'remaining balance' },
+    }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('5% of $591,532.00 is $29,576.60, not the printed retainage $50,000.00');
+  });
+
+  it('books without a PO link when the PO has no lines', () => {
+    const none = planBalanceInvoice(payAppInput({ poLines: [] as any[] }))!;
+    expect(none.applied).toBe(true);
+    expect(none.noteLabel).toBe('Pay application');
+  });
+
   it('is silent when the lines or contract total do not exceed the amount due', () => {
     expect(planBalanceInvoice(payAppInput({ amountDue: '$591,532.00' }))).toBeUndefined();
     expect(planBalanceInvoice(payAppInput({ amountDue: null }))).toBeUndefined();
@@ -725,9 +789,28 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
   });
 });
 
+describe('hasPrintedRetainage', () => {
+  it.each([
+    [{ label: 'Retainage', percent: '10%', amount: '$59,153.20' }, true],
+    [{ label: 'Less Retention Held', percent: null, amount: '($59,153.20)' }, true],
+    [{ label: 'Retainage', percent: null, amount: 'TBD' }, false],
+    [{ label: 'Retainage', percent: null, amount: '$0.00' }, false],
+    [{ label: 'Tax', percent: null, amount: '$59,153.20' }, false],
+    [{ label: 'Retainage Release', percent: null, amount: '$59,153.20' }, false],
+    [null, false],
+    [undefined, false],
+  ])('reads %j as %s', (retainage, expected) => {
+    expect(hasPrintedRetainage(retainage as any)).toBe(expected);
+  });
+});
+
 describe('amountDueGapCents with retainage', () => {
   it('is not a meaningful check on a pay application', () => {
     expect(amountDueGapCents({ lines: supin474922Rows, amountDue: '$130,137.04', retainage: supin474922Retainage })).toBeUndefined();
+  });
+
+  it('still checks the gap when the retainage row is unreadable or not a retainage row', () => {
+    expect(amountDueGapCents({ lines: supin474922Rows, amountDue: '$130,137.04', retainage: { ...supin474922Retainage, amount: 'TBD' } })).toBe(130137.04 * 100 - 591532 * 100);
   });
 });
 

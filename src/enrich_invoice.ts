@@ -70,7 +70,7 @@ import {
   type LineFallbacks,
 } from './lib/invoice_lines.js';
 import { applyPrintedTaxCharges, hasPrintedSettlement, placeChargesOnPoServiceLines, placeSummaryCharges, summaryCreditCents, reinterpretSinglePriceLinesForCharges, settlePlacedSummaryLines, type PlacedSummaryCharges } from './lib/header_charges.js';
-import { reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
+import { hasPrintedRetainage, reviewAmountDueGapCents, subtotalFreightCents, formatLineSubtotalNotes, formatPartialPaymentNotes, lineSubtotalReviewNote, planBalanceInvoice, planPartialPayment, poTotalReviewNote, secondReadRowsNote } from './lib/partial_payment.js';
 import type { RelatedLob } from './lib/related_worktags.js';
 import { isInvoiceMarkedForSkip, isWorkdayTaskNotAuthorizedError, isWorkdayValidationError, recordInvoiceValidationFailure } from './lib/invoice_validation_failures.js';
 import { notifyEnrichmentResult, notifyResult } from './lib/slack.js';
@@ -436,7 +436,8 @@ async function processInvoice(
     }
     const composedLines = withComposedLineDescriptions(charges.lines);
     // A deposit invoice bills a printed amount smaller than its contract total, so one deposit line replaces the lines.
-    const depositPlan = !submitsLines || chargeWithheld || freightAsLines
+    // A document that holds retainage back is a pay application, so the balance plan reconciles it, not the deposit plan.
+    const depositPlan = !submitsLines || chargeWithheld || freightAsLines || hasPrintedRetainage(result.extractedRetainage)
       ? undefined
       : planPartialPayment({
         partialPayment: result.extractedPartialPayment,
@@ -451,7 +452,7 @@ async function processInvoice(
     if (depositPlan) debug(`Deposit invoice: ${depositPlan.note}`);
     if (depositApplied) chargeCheck = [];
     const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
-    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length || result.extractedRetainage
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length || hasPrintedRetainage(result.extractedRetainage)
       ? undefined
       : reviewAmountDueGapCents({
         lines: charges.lines,

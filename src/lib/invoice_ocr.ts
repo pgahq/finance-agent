@@ -314,7 +314,7 @@ function secondReadClosesGap(
   }
   if (plan.subtotalShortfall !== undefined) {
     const retriedCents = sumExtractedLineCents(retriedRows);
-    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents;
+    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents && added.every(row => !isNonLineRowLabel(row.description));
   }
   return false;
 }
