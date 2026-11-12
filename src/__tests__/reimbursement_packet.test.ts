@@ -399,9 +399,32 @@ describe('formTotalFailure', () => {
     expect(formTotalFailure(1403.95, formLook({ categoryLines: [{ label: 'Meals', amount: 'n/a' }] }))).toContain('could not be read');
   });
 
-  it('rejects the totals row listed as a category line, which doubles the sum', () => {
+  it('rejects a total with no label, a blank category label, and a negative row that offsets the others', () => {
+    expect(formTotalFailure(1403.95, formLook({ totalsLabel: null }))).toBe('the focused look named no label for the form total');
+    expect(formTotalFailure(1403.95, formLook({ totalsLabel: '  ' }))).toBe('the focused look named no label for the form total');
     expect(formTotalFailure(1403.95, formLook({
-      categoryLines: [...formLook().categoryLines, { label: 'TOTALS', amount: '$1,403.95' }],
+      categoryLines: [{ label: ' ', amount: '$440.80' }, { label: 'SC-Lodging', amount: '$963.15' }],
+    }))).toBe('a category line has no label');
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [...formLook().categoryLines, { label: 'Refund', amount: '-$5.00' }, { label: 'Other', amount: '$5.00' }],
+    }))).toContain('could not be read');
+  });
+
+  it.each(['TOTALS', 'Subtotal', 'Sub Total', 'Amount to Pay', 'Grand total'])(
+    'rejects the aggregate row "%s" as a category line even when the sum matches', (label) => {
+      expect(formTotalFailure(1403.95, formLook({ categoryLines: [{ label, amount: '$1,403.95' }] })))
+        .toContain('is a total, not an expense category');
+    });
+
+  it('accepts a zero category row, since forms print every category', () => {
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [...formLook().categoryLines, { label: 'Meals', amount: '$0.00' }],
+    }))).toBeUndefined();
+  });
+
+  it('rejects rows that double the total, such as a repeated total under another label', () => {
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [...formLook().categoryLines, { label: 'Trip', amount: '$1,403.95' }],
     }))).toContain('add up to $2,807.90');
   });
 });

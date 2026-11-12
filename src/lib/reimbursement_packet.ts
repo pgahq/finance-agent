@@ -66,6 +66,8 @@ const SIGNAL = /\breimburs(?:e|es|ed|ing|ement|ements)\b|\bamount\s+to\s+pay\b|\
 const READ_ATTEMPTS = 2;
 const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
+// A totals or subtotal row listed as a category would make the rows add up to the total by itself.
+const AGGREGATE_ROW = /\b(?:sub\s*)?totals?\b|\bamount\s+to\s+pay\b|\bgrand\b/i;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -263,9 +265,12 @@ export function formTotalFailure(foundAmount: number, look: ReimbursementFormTot
   if (cents(total) !== foundCents) {
     return `a focused look at the form found ${formatChargeDollars(total)}`;
   }
+  if (isBlank(look.totalsLabel)) return 'the focused look named no label for the form total';
   if (look.categoryLines.length === 0) return 'the form lists no category lines to check the total against';
   let sum = 0;
   for (const line of look.categoryLines) {
+    if (isBlank(line.label)) return 'a category line has no label';
+    if (AGGREGATE_ROW.test(line.label)) return `the category line "${readableText(line.label)}" is a total, not an expense category`;
     const amount = parseEmailAmount(line.amount);
     if (amount === undefined) {
       return `the form's category line "${readableText(line.label)}" has an amount "${readableText(line.amount)}" that could not be read`;
