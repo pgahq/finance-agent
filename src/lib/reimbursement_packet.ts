@@ -60,6 +60,8 @@ export interface AppliedReimbursement {
   };
   amount: number;
   amountLabel: string;
+  /** The label the form prints beside the total, when it is a recognized payable-total label. */
+  totalLabel?: string;
   /** The email's own limit when it worded its amount as "up to"; the form amount was checked against it. */
   emailCap?: number;
   /** The form total was confirmed by the form's own arithmetic, not by two agreeing reads. */
@@ -92,10 +94,16 @@ const EMAIL_TEXT_LIMIT = 12_000;
 const DESCRIPTION_LIMIT = 120;
 // A totals or subtotal row listed as a category would make the rows add up to the total by itself.
 const AGGREGATE_ROW = /\bsub[-\s]*totals?\b|\b(?:grand\s+)?totals?\b|\bamount\s+to\s+pay\b|\bsum\s+of\s+all\s+columns\b/i;
-// The figure the form-math look reports must sit beside a label for the payable total, never a category or subtotal.
-const PAYABLE_TOTAL_LABEL = /^\s*(?:grand\s+)?totals?\s*:?\s*$|\bamount\s+to\s+pay\b|\btotal\s+(?:reimbursement|to\s+be\s+reimbursed)\b|\bsum\s+of\s+all\s+columns\b/i;
-const LABEL_LIMIT = 60;
-// Looks at one form before giving up: two run together, then one at a time while no two passing looks agree.
+// The whole label beside the figure must be one of these, never a category or subtotal and never a label with other
+// words added ("Total Reimbursement estimate"). It is tested on the label with whitespace collapsed.
+const PAYABLE_TOTAL_LABEL = /^(?:(?:grand\s+)?totals?(?:\s*[-:\u2013]\s*sum\s+of\s+all\s+columns)?|sum\s+of\s+all\s+columns|(?:total\s+)?amount\s+to\s+pay|total\s+reimbursement|total\s+to\s+be\s+reimbursed)\s*:?$/i;
+// The most a form-math look may return before it is rejected (not truncated): columns, line items per column, and
+// characters in any label or amount.
+const MAX_COLUMNS = 12;
+const MAX_ENTRIES = 60;
+const MAX_TEXT = 80;
+// Looks at one form before giving up: two run together, then one at a time while no two passing looks agree. Each look
+// is one model call, so the provider calls for the looks never exceed this.
 const MAX_LOOKS = 4;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
@@ -129,10 +137,11 @@ async function readWithRetries<T>(
   text: string,
   parts: PacketParts,
   abortSignal: AbortSignal | undefined,
-  model?: LanguageModel
+  model?: LanguageModel,
+  attempts = READ_ATTEMPTS
 ): Promise<T> {
   let lastFailure: unknown;
-  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (abortSignal?.aborted) break;
     try {
       const response = await getAiResponse({
@@ -191,7 +200,9 @@ function readFormMath(
     `Read the grand total, the column totals and the line items from the reimbursement form.\n\nDocuments: ${fileList}`,
     parts,
     abortSignal,
-    model
+    model,
+    // One call per look: a look that fails is replaced by the next look, so retries inside a look would double the calls.
+    1
   );
 }
 
@@ -224,6 +235,17 @@ function amountCents(amount: number | undefined): number | null {
 
 function readableText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+// Text copied off a document reaches the invoice note and Slack, so control characters go and whitespace collapses.
+function cleanText(value: string): string {
+  return readableText(value.replace(/\p{Cc}/gu, ' '));
+}
+
+/** The printed label beside a form total, when it is one of the recognized payable-total labels. */
+function payableTotalLabel(value: string | null | undefined): string | undefined {
+  const label = cleanText(value ?? '');
+  return label.length <= MAX_TEXT && PAYABLE_TOTAL_LABEL.test(label) ? label : undefined;
 }
 
 function nameWords(value: string | null): Set<string> {
@@ -295,31 +317,41 @@ type FormMathResult =
   | { total: number; totalText: string; summary: FormMathSummary }
   | { failure: string; noTotal?: true };
 
-const shortLabel = (value: string): string => readableText(value).slice(0, LABEL_LIMIT);
+function oversized(look: ReimbursementFormMath): boolean {
+  const texts = [look.grandTotal, look.grandTotalLabel, ...look.columns.flatMap((column) => [column.label, column.total, ...column.entries])];
+  return look.columns.length > MAX_COLUMNS
+    || look.columns.some((column) => column.entries.length > MAX_ENTRIES)
+    || texts.some((text) => (text ?? '').length > MAX_TEXT);
+}
 
 /**
  * Whether the form's own arithmetic backs the total the look read: the total sits beside a payable-total label, the
  * column totals add up to it, and each column's line items add up to that column's total. The code sums in cents;
- * the model never does. Reasons name columns and labels but never amounts, because they reach the Slack alert.
+ * the model never does. Reasons name columns and labels but never amounts, because they reach the Slack alert. A look
+ * with more columns, entries, or characters than a form has is rejected, never trimmed to fit.
  */
 export function formMathResult(look: ReimbursementFormMath): FormMathResult {
   if (isBlank(look.grandTotal)) return { failure: 'the form shows no total to check', noTotal: true };
+  if (oversized(look)) return { failure: 'the look returned more columns, line items, or text than a form holds' };
   const total = parseFormAmountToPay(look.grandTotal);
   if (total === undefined) return { failure: "the form's total could not be read as a dollar amount" };
   if (cents(total) <= 0) return { failure: "the form's total is zero" };
   if (isBlank(look.grandTotalLabel)) return { failure: 'no label was read for the form total' };
-  const totalLabel = shortLabel(look.grandTotalLabel ?? '');
-  if (!PAYABLE_TOTAL_LABEL.test(look.grandTotalLabel ?? '')) {
-    return { failure: `the form total was read beside "${totalLabel}", which is not a payable-total label` };
+  const totalLabel = payableTotalLabel(look.grandTotalLabel);
+  if (!totalLabel) {
+    return { failure: `the form total was read beside "${cleanText(look.grandTotalLabel ?? '')}", which is not a payable-total label` };
   }
   if (look.columns.length === 0) return { failure: 'the form lists no expense columns to check the total against' };
 
   let columnSum = 0;
   const columns: FormMathSummary['columns'] = [];
+  const seen = new Set<string>();
   for (const column of look.columns) {
     if (isBlank(column.label)) return { failure: 'a column has no label' };
-    const label = shortLabel(column.label);
-    if (AGGREGATE_ROW.test(column.label)) return { failure: `the column "${label}" is a total, not an expense category` };
+    const label = cleanText(column.label);
+    if (AGGREGATE_ROW.test(label)) return { failure: `the column "${label}" is a total, not an expense category` };
+    if (seen.has(label.toLowerCase())) return { failure: `the column "${label}" is listed more than once` };
+    seen.add(label.toLowerCase());
     if (isBlank(column.total)) return { failure: `the column "${label}" has no printed total` };
     const columnTotal = parseEmailAmount(column.total);
     if (columnTotal === undefined) return { failure: `the total of column "${label}" could not be read as a dollar amount` };
@@ -337,7 +369,7 @@ export function formMathResult(look: ReimbursementFormMath): FormMathResult {
   return { total, totalText: readableText(look.grandTotal ?? ''), summary: { label: totalLabel, columns } };
 }
 
-type Look = { passed: { total: number; totalText: string; summary: FormMathSummary; label: string | null } } | { failed: string; noTotal: boolean };
+type Look = { passed: { total: number; totalText: string; summary: FormMathSummary } } | { failed: string; noTotal: boolean };
 
 async function lookAtForm(
   first: ReimbursementPacket,
@@ -356,7 +388,7 @@ async function lookAtForm(
   const result = formMathResult(look);
   debug('Reimbursement form math look', { first: first.formAmountToPay, second: second.formAmountToPay, look, result });
   return 'total' in result
-    ? { passed: { total: result.total, totalText: result.totalText, summary: result.summary, label: look.grandTotalLabel } }
+    ? { passed: { total: result.total, totalText: result.totalText, summary: result.summary } }
     : { failed: result.failure, noTotal: result.noTotal === true };
 }
 
@@ -396,8 +428,8 @@ async function confirmFormTotal(
     settled = settleLooks(looks);
   }
   if (settled.agreeing) {
-    const { totalText, label, summary } = settled.agreeing;
-    return { ...first, formAmountToPay: totalText, formAmountLabel: label, confirmedByFormMath: summary };
+    const { totalText, summary } = settled.agreeing;
+    return { ...first, formAmountToPay: totalText, formAmountLabel: summary.label, confirmedByFormMath: summary };
   }
   if (settled.noTotal && isBlank(first.formAmountToPay) && isBlank(second.formAmountToPay)) return first;
 
@@ -405,6 +437,8 @@ async function confirmFormTotal(
   if (settled.passed.length > 0) failures.push('no two looks at the form both passed and read the same total');
   return {
     ...first,
+    formAmountToPay: null,
+    formAmountLabel: null,
     unconfirmed: "the form's Amount to Pay",
     unconfirmedDetail: [...new Set(failures)].join('; '),
     notConfirmed: ['formAmount'],
@@ -442,7 +476,12 @@ export async function readReimbursementPacket(
     debug('Reimbursement packet reads disagree', { disagreement: others.map((item) => item.phrase), first, second });
     const notConfirmed = new Set<NotConfirmedFact>(others.flatMap((item) => (item.field ? [item.field] : [])));
     if (!amountAgreed) notConfirmed.add('formAmount');
-    return { ...first, unconfirmed: others[0].phrase, notConfirmed: [...notConfirmed] };
+    return {
+      ...first,
+      ...(amountAgreed ? {} : { formAmountToPay: null, formAmountLabel: null }),
+      unconfirmed: others[0].phrase,
+      notConfirmed: [...notConfirmed],
+    };
   }
   return amountAgreed ? first : confirmFormTotal(first, second, fileList, parts, abortSignal);
 }
@@ -572,6 +611,7 @@ export async function decideReimbursement(
   const invoiceDate = normalizePrintedDate(packet.formDate);
   if (!invoiceDate) return manual(packet, 'the reimbursement form prints no readable date, so the invoice would have no number to stop a duplicate');
 
+  const totalLabel = packet.confirmedByFormMath?.label ?? payableTotalLabel(packet.formAmountLabel);
   const payee = await resolvePayee(db, packet, options.defaultSupplierWid);
   if ('failure' in payee) return manual(packet, payee.failure);
 
@@ -581,6 +621,7 @@ export async function decideReimbursement(
       payee,
       amount: amount.amount,
       amountLabel: formatChargeDollars(amount.amount),
+      ...(totalLabel ? { totalLabel } : {}),
       ...(amount.emailCap !== undefined ? { emailCap: amount.emailCap } : {}),
       ...(packet.confirmedByFormMath ? { confirmedByFormMath: packet.confirmedByFormMath } : {}),
       invoiceDate,
@@ -701,7 +742,7 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
   const math = reimbursement.confirmedByFormMath;
   const columns = math?.columns.map((column) => `${column.label} ${column.total}`).join(', ');
   const checked = math ? ` The reads of the form did not agree on this total, so it was checked against the form's own arithmetic: the column totals (${columns}) add up to it, and each column's line items add up to its column total.` : '';
-  const named = math ? `the ${math.label} on the reimbursement form` : 'the Amount to Pay on the reimbursement form';
+  const named = `the ${reimbursement.totalLabel ?? 'Amount to Pay'} on the reimbursement form`;
   return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, ${named}.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
 }
 
@@ -710,7 +751,7 @@ export function reimbursementSlackLines(reimbursement: AppliedReimbursement): st
   const { payee } = reimbursement;
   return [
     `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'supplier_id' ? 'Supplier ID and name' : 'name'}`,
-    `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.confirmedByFormMath?.label ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
+    `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.totalLabel ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
     ...(reimbursement.confirmedByFormMath
       ? ["Check the total first: the reads of the form did not agree on it, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
       : []),

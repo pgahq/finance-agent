@@ -32,6 +32,7 @@ import {
   reimbursementOcr,
   reimbursementSlackLines,
   type AppliedReimbursement,
+  type FormMathSummary,
   type ReimbursementPacket,
 } from '../lib/reimbursement_packet.js';
 
@@ -311,7 +312,10 @@ describe('formMathResult', () => {
       expect(formMathResult(gridLook({ grandTotalLabel }))).toMatchObject({ total: 1500.3 });
     });
 
-  it.each(['TOTAL AMT DUE TO PAYEE', 'Subtotal', 'Total Lodging', 'Hotel', 'Reimbursable expenses'])(
+  it.each([
+    'TOTAL AMT DUE TO PAYEE', 'Subtotal', 'Total Lodging', 'Hotel', 'Reimbursable expenses',
+    'Not a total reimbursement', 'Total Reimbursement estimate', 'Hotel total / Sum of All Columns', 'Sum of All Columns excluding meals',
+  ])(
     'rejects "%s" as the label of the form total', (grandTotalLabel) => {
       expect(formMathResult(gridLook({ grandTotalLabel }))).toEqual({
         failure: `the form total was read beside "${grandTotalLabel}", which is not a payable-total label`,
@@ -349,6 +353,37 @@ describe('formMathResult', () => {
       });
       expect(formMathResult(look)).toEqual({ failure: `the column "${label}" is a total, not an expense category` });
     });
+
+  it('rejects a column listed twice, even when the duplicate makes the columns add up', () => {
+    const look = gridLook({
+      columns: [
+        { label: 'Hotel', total: '$750.15', entries: ['$750.15'] },
+        { label: 'hotel ', total: '$750.15', entries: ['$750.15'] },
+      ],
+      grandTotal: '$1,500.30',
+    });
+    expect(formMathResult(look)).toEqual({ failure: 'the column "hotel" is listed more than once' });
+  });
+
+  it('rejects, rather than trims, a look with more columns, line items, or text than a form holds', () => {
+    const oversized = { failure: 'the look returned more columns, line items, or text than a form holds' };
+    const column = (index: number) => ({ label: `Category ${index}`, total: '$0.00', entries: [] });
+    expect(formMathResult(gridLook({ columns: Array.from({ length: 13 }, (_value, index) => column(index)) }))).toEqual(oversized);
+    expect(formMathResult(withColumn('Meals', { entries: Array.from({ length: 61 }, () => '$0.00') }))).toEqual(oversized);
+    expect(formMathResult(withColumn('Meals', { label: 'M'.repeat(81) }))).toEqual(oversized);
+    expect(formMathResult(gridLook({ grandTotalLabel: `TOTALS${' '.repeat(80)}` }))).toEqual(oversized);
+    expect(formMathResult(withColumn('Meals', { label: 'M'.repeat(80), entries: ['$0.00', '$39.70'] }))).toMatchObject({ total: 1500.3 });
+  });
+
+  it('keeps control characters and newlines out of the labels that reach the note and the alert', () => {
+    const noisy = withColumn('Meals', { label: 'Meals\n\u0007 | <b>and tips' });
+    const result = formMathResult(gridLook({ grandTotalLabel: 'TOTALS\u0000', columns: noisy.columns }));
+    expect(result).toMatchObject({ summary: { label: 'TOTALS' } });
+    expect((result as { summary: FormMathSummary }).summary.columns.map((column) => column.label)).toContain('Meals | <b>and tips');
+    expect(formMathResult(withColumn('Meals', { label: 'Meals\nTOTALS', total: 'n/a' }))).toEqual({
+      failure: 'the column "Meals TOTALS" is a total, not an expense category',
+    });
+  });
 
   it('never puts an amount in a failure reason, because the reason reaches the Slack alert', () => {
     const failures = [
@@ -538,7 +573,8 @@ describe('a total the reads did not both give', () => {
   it('stops when the looks could not be completed', async () => {
     script([inventedPacket(), otherPacket()], Array.from({ length: 8 }, () => new Error('gateway timeout')));
     const result = await read();
-    expect(lookCalls()).toHaveLength(8);
+    expect(lookCalls()).toHaveLength(4);
+    expect(aiResponse).toHaveBeenCalledTimes(6);
     expect(result).toMatchObject({ unconfirmed: "the form's Amount to Pay", unconfirmedDetail: 'a look at the form could not be completed' });
   });
 
@@ -600,9 +636,27 @@ describe('a total the reads did not both give', () => {
     const decision = await decideReimbursement(db as never, await read());
     if (decision.outcome !== 'apply') throw new Error('expected apply');
     expect(decision.reimbursement).not.toHaveProperty('confirmedByFormMath');
-    expect(reimbursementNote(decision.reimbursement)).toContain('the Amount to Pay on the reimbursement form.');
+    expect(reimbursementNote(decision.reimbursement)).toContain('the TOTALS on the reimbursement form.');
     expect(reimbursementNote(decision.reimbursement)).not.toContain('arithmetic');
     expect(reimbursementSlackLines(decision.reimbursement).join('\n')).not.toContain('Check the total first');
+  });
+
+  it('says Amount to Pay, not an invented label, when two reads agree on a total under a label the form does not print', async () => {
+    script([inventedPacket({ formAmountToPay: '$1,500.30' }), inventedPacket({ formAmountToPay: '$1,500.30' })]);
+    const decision = await decideReimbursement(db as never, await read());
+    if (decision.outcome !== 'apply') throw new Error('expected apply');
+    expect(decision.reimbursement).not.toHaveProperty('totalLabel');
+    expect(reimbursementNote(decision.reimbursement)).toContain('the Amount to Pay on the reimbursement form.');
+    expect(JSON.stringify(decision)).not.toContain('TOTAL AMT DUE');
+  });
+
+  it('does not leave a total the reads did not agree on on the unconfirmed read', async () => {
+    script([inventedPacket(), otherPacket()], [brokenLook(), brokenLook(), brokenLook(), brokenLook()]);
+    expect(await read()).toMatchObject({ formAmountToPay: null, formAmountLabel: null, unconfirmed: "the form's Amount to Pay" });
+    script([inventedPacket(), otherPacket({ payeeName: 'JORDAN P REYES' })]);
+    expect(await read()).toMatchObject({ formAmountToPay: null, formAmountLabel: null, unconfirmed: 'the payee' });
+    script([totalsPacket(), totalsPacket({ formDate: '11/09/2026' })]);
+    expect(await read()).toMatchObject({ formAmountToPay: '$1,500.30', unconfirmed: 'the form date' });
   });
 
   it('shows the confirmed total, not a guess, when the packet then stops for another reason', async () => {
@@ -643,6 +697,7 @@ describe('decideReimbursement', () => {
         },
         amount: 1000,
         amountLabel: '$1,000.00',
+        totalLabel: 'Amount to Pay',
         invoiceDate: '2026-11-02',
         description: 'Hotel reimbursement - 2026 Sample Marathon Team',
       },
