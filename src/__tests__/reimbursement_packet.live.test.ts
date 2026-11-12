@@ -1,10 +1,9 @@
-// Runs the real packet read (GPT-5.4, then the Haiku confirming read; no mocks) on fictional packets that put the
+// Runs the real packet read (one read on GPT-5.4; no mocks) on fictional packets that put the
 // "invoice the person for the form amount, never the folio" rule at risk. It is skipped unless
 // RUN_LIVE_REIMBURSEMENT_EVAL=1 and AI_GATEWAY_API_KEY are set, so CI never calls the model:
 //   RUN_LIVE_REIMBURSEMENT_EVAL=1 npx jest --ci src/__tests__/reimbursement_packet.live.test.ts
-// RUNS (default 3) sets how many times each packet is read. Each packet must come out the same every time, and the
-// two reads must agree, because a disagreement sends a real packet to manual entry.
-import { readReimbursementPacket, type ReimbursementRead } from '../lib/reimbursement_packet.js';
+// RUNS (default 3) sets how many times each packet is read. Each packet must come out the same every time.
+import { readReimbursementPacket, type ReimbursementPacket } from '../lib/reimbursement_packet.js';
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import {
   folioTotal,
@@ -19,7 +18,7 @@ const RUNS = Number(process.env.RUNS) || 3;
 
 type Email = { emailFrom?: string; subject?: string; plainTextBody?: string };
 
-async function read(pdf: Buffer, fileName: string, email?: Email): Promise<ReimbursementRead | undefined> {
+async function read(pdf: Buffer, fileName: string, email?: Email): Promise<ReimbursementPacket | undefined> {
   return readReimbursementPacket(
     [{ id: '1', fileName, contentType: 'application/pdf', presignedUrl: 'https://example.invalid/packet.pdf', expiresAt: new Date(), s3Key: 'packet', buffer: pdf }],
     email
@@ -59,7 +58,6 @@ live('reimbursement packet read on fictional packets (live)', () => {
       expect(packet?.kind).toBe('reimbursement');
       expect(packet?.payeeName).toMatch(/jordan.*reyes/i);
       expect(cents(packet?.formAmountToPay)).toBe(100000);
-      expect(packet?.unconfirmed).toBeUndefined();
     }
   }, 300000);
 
@@ -70,7 +68,6 @@ live('reimbursement packet read on fictional packets (live)', () => {
       expect(packet?.kind).toBe('reimbursement');
       expect(packet?.payeeName).toMatch(/avery.*lindqvist/i);
       expect(cents(packet?.formAmountToPay)).toBe(48750);
-      expect(packet?.unconfirmed).toBeUndefined();
     }
   }, 300000);
 
@@ -80,7 +77,6 @@ live('reimbursement packet read on fictional packets (live)', () => {
       const packet = await read(pdf, 'expense report.pdf');
       expect(packet?.kind).toBe('reimbursement');
       expect(cents(packet?.formAmountToPay)).toBe(21240);
-      expect(packet?.unconfirmed).toBeUndefined();
     }
   }, 300000);
 

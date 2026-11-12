@@ -1,7 +1,6 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import type { DatabaseConnection } from './database.js';
-import { getOcrModel } from './models.js';
 import { formatChargeDollars, parseCanonicalChargeAmount } from './invoice_lines.js';
 import { attachmentContentParts, convertOfficeAttachmentsForModel } from './invoice_ocr.js';
 import { supplierNamesMatch } from './po_supplier.js';
@@ -17,9 +16,6 @@ import {
 } from '../prompts/reimbursement_packet_prompt.js';
 
 export type { ReimbursementPacket };
-
-/** The packet as read. `unconfirmed` is set when a second, independent read of a reimbursement disagreed with the first. */
-export type ReimbursementRead = ReimbursementPacket & { unconfirmed?: string };
 
 /**
  * A reimbursement packet asks AP to pay a person back. The folio or receipt in it is backup, so the invoice goes to
@@ -86,12 +82,11 @@ function emailText(emailContext: EmailContextInput): string {
 
 type PacketParts = ReturnType<typeof attachmentContentParts>;
 
-async function readPacketOnce(
+async function readPacket(
   fileList: string,
   parts: PacketParts,
   emailContext: EmailContextInput,
-  abortSignal: AbortSignal | undefined,
-  verifier = false
+  abortSignal: AbortSignal | undefined
 ): Promise<ReimbursementPacket> {
   let lastFailure: unknown;
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
@@ -102,9 +97,6 @@ async function readPacketOnce(
         schema: ReimbursementPacketSchema,
         tools: {},
         abortSignal,
-        // The confirming read uses the document-reading model from another vendor, so a consistent misread by
-        // the first model is not simply repeated.
-        ...(verifier ? { model: getOcrModel(), temperature: null } : {}),
         messages: [
           {
             role: 'user',
@@ -153,60 +145,20 @@ function parseEmailAmount(value: string | null | undefined): number | undefined 
   return value == null ? undefined : parseCanonicalChargeAmount(withoutPadding(value));
 }
 
-function amountCents(amount: number | undefined): number | null {
-  return amount === undefined ? null : Math.round(amount * 100);
-}
-
 function readableText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
-}
-
-function nameWords(value: string | null): Set<string> {
-  return new Set(
-    (value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1)
-  );
-}
-
-// Single letters are dropped, so "Morgan Ellery" and "MORGAN T ELLERY" are one person. A dropped whole word
-// ("Jane Doe" and "Jane Doe Smith") is not: the first read's name picks the supplier, so it must be the name both saw.
-function sameName(left: string | null, right: string | null): boolean {
-  const a = nameWords(left);
-  const b = nameWords(right);
-  return a.size === b.size && [...a].every((word) => b.has(word));
-}
-
-function comparableId(value: string | null): string | null {
-  return value?.match(SUPPLIER_ID_PATTERN)?.[0].toUpperCase() ?? null;
-}
-
-/** What the two reads of one packet disagree on, if anything. Every fact that decides who is paid, how much, and under what number must match. */
-export function packetDisagreement(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
-  if (first.kind !== second.kind) return 'whether it is a reimbursement';
-  if (!sameName(first.payeeName, second.payeeName)) return 'the payee';
-  if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) return 'the payee Supplier ID';
-  if (amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
-    return "the form's Amount to Pay";
-  }
-  const firstEmailCents = amountCents(parseEmailAmount(first.emailAmount));
-  if (firstEmailCents !== amountCents(parseEmailAmount(second.emailAmount))) return "the email's amount";
-  if (firstEmailCents !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
-    return "whether the email's amount is a limit";
-  }
-  if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) return 'the form date';
-  return undefined;
 }
 
 /**
  * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
  * no document can be read. A model or schema failure throws (after one retry), so a packet that may be a reimbursement
- * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time
- * by a different model, and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
+ * is never silently booked as a supplier invoice.
  */
 export async function readReimbursementPacket(
   attachments: PresignedAttachment[],
   emailContext: EmailContextInput,
   abortSignal?: AbortSignal
-): Promise<ReimbursementRead | undefined> {
+): Promise<ReimbursementPacket | undefined> {
   if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
   const readable = await convertOfficeAttachmentsForModel(attachments);
   const parts = attachmentContentParts(readable);
@@ -215,13 +167,7 @@ export async function readReimbursementPacket(
     return undefined;
   }
   const fileList = readable.map((attachment) => `${attachment.fileName} (${attachment.contentType})`).join('; ');
-  const first = await readPacketOnce(fileList, parts, emailContext, abortSignal);
-  if (first.kind !== 'reimbursement') return first;
-
-  const second = await readPacketOnce(fileList, parts, emailContext, abortSignal, true);
-  const disagreement = packetDisagreement(first, second);
-  if (disagreement) debug('Reimbursement packet reads disagree', { disagreement, first, second });
-  return disagreement ? { ...first, unconfirmed: disagreement } : first;
+  return readPacket(fileList, parts, emailContext, abortSignal);
 }
 
 function cents(amount: number): number {
@@ -318,16 +264,12 @@ async function resolvePayee(
  */
 export async function decideReimbursement(
   db: DatabaseConnection,
-  packet: ReimbursementRead | undefined,
+  packet: ReimbursementPacket | undefined,
   options: { defaultSupplierWid?: string } = {}
 ): Promise<ReimbursementDecision> {
   if (!packet || packet.kind !== 'reimbursement') return { outcome: 'not_reimbursement' };
   if (packet.confidence < MIN_CONFIDENCE) {
     return manual(packet, 'the packet looks like a reimbursement but the read was not confident enough to book it');
-  }
-
-  if (packet.unconfirmed) {
-    return manual(packet, `two reads of the packet disagreed on ${packet.unconfirmed}`);
   }
 
   const amount = approvedAmount(packet);
