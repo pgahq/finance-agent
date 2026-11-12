@@ -707,8 +707,22 @@ describe('a total the reads did not both give', () => {
       expect(result?.unconfirmedDetail).toBe('there was not enough time left to look at the form again');
     });
 
+    it('cuts off a look that is still running at the deadline and stops in manual entry', async () => {
+      clock([0, 10_000, 209_995, 209_995, 209_995]);
+      let sawSignal: AbortSignal | undefined;
+      aiResponse.mockReset().mockImplementation(async ({ prompt, abortSignal }: { prompt: string; abortSignal?: AbortSignal }) => {
+        if (prompt !== reimbursementFormMathPrompt) return aiResponse.mock.calls.length === 1 ? inventedPacket() : otherPacket();
+        sawSignal = abortSignal;
+        return new Promise((_resolve, reject) => abortSignal?.addEventListener('abort', () => reject(new Error('timed out'))));
+      });
+      const result = await read();
+      expect(sawSignal?.aborted).toBe(true);
+      expect(result).toMatchObject({ formAmountToPay: null, notConfirmed: ['formAmount'] });
+      expect(result?.unconfirmedDetail).toContain('a look at the form could not be completed');
+    });
+
     it('stops looking one at a time once the budget is gone, instead of running into the timeout', async () => {
-      clock([0, 10_000, 200_000]);
+      clock([0, 10_000, 10_000, 200_000]);
       script([inventedPacket(), otherPacket()], [gridLook(), brokenLook(), gridLook(), gridLook()]);
       const result = await read();
       expect(lookCalls()).toHaveLength(2);

@@ -108,6 +108,8 @@ const MAX_LOOKS = 4;
 // The processor has 480 s for the reads, the looks, OCR, matching and the Workday write. The live runs took 11-47 s end
 // to end; no look starts once this much of the run is gone, and the packet stops in manual entry instead of timing out.
 const LOOK_BUDGET_MS = 150_000;
+// A look that starts inside the budget is still cut off here, so a slow provider cannot carry the run into the timeout.
+const LOOK_DEADLINE_MS = 210_000;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -204,7 +206,8 @@ function readFormMath(
     parts,
     abortSignal,
     model,
-    // One call per look: a look that fails is replaced by the next look, so retries inside a look would double the calls.
+    // One call per look from this code: a look that fails is replaced by the next look, so retries here would double
+    // the calls. Retries inside the SDK or provider are outside this count; the deadline above bounds their time.
     1
   );
 }
@@ -389,13 +392,14 @@ async function lookAtForm(
   second: ReimbursementPacket,
   fileList: string,
   parts: PacketParts,
-  abortSignal: AbortSignal | undefined
+  lookSignal: AbortSignal | undefined,
+  callerSignal: AbortSignal | undefined
 ): Promise<Look> {
   let look: ReimbursementFormMath;
   try {
-    look = await readFormMath(fileList, parts, abortSignal, getOcrModel());
+    look = await readFormMath(fileList, parts, lookSignal, getOcrModel());
   } catch (error) {
-    if (abortSignal?.aborted) throw error;
+    if (callerSignal?.aborted) throw error;
     return { failed: 'a look at the form could not be completed', noTotal: false };
   }
   const result = formMathResult(look);
@@ -436,12 +440,17 @@ async function confirmFormTotal(
   startedAt: number
 ): Promise<ReimbursementRead> {
   const timeLeft = () => Date.now() - startedAt < LOOK_BUDGET_MS;
-  const looks: Look[] = timeLeft()
-    ? await Promise.all([0, 1].map(() => lookAtForm(first, second, fileList, parts, abortSignal)))
-    : [];
+  let lookSignal = abortSignal;
+  const startLook = () => lookAtForm(first, second, fileList, parts, lookSignal, abortSignal);
+  const looks: Look[] = [];
+  if (timeLeft()) {
+    const deadline = AbortSignal.timeout(Math.max(1, startedAt + LOOK_DEADLINE_MS - Date.now()));
+    lookSignal = abortSignal ? AbortSignal.any([abortSignal, deadline]) : deadline;
+    looks.push(...await Promise.all([startLook(), startLook()]));
+  }
   let settled = settleLooks(looks);
   while (looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal && timeLeft()) {
-    looks.push(await lookAtForm(first, second, fileList, parts, abortSignal));
+    looks.push(await startLook());
     settled = settleLooks(looks);
   }
   const outOfTime = looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal;

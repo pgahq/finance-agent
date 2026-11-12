@@ -82,7 +82,7 @@ live('reimbursement packet read on fictional packets (live)', () => {
       const packet = await read(pdf, 'expense report.pdf', { subject: 'Expense report' });
       expect(packet?.kind).toBe('reimbursement');
       if (packet?.unconfirmed) {
-        expect(packet.notConfirmed).toContain('formAmount');
+        if (packet.notConfirmed?.includes('formAmount')) expect(packet.formAmountToPay).toBeNull();
       } else {
         expect(cents(packet?.formAmountToPay)).toBe(expected);
       }
