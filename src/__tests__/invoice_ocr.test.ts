@@ -967,6 +967,15 @@ describe('invoice OCR pass', () => {
       expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [] })).extractedRetainage).toBeNull();
     });
 
+    it.each(['Total Earned Less Retainage', 'Balance to Finish, including retainage', 'Deposit retained'])('does not split the "%s" row out as retainage held, and keeps looking for the real retainage row', label => {
+      const other = { label, amount: '$532,378.80' };
+      const retainage = { label: 'Retainage 10%', amount: '$53,237.88' };
+      const normalized = normalizeInvoiceOcrResult(response({ extractedPriorPayments: [other, retainage] }));
+      expect(normalized.extractedRetainage).toEqual({ label: 'Retainage 10%', percent: '10%', amount: '$53,237.88' });
+      expect(normalized.extractedPriorPayments).toEqual([other]);
+      expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [other] })).extractedRetainage).toBeNull();
+    });
+
     it('does not split a retainage release row out as retainage held', () => {
       const release = { label: 'Retainage Released', amount: '$59,153.20' };
       const normalized = normalizeInvoiceOcrResult(response({ extractedPriorPayments: [release] }));

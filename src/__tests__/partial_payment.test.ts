@@ -631,6 +631,13 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     expect(plan.noteLabel).toBe('Balance invoice');
   });
 
+  it('leaves the PO line to the merge, naming the base, when a several-line PO has a $591,532.00 line', () => {
+    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $532,378.80 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
+  });
+
   it('is what the old contract-sum base got wrong: $591,532.00 less payments is $189,290.24, not the amount due', () => {
     const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'REPORT TOTALS', amount: '$591,532.00' } }))!;
     expect(plan.applied).toBe(false);
@@ -641,6 +648,7 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     expect(59153.2).toBeCloseTo(591532 - 532378.8, 2);
     const plan = planBalanceInvoice(printed({ retainage: { label: 'Balance to Finish, including retainage', percent: null, amount: '$59,153.20' } }))!;
     expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the printed row "Balance to Finish, including retainage" is not labeled as retainage held');
   });
 });
 
@@ -883,7 +891,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
       const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 300000), poLine('L2', 291532)] }))!;
       expect(plan.applied).toBe(true);
       expect(plan.poLines).toBeUndefined();
-      expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $591,532.00 contract total, so the PO line was left to the line merge; check the PO line coding before approving.');
+      expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $591,532.00 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
       expect(plan.slackLines).toHaveLength(2);
     });
   });

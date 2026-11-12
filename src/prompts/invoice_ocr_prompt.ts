@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { InvoiceEnrichmentSchema } from './enrich_invoice_prompt.js';
+import { isRetainageHeldLabel } from '../lib/retainage_label.js';
 
 const enrichment = InvoiceEnrichmentSchema.shape;
 const extractedLine = enrichment.extractedInvoiceLines.unwrap().element.shape;
@@ -198,8 +199,6 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 }
 
 // A pay application's retainage is read as one of the printed payment rows (a deduction from the contract total), then split out here.
-const RETAINAGE_ROW_LABEL = /\b(?:retainage|retention|retained)\b/i;
-const RETAINAGE_RELEASE_LABEL = /\breleas(?:e|ed|es)\b/i;
 
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
@@ -220,7 +219,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
   const printedRows = (extractedPriorPayments ?? [])
     .filter(payment => payment.amount.trim())
     .map(payment => ({ label: payment.label.trim(), amount: payment.amount.trim() }));
-  const retainageRow = printedRows.find(row => RETAINAGE_ROW_LABEL.test(row.label) && !RETAINAGE_RELEASE_LABEL.test(row.label));
+  const retainageRow = printedRows.find(row => isRetainageHeldLabel(row.label));
   const priorPayments = printedRows.filter(row => row !== retainageRow);
   const partialPayment = textOrNull(extractedPartialPayment?.amount)
     ? {

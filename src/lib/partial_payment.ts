@@ -10,6 +10,9 @@ import {
   type ExtractedInvoiceLine,
 } from './invoice_lines.js';
 import type { PurchaseOrderLine } from './workday.js';
+import { isRetainageHeldLabel } from './retainage_label.js';
+
+export { isRetainageHeldLabel };
 
 export interface PrintedAmount {
   label: string;
@@ -463,18 +466,10 @@ function readPrintedAmount(raw: string | null | undefined): number | undefined {
   return text && WHOLE_AMOUNT.test(text) ? parseExtractedLineAmount(text) : undefined;
 }
 
-const RETAINAGE_LABEL_WORDS = new Set(['retainage', 'retention', 'retained']);
-
 /** A pay application's base line: "Total Completed and Stored to Date" (G702 line 4). */
 function isCompletedToDateLabel(label: string | null | undefined): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ');
   return tokens.includes('completed') && tokens.includes('stored');
-}
-
-/** Whether the row is labeled as a holdback and not as a release of one. */
-export function isRetainageHeldLabel(label: string | null | undefined): boolean {
-  const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
-  return tokens.some(token => RETAINAGE_LABEL_WORDS.has(token)) && !tokens.some(token => ['release', 'released', 'service', 'services'].includes(token));
 }
 
 /** Whether the document prints a readable amount, even $0.00, on a row labeled as retainage held: it is a pay application. */
@@ -504,7 +499,7 @@ function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, du
   const contractLines = lines.filter(line => poLineAmountCents(line) === contractCents && line.availableForInvoicing !== false);
   if (contractLines.length === 1) return { status: 'matched', line: contractLines[0], consumed: false };
   if (lines.length === 1) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and none or several PO lines are for the ${centsDollars(contractCents)} contract total, so the PO line was left to the line merge` };
+  return { status: 'unpinned', reason: `${exact.reason}, and none or several PO lines are for the ${centsDollars(contractCents)} total to date, so the PO line was left to the line merge` };
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
