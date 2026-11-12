@@ -11,11 +11,14 @@ jest.mock('../lib/invoice_ocr.js', () => ({
 
 import { findDocumentsContainingWords } from '../lib/database.js';
 import { getAiResponse } from '../lib/ai.js';
+import type { ReimbursementFormTotal } from '../prompts/reimbursement_packet_prompt.js';
 import { attachmentContentParts } from '../lib/invoice_ocr.js';
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import {
   applyReimbursementToEnrichment,
   decideReimbursement,
+  formAmountGap,
+  formTotalFailure,
   hasReimbursementSignal,
   packetDisagreement,
   parseFormAmountToPay,
@@ -236,6 +239,170 @@ describe('packetDisagreement', () => {
     expect(packetDisagreement(packet(), packet({ payeeName: 'Jordan Ellery' }))).toBe('the payee');
     expect(packetDisagreement(packet(), packet({ payeeSupplierId: 'S-000123' }))).toBe('the payee Supplier ID');
     expect(packetDisagreement(packet(), packet({ emailAmount: '$900.00' }))).toBe("the email's amount");
+  });
+});
+
+// The Ellis packet shape (2026-11-12): one read found no Amount to Pay, the other read the TOTALS row. The form's
+// category lines are entered separately in Workday and add up to that total.
+const formLook = (overrides: Partial<ReimbursementFormTotal> = {}): ReimbursementFormTotal => ({
+  amountToPay: '$1,403.95',
+  totalsLabel: 'TOTALS',
+  categoryLines: [
+    { label: 'SC - ground transportation', amount: '$440.80' },
+    { label: 'SC-Lodging', amount: '$963.15' },
+  ],
+  ...overrides,
+});
+const totalsPacket = (overrides: Partial<ReimbursementPacket> = {}) =>
+  packet({ formAmountToPay: '$1,403.95', purpose: '110th Annual Meeting', expenseKind: 'hotel', ...overrides });
+const missingTotalPacket = (overrides: Partial<ReimbursementPacket> = {}) => totalsPacket({ formAmountToPay: null, ...overrides });
+
+describe('a form total only one read found', () => {
+  const attachments = [{ fileName: 'packet.pdf', contentType: 'application/pdf' }] as never;
+  const email = { subject: 'Expense report' } as never;
+  const read = () => readReimbursementPacket(attachments, email);
+
+  it('books the form total when a focused look matches it and the category lines add up', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(formLook());
+    const result = await read();
+    expect(aiResponse).toHaveBeenCalledTimes(3);
+    expect(aiResponse.mock.calls[2][0]).toMatchObject({ model: expect.anything(), temperature: null });
+    expect(result).not.toHaveProperty('unconfirmed');
+    expect(await decideReimbursement(db as never, result)).toMatchObject({
+      outcome: 'apply',
+      reimbursement: { amount: 1403.95, amountLabel: '$1,403.95' },
+    });
+  });
+
+  it('books it the same way when the second read is the one that found no total', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(formLook());
+    const result = await read();
+    expect(result?.formAmountToPay).toBe('$1,403.95');
+    expect(result).not.toHaveProperty('unconfirmed');
+  });
+
+  it('books the total, not a category line', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(formLook());
+    const decision = await decideReimbursement(db as never, await read());
+    expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { amount: 1403.95 } });
+    expect(JSON.stringify(decision)).not.toContain('963.15');
+  });
+
+  it.each([
+    ['finds no total', formLook({ amountToPay: null, totalsLabel: null }), 'a focused look at the form found no Amount to Pay'],
+    ['finds a different total', formLook({ amountToPay: '$963.15' }), 'a focused look at the form found $963.15'],
+    ['finds category lines that do not add up', formLook({ categoryLines: [{ label: 'SC-Lodging', amount: '$963.15' }] }), "the form's category lines add up to $963.15, not $1,403.95"],
+    ['finds no category lines', formLook({ categoryLines: [] }), 'the form lists no category lines to check the total against'],
+  ])('stops for manual entry when the focused look %s', async (_name, look, reason) => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(look);
+    const result = await read();
+    expect(result?.unconfirmed).toContain('one read found $1,403.95 and the other found none');
+    expect(result?.unconfirmed).toContain(reason);
+    const decision = await decideReimbursement(db as never, result);
+    expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('disagreed on') } });
+  });
+
+  it('stops for manual entry when the focused look cannot be completed', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket())
+      .mockRejectedValue(new Error('gateway timeout'));
+    const result = await read();
+    expect(aiResponse).toHaveBeenCalledTimes(4);
+    expect(result?.unconfirmed).toContain('the focused look at the form could not be completed');
+  });
+
+  it('does not take a focused look when the reads also disagree on another fact', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket({ formDate: '11/09/2026' }));
+    const result = await read();
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(result?.unconfirmed).toBe('the form date');
+  });
+
+  it('does not take a focused look when both reads found the same total or two different totals', async () => {
+    aiResponse.mockReset().mockResolvedValue(totalsPacket());
+    expect((await read())?.unconfirmed).toBeUndefined();
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(totalsPacket({ formAmountToPay: '$963.15' }));
+    expect((await read())?.unconfirmed).toBe("the form's Amount to Pay");
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not take a focused look when neither read found a total', async () => {
+    aiResponse.mockReset().mockResolvedValue(missingTotalPacket());
+    const result = await read();
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(await decideReimbursement(db as never, result)).toMatchObject({
+      outcome: 'manual_entry',
+      manual: { reason: 'the reimbursement form prints no Amount to Pay' },
+    });
+  });
+});
+
+describe('formAmountGap', () => {
+  it('finds the total one read has when the other is blank, in either order', () => {
+    expect(formAmountGap(missingTotalPacket(), totalsPacket())).toEqual({ found: '$1,403.95' });
+    expect(formAmountGap(totalsPacket(), missingTotalPacket({ formAmountToPay: '  ' }))).toEqual({ found: '$1,403.95' });
+  });
+
+  it('is not a gap when both or neither read has a total, or the one found is unreadable, zero, or negative', () => {
+    expect(formAmountGap(totalsPacket(), totalsPacket({ formAmountToPay: '$1.00' }))).toBeUndefined();
+    expect(formAmountGap(missingTotalPacket(), missingTotalPacket())).toBeUndefined();
+    expect(formAmountGap(missingTotalPacket(), totalsPacket({ formAmountToPay: 'TBD' }))).toBeUndefined();
+    expect(formAmountGap(missingTotalPacket(), totalsPacket({ formAmountToPay: '$0.00' }))).toBeUndefined();
+    expect(formAmountGap(missingTotalPacket(), totalsPacket({ formAmountToPay: '-$5.00' }))).toBeUndefined();
+  });
+
+  it('is not flagged by packetDisagreement, but a different non-blank total still is', () => {
+    expect(packetDisagreement(missingTotalPacket(), totalsPacket())).toBeUndefined();
+    expect(packetDisagreement(totalsPacket(), missingTotalPacket())).toBeUndefined();
+    expect(packetDisagreement(missingTotalPacket(), totalsPacket({ formAmountToPay: '$0.00' }))).toBe("the form's Amount to Pay");
+    expect(packetDisagreement(missingTotalPacket(), totalsPacket({ payeeName: 'Jordan Ellery' }))).toBe('the payee');
+  });
+});
+
+describe('formTotalFailure', () => {
+  it('accepts a matching total whose category lines add up in cents', () => {
+    expect(formTotalFailure(1403.95, formLook())).toBeUndefined();
+    expect(formTotalFailure(1403.95, formLook({ amountToPay: '($    1,403.95)' }))).toBeUndefined();
+    expect(formTotalFailure(0.3, formLook({
+      amountToPay: '$0.30',
+      categoryLines: [{ label: 'a', amount: '$0.10' }, { label: 'b', amount: '$0.20' }],
+    }))).toBeUndefined();
+  });
+
+  it('rejects a total that is not a dollar amount', () => {
+    expect(formTotalFailure(1403.95, formLook({ amountToPay: 'see receipts' }))).toContain('is not a dollar amount');
+  });
+
+  it('rejects a category line that cannot be read, including a credit in parentheses', () => {
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [{ label: 'Lodging', amount: '$1,500.00' }, { label: 'Advance', amount: '($96.05)' }],
+    }))).toContain('"Advance" has an amount "($96.05)" that could not be read');
+    expect(formTotalFailure(1403.95, formLook({ categoryLines: [{ label: 'Meals', amount: 'n/a' }] }))).toContain('could not be read');
+  });
+
+  it('rejects the totals row listed as a category line, which doubles the sum', () => {
+    expect(formTotalFailure(1403.95, formLook({
+      categoryLines: [...formLook().categoryLines, { label: 'TOTALS', amount: '$1,403.95' }],
+    }))).toContain('add up to $2,807.90');
   });
 });
 

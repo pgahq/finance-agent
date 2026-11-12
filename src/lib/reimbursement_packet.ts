@@ -1,4 +1,6 @@
 import { debug } from '@pga/logger';
+import type { LanguageModel } from 'ai';
+import type { z } from 'zod';
 import { getAiResponse } from './ai.js';
 import type { DatabaseConnection } from './database.js';
 import { getOcrModel } from './models.js';
@@ -11,8 +13,11 @@ import type { InvoiceData, PresignedAttachment } from './types.js';
 import type { InvoiceEnrichmentResult } from '../prompts/enrich_invoice_prompt.js';
 import { normalizePrintedDate, type InvoiceOcrResult } from '../prompts/invoice_ocr_prompt.js';
 import {
+  ReimbursementFormTotalSchema,
   ReimbursementPacketSchema,
+  reimbursementFormTotalPrompt,
   reimbursementPacketPrompt,
+  type ReimbursementFormTotal,
   type ReimbursementPacket,
 } from '../prompts/reimbursement_packet_prompt.js';
 
@@ -86,48 +91,76 @@ function emailText(emailContext: EmailContextInput): string {
 
 type PacketParts = ReturnType<typeof attachmentContentParts>;
 
-async function readPacketOnce(
+async function readWithRetries<T>(
+  name: string,
+  schema: z.ZodType<T>,
+  prompt: string,
+  text: string,
+  parts: PacketParts,
+  abortSignal: AbortSignal | undefined,
+  model?: LanguageModel
+): Promise<T> {
+  let lastFailure: unknown;
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
+    if (abortSignal?.aborted) break;
+    try {
+      const response = await getAiResponse({
+        prompt,
+        schema,
+        tools: {},
+        abortSignal,
+        ...(model ? { model, temperature: null } : {}),
+        messages: [{ role: 'user', content: [{ type: 'text', text }, ...parts] }],
+      });
+      const parsed = schema.safeParse(response);
+      if (parsed.success) {
+        debug(`${name} read`, parsed.data);
+        return parsed.data;
+      }
+      debug(`${name} read failed schema validation`, { attempt, issues: parsed.error.issues });
+      lastFailure = new Error(`${name} read returned an unexpected shape`);
+    } catch (error) {
+      debug(`${name} read failed`, { attempt, error });
+      lastFailure = error;
+    }
+  }
+  throw lastFailure ?? new Error(`${name} read was aborted`);
+}
+
+function readPacketOnce(
   fileList: string,
   parts: PacketParts,
   emailContext: EmailContextInput,
   abortSignal: AbortSignal | undefined,
   verifier = false
 ): Promise<ReimbursementPacket> {
-  let lastFailure: unknown;
-  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
-    if (abortSignal?.aborted) break;
-    try {
-      const response = await getAiResponse({
-        prompt: reimbursementPacketPrompt,
-        schema: ReimbursementPacketSchema,
-        tools: {},
-        abortSignal,
-        // The confirming read uses the document-reading model from another vendor, so a consistent misread by
-        // the first model is not simply repeated.
-        ...(verifier ? { model: getOcrModel(), temperature: null } : {}),
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: `Decide whether this packet is an expense reimbursement.\n\nDocuments: ${fileList}\n\nEmail:\n${emailText(emailContext)}` },
-              ...parts,
-            ],
-          },
-        ],
-      });
-      const parsed = ReimbursementPacketSchema.safeParse(response);
-      if (parsed.success) {
-        debug('Reimbursement packet read', parsed.data);
-        return parsed.data;
-      }
-      debug('Reimbursement packet read failed schema validation', { attempt, issues: parsed.error.issues });
-      lastFailure = new Error('Reimbursement packet read returned an unexpected shape');
-    } catch (error) {
-      debug('Reimbursement packet read failed', { attempt, error });
-      lastFailure = error;
-    }
-  }
-  throw lastFailure ?? new Error('Reimbursement packet read was aborted');
+  return readWithRetries(
+    'Reimbursement packet',
+    ReimbursementPacketSchema,
+    reimbursementPacketPrompt,
+    `Decide whether this packet is an expense reimbursement.\n\nDocuments: ${fileList}\n\nEmail:\n${emailText(emailContext)}`,
+    parts,
+    abortSignal,
+    // The confirming read uses the document-reading model from another vendor, so a consistent misread by
+    // the first model is not simply repeated.
+    verifier ? getOcrModel() : undefined
+  );
+}
+
+function readFormTotal(
+  fileList: string,
+  parts: PacketParts,
+  abortSignal: AbortSignal | undefined
+): Promise<ReimbursementFormTotal> {
+  return readWithRetries(
+    'Reimbursement form total',
+    ReimbursementFormTotalSchema,
+    reimbursementFormTotalPrompt,
+    `Read the total to pay and the expense category rows from the reimbursement form.\n\nDocuments: ${fileList}`,
+    parts,
+    abortSignal,
+    getOcrModel()
+  );
 }
 
 // Only padding beside the field's own symbols goes. Whitespace inside the digits ("1 335.93", "1 ,335.93") is kept so
@@ -179,12 +212,31 @@ function comparableId(value: string | null): string | null {
   return value?.match(SUPPLIER_ID_PATTERN)?.[0].toUpperCase() ?? null;
 }
 
-/** What the two reads of one packet disagree on, if anything. Every fact that decides who is paid, how much, and under what number must match. */
+const isBlank = (value: string | null | undefined): boolean => !value?.trim();
+
+/**
+ * One read found a positive Amount to Pay on the form and the other found none. That is a missing total, not a
+ * different one, so it is not a disagreement: the caller takes a focused second look at the form's total instead.
+ * An amount that is unreadable, zero, or negative on the finding side is not a gap.
+ */
+export function formAmountGap(first: ReimbursementPacket, second: ReimbursementPacket): { found: string } | undefined {
+  const found = isBlank(first.formAmountToPay) ? second.formAmountToPay : first.formAmountToPay;
+  if (isBlank(first.formAmountToPay) === isBlank(second.formAmountToPay) || !found) return undefined;
+  const amount = amountCents(parseFormAmountToPay(found));
+  return amount !== null && amount > 0 ? { found } : undefined;
+}
+
+/**
+ * What the two reads of one packet disagree on, if anything. Every fact that decides who is paid, how much, and
+ * under what number must match. A form total found by one read and missing from the other is not a disagreement;
+ * see `formAmountGap`.
+ */
 export function packetDisagreement(first: ReimbursementPacket, second: ReimbursementPacket): string | undefined {
   if (first.kind !== second.kind) return 'whether it is a reimbursement';
   if (!sameName(first.payeeName, second.payeeName)) return 'the payee';
   if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) return 'the payee Supplier ID';
-  if (amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
+  if (!formAmountGap(first, second)
+    && amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
     return "the form's Amount to Pay";
   }
   const firstEmailCents = amountCents(parseEmailAmount(first.emailAmount));
@@ -197,10 +249,66 @@ export function packetDisagreement(first: ReimbursementPacket, second: Reimburse
 }
 
 /**
+ * Whether a focused look at the form backs the total one read found: it must read the same Amount to Pay, and the
+ * form's category rows must be listed and add up to it. The rows only check the total; they are never booked.
+ */
+export function formTotalFailure(foundAmount: number, look: ReimbursementFormTotal): string | undefined {
+  const foundCents = cents(foundAmount);
+  const total = isBlank(look.amountToPay) ? undefined : parseFormAmountToPay(look.amountToPay);
+  if (total === undefined) {
+    return isBlank(look.amountToPay)
+      ? 'a focused look at the form found no Amount to Pay'
+      : `a focused look read the form's Amount to Pay "${readableText(look.amountToPay ?? '')}", which is not a dollar amount`;
+  }
+  if (cents(total) !== foundCents) {
+    return `a focused look at the form found ${formatChargeDollars(total)}`;
+  }
+  if (look.categoryLines.length === 0) return 'the form lists no category lines to check the total against';
+  let sum = 0;
+  for (const line of look.categoryLines) {
+    const amount = parseEmailAmount(line.amount);
+    if (amount === undefined) {
+      return `the form's category line "${readableText(line.label)}" has an amount "${readableText(line.amount)}" that could not be read`;
+    }
+    sum += cents(amount);
+  }
+  if (sum !== foundCents) {
+    return `the form's category lines add up to ${formatChargeDollars(sum / 100)}, not ${formatChargeDollars(foundAmount)}`;
+  }
+  return undefined;
+}
+
+async function confirmMissingFormTotal(
+  first: ReimbursementPacket,
+  gap: { found: string },
+  fileList: string,
+  parts: PacketParts,
+  abortSignal: AbortSignal | undefined
+): Promise<ReimbursementRead> {
+  const found = formatChargeDollars(parseFormAmountToPay(gap.found) ?? 0);
+  const unconfirmed = (reason: string): ReimbursementRead => ({
+    ...first,
+    unconfirmed: `the form's Amount to Pay: one read found ${found} and the other found none, and ${reason}`,
+  });
+  let look: ReimbursementFormTotal;
+  try {
+    look = await readFormTotal(fileList, parts, abortSignal);
+  } catch (error) {
+    if (abortSignal?.aborted) throw error;
+    return unconfirmed('the focused look at the form could not be completed');
+  }
+  const failure = formTotalFailure(parseFormAmountToPay(gap.found) ?? 0, look);
+  debug('Reimbursement form total focused look', { found: gap.found, look, failure });
+  return failure ? unconfirmed(failure) : { ...first, formAmountToPay: gap.found };
+}
+
+/**
  * Reads the packet when the email or file names mention reimbursement. Returns undefined when nothing hints at one or
  * no document can be read. A model or schema failure throws (after one retry), so a packet that may be a reimbursement
  * is never silently booked as a supplier invoice. A packet the first read calls a reimbursement is read a second time
  * by a different model, and the result is marked `unconfirmed` when the two reads disagree on who is paid or how much.
+ * When only one read found the form's total, a focused look at the form's total and category lines decides whether it is
+ * confirmed.
  */
 export async function readReimbursementPacket(
   attachments: PresignedAttachment[],
@@ -220,8 +328,12 @@ export async function readReimbursementPacket(
 
   const second = await readPacketOnce(fileList, parts, emailContext, abortSignal, true);
   const disagreement = packetDisagreement(first, second);
-  if (disagreement) debug('Reimbursement packet reads disagree', { disagreement, first, second });
-  return disagreement ? { ...first, unconfirmed: disagreement } : first;
+  if (disagreement) {
+    debug('Reimbursement packet reads disagree', { disagreement, first, second });
+    return { ...first, unconfirmed: disagreement };
+  }
+  const gap = formAmountGap(first, second);
+  return gap ? confirmMissingFormTotal(first, gap, fileList, parts, abortSignal) : first;
 }
 
 function cents(amount: number): number {
