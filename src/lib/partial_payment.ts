@@ -448,13 +448,16 @@ function balanceNotApplied(reason: string, payApplication = false): PartialPayme
   };
 }
 
-/** The printed payment rows in cents, or undefined when there are none or any amount is unreadable. */
-function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined): number | undefined {
+/**
+ * The printed payment rows in cents, or undefined when there are none or any amount is unreadable. A $0.00 row
+ * makes a plain balance invoice unreadable (as on main); on a pay application it counts as none.
+ */
+function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined, zeroRowIsNone = false): number | undefined {
   if (!payments?.length) return undefined;
   let total = 0;
   for (const payment of payments) {
     const amount = parseExtractedLineAmount(payment.amount);
-    if (amount == null) return undefined;
+    if (amount == null || (amount === 0 && !zeroRowIsNone)) return undefined;
     total += toCents(Math.abs(amount));
   }
   return total > 0 ? total : undefined;
@@ -535,13 +538,13 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   if (contractCents == null || contractCents < dueCents) return undefined;
   if (linesCents != null && linesCents <= dueCents) return undefined;
 
-  const paidCents = priorPaymentCents(input.priorPayments);
   const retainageRead = retainageCents(input.retainage);
   if (retainageRead != null && Number.isNaN(retainageRead)) {
     return balanceNotApplied(`the printed retainage "${printable(input.retainage?.amount)}" is not a readable amount, so the figures cannot be checked`, true);
   }
   const retainedCents = retainageRead;
   const payApplication = retainedCents != null || isCompletedToDateLabel(input.lineSubtotal?.label);
+  const paidCents = priorPaymentCents(input.priorPayments, payApplication);
   if (retainedCents != null && !isRetainageHeldLabel(input.retainage?.label)) {
     return balanceNotApplied(`the printed row "${printable(input.retainage?.label)}" is not labeled as retainage held, so the figures cannot be checked`, true);
   }

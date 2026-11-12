@@ -822,6 +822,11 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.note).not.toContain('retainage');
   });
 
+  it('keeps the plain-invoice rule that a $0.00 payment row makes the payments unreadable', () => {
+    const plain = { lineSubtotal: { label: 'Total Contract Price', amount: '$23,887.00' }, amountDue: '$23,387.00', priorPayments: [{ label: 'Prior', amount: '$0.00' }, { label: 'Payments Received', amount: '$500.00' }] };
+    expect(planBalanceInvoice(payAppInput({ retainage: null, lines: [], poLines: undefined, ...plain }))).toBeUndefined();
+  });
+
   it('leaves the PO line to the merge when the only line is below the current payment due', () => {
     const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 100000)] }))!;
     expect(plan.applied).toBe(true);
