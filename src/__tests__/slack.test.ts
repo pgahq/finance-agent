@@ -1046,24 +1046,24 @@ describe('notifyEnrichmentResult', () => {
   it('says a PO was not used because the email budget split codes the invoice', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',
-      extracted: { purchaseOrderNotUsed: 'PO-414088' },
+      extracted: { purchaseOrderNotUsed: 'PO-400001' },
     });
 
-    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain("*PO #* → PO-414088 (not used: coded from the email's budget split)");
+    expect(postedSlackTexts(global.fetch as jest.Mock)).toContain("*PO #* → PO-400001 (not used: coded from the email's budget split)");
   });
 
   it('says a PO was not used on enrich success when the email budget split codes the invoice', async () => {
     await notifyEnrichmentResult({
       processingTime: 1500,
-      invoiceNumber: 'SUPIN-474055',
+      invoiceNumber: 'SUPIN-400001',
       canModify: true,
-      supplier: { status: 'matching', resolvedName: 'PBD INC', isDefault: false },
-      extracted: { purchaseOrderNotUsed: 'PO-414088' },
+      supplier: { status: 'matching', resolvedName: 'Sample Print Supplier', isDefault: false },
+      extracted: { purchaseOrderNotUsed: 'PO-400001' },
       fallbacks: { defaultSupplier: false },
     });
 
     const texts = postedSlackBody(global.fetch as jest.Mock).blocks.map((block) => block.text?.text ?? '').join('\n');
-    expect(texts).toContain("*PO #* → PO-414088 (not used: coded from the email's budget split)");
+    expect(texts).toContain("*PO #* → PO-400001 (not used: coded from the email's budget split)");
   });
 
   it('shows the printed due date on enrich success', async () => {

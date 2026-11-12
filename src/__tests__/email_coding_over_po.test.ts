@@ -22,20 +22,20 @@ const split = (label: string, share: { amount?: string; percent?: number; equalS
   ...coding(cc, sc),
 });
 
-const pbdSplits = () => [
-  split('Fulfillment', { amount: '$1,032.60' }, 'CC-Membership Dues', 'SC-Fulfillment'),
-  split('Printing', { amount: '$2,091.38' }, 'CC-Membership Dues', 'SC-Printing'),
-  split('Postage', { amount: '$489.41' }, 'CC-Membership Dues', 'SC-Postage'),
+const budgetSplitsFixture = () => [
+  split('Fulfillment', { amount: '$1,000.00' }, 'CC-Membership Dues', 'SC-Fulfillment'),
+  split('Printing', { amount: '$2,000.00' }, 'CC-Membership Dues', 'SC-Printing'),
+  split('Postage', { amount: '$500.00' }, 'CC-Membership Dues', 'SC-Postage'),
 ];
 
-const input = (overrides: Partial<EmailCodingOverPurchaseOrderInput> & { splits?: ReturnType<typeof pbdSplits> } = {}): EmailCodingOverPurchaseOrderInput => ({
-  invoiceSupplierWorkdayId: 'pbd-wid',
+const input = (overrides: Partial<EmailCodingOverPurchaseOrderInput> & { splits?: ReturnType<typeof budgetSplitsFixture> } = {}): EmailCodingOverPurchaseOrderInput => ({
+  invoiceSupplierWorkdayId: 'listed-wid',
   purchaseOrderFromNote: false,
-  env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'pbd-wid' } as NodeJS.ProcessEnv,
+  env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'listed-wid' } as NodeJS.ProcessEnv,
   result: {
     emailWorktags: null,
-    emailBudgetSplits: overrides.splits ?? pbdSplits(),
-    extractedAmountDue: '$3,613.39',
+    emailBudgetSplits: overrides.splits ?? budgetSplitsFixture(),
+    extractedAmountDue: '$3,500.00',
     extractedFreightAmount: null,
     extractedTaxAmount: null,
   },
@@ -53,7 +53,7 @@ describe('emailCodingOverridesPoSupplierWids', () => {
 });
 
 describe('emailCodingOverPurchaseOrder', () => {
-  it('sets the PO aside for a listed supplier whose email budgets total the amount due (SUPIN-474055)', () => {
+  it('sets the PO aside for a listed supplier whose email budgets total the amount due (SUPIN-400001)', () => {
     expect(emailCodingOverPurchaseOrder(input())).toBe(true);
   });
 
@@ -69,8 +69,8 @@ describe('emailCodingOverPurchaseOrder', () => {
 
   it('compares supplier WIDs without regard to case or padding', () => {
     expect(emailCodingOverPurchaseOrder(input({
-      invoiceSupplierWorkdayId: ' PBD-WID ',
-      env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'Pbd-Wid' } as NodeJS.ProcessEnv,
+      invoiceSupplierWorkdayId: ' LISTED-WID ',
+      env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'Listed-Wid' } as NodeJS.ProcessEnv,
     }))).toBe(true);
   });
 
@@ -84,24 +84,24 @@ describe('emailCodingOverPurchaseOrder', () => {
   });
 
   it('needs two or more budgets', () => {
-    expect(emailCodingOverPurchaseOrder(input({ splits: [pbdSplits()[0]] }))).toBe(false);
+    expect(emailCodingOverPurchaseOrder(input({ splits: [budgetSplitsFixture()[0]] }))).toBe(false);
     expect(emailCodingOverPurchaseOrder(input({ splits: [] }))).toBe(false);
   });
 
   it('keeps the PO when the budget amounts do not reconcile', () => {
-    const splits = pbdSplits();
-    splits[0] = split('Fulfillment', { amount: '$1,000.00' }, 'CC-Membership Dues', 'SC-Fulfillment');
+    const splits = budgetSplitsFixture();
+    splits[0] = split('Fulfillment', { amount: '$900.00' }, 'CC-Membership Dues', 'SC-Fulfillment');
     expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
 
   it('keeps the PO when a budget has neither a cost center nor a spend category', () => {
-    const splits = pbdSplits();
-    splits[2] = split('Postage', { amount: '$489.41' }, null, null);
+    const splits = budgetSplitsFixture();
+    splits[2] = split('Postage', { amount: '$500.00' }, null, null);
     expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
 
   it('keeps the PO when the shares mix amounts and percentages', () => {
-    const splits = pbdSplits();
+    const splits = budgetSplitsFixture();
     splits[1] = split('Printing', { percent: 50 }, 'CC-Membership Dues', 'SC-Printing');
     expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
@@ -115,7 +115,7 @@ describe('emailCodingOverPurchaseOrder', () => {
 
   it('accepts amounts that total the merchandise before header tax and freight, and the amount due that includes them', () => {
     const base = input();
-    const withCharges = (splits: ReturnType<typeof pbdSplits>) => input({
+    const withCharges = (splits: ReturnType<typeof budgetSplitsFixture>) => input({
       splits,
       result: { ...base.result, emailBudgetSplits: splits, extractedAmountDue: '$1,100.00', extractedTaxAmount: '$100.00' },
     });
@@ -132,8 +132,8 @@ describe('emailCodingOverPurchaseOrder', () => {
 
 describe('formatPurchaseOrderSkippedNotes', () => {
   it('says the PO was not used and the invoice is not linked to it', () => {
-    expect(formatPurchaseOrderSkippedNotes('PO-414088')).toBe(
-      "\n\nPurchase order: PO-414088 on the invoice was not used. The email gives budget coding and this supplier's invoices are coded from the email; the invoice is not linked to a PO."
+    expect(formatPurchaseOrderSkippedNotes('PO-400001')).toBe(
+      "\n\nPurchase order: PO-400001 on the invoice was not used. The email gives budget coding and this supplier's invoices are coded from the email; the invoice is not linked to a PO."
     );
   });
 });

@@ -2159,16 +2159,16 @@ describe('enrich_invoice', () => {
       Response_Data: {
         Purchase_Order: {
           Purchase_Order_Data: {
-            Document_Number: 'PO-414088',
+            Document_Number: 'PO-400001',
             Purchase_Order_Document_Status_Reference: {
               descriptor: 'Issued',
               ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
             },
             Supplier_Reference: {
-              descriptor: 'PBD INC',
-              ID: [{ $attributes: { type: 'WID' }, $value: 'pbd-wid' }]
+              descriptor: 'Sample Print Supplier',
+              ID: [{ $attributes: { type: 'WID' }, $value: 'listed-wid' }]
             },
-            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'SVC-1', Description: 'Printing', Extended_Amount: 3613.39 }
+            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'SVC-1', Description: 'Printing', Extended_Amount: 3500 }
           }
         }
       }
@@ -2177,26 +2177,26 @@ describe('enrich_invoice', () => {
       supplier: {
         status: 'matching',
         confidence: 0.9,
-        extractedInformation: { supplierName: 'PBD INC', memo: 'Printing' },
-        resolvedSupplier: { workdayId: 'pbd-wid', supplierName: 'PBD INC', confidence: 1, reason: 'Exact match' },
+        extractedInformation: { supplierName: 'Sample Print Supplier', memo: 'Printing' },
+        resolvedSupplier: { workdayId: 'listed-wid', supplierName: 'Sample Print Supplier', confidence: 1, reason: 'Exact match' },
         potentialDuplicateSuppliers: null,
         recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
         reason: 'High confidence match'
       },
       companyVerification: { status: 'matching', confidence: 0.85, extractedInformation: {}, recommended: null, reason: 'Company matches' },
-      extractedPurchaseOrderNumber: 'PO-414088',
-      extractedAmountDue: '$3,613.39',
+      extractedPurchaseOrderNumber: 'PO-400001',
+      extractedAmountDue: '$3,500.00',
       extractedInvoiceLines: [
-        { description: 'Printing', quantity: null, unitCost: null, totalPrice: '$3,613.39', hasDiscount: false }
+        { description: 'Printing', quantity: null, unitCost: null, totalPrice: '$3,500.00', hasDiscount: false }
       ],
       emailWorktags: null,
       emailBudgetSplits: [
         { label: 'Fulfillment', amount: splitAmount, percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Fulfillment') },
-        { label: 'Printing', amount: '$2,091.38', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Printing') },
-        { label: 'Postage', amount: '$489.41', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Postage') },
+        { label: 'Printing', amount: '$2,000.00', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Printing') },
+        { label: 'Postage', amount: '$500.00', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Postage') },
       ],
     });
-    const run = async (wids: string, splitAmount = '$1,032.60') => {
+    const run = async (wids: string, splitAmount = '$1,000.00') => {
       const { enrichmentResponse } = require('../lib/ai.js');
       const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const loadEnv = require('@pga/lambda-env').default;
@@ -2204,7 +2204,7 @@ describe('enrich_invoice', () => {
       getPurchaseOrder.mockResolvedValueOnce(poResponse());
       enrichmentResponse.mockResolvedValueOnce(enrichment(splitAmount));
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
-        lines: [{ lineOrder: 1, description: 'Printing', quantity: 0, unitCost: 0, extendedAmount: 3613.39 }],
+        lines: [{ lineOrder: 1, description: 'Printing', quantity: 0, unitCost: 0, extendedAmount: 3500 }],
         appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
       });
       loadEnv.mockResolvedValue({ EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: wids });
@@ -2225,20 +2225,20 @@ describe('enrich_invoice', () => {
     };
 
     it('sets the PO aside and notes it when the email budgets apply', async () => {
-      const { invoiceLines, params } = await run('pbd-wid');
+      const { invoiceLines, params } = await run('listed-wid');
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
         budgetSplits: [
-          expect.objectContaining({ amount: '$1,032.60' }),
-          expect.objectContaining({ amount: '$2,091.38' }),
-          expect.objectContaining({ amount: '$489.41' }),
+          expect.objectContaining({ amount: '$1,000.00' }),
+          expect.objectContaining({ amount: '$2,000.00' }),
+          expect.objectContaining({ amount: '$500.00' }),
         ],
       }));
-      expect(params.buildNotes([])).toContain('Purchase order: PO-414088 on the invoice was not used.');
-      expect(params.memo ?? '').not.toContain('PO-414088');
+      expect(params.buildNotes([])).toContain('Purchase order: PO-400001 on the invoice was not used.');
+      expect(params.memo ?? '').not.toContain('PO-400001');
       const { notifyEnrichmentResult } = require('../lib/slack.js');
-      expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0].extracted).toEqual(expect.objectContaining({ purchaseOrderNotUsed: 'PO-414088' }));
+      expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0].extracted).toEqual(expect.objectContaining({ purchaseOrderNotUsed: 'PO-400001' }));
       expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0].extracted.purchaseOrderNumber).toBeUndefined();
     });
 
@@ -2250,7 +2250,7 @@ describe('enrich_invoice', () => {
     });
 
     it('keeps the PO when the email budgets do not add up to the invoice', async () => {
-      const { invoiceLines } = await run('pbd-wid', '$1,000.00');
+      const { invoiceLines } = await run('listed-wid', '$900.00');
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
     });
