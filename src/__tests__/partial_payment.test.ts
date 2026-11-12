@@ -684,6 +684,29 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     expect(plan.note).toContain('pay applications with header charges are not booked automatically');
   });
 
+  it('books a first application, which prints no previous certificates, at the current payment due', () => {
+    const first = { lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$130,137.04' } };
+    for (const priorPayments of [[], [{ label: 'Less Previous Certificates for Payment', amount: '$0.00' }]]) {
+      const plan = planBalanceInvoice(printed({ ...first, priorPayments }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.line!.totalPrice).toBe('$130,137.04');
+      expect(plan.note).toContain('"Total Completed and Stored to Date" is $130,137.04 and no previous payments are printed, which leaves the $130,137.04 current payment due');
+      expect(plan.slackLines[0]).toContain('$130,137.04 to date, no previous payments, $130,137.04 current payment due');
+    }
+    expect(planBalanceInvoice(printed({ ...first, priorPayments: supin474922Payments }))).toBeUndefined();
+  });
+
+  it('says no previous payments were read when the completed total is above the due and no payments were returned', () => {
+    const plan = planBalanceInvoice(printed({ priorPayments: [] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the work completed to date $532,378.80 is not the current payment due $130,137.04, and no previous payments were read');
+  });
+
+  it('keeps the plain remaining-balance rule for a subtotal that is not a completed-to-date total', () => {
+    const plan = planBalanceInvoice(printed({ lineSubtotal: { label: 'Completed and Stored Materials', amount: '$532,378.80' } }))!;
+    expect(plan.noteLabel).toBe('Balance invoice');
+  });
+
   it('is silent when the completed total is not above the amount due', () => {
     expect(planBalanceInvoice(printed({ amountDue: '$532,378.80' }))).toBeUndefined();
     expect(planBalanceInvoice(printed({ lines: [{ ...supin474922Rows[0], totalPrice: '$130,137.04', unitCost: '$130,137.04' }] }))).toBeUndefined();

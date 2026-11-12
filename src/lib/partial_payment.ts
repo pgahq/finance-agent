@@ -448,7 +448,19 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined): 
 /** A pay application's base line: "Total Completed and Stored to Date" (G702 line 4), which is what the payment due is computed from. */
 function isCompletedToDateLabel(label: string | null | undefined): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ');
-  return tokens.includes('completed') && tokens.includes('stored');
+  return tokens.includes('completed') && tokens.includes('stored') && tokens.includes('date');
+}
+
+/** Previous certificates on a pay application. The first application prints none or $0.00, which is zero paid, not unreadable. */
+function payApplicationPriorCents(payments: PrintedPriorPayment[] | null | undefined): number | undefined {
+  if (!payments?.length) return 0;
+  let total = 0;
+  for (const payment of payments) {
+    const amount = parseExtractedLineAmount(payment.amount);
+    if (amount == null) return undefined;
+    total += toCents(Math.abs(amount));
+  }
+  return total;
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
@@ -487,12 +499,13 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const printedBase = parseCanonicalChargeAmount(input.lineSubtotal?.amount);
   const linesCents = sumExtractedLineCents(input.lines);
   const contractCents = printedBase != null ? toCents(printedBase) : linesCents;
-  if (contractCents == null || contractCents <= dueCents) return undefined;
-  if (linesCents != null && linesCents <= dueCents) return undefined;
-
-  const paidCents = priorPaymentCents(input.priorPayments);
   // A pay application bills what was completed since the last certificate, so its printed base is the work completed to date.
   const payApplication = printedBase != null && isCompletedToDateLabel(input.lineSubtotal?.label);
+  const paidCents = payApplication ? payApplicationPriorCents(input.priorPayments) : priorPaymentCents(input.priorPayments);
+  if (contractCents == null || contractCents < dueCents) return undefined;
+  if (contractCents === dueCents && !(payApplication && paidCents === 0)) return undefined;
+  if (linesCents != null && linesCents <= dueCents) return undefined;
+
   const paymentsExplainGap = paidCents != null && contractCents - paidCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
   // The email alone must sit beside a printed contract total; a line sum can read high for other reasons. On a pay application
@@ -500,9 +513,17 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const emailSaysBalance = !payApplication && printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
     if (paidCents == null) return undefined;
+    if (payApplication) {
+      return balanceNotApplied(
+        paidCents === 0 && !input.priorPayments?.length
+          ? `the work completed to date ${centsDollars(contractCents)} is not the current payment due ${centsDollars(dueCents)}, and no previous payments were read`
+          : `the work completed to date ${centsDollars(contractCents)} less ${centsDollars(paidCents)} in previous payments is ${centsDollars(contractCents - paidCents)}, not the current payment due ${centsDollars(dueCents)}`,
+        true
+      );
+    }
     return balanceNotApplied(
-      `the ${payApplication ? 'work completed to date' : 'printed payments total'} ${centsDollars(payApplication ? contractCents : paidCents)}${payApplication ? ` less ${centsDollars(paidCents)} in previous payments` : `, which leaves ${centsDollars(contractCents - paidCents)} of the ${centsDollars(contractCents)} contract total,`} ${payApplication ? `is ${centsDollars(contractCents - paidCents)}, not the current payment due` : 'not the amount due'} ${centsDollars(dueCents)}`,
-      payApplication
+      `the printed payments total ${centsDollars(paidCents)}, which leaves ${centsDollars(contractCents - paidCents)} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`,
+      false
     );
   }
 
@@ -542,10 +563,10 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       noteLabel: PAY_APPLICATION_NOTE_LABEL,
       line: { description: `Pay application - current payment due (${label} ${contractText})`, quantity: 1, unitCost: amount, totalPrice: amount, hasDiscount: null, tableNumber: 1 },
       ...poLines,
-      note: `"${label}" is ${contractText}, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
+      note: `"${label}" is ${contractText}${paidCents === 0 ? ' and no previous payments are printed' : `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents as number)}`}, which leaves the ${dueText} current payment due${lineText}. The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
-        `${label}: ${contractText} to date, less ${centsDollars(paidCents as number)} previous payments, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
+        `${label}: ${contractText} to date${paidCents === 0 ? ', no previous payments' : `, less ${centsDollars(paidCents as number)} previous payments`}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
         ...slackPoLines,
       ],
     };
