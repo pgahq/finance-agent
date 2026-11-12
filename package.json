@@ -47,7 +47,7 @@
     "@aws-sdk/s3-request-presigner": "^3.598.0",
     "@pga/lambda-env": "^0.0.11",
     "@pga/logger": "^0.1.10",
-    "ai": "^6.0.168",
+    "ai": "^7.0.170",
     "exceljs": "^4.4.0",
     "mammoth": "^1.13.0",
     "pdfkit": "^0.17.2",
