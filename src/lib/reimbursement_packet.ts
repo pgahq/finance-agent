@@ -130,9 +130,10 @@ async function readPacketOnce(
   throw lastFailure ?? new Error('Reimbursement packet read was aborted');
 }
 
-// Whitespace between two digits is kept, so "1 335.93" stays unreadable instead of becoming 1335.93.
+// Only padding beside the field's own symbols goes. Whitespace inside the digits ("1 335.93", "1 ,335.93") is kept so
+// a malformed number stays unreadable instead of becoming a valid-looking one.
 function withoutPadding(value: string): string {
-  return value.trim().replace(/(?<!\d)\s+|\s+(?!\d)/g, '');
+  return value.trim().replace(/\s*([()$€£¥])\s*/g, '$1');
 }
 
 /**

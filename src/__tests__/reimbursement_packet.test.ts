@@ -12,6 +12,7 @@ jest.mock('../lib/invoice_ocr.js', () => ({
 import { findDocumentsContainingWords } from '../lib/database.js';
 import { getAiResponse } from '../lib/ai.js';
 import { attachmentContentParts } from '../lib/invoice_ocr.js';
+import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import {
   applyReimbursementToEnrichment,
   decideReimbursement,
@@ -176,10 +177,18 @@ describe('parseFormAmountToPay', () => {
   });
 
   it('still rejects negatives, unbalanced or nested parentheses, split digits, and text', () => {
-    for (const value of ['-$50.00', '($-50.00)', '(−$50.00)', '(1,335.93', '1,335.93)', '(($1,335.93))', '$1 335.93', '()', 'see attached', '']) {
+    for (const value of [
+      '-$50.00', '($-50.00)', '(−$50.00)', '(1,335.93', '1,335.93)', '(($1,335.93))', '$1 335.93', '1, 335.93', '1 ,335.93',
+      '$1 . 335.93', '()', 'see attached', '',
+    ]) {
       expect(parseFormAmountToPay(value)).toBeUndefined();
     }
     expect(parseFormAmountToPay(null)).toBeUndefined();
+  });
+
+  it('leaves the shared parser strict, so a parenthesized supplier-invoice amount is still not read as positive', () => {
+    expect(parseCanonicalChargeAmount('($1,335.93)')).toBeUndefined();
+    expect(parseCanonicalChargeAmount('$(1,335.93)')).toBeUndefined();
   });
 });
 
@@ -341,6 +350,10 @@ describe('decideReimbursement', () => {
     it('still stops on a negative or parenthesized zero form amount', async () => {
       expect(await reason({ formAmountToPay: `-$${' '.repeat(70)}50.00` })).toContain('could not be read');
       expect(await reason({ formAmountToPay: '($0.00)' })).toContain('zero');
+    });
+
+    it('stops on a parenthesized email amount rather than reading it as positive', async () => {
+      expect(await reason({ emailAmount: '($1,000.00)', emailAmountIsCap: false })).toContain('could not be read');
     });
 
     it('still stops when a parenthesized form amount differs from the email', async () => {
