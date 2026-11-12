@@ -1069,14 +1069,14 @@ async function processInvoiceCluster(
     // would drop the email coding.
     const emailCodingOverride = emailCodingOverPurchaseOrder({
       invoiceSupplierWorkdayId: result.supplier.resolvedSupplier?.workdayId,
-      purchaseOrderSupplierWorkdayId: pinnedPo.purchaseOrder?.supplier?.workdayId,
       purchaseOrderFromNote: Boolean(selectedPo.fromNote),
+      purchaseOrderNamedInEmail: Boolean(selectedPo.fromConversation && pinnedPo.purchaseOrder?.documentNumber !== enrichmentPoNumber),
       result,
       emailCompany,
     });
     const skippedPo = emailCodingOverride ? pinnedPo.purchaseOrder : undefined;
     if (skippedPo) {
-      debug(`Using the email budget coding instead of ${skippedPo.documentNumber}: the ${emailCodingOverride?.matchedSupplier === 'purchase_order' ? 'PO supplier' : 'invoice supplier'} is on the email-coding list`);
+      debug(`Using the email budget coding instead of ${skippedPo.documentNumber}: the invoice supplier is on the email-coding list`);
     }
     const matchedPo = skippedPo ? undefined : pinnedPo.purchaseOrder;
     const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {

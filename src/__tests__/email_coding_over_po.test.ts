@@ -30,7 +30,6 @@ const pbdSplits = () => [
 
 const input = (overrides: Partial<EmailCodingOverPurchaseOrderInput> & { splits?: ReturnType<typeof pbdSplits> } = {}): EmailCodingOverPurchaseOrderInput => ({
   invoiceSupplierWorkdayId: 'pbd-wid',
-  purchaseOrderSupplierWorkdayId: 'pbd-wid',
   purchaseOrderFromNote: false,
   env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'pbd-wid' } as NodeJS.ProcessEnv,
   result: {
@@ -55,58 +54,63 @@ describe('emailCodingOverridesPoSupplierWids', () => {
 
 describe('emailCodingOverPurchaseOrder', () => {
   it('sets the PO aside for a listed supplier whose email budgets total the amount due (SUPIN-474055)', () => {
-    expect(emailCodingOverPurchaseOrder(input())).toEqual({ matchedSupplier: 'invoice' });
+    expect(emailCodingOverPurchaseOrder(input())).toBe(true);
   });
 
-  it('matches through the PO supplier when the invoice supplier is a different record', () => {
-    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: 'other-record' }))).toEqual({ matchedSupplier: 'purchase_order' });
+  it('matches only the invoice supplier, never the supplier a PO was issued to', () => {
+    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: 'other-record' }))).toBe(false);
+    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: null }))).toBe(false);
   });
 
   it('leaves the PO in charge for every supplier that is not listed, and when the list is empty', () => {
-    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: 'x', purchaseOrderSupplierWorkdayId: 'y' }))).toBeUndefined();
-    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: null, purchaseOrderSupplierWorkdayId: undefined }))).toBeUndefined();
-    expect(emailCodingOverPurchaseOrder(input({ env: {} as NodeJS.ProcessEnv }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ invoiceSupplierWorkdayId: 'x' }))).toBe(false);
+    expect(emailCodingOverPurchaseOrder(input({ env: {} as NodeJS.ProcessEnv }))).toBe(false);
   });
 
   it('compares supplier WIDs without regard to case or padding', () => {
     expect(emailCodingOverPurchaseOrder(input({
       invoiceSupplierWorkdayId: ' PBD-WID ',
       env: { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: 'Pbd-Wid' } as NodeJS.ProcessEnv,
-    }))).toEqual({ matchedSupplier: 'invoice' });
+    }))).toBe(true);
   });
 
   it('never sets aside a PO that an AP note chose', () => {
-    expect(emailCodingOverPurchaseOrder(input({ purchaseOrderFromNote: true }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ purchaseOrderFromNote: true }))).toBe(false);
+  });
+
+  it('never sets aside a PO the requester named in the email when it differs from the printed one', () => {
+    expect(emailCodingOverPurchaseOrder(input({ purchaseOrderNamedInEmail: true }))).toBe(false);
+    expect(emailCodingOverPurchaseOrder(input({ purchaseOrderNamedInEmail: false }))).toBe(true);
   });
 
   it('needs two or more budgets', () => {
-    expect(emailCodingOverPurchaseOrder(input({ splits: [pbdSplits()[0]] }))).toBeUndefined();
-    expect(emailCodingOverPurchaseOrder(input({ splits: [] }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ splits: [pbdSplits()[0]] }))).toBe(false);
+    expect(emailCodingOverPurchaseOrder(input({ splits: [] }))).toBe(false);
   });
 
   it('keeps the PO when the budget amounts do not reconcile', () => {
     const splits = pbdSplits();
     splits[0] = split('Fulfillment', { amount: '$1,000.00' }, 'CC-Membership Dues', 'SC-Fulfillment');
-    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
 
   it('keeps the PO when a budget has neither a cost center nor a spend category', () => {
     const splits = pbdSplits();
     splits[2] = split('Postage', { amount: '$489.41' }, null, null);
-    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
 
   it('keeps the PO when the shares mix amounts and percentages', () => {
     const splits = pbdSplits();
     splits[1] = split('Printing', { percent: 50 }, 'CC-Membership Dues', 'SC-Printing');
-    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ splits }))).toBe(false);
   });
 
   it('accepts percentages that total 100 and an even split', () => {
     const percents = [split('A', { percent: 60 }), split('B', { percent: 40 })];
-    expect(emailCodingOverPurchaseOrder(input({ splits: percents }))).toEqual({ matchedSupplier: 'invoice' });
+    expect(emailCodingOverPurchaseOrder(input({ splits: percents }))).toBe(true);
     const even = [split('A', { equalShare: true }), split('B', { equalShare: true })];
-    expect(emailCodingOverPurchaseOrder(input({ splits: even }))).toEqual({ matchedSupplier: 'invoice' });
+    expect(emailCodingOverPurchaseOrder(input({ splits: even }))).toBe(true);
   });
 
   it('accepts amounts that total the merchandise before header tax and freight, and the amount due that includes them', () => {
@@ -115,14 +119,14 @@ describe('emailCodingOverPurchaseOrder', () => {
       splits,
       result: { ...base.result, emailBudgetSplits: splits, extractedAmountDue: '$1,100.00', extractedTaxAmount: '$100.00' },
     });
-    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$400.00' }), split('B', { amount: '$600.00' })]))).toEqual({ matchedSupplier: 'invoice' });
-    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$500.00' }), split('B', { amount: '$600.00' })]))).toEqual({ matchedSupplier: 'invoice' });
-    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$500.00' }), split('B', { amount: '$550.00' })]))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$400.00' }), split('B', { amount: '$600.00' })]))).toBe(true);
+    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$500.00' }), split('B', { amount: '$600.00' })]))).toBe(true);
+    expect(emailCodingOverPurchaseOrder(withCharges([split('A', { amount: '$500.00' }), split('B', { amount: '$550.00' })]))).toBe(false);
   });
 
   it('keeps the PO when the amount due cannot be read', () => {
     const base = input();
-    expect(emailCodingOverPurchaseOrder(input({ result: { ...base.result, extractedAmountDue: null } }))).toBeUndefined();
+    expect(emailCodingOverPurchaseOrder(input({ result: { ...base.result, extractedAmountDue: null } }))).toBe(false);
   });
 });
 

@@ -4863,10 +4863,30 @@ describe('create_invoice', () => {
         }));
       });
 
-      it('matches a PO issued to a listed supplier when the invoice resolves to another supplier record', async () => {
-        const { invoiceLines } = await run({ wids: poSupplierWid, po: parsedPo(poSupplierWid) });
+      it('keeps the PO and its supplier when only the supplier the PO was issued to is listed', async () => {
+        const { workday, invoiceLines } = await run({ wids: poSupplierWid, po: parsedPo(poSupplierWid) });
 
-        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].supplierWID).toBe(poSupplierWid);
+      });
+
+      it('keeps the PO when the invoice supplier did not resolve', async () => {
+        const { invoiceLines } = await run({
+          wids: PBD_WID,
+          enrichment: { supplier: { ...baseEnrichmentResult.supplier, resolvedSupplier: null } },
+        });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      });
+
+      it('keeps a PO the requester named in the email when it differs from the printed one', async () => {
+        const { invoiceLines } = await run({
+          wids: PBD_WID,
+          po: { ...parsedPo(), documentNumber: 'PO-411111' },
+          emailContext: { plainTextBody: 'Company 310. Split $15,000 / $20,000. Please use PO-411111' },
+        });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
       });
 
       it('keeps the PO and its review warning for a supplier that is not listed', async () => {

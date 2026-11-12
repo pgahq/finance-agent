@@ -317,14 +317,14 @@ async function processInvoice(
     const emailCodingOverride = poLines?.length && extractedPurchaseOrderNumber
       ? emailCodingOverPurchaseOrder({
         invoiceSupplierWorkdayId: resolvedSupplierWID,
-        purchaseOrderSupplierWorkdayId: poSupplier?.workdayId,
+        purchaseOrderNamedInEmail: extractedPurchaseOrderNumber === emailPurchaseOrderNumber && emailPurchaseOrderNumber !== invoicePurchaseOrderNumber,
         result,
         emailCompany,
       })
       : undefined;
     const skippedPurchaseOrderNumber = emailCodingOverride ? extractedPurchaseOrderNumber : undefined;
     if (skippedPurchaseOrderNumber) {
-      debug(`Using the email budget coding instead of ${skippedPurchaseOrderNumber}: the ${emailCodingOverride?.matchedSupplier === 'purchase_order' ? 'PO supplier' : 'invoice supplier'} is on the email-coding list`);
+      debug(`Using the email budget coding instead of ${skippedPurchaseOrderNumber}: the invoice supplier is on the email-coding list`);
       extractedPurchaseOrderNumber = undefined;
       poLines = undefined;
       poSupplier = undefined;

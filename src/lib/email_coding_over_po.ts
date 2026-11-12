@@ -20,37 +20,27 @@ function normalizeWid(wid: string | null | undefined): string {
 
 export interface EmailCodingOverPurchaseOrderInput {
   invoiceSupplierWorkdayId?: string | null;
-  purchaseOrderSupplierWorkdayId?: string | null;
   /** An AP Intercom note named the PO, which is AP's explicit choice and always wins. */
   purchaseOrderFromNote?: boolean;
+  /** The requester's email names a PO other than the one printed on the invoice, so the requester chose it. */
+  purchaseOrderNamedInEmail?: boolean;
   result: Pick<InvoiceEnrichmentResult, 'emailWorktags' | 'emailBudgetSplits' | 'extractedAmountDue' | 'extractedFreightAmount' | 'extractedTaxAmount'>;
   emailCompany?: EmailCompanyMatch;
   env?: NodeJS.ProcessEnv;
 }
 
-export interface EmailCodingOverPurchaseOrder {
-  /** Which party matched the supplier list, for the log. */
-  matchedSupplier: 'invoice' | 'purchase_order';
-}
-
 /**
  * Decides, before any line is built, whether the email's budget splits replace the printed PO for this invoice.
- * All of these must hold: the invoice's supplier (or the PO's own supplier) is on the supplier list, the PO was
- * not chosen by an AP note, and the email gives two or more budget splits that can be applied, meaning each
- * budget has coding and the shares reconcile to the invoice amounts. Anything else keeps the PO.
+ * All of these must hold: the invoice's resolved supplier is on the supplier list, the PO was not chosen by an
+ * AP note or named in the requester's email, and the email gives two or more budget splits that can be applied,
+ * meaning each budget has coding and the shares reconcile to the invoice amounts. Anything else keeps the PO.
+ * Only the invoice's own supplier is matched, so the invoice's supplier never changes when the PO is set aside.
  */
-export function emailCodingOverPurchaseOrder(input: EmailCodingOverPurchaseOrderInput): EmailCodingOverPurchaseOrder | undefined {
-  if (input.purchaseOrderFromNote) return undefined;
+export function emailCodingOverPurchaseOrder(input: EmailCodingOverPurchaseOrderInput): boolean {
+  if (input.purchaseOrderFromNote || input.purchaseOrderNamedInEmail) return false;
   const suppliers = emailCodingOverridesPoSupplierWids(input.env);
-  if (suppliers.size === 0) return undefined;
   const invoiceSupplierWid = normalizeWid(input.invoiceSupplierWorkdayId);
-  const purchaseOrderSupplierWid = normalizeWid(input.purchaseOrderSupplierWorkdayId);
-  const matchedSupplier = invoiceSupplierWid && suppliers.has(invoiceSupplierWid)
-    ? 'invoice' as const
-    : purchaseOrderSupplierWid && suppliers.has(purchaseOrderSupplierWid)
-      ? 'purchase_order' as const
-      : undefined;
-  if (!matchedSupplier) return undefined;
+  if (!invoiceSupplierWid || !suppliers.has(invoiceSupplierWid)) return false;
 
   const charges: LineTotalCharges = {
     amountDue: input.result.extractedAmountDue ?? undefined,
@@ -58,13 +48,13 @@ export function emailCodingOverPurchaseOrder(input: EmailCodingOverPurchaseOrder
     taxAmount: input.result.extractedTaxAmount ?? undefined,
   };
   const options = budgetSplitOptions({ charges });
-  if (options.budgetSplitBlockedReason || options.budgetSplitBaseCents == null) return undefined;
+  if (options.budgetSplitBlockedReason || options.budgetSplitBaseCents == null) return false;
   const emailWorktags = buildEmailWorktags(input.result, input.emailCompany, options);
   const splits = emailWorktags?.budgetSplits;
-  if (!splits || splits.length < 2) return undefined;
-  if (splits.some(split => !split.costCenterId && !split.spendCategoryReferenceId)) return undefined;
+  if (!splits || splits.length < 2) return false;
+  if (splits.some(split => !split.costCenterId && !split.spendCategoryReferenceId)) return false;
   const shares = budgetSplitCents(splits, options.budgetSplitBaseCents, options.budgetSplitGrossCents);
-  return shares.cents ? { matchedSupplier } : undefined;
+  return Boolean(shares.cents);
 }
 
 export function formatPurchaseOrderSkippedNotes(purchaseOrderNumber: string): string {
