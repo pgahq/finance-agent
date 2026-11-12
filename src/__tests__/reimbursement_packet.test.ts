@@ -12,11 +12,13 @@ jest.mock('../lib/invoice_ocr.js', () => ({
 import { findDocumentsContainingWords } from '../lib/database.js';
 import { getAiResponse } from '../lib/ai.js';
 import { attachmentContentParts } from '../lib/invoice_ocr.js';
+import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import {
   applyReimbursementToEnrichment,
   decideReimbursement,
   hasReimbursementSignal,
   packetDisagreement,
+  parseFormAmountToPay,
   readReimbursementPacket,
   reimbursementDescription,
   reimbursementNote,
@@ -134,6 +136,16 @@ describe('readReimbursementPacket', () => {
     expect(read?.unconfirmed).toBe("the form's Amount to Pay");
   });
 
+  it('confirms a packet whose first read has a parenthesized, padded form amount and whose second read is plain', async () => {
+    const email = { emailAmount: '$1,335.93', emailAmountIsCap: false };
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet({ ...email, formAmountToPay: paddedParenthesized }))
+      .mockResolvedValueOnce(packet({ ...email, formAmountToPay: '$1,335.93' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read).not.toHaveProperty('unconfirmed');
+    expect(await decideReimbursement(db as never, read)).toMatchObject({ outcome: 'apply', reimbursement: { amount: 1335.93 } });
+  });
+
   it('marks the read unconfirmed when the second read says it is not a reimbursement', async () => {
     aiResponse.mockReset()
       .mockResolvedValueOnce(packet())
@@ -150,7 +162,50 @@ describe('readReimbursementPacket', () => {
   });
 });
 
+// The Dustin Hull packet (2026-11-12): the form field extracted as an accounting-format string while the page shows
+// no parentheses, and the other read returned the plain amount.
+const paddedParenthesized = `($${' '.repeat(70)}1,335.93)`;
+
+describe('parseFormAmountToPay', () => {
+  it('reads padded and parenthesized form amounts as the plain positive amount', () => {
+    expect(parseFormAmountToPay(paddedParenthesized)).toBe(1335.93);
+    expect(parseFormAmountToPay(`$${' '.repeat(70)}1,335.93`)).toBe(1335.93);
+    expect(parseFormAmountToPay('($1,335.93)')).toBe(1335.93);
+    expect(parseFormAmountToPay(' ( 1,335.93 ) ')).toBe(1335.93);
+    expect(parseFormAmountToPay('$1,335.93')).toBe(1335.93);
+    expect(parseFormAmountToPay('1,335.93 USD')).toBe(1335.93);
+  });
+
+  it('still rejects negatives, unbalanced or nested parentheses, split digits, and text', () => {
+    for (const value of [
+      '-$50.00', '($-50.00)', '(−$50.00)', '(1,335.93', '1,335.93)', '(($1,335.93))', '$1 335.93', '1, 335.93', '1 ,335.93',
+      '$1 . 335.93', '()', 'see attached', '',
+    ]) {
+      expect(parseFormAmountToPay(value)).toBeUndefined();
+    }
+    expect(parseFormAmountToPay(null)).toBeUndefined();
+  });
+
+  it('leaves the shared parser strict, so a parenthesized supplier-invoice amount is still not read as positive', () => {
+    expect(parseCanonicalChargeAmount('($1,335.93)')).toBeUndefined();
+    expect(parseCanonicalChargeAmount('$(1,335.93)')).toBeUndefined();
+  });
+});
+
 describe('packetDisagreement', () => {
+  it('does not flag the form amount read with parentheses and padding against the plain amount', () => {
+    const plain = packet({ formAmountToPay: '$1,335.93', emailAmount: '$1,335.93', emailAmountIsCap: false });
+    const accounting = packet({ formAmountToPay: paddedParenthesized, emailAmount: '$1,335.93', emailAmountIsCap: false });
+    expect(packetDisagreement(accounting, plain)).toBeUndefined();
+    expect(packetDisagreement(plain, accounting)).toBeUndefined();
+    expect(packetDisagreement(accounting, packet({ formAmountToPay: '$1,335.94', emailAmount: '$1,335.93', emailAmountIsCap: false })))
+      .toBe("the form's Amount to Pay");
+  });
+
+  it('does not read parentheses as positive on the email amount', () => {
+    expect(packetDisagreement(packet({ emailAmount: '($900.00)' }), packet({ emailAmount: '$900.00' }))).toBe("the email's amount");
+  });
+
   it('ignores case and punctuation in names and the formatting of amounts', () => {
     expect(packetDisagreement(
       packet(),
@@ -282,6 +337,32 @@ describe('decideReimbursement', () => {
       expect(await reason({ formAmountToPay: 'see attached' })).toContain('could not be read');
       expect(await reason({ formAmountToPay: '$0.00' })).toContain('zero');
       expect(await reason({ formAmountToPay: '-$50.00' })).toContain('could not be read');
+    });
+
+    it('books a form amount printed with accounting parentheses and padding as a positive amount', async () => {
+      const decision = await decideReimbursement(
+        db as never,
+        packet({ formAmountToPay: paddedParenthesized, emailAmount: '$1,335.93', emailAmountIsCap: false }),
+      );
+      expect(decision).toMatchObject({ outcome: 'apply', reimbursement: { amount: 1335.93, amountLabel: '$1,335.93' } });
+    });
+
+    it('still stops on a negative or parenthesized zero form amount', async () => {
+      expect(await reason({ formAmountToPay: `-$${' '.repeat(70)}50.00` })).toContain('could not be read');
+      expect(await reason({ formAmountToPay: '($0.00)' })).toContain('zero');
+    });
+
+    it('stops on a parenthesized email amount rather than reading it as positive', async () => {
+      expect(await reason({ emailAmount: '($1,000.00)', emailAmountIsCap: false })).toContain('could not be read');
+    });
+
+    it('still stops when a parenthesized form amount differs from the email', async () => {
+      expect(await reason({ formAmountToPay: paddedParenthesized, emailAmount: '$1,300.00', emailAmountIsCap: false })).toContain('disagree');
+    });
+
+    it('shows the amounts without padding when it stops', async () => {
+      const decision = await decideReimbursement(db as never, packet({ formAmountToPay: `see   attached${' '.repeat(70)}form`, emailAmount: ' $900.00 ' }));
+      expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { formAmount: 'see attached form', emailAmount: '$900.00' } });
     });
 
     it('accepts an email amount equal to the form amount', async () => {
