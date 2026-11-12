@@ -637,7 +637,7 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $532,378.80 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
+    expect(plan.note).toContain('No PO line is for $130,137.04, and no open PO line can be picked for the $532,378.80 total to date (an only line must cover it), so the PO line was left to the line merge; check the PO line coding before approving.');
   });
 
   it('books without a PO link when the PO has no lines', () => {
@@ -717,11 +717,18 @@ describe('planBalanceInvoice for a construction pay application (SUPIN-474922)',
     expect(plan.note).toContain('the work completed to date $532,378.80 is not the current payment due $130,137.04, and no previous payments were read');
   });
 
-  it('leaves the PO line to the merge when the only line is below the current payment due', () => {
-    const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 100000)] }))!;
-    expect(plan.applied).toBe(true);
-    expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('check the PO line coding before approving');
+  it('leaves the PO line to the merge when the only line cannot cover the work completed to date', () => {
+    for (const amount of [100000, 300000, 532378.79]) {
+      const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', amount)] }))!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('check the PO line coding before approving');
+    }
+  });
+
+  it('pins an only line that covers the work completed to date', () => {
+    const line = poLine('L1', 700000);
+    expect(planBalanceInvoice(printed({ poLines: [line] }))!.poLines).toEqual([line]);
   });
 
   it('does not review the line subtotal against rows when the subtotal is a completed-to-date total', () => {
