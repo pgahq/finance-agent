@@ -754,7 +754,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.applied).toBe(false);
     expect(plan.noteLabel).toBe('Pay application');
     expect(plan.line).toBeUndefined();
-    expect(plan.note).toBe('This looks like a construction pay application with retainage, but the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.');
+    expect(plan.note).toBe('This looks like a construction pay application, but the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.');
     expect(plan.slackLines).toEqual(['Pay application not applied: the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04.']);
   });
 
@@ -791,10 +791,10 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label } }))!.applied).toBe(true);
   });
 
-  it('does not apply when the document prints no contract sum to date, which a line sum cannot stand in for', () => {
+  it('does not apply when the document prints no contract sum or completed-to-date total, which a line sum cannot stand in for', () => {
     const plan = planBalanceInvoice(payAppInput({ lineSubtotal: null }))!;
     expect(plan.applied).toBe(false);
-    expect(plan.note).toContain('the document prints no contract sum to date to reconcile the retainage against');
+    expect(plan.note).toContain('the document prints no contract sum or completed-to-date total to reconcile the figures against');
   });
 
   it.each(['TBD 59,153.20', 'see attached 59153.20', '10% 59,153.20'])('does not apply when the retainage "%s" only contains digits', (amount) => {
@@ -812,6 +812,14 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Prior', amount: '$0.00' }, ...supin474922Payments] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.line?.totalPrice).toBe('$130,137.04');
+  });
+
+  it('words a no-retainage mismatch by the work completed to date, without mentioning retainage', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: null, lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$532,378.80' }, priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: '$402,241.77' }] }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.noteLabel).toBe('Pay application');
+    expect(plan.note).toContain('This looks like a construction pay application, but the work completed to date $532,378.80 less $402,241.77 in previous payments is $130,137.03, not the current payment due $130,137.04');
+    expect(plan.note).not.toContain('retainage');
   });
 
   it('leaves the PO line to the merge when the only line is below the current payment due', () => {

@@ -3302,7 +3302,7 @@ describe('create_invoice', () => {
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ description: 'Contract Sum to Date', totalPrice: '$591,532.00' })]);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
-      expect(notes).toContain('Pay application: This looks like a construction pay application with retainage, but the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04, so the printed lines were submitted unchanged.');
+      expect(notes).toContain('Pay application: This looks like a construction pay application, but the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04, so the printed lines were submitted unchanged.');
       expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual(['Pay application not applied: the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04.']);
     });
 
@@ -3314,7 +3314,7 @@ describe('create_invoice', () => {
 
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ description: 'Contract Sum to Date', totalPrice: '$591,532.00' })]);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
-      expect(notes).toContain(`Pay application: This looks like a construction pay application with retainage, but ${reason}`);
+      expect(notes).toContain(`Pay application: This looks like a construction pay application, but ${reason}`);
       expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual([expect.stringContaining('Pay application not applied')]);
     });
 

@@ -436,7 +436,7 @@ function balanceNotApplied(reason: string, payApplication = false): PartialPayme
     return {
       applied: false,
       noteLabel: PAY_APPLICATION_NOTE_LABEL,
-      note: `This looks like a construction pay application with retainage, but ${reason}, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.`,
+      note: `This looks like a construction pay application, but ${reason}, so the printed lines were submitted unchanged. The submitted lines may not match the current payment due; check before approving.`,
       slackLines: [`Pay application not applied: ${reason}.`],
     };
   }
@@ -491,18 +491,19 @@ function retainageCents(retainage: PrintedRetainage | null | undefined): number 
 /**
  * The PO line a pay application's current payment is coded to. A line equal to the payment wins (the deposit rule);
  * a pay application is normally billed against one PO line for the whole contract, so a single open line equal to
- * the contract sum to date, or a PO with only one line, is also used. Several candidates leave the line unpinned for
- * the merge to code, and the note says so.
+ * the printed base (the work completed to date, or the contract sum when that is the base), or a PO with only one
+ * line that covers the payment, is also used. Several candidates leave the line unpinned for the merge to code,
+ * and the note says so.
  */
-function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, contractCents: number): DepositPoSelection | { status: 'unpinned'; reason: string } {
+function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, dueCents: number, baseCents: number): DepositPoSelection | { status: 'unpinned'; reason: string } {
   const exact = selectDepositPoLine(poLines, dueCents);
   if (exact.status !== 'unmatched') return exact;
   const lines = poLines ?? [];
-  const contractLines = lines.filter(line => poLineAmountCents(line) === contractCents && line.availableForInvoicing !== false);
-  if (contractLines.length === 1) return { status: 'matched', line: contractLines[0], consumed: false };
+  const baseLines = lines.filter(line => poLineAmountCents(line) === baseCents && line.availableForInvoicing !== false);
+  if (baseLines.length === 1) return { status: 'matched', line: baseLines[0], consumed: false };
   const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
   if (onlyLineCents != null && onlyLineCents >= dueCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and no single open PO line is for the ${centsDollars(contractCents)} total to date or covers the payment due, so the PO line was left to the line merge` };
+  return { status: 'unpinned', reason: `${exact.reason}, and no single open PO line is for the ${centsDollars(baseCents)} total to date or covers the payment due, so the PO line was left to the line merge` };
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
@@ -551,9 +552,9 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   const settlementPrinted = paidCents != null || retainedCents != null;
   // A first application prints no previous certificates (or $0.00) and no retainage, so the completed total is the payment due.
   if (contractCents === dueCents && !(payApplication && settledCents === 0)) return undefined;
-  // A pay application's lines can be one period's work, so its contract sum to date must be printed, not summed.
+  // A pay application's lines can be one period's work, so its printed base (completed to date or contract sum) must be printed, not summed.
   if (payApplication && printedBase == null) {
-    return balanceNotApplied('the document prints no contract sum to date to reconcile the retainage against', true);
+    return balanceNotApplied('the document prints no contract sum or completed-to-date total to reconcile the figures against', true);
   }
   const paymentsExplainGap = (settlementPrinted || payApplication) && contractCents - settledCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
@@ -567,7 +568,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
         return balanceNotApplied(`the work completed to date ${centsDollars(contractCents)} is not the current payment due ${centsDollars(dueCents)}, and no previous payments were read`, true);
       }
       const parts = [...(retainedCents != null ? [`${centsDollars(retainedCents)} retainage`] : []), ...(paidCents != null ? [`${centsDollars(paidCents)} in previous payments`] : [])];
-      return balanceNotApplied(`the ${centsDollars(contractCents)} contract total less ${parts.join(' and ')} is ${centsDollars(contractCents - settledCents)}, not the current payment due ${centsDollars(dueCents)}`, true);
+      return balanceNotApplied(`${isCompletedToDateLabel(input.lineSubtotal?.label) ? `the work completed to date ${centsDollars(contractCents)}` : `the ${centsDollars(contractCents)} contract total`} less ${parts.join(' and ')} is ${centsDollars(contractCents - settledCents)}, not the current payment due ${centsDollars(dueCents)}`, true);
     }
     return balanceNotApplied(`the printed payments total ${centsDollars(paidCents as number)}, which leaves ${centsDollars(contractCents - (paidCents as number))} of the ${centsDollars(contractCents)} contract total, not the amount due ${centsDollars(dueCents)}`);
   }
