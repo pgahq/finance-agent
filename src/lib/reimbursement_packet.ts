@@ -105,6 +105,9 @@ const MAX_TEXT = 80;
 // Looks at one form before giving up: two run together, then one at a time while no two passing looks agree. Each look
 // is one model call, so the provider calls for the looks never exceed this.
 const MAX_LOOKS = 4;
+// The processor has 480 s for the reads, the looks, OCR, matching and the Workday write. The live runs took 11-47 s end
+// to end; no look starts once this much of the run is gone, and the packet stops in manual entry instead of timing out.
+const LOOK_BUDGET_MS = 150_000;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -410,7 +413,7 @@ function settleLooks(looks: Look[]): { passed: PassedLook[]; agreeing?: PassedLo
     passed,
     agreeing: passed.find((candidate) => passed.filter((other) => cents(other.total) === cents(candidate.total)).length >= 2),
     conflicting: new Set(passed.map((look) => cents(look.total))).size > 1,
-    noTotal: looks.every((look) => 'failed' in look && look.noTotal),
+    noTotal: looks.length > 0 && looks.every((look) => 'failed' in look && look.noTotal),
   };
 }
 
@@ -429,14 +432,19 @@ async function confirmFormTotal(
   second: ReimbursementPacket,
   fileList: string,
   parts: PacketParts,
-  abortSignal: AbortSignal | undefined
+  abortSignal: AbortSignal | undefined,
+  startedAt: number
 ): Promise<ReimbursementRead> {
-  const looks = await Promise.all([0, 1].map(() => lookAtForm(first, second, fileList, parts, abortSignal)));
+  const timeLeft = () => Date.now() - startedAt < LOOK_BUDGET_MS;
+  const looks: Look[] = timeLeft()
+    ? await Promise.all([0, 1].map(() => lookAtForm(first, second, fileList, parts, abortSignal)))
+    : [];
   let settled = settleLooks(looks);
-  while (looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal) {
+  while (looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal && timeLeft()) {
     looks.push(await lookAtForm(first, second, fileList, parts, abortSignal));
     settled = settleLooks(looks);
   }
+  const outOfTime = looks.length < MAX_LOOKS && !settled.agreeing && !settled.conflicting && !settled.noTotal;
   if (settled.agreeing) {
     const { totalText, summary } = settled.agreeing;
     return { ...first, formAmountToPay: totalText, formAmountLabel: summary.label, confirmedByFormMath: summary };
@@ -445,6 +453,7 @@ async function confirmFormTotal(
 
   const failures = looks.flatMap((look) => ('failed' in look ? [look.failed] : []));
   if (settled.passed.length > 0) failures.push('no two looks at the form both passed and read the same total');
+  if (outOfTime) failures.push('there was not enough time left to look at the form again');
   return {
     ...first,
     formAmountToPay: null,
@@ -469,6 +478,7 @@ export async function readReimbursementPacket(
   abortSignal?: AbortSignal
 ): Promise<ReimbursementRead | undefined> {
   if (!hasReimbursementSignal(emailContext, attachments.map((attachment) => attachment.fileName))) return undefined;
+  const startedAt = Date.now();
   const readable = await convertOfficeAttachmentsForModel(attachments);
   const parts = attachmentContentParts(readable);
   if (parts.length === 0) {
@@ -493,7 +503,10 @@ export async function readReimbursementPacket(
       notConfirmed: [...notConfirmed],
     };
   }
-  return amountAgreed ? first : confirmFormTotal(first, second, fileList, parts, abortSignal);
+  if (!amountAgreed) return confirmFormTotal(first, second, fileList, parts, abortSignal, startedAt);
+  const agreedLabel = payableTotalLabel(first.formAmountLabel);
+  const sameLabel = agreedLabel !== undefined && agreedLabel.toLowerCase() === payableTotalLabel(second.formAmountLabel)?.toLowerCase();
+  return sameLabel ? first : { ...first, formAmountLabel: null };
 }
 
 function cents(amount: number): number {
@@ -751,7 +764,7 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
   const cap = reimbursement.emailCap !== undefined ? ` The email's limit of ${formatChargeDollars(reimbursement.emailCap)} was not exceeded.` : '';
   const math = reimbursement.confirmedByFormMath;
   const columns = math?.columns.map((column) => `${column.label} ${column.total}`).join(', ');
-  const checked = math ? ` The reads of the form did not agree on this total, so it was checked against the form's own arithmetic: the column totals (${columns}) add up to it, and each column's line items add up to its column total.` : '';
+  const checked = math ? ` The reads of the form did not give one agreed total, so it was checked against the form's own arithmetic: the column totals (${columns}) add up to it, and each column's line items add up to its column total.` : '';
   const named = `the ${reimbursement.totalLabel ?? 'Amount to Pay'} on the reimbursement form`;
   return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, ${named}.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
 }
@@ -763,7 +776,7 @@ export function reimbursementSlackLines(reimbursement: AppliedReimbursement): st
     `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'supplier_id' ? 'Supplier ID and name' : 'name'}`,
     `Amount: ${reimbursement.amountLabel} from the form's ${reimbursement.totalLabel ?? 'Amount to Pay'}${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
     ...(reimbursement.confirmedByFormMath
-      ? ["Check the total first: the reads of the form did not agree on it, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
+      ? ["Check the total first: the reads of the form did not give one agreed total, and the form's own arithmetic confirmed it (the column totals and each column's line items add up)."]
       : []),
     'Receipts and folios were not booked as invoice lines.',
   ];

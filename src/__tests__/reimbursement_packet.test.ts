@@ -661,12 +661,60 @@ describe('a total the reads did not both give', () => {
     if (decision.outcome !== 'apply') throw new Error('expected apply');
     const note = reimbursementNote(decision.reimbursement);
     expect(note).toContain('invoiced to S-000123 MORGAN T ELLERY for $1,500.30, the TOTALS on the reimbursement form.');
-    expect(note).toContain("The reads of the form did not agree on this total, so it was checked against the form's own arithmetic");
+    expect(note).toContain("The reads of the form did not give one agreed total, so it was checked against the form's own arithmetic");
     expect(note).toContain('the column totals (Airfare $0.00, Ground $310.40, Hotel $1,150.20, Meals $39.70) add up to it');
     expect(note).toContain("each column's line items add up to its column total");
     const lines = reimbursementSlackLines(decision.reimbursement).join('\n');
     expect(lines).toContain("Amount: $1,500.30 from the form's TOTALS");
     expect(lines).toContain('Check the total first');
+  });
+
+  it('does not say the reads disagreed when neither found a total, and still tells AP to check it first', async () => {
+    script([missingTotalPacket(), missingTotalPacket()], [gridLook(), gridLook()]);
+    const decision = await decideReimbursement(db as never, await read());
+    if (decision.outcome !== 'apply') throw new Error('expected apply');
+    expect(decision.reimbursement).toMatchObject({ amount: 1500.3, confirmedByFormMath: { label: 'TOTALS' } });
+    expect(reimbursementNote(decision.reimbursement)).not.toContain('disagree');
+    expect(reimbursementSlackLines(decision.reimbursement).join('\n')).toContain('Check the total first');
+  });
+
+  it('names the printed label only when both reads give the same allowlisted label', async () => {
+    script([totalsPacket({ formAmountLabel: 'Total Reimbursement' }), totalsPacket({ formAmountLabel: 'TOTALS' })]);
+    const mismatch = await decideReimbursement(db as never, await read());
+    if (mismatch.outcome !== 'apply') throw new Error('expected apply');
+    expect(mismatch.reimbursement).not.toHaveProperty('totalLabel');
+    expect(reimbursementNote(mismatch.reimbursement)).toContain('the Amount to Pay on the reimbursement form.');
+    script([totalsPacket({ formAmountLabel: 'Total Reimbursement' }), totalsPacket({ formAmountLabel: ' total  reimbursement ' })]);
+    const same = await decideReimbursement(db as never, await read());
+    if (same.outcome !== 'apply') throw new Error('expected apply');
+    expect(reimbursementNote(same.reimbursement)).toContain('the Total Reimbursement on the reimbursement form.');
+  });
+
+  describe('when the run is short of time', () => {
+    afterEach(() => jest.restoreAllMocks());
+    const clock = (steps: number[]) => {
+      const spy = jest.spyOn(Date, 'now');
+      let index = 0;
+      spy.mockImplementation(() => steps[Math.min(index++, steps.length - 1)]);
+    };
+
+    it('takes no look and stops in manual entry when the reads already used the budget', async () => {
+      clock([0, 200_000]);
+      script([inventedPacket(), otherPacket()], [gridLook(), gridLook()]);
+      const result = await read();
+      expect(lookCalls()).toHaveLength(0);
+      expect(result).toMatchObject({ formAmountToPay: null, notConfirmed: ['formAmount'] });
+      expect(result?.unconfirmedDetail).toBe('there was not enough time left to look at the form again');
+    });
+
+    it('stops looking one at a time once the budget is gone, instead of running into the timeout', async () => {
+      clock([0, 10_000, 200_000]);
+      script([inventedPacket(), otherPacket()], [gridLook(), brokenLook(), gridLook(), gridLook()]);
+      const result = await read();
+      expect(lookCalls()).toHaveLength(2);
+      expect(result?.unconfirmedDetail).toContain('not enough time left');
+      expect(await decideReimbursement(db as never, result)).toMatchObject({ outcome: 'manual_entry' });
+    });
   });
 
   it('does not mark a booking where both reads found the total', async () => {
