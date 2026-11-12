@@ -2,16 +2,17 @@
 # reimbursement check (reimbursement_packet.live.test.ts) needs no Python. Nothing here comes from a real person or
 # packet: names, amounts, and hotels are invented, and the "handwriting" is the Caveat and Kalam fonts (SIL OFL,
 # https://github.com/google/fonts) with a scan simulated by rotation, blur, noise, and JPEG compression.
-# Run: pip install pillow numpy; download Caveat[wght].ttf and Kalam-Regular.ttf to /tmp/fonts as Caveat.ttf and
+# Run: pip install pillow numpy; DejaVu Sans, Sans Bold and Sans Mono must be installed under
+# /usr/share/fonts/truetype/dejavu (the script stops if they are missing); download Caveat[wght].ttf and Kalam-Regular.ttf to /tmp/fonts as Caveat.ttf and
 # Kalam.ttf; python3 make_scans.py (writes next to this file). Regenerating gives the same packets with slightly
 # different scan noise, so the committed PDFs are the ones the live check was run on.
-import random, io
+import random, io, os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 
 random.seed(7); np.random.seed(7)
 W, H = 850, 1100  # letter at 100 dpi
-SANS = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 20) if __import__('os').path.exists('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf') else ImageFont.load_default()
+SANS = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 20)
 SANS_S = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 15)
 HAND = lambda size: ImageFont.truetype('/tmp/fonts/Caveat.ttf', size)
 HAND2 = lambda size: ImageFont.truetype('/tmp/fonts/Kalam.ttf', size)
