@@ -4,10 +4,6 @@ jest.mock('../lib/database.js', () => ({
   findSuppliersByNameWord: jest.fn(),
 }));
 jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
-jest.mock('../lib/models.js', () => ({
-  ...jest.requireActual<Record<string, unknown>>('../lib/models.js'),
-  getOcrModel: jest.fn(() => 'ocr-model'),
-}));
 jest.mock('../lib/invoice_ocr.js', () => ({
   convertOfficeAttachmentsForModel: jest.fn(async (attachments: unknown[]) => attachments),
   attachmentContentParts: jest.fn(() => [{ type: 'file', data: 'pdf', mediaType: 'application/pdf' }]),
@@ -21,6 +17,7 @@ import {
   applyReimbursementToEnrichment,
   decideReimbursement,
   hasReimbursementSignal,
+  packetDisagreement,
   parseFormAmountToPay,
   readReimbursementPacket,
   reimbursementDescription,
@@ -113,7 +110,7 @@ describe('readReimbursementPacket', () => {
     aiResponse.mockReset().mockRejectedValueOnce(new Error('gateway timeout')).mockResolvedValue(packet());
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('reimbursement');
-    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(aiResponse).toHaveBeenCalledTimes(3);
   });
 
   it('throws the last failure when both attempts fail', async () => {
@@ -122,21 +119,42 @@ describe('readReimbursementPacket', () => {
       .rejects.toThrow('gateway timeout');
   });
 
-  it('reads a reimbursement once, on the document-reading model', async () => {
+  it('reads a reimbursement a second time and confirms it when the reads agree', async () => {
     aiResponse.mockReset().mockResolvedValue(packet());
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
-    expect(read?.kind).toBe('reimbursement');
-    expect(aiResponse).toHaveBeenCalledTimes(1);
-    expect(aiResponse.mock.calls[0][0]).toMatchObject({ model: 'ocr-model', temperature: null });
+    expect(aiResponse).toHaveBeenCalledTimes(2);
+    expect(read).not.toHaveProperty('unconfirmed');
+    expect(aiResponse.mock.calls[0][0]).not.toHaveProperty('model');
+    expect(aiResponse.mock.calls[1][0]).toMatchObject({ model: expect.anything(), temperature: null });
   });
 
-  it('books a packet whose form amount reads with parentheses and padding', async () => {
-    aiResponse.mockReset().mockResolvedValue(packet({ emailAmount: '$1,335.93', emailAmountIsCap: false, formAmountToPay: paddedParenthesized }));
+  it('marks the read unconfirmed when the second read picks a different amount', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet())
+      .mockResolvedValueOnce(packet({ formAmountToPay: '$1,100.00' }));
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.unconfirmed).toBe("the form's Amount to Pay");
+  });
+
+  it('confirms a packet whose first read has a parenthesized, padded form amount and whose second read is plain', async () => {
+    const email = { emailAmount: '$1,335.93', emailAmountIsCap: false };
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet({ ...email, formAmountToPay: paddedParenthesized }))
+      .mockResolvedValueOnce(packet({ ...email, formAmountToPay: '$1,335.93' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read).not.toHaveProperty('unconfirmed');
     expect(await decideReimbursement(db as never, read)).toMatchObject({ outcome: 'apply', reimbursement: { amount: 1335.93 } });
   });
 
-  it('reads a supplier invoice once', async () => {
+  it('marks the read unconfirmed when the second read says it is not a reimbursement', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(packet())
+      .mockResolvedValueOnce(packet({ kind: 'supplier_invoice' }));
+    const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
+    expect(read?.unconfirmed).toBe('whether it is a reimbursement');
+  });
+
+  it('does not read a supplier invoice a second time', async () => {
     aiResponse.mockReset().mockResolvedValue(packet({ kind: 'supplier_invoice' }));
     const read = await readReimbursementPacket(attachments, { subject: 'Reimbursement' } as never);
     expect(read?.kind).toBe('supplier_invoice');
@@ -144,8 +162,8 @@ describe('readReimbursementPacket', () => {
   });
 });
 
-// A real packet (2026-11-12): the form field extracted as an accounting-format string while the page shows no
-// parentheses.
+// The Dustin Hull packet (2026-11-12): the form field extracted as an accounting-format string while the page shows
+// no parentheses, and the other read returned the plain amount.
 const paddedParenthesized = `($${' '.repeat(70)}1,335.93)`;
 
 describe('parseFormAmountToPay', () => {
@@ -171,6 +189,53 @@ describe('parseFormAmountToPay', () => {
   it('leaves the shared parser strict, so a parenthesized supplier-invoice amount is still not read as positive', () => {
     expect(parseCanonicalChargeAmount('($1,335.93)')).toBeUndefined();
     expect(parseCanonicalChargeAmount('$(1,335.93)')).toBeUndefined();
+  });
+});
+
+describe('packetDisagreement', () => {
+  it('does not flag the form amount read with parentheses and padding against the plain amount', () => {
+    const plain = packet({ formAmountToPay: '$1,335.93', emailAmount: '$1,335.93', emailAmountIsCap: false });
+    const accounting = packet({ formAmountToPay: paddedParenthesized, emailAmount: '$1,335.93', emailAmountIsCap: false });
+    expect(packetDisagreement(accounting, plain)).toBeUndefined();
+    expect(packetDisagreement(plain, accounting)).toBeUndefined();
+    expect(packetDisagreement(accounting, packet({ formAmountToPay: '$1,335.94', emailAmount: '$1,335.93', emailAmountIsCap: false })))
+      .toBe("the form's Amount to Pay");
+  });
+
+  it('does not read parentheses as positive on the email amount', () => {
+    expect(packetDisagreement(packet({ emailAmount: '($900.00)' }), packet({ emailAmount: '$900.00' }))).toBe("the email's amount");
+  });
+
+  it('ignores case and punctuation in names and the formatting of amounts', () => {
+    expect(packetDisagreement(
+      packet(),
+      packet({ payeeName: 'Morgan T. Ellery', formAmountToPay: '1000', payeeSupplierId: null }),
+    )).toBeUndefined();
+  });
+
+  it('treats a missing middle initial as the same person, but not a dropped name or a different one', () => {
+    expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'MORGAN T ELLERY' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ payeeName: 'Jane Doe' }), packet({ payeeName: 'Jane Doe Smith' }))).toBe('the payee');
+    expect(packetDisagreement(packet({ payeeName: 'Morgan Ellery' }), packet({ payeeName: 'Morgan Ellory' }))).toBe('the payee');
+  });
+
+  it('flags a different form date, including the same date in another format only when it differs', () => {
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: 'Nov 2, 2026' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11/03/2026' }))).toBe('the form date');
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: null }))).toBe('the form date');
+  });
+
+  it('flags a different reading of whether the email amount is a limit', () => {
+    const exact = packet({ emailAmount: '$1,000.00', emailAmountIsCap: false });
+    expect(packetDisagreement(exact, packet({ emailAmount: '$1,000.00', emailAmountIsCap: true })))
+      .toBe("whether the email's amount is a limit");
+    expect(packetDisagreement(packet(), packet({ emailAmountIsCap: true }))).toBeUndefined();
+  });
+
+  it('flags a different payee, Supplier ID, or email amount', () => {
+    expect(packetDisagreement(packet(), packet({ payeeName: 'Jordan Ellery' }))).toBe('the payee');
+    expect(packetDisagreement(packet(), packet({ payeeSupplierId: 'S-000123' }))).toBe('the payee Supplier ID');
+    expect(packetDisagreement(packet(), packet({ emailAmount: '$900.00' }))).toBe("the email's amount");
   });
 });
 
@@ -234,6 +299,11 @@ describe('decideReimbursement', () => {
     findDocuments.mockResolvedValue([payeeDocument, { ...payeeDocument, workday_id: 'wid-ellery-2', metadata: { ...payeeDocument.metadata, supplierId: 'S-000124' } }]);
     const decision = await decideReimbursement(db as never, packet());
     expect(decision.outcome).toBe('manual_entry');
+  });
+
+  it('stops when two reads of the packet disagreed', async () => {
+    const decision = await decideReimbursement(db as never, { ...packet(), unconfirmed: 'the payee' });
+    expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: 'two reads of the packet disagreed on the payee' } });
   });
 
   it('stops when the form has no readable date, since the draft would have no number', async () => {
