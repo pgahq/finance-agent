@@ -8,10 +8,13 @@ import { readReimbursementPacket, type ReimbursementRead } from '../lib/reimburs
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
 import {
   folioTotal,
+  gridExpenseFormPdf,
+  gridFormTotals,
   reimbursementPacketPdf,
   vendorInvoicePdf,
   type FolioOptions,
   type FormOptions,
+  type GridFormOptions,
 } from './fixtures/reimbursement_packets.js';
 
 const live = process.env.RUN_LIVE_REIMBURSEMENT_EVAL === '1' && process.env.AI_GATEWAY_API_KEY ? describe : describe.skip;
@@ -50,7 +53,42 @@ const folio = (overrides: Partial<FolioOptions> = {}): FolioOptions => ({
   ...overrides,
 });
 
+const gridForm = (overrides: Partial<GridFormOptions> = {}): GridFormOptions => ({
+  title: 'SAMPLE ASSOCIATION EXPENSE REPORT',
+  payee: 'Jordan P Reyes',
+  date: '11/5/2026',
+  columns: ['Airfare', 'Ground', 'Hotel', 'Meals'],
+  lines: [
+    { description: 'Parking at home airport', column: 1, amount: 64.2 },
+    { description: 'Ride share to hotel', column: 1, amount: 41.35 },
+    { description: 'Ride share to airport', column: 1, amount: 38.9 },
+    { description: 'Sample Courtyard hotel, room and tax', column: 2, amount: 812.44 },
+    { description: 'Lunch', column: 3, amount: 17.85 },
+  ],
+  ...overrides,
+});
+
 live('reimbursement packet read on fictional packets (live)', () => {
+  // The form prints no "Amount to Pay": the total is the TOTALS row under "Sum of All Columns". When the reads miss it,
+  // the form's own arithmetic must confirm it, never a guess. The rotated, shaded case is the closest a generated PDF
+  // gets to a scanned form; a real scan still needs a manual check.
+  it.each([
+    ['upright', gridForm()],
+    ['sideways and shaded', gridForm({ rotated: true, shaded: true })],
+  ])('books the TOTALS row total of a grid expense form (%s), or stops with no amount shown', async (_name, form) => {
+    const pdf = await gridExpenseFormPdf(form, folio());
+    const expected = Math.round(gridFormTotals(form).grand * 100);
+    for (let run = 0; run < RUNS; run++) {
+      const packet = await read(pdf, 'expense report.pdf', { subject: 'Expense report' });
+      expect(packet?.kind).toBe('reimbursement');
+      if (packet?.unconfirmed) {
+        expect(packet.notConfirmed).toContain('formAmount');
+      } else {
+        expect(cents(packet?.formAmountToPay)).toBe(expected);
+      }
+    }
+  }, 600000);
+
   it('books the form amount and payee, not the folio, when the folio totals more', async () => {
     const pdf = await reimbursementPacketPdf(form(), folio());
     expect(folioTotal(folio())).toBeGreaterThan(1000);
