@@ -130,9 +130,34 @@ async function readPacketOnce(
   throw lastFailure ?? new Error('Reimbursement packet read was aborted');
 }
 
-function amountCents(value: string | null): number | null {
-  const amount = parseCanonicalChargeAmount(value);
+// Whitespace between two digits is kept, so "1 335.93" stays unreadable instead of becoming 1335.93.
+function withoutPadding(value: string): string {
+  return value.trim().replace(/(?<!\d)\s+|\s+(?!\d)/g, '');
+}
+
+/**
+ * A reimbursement form's Amount to Pay is a positive amount to pay, never a credit. A fillable PDF field in an
+ * accounting number format can extract as "($      1,335.93)" while the page shows no parentheses, so padding is
+ * dropped and one pair of wrapping parentheses is read as the plain amount. A minus sign still makes it unreadable.
+ * Only the form's amount gets this: parentheses mean a credit on a supplier invoice.
+ */
+export function parseFormAmountToPay(value: string | null | undefined): number | undefined {
+  if (value == null) return undefined;
+  const compact = withoutPadding(value);
+  const wrapped = compact.match(/^\(([^()]*)\)$/);
+  return parseCanonicalChargeAmount(wrapped ? wrapped[1] : compact);
+}
+
+function parseEmailAmount(value: string | null | undefined): number | undefined {
+  return value == null ? undefined : parseCanonicalChargeAmount(withoutPadding(value));
+}
+
+function amountCents(amount: number | undefined): number | null {
   return amount === undefined ? null : Math.round(amount * 100);
+}
+
+function readableText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function nameWords(value: string | null): Set<string> {
@@ -158,9 +183,12 @@ export function packetDisagreement(first: ReimbursementPacket, second: Reimburse
   if (first.kind !== second.kind) return 'whether it is a reimbursement';
   if (!sameName(first.payeeName, second.payeeName)) return 'the payee';
   if (comparableId(first.payeeSupplierId) !== comparableId(second.payeeSupplierId)) return 'the payee Supplier ID';
-  if (amountCents(first.formAmountToPay) !== amountCents(second.formAmountToPay)) return "the form's Amount to Pay";
-  if (amountCents(first.emailAmount) !== amountCents(second.emailAmount)) return "the email's amount";
-  if (amountCents(first.emailAmount) !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
+  if (amountCents(parseFormAmountToPay(first.formAmountToPay)) !== amountCents(parseFormAmountToPay(second.formAmountToPay))) {
+    return "the form's Amount to Pay";
+  }
+  const firstEmailCents = amountCents(parseEmailAmount(first.emailAmount));
+  if (firstEmailCents !== amountCents(parseEmailAmount(second.emailAmount))) return "the email's amount";
+  if (firstEmailCents !== null && (first.emailAmountIsCap ?? null) !== (second.emailAmountIsCap ?? null)) {
     return "whether the email's amount is a limit";
   }
   if (normalizePrintedDate(first.formDate) !== normalizePrintedDate(second.formDate)) return 'the form date';
@@ -205,8 +233,8 @@ function manual(packet: ReimbursementPacket, reason: string): ReimbursementDecis
     manual: {
       reason,
       ...(packet.payeeName?.trim() ? { payeeName: packet.payeeName.trim() } : {}),
-      ...(packet.formAmountToPay?.trim() ? { formAmount: packet.formAmountToPay.trim() } : {}),
-      ...(packet.emailAmount?.trim() ? { emailAmount: packet.emailAmount.trim() } : {}),
+      ...(packet.formAmountToPay?.trim() ? { formAmount: readableText(packet.formAmountToPay) } : {}),
+      ...(packet.emailAmount?.trim() ? { emailAmount: readableText(packet.emailAmount) } : {}),
     },
   };
 }
@@ -216,13 +244,13 @@ type AmountResult = { amount: number; emailCap?: number } | { failure: string };
 /** The form's Amount to Pay is exact. An email amount must equal it, or be a limit the form stays within. */
 function approvedAmount(packet: ReimbursementPacket): AmountResult {
   if (!packet.formAmountToPay?.trim()) return { failure: 'the reimbursement form prints no Amount to Pay' };
-  const amount = parseCanonicalChargeAmount(packet.formAmountToPay);
-  if (amount === undefined) return { failure: `the form's Amount to Pay "${packet.formAmountToPay.trim()}" could not be read as a dollar amount` };
+  const amount = parseFormAmountToPay(packet.formAmountToPay);
+  if (amount === undefined) return { failure: `the form's Amount to Pay "${readableText(packet.formAmountToPay)}" could not be read as a dollar amount` };
   if (cents(amount) <= 0) return { failure: 'the form\'s Amount to Pay is zero' };
 
   if (!packet.emailAmount?.trim()) return { amount };
-  const emailAmount = parseCanonicalChargeAmount(packet.emailAmount);
-  if (emailAmount === undefined) return { failure: `the email's amount "${packet.emailAmount.trim()}" could not be read as a dollar amount` };
+  const emailAmount = parseEmailAmount(packet.emailAmount);
+  if (emailAmount === undefined) return { failure: `the email's amount "${readableText(packet.emailAmount)}" could not be read as a dollar amount` };
   if (packet.emailAmountIsCap === true) {
     if (cents(amount) > cents(emailAmount)) {
       return { failure: `the form's Amount to Pay ${formatChargeDollars(amount)} is above the email's limit of ${formatChargeDollars(emailAmount)}` };
