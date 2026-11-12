@@ -4,6 +4,10 @@ jest.mock('../lib/database.js', () => ({
   findSuppliersByNameWord: jest.fn(),
 }));
 jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
+jest.mock('../lib/models.js', () => ({
+  ...jest.requireActual('../lib/models.js'),
+  getOcrModel: jest.fn(() => 'ocr-model'),
+}));
 jest.mock('../lib/invoice_ocr.js', () => ({
   convertOfficeAttachmentsForModel: jest.fn(async (attachments: unknown[]) => attachments),
   attachmentContentParts: jest.fn(() => [{ type: 'file', data: 'pdf', mediaType: 'application/pdf' }]),
@@ -277,6 +281,43 @@ describe('a form total only one read found', () => {
     });
   });
 
+  it.each([
+    ['first', [missingTotalPacket(), totalsPacket()]],
+    ['second', [totalsPacket(), missingTotalPacket()]],
+  ])('runs the focused look on the OCR model, with no email text, when the %s read found no total', async (_name, reads) => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(reads[0])
+      .mockResolvedValueOnce(reads[1])
+      .mockResolvedValueOnce(formLook());
+    await read();
+    const [firstCall, secondCall, lookCall] = aiResponse.mock.calls.map((call) => call[0] as { model?: unknown; messages: { content: { text?: string }[] }[] });
+    expect(firstCall).not.toHaveProperty('model');
+    expect(secondCall.model).toBe('ocr-model');
+    expect(lookCall.model).toBe('ocr-model');
+    expect(lookCall.messages[0].content[0].text).not.toContain('Subject:');
+  });
+
+  it('marks a booking that rests on the focused look so AP sees it in the note and the Slack post', async () => {
+    aiResponse.mockReset()
+      .mockResolvedValueOnce(missingTotalPacket())
+      .mockResolvedValueOnce(totalsPacket())
+      .mockResolvedValueOnce(formLook());
+    const decision = await decideReimbursement(db as never, await read());
+    if (decision.outcome !== 'apply') throw new Error('expected apply');
+    expect(decision.reimbursement.checkedByFocusedLook).toBe(true);
+    expect(reimbursementNote(decision.reimbursement)).toContain('One of two reads of the form found no Amount to Pay');
+    expect(reimbursementSlackLines(decision.reimbursement).join('\n')).toContain('Check the total first');
+  });
+
+  it('does not mark a booking where both reads found the total', async () => {
+    aiResponse.mockReset().mockResolvedValue(totalsPacket());
+    const decision = await decideReimbursement(db as never, await read());
+    if (decision.outcome !== 'apply') throw new Error('expected apply');
+    expect(decision.reimbursement).not.toHaveProperty('checkedByFocusedLook');
+    expect(reimbursementNote(decision.reimbursement)).not.toContain('focused');
+    expect(reimbursementSlackLines(decision.reimbursement).join('\n')).not.toContain('Check the total first');
+  });
+
   it('books it the same way when the second read is the one that found no total', async () => {
     aiResponse.mockReset()
       .mockResolvedValueOnce(totalsPacket())
@@ -422,11 +463,11 @@ describe('formTotalFailure', () => {
     }))).toBeUndefined();
   });
 
-  it.each(['TOTALS', 'Amount to Pay', 'Total Reimbursement', 'Total to be reimbursed'])('accepts "%s" as the label of the form total', (totalsLabel) => {
+  it.each(['TOTALS', 'Total:', 'Grand Total', 'Amount to Pay', 'Total Amount to Pay', 'Total Reimbursement', 'Total to be reimbursed'])('accepts "%s" as the label of the form total', (totalsLabel) => {
     expect(formTotalFailure(1403.95, formLook({ totalsLabel }))).toBeUndefined();
   });
 
-  it.each(['Lodging', 'Subtotal', 'Sub-total', 'SC-Lodging'])('rejects "%s" as the label of the form total', (totalsLabel) => {
+  it.each(['Lodging', 'Subtotal', 'Sub-total', 'SC-Lodging', 'Total Lodging', 'Total Mileage', 'Non-reimbursable', 'Reimbursable expenses'])('rejects "%s" as the label of the form total', (totalsLabel) => {
     expect(formTotalFailure(1403.95, formLook({ totalsLabel }))).toContain('is not a payable-total label');
   });
 

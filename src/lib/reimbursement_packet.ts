@@ -24,7 +24,11 @@ import {
 export type { ReimbursementPacket };
 
 /** The packet as read. `unconfirmed` is set when a second, independent read of a reimbursement disagreed with the first. */
-export type ReimbursementRead = ReimbursementPacket & { unconfirmed?: string };
+export type ReimbursementRead = ReimbursementPacket & {
+  unconfirmed?: string;
+  /** One read found the form total and the other did not; a focused look at the form confirmed it. */
+  checkedByFocusedLook?: true;
+};
 
 /**
  * A reimbursement packet asks AP to pay a person back. The folio or receipt in it is backup, so the invoice goes to
@@ -42,6 +46,8 @@ export interface AppliedReimbursement {
   amountLabel: string;
   /** The email's own limit when it worded its amount as "up to"; the form amount was checked against it. */
   emailCap?: number;
+  /** The form total came from one full read plus a focused look at the form, not from two agreeing reads. */
+  checkedByFocusedLook?: true;
   invoiceDate: string;
   description: string;
 }
@@ -69,8 +75,7 @@ const DESCRIPTION_LIMIT = 120;
 // A totals or subtotal row listed as a category would make the rows add up to the total by itself.
 const AGGREGATE_ROW = /\bsub[-\s]*totals?\b|\b(?:grand\s+)?totals?\b|\bamount\s+to\s+pay\b/i;
 // The figure the focused look reports must sit beside a label for the payable total, never a category or subtotal.
-const PAYABLE_TOTAL_LABEL = /\btotals?\b|\bamount\s+to\s+pay\b|\breimburs/i;
-const SUBTOTAL_LABEL = /\bsub[-\s]*totals?\b/i;
+const PAYABLE_TOTAL_LABEL = /^\s*(?:grand\s+)?totals?\s*:?\s*$|\bamount\s+to\s+pay\b|\btotal\s+(?:reimbursement|to\s+be\s+reimbursed)\b/i;
 const SUPPLIER_ID_PATTERN = /\bS-\d{4,}\b/i;
 
 /** A cheap text gate so ordinary invoices never pay for the packet read. */
@@ -269,7 +274,7 @@ export function formTotalFailure(foundAmount: number, look: ReimbursementFormTot
     return `a focused look at the form found ${formatChargeDollars(total)}`;
   }
   if (isBlank(look.totalsLabel)) return 'the focused look named no label for the form total';
-  if (SUBTOTAL_LABEL.test(look.totalsLabel ?? '') || !PAYABLE_TOTAL_LABEL.test(look.totalsLabel ?? '')) {
+  if (!PAYABLE_TOTAL_LABEL.test(look.totalsLabel ?? '')) {
     return `the focused look read the form total beside "${readableText(look.totalsLabel ?? '')}", which is not a payable-total label`;
   }
   if (look.categoryLines.length === 0) return 'the form lists no category lines to check the total against';
@@ -310,7 +315,7 @@ async function confirmMissingFormTotal(
   }
   const failure = formTotalFailure(parseFormAmountToPay(gap.found) ?? 0, look);
   debug('Reimbursement form total focused look', { found: gap.found, look, failure });
-  return failure ? unconfirmed(failure) : { ...first, formAmountToPay: gap.found };
+  return failure ? unconfirmed(failure) : { ...first, formAmountToPay: gap.found, checkedByFocusedLook: true };
 }
 
 /**
@@ -471,6 +476,7 @@ export async function decideReimbursement(
       amount: amount.amount,
       amountLabel: formatChargeDollars(amount.amount),
       ...(amount.emailCap !== undefined ? { emailCap: amount.emailCap } : {}),
+      ...(packet.checkedByFocusedLook ? { checkedByFocusedLook: true as const } : {}),
       invoiceDate,
       description: reimbursementDescription(packet),
     },
@@ -586,7 +592,8 @@ export function reimbursementNote(reimbursement: AppliedReimbursement): string {
   const { payee } = reimbursement;
   const who = `${payee.supplierId ? `${payee.supplierId} ` : ''}${payee.supplierName}`;
   const cap = reimbursement.emailCap !== undefined ? ` The email's limit of ${formatChargeDollars(reimbursement.emailCap)} was not exceeded.` : '';
-  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, the Amount to Pay on the reimbursement form.${cap} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
+  const checked = reimbursement.checkedByFocusedLook ? " One of two reads of the form found no Amount to Pay; the total came from the other read and was confirmed by a focused second look at the form, whose category lines add up to it." : '';
+  return `Reimbursement packet: invoiced to ${who} for ${reimbursement.amountLabel}, the Amount to Pay on the reimbursement form.${cap}${checked} Receipts and folios in the packet are supporting documents only; their rooms, taxes, and totals were not booked.`;
 }
 
 /** Lines for the Slack success post. */
@@ -595,6 +602,9 @@ export function reimbursementSlackLines(reimbursement: AppliedReimbursement): st
   return [
     `Payee: ${payee.supplierName}${payee.supplierId ? ` (${payee.supplierId})` : ''}, matched by ${payee.matchedBy === 'supplier_id' ? 'Supplier ID and name' : 'name'}`,
     `Amount: ${reimbursement.amountLabel} from the form's Amount to Pay${reimbursement.emailCap !== undefined ? `, within the email's ${formatChargeDollars(reimbursement.emailCap)} limit` : ''}`,
+    ...(reimbursement.checkedByFocusedLook
+      ? ["Check the total first: one read found no Amount to Pay, and a focused second look confirmed it with the category lines adding up."]
+      : []),
     'Receipts and folios were not booked as invoice lines.',
   ];
 }
