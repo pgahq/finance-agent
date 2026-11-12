@@ -736,15 +736,6 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.noteLabel).toBe('Balance invoice');
   });
 
-  it('reports a percent mismatch on the email-balance route too', () => {
-    const plan = planBalanceInvoice(payAppInput({
-      retainage: { ...supin474922Retainage, percent: '5%', amount: '$50,000.00' },
-      emailBalanceDue: { amount: '$130,137.04', phrase: 'remaining balance' },
-    }))!;
-    expect(plan.applied).toBe(true);
-    expect(plan.note).toContain('5% of $591,532.00 is $29,576.60, not the printed retainage $50,000.00');
-  });
-
   it('books without a PO link when the PO has no lines', () => {
     const none = planBalanceInvoice(payAppInput({ poLines: [] as any[] }))!;
     expect(none.applied).toBe(true);
@@ -764,13 +755,39 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     }
   });
 
-  it('applies on an exact email balance and says the printed figures do not reconcile', () => {
+  it('does not let an email balance book a pay application whose figures do not reconcile', () => {
     const plan = planBalanceInvoice(payAppInput({
       retainage: { ...supin474922Retainage, amount: '$50,000.00' },
       emailBalanceDue: { amount: '$130,137.04', phrase: 'remaining balance' },
     }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is $139,290.24, not the current payment due $130,137.04');
+    expect(plan.note).toContain('so the printed lines were submitted unchanged');
+  });
+
+  it('books a partly finished job from Total Completed and Stored to Date, not the larger contract sum', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      lineSubtotal: { label: 'Total Completed and Stored to Date', amount: '$591,532.00' },
+      emailBalanceDue: null,
+    }))!;
     expect(plan.applied).toBe(true);
-    expect(plan.note).toContain('The document prints $50,000.00 retainage and $402,241.76 in previous payments, which leaves $139,290.24, not the current payment due; check them against the PDF.');
+    expect(plan.line?.description).toBe('Pay application - current payment due (Total Completed and Stored to Date $591,532.00)');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $591,532.00, less "Retainage" (10%) $59,153.20');
+  });
+
+  it('flags the contract sum as the base when the completed work is smaller', () => {
+    const plan = planBalanceInvoice(payAppInput({
+      lineSubtotal: { label: 'Contract Sum to Date', amount: '$700,000.00' },
+      emailBalanceDue: null,
+    }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('the $700,000.00 contract total less $59,153.20 retainage and $402,241.76 in previous payments is $238,605.04, not the current payment due $130,137.04');
+  });
+
+  it('reports a percent mismatch when the arithmetic reconciles', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, percent: '5%' } }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.note).toContain('5% of $591,532.00 is $29,576.60, not the printed retainage $59,153.20');
   });
 
   describe('with a PO', () => {

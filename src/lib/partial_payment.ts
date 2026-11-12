@@ -466,7 +466,7 @@ function readPrintedAmount(raw: string | null | undefined): number | undefined {
 const RETAINAGE_LABEL_WORDS = new Set(['retainage', 'retention', 'retained']);
 
 /** Whether the row is labeled as a holdback and not as a release of one. */
-function isRetainageHeldLabel(label: string | null | undefined): boolean {
+export function isRetainageHeldLabel(label: string | null | undefined): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
   return tokens.some(token => RETAINAGE_LABEL_WORDS.has(token)) && !tokens.some(token => ['release', 'released', 'service', 'services'].includes(token));
 }
@@ -546,8 +546,9 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   }
   const paymentsExplainGap = settlementPrinted && contractCents - settledCents === dueCents;
   const emailAmount = parseCanonicalChargeAmount(input.emailBalanceDue?.amount);
-  // The email alone must sit beside a printed contract total; a line sum can read high for other reasons.
-  const emailSaysBalance = printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
+  // The email alone must sit beside a printed contract total; a line sum can read high for other reasons. On a pay application
+  // it never stands in for the retainage arithmetic: figures that do not add up are a warning sign, not something an email settles.
+  const emailSaysBalance = !payApplication && printedBase != null && Boolean(input.emailBalanceDue?.phrase?.trim()) && emailAmount != null && toCents(emailAmount) === dueCents;
   if (!paymentsExplainGap && !emailSaysBalance) {
     if (!settlementPrinted) return undefined;
     if (payApplication) {
@@ -596,9 +597,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       ? ` ${formatPercent(percent)} of ${contractText} is ${centsDollars(Math.round(contractCents * percent / 100))}, not the printed retainage ${retainedText}; check the retainage against the PDF.`
       : '';
     const paidClause = paidCents != null ? `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : '';
-    const basis = paymentsExplainGap
-      ? `"${label}" is ${contractText}, less "${retainageLabel}"${percentText} ${retainedText}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`
-      : `"${label}" is ${contractText} but the current payment due is ${dueText}, and the email calls ${dueText} the remaining balance${lineText}. The document prints ${retainedText} retainage${paidCents != null ? ` and ${centsDollars(paidCents)} in previous payments` : ''}, which leaves ${centsDollars(contractCents - settledCents)}, not the current payment due; check them against the PDF.${percentCheck}`;
+    const basis = `"${label}" is ${contractText}, less "${retainageLabel}"${percentText} ${retainedText}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`;
     return {
       applied: true,
       noteLabel: PAY_APPLICATION_NOTE_LABEL,
@@ -607,7 +606,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
       note: `${basis} The invoice bills the current payment due, so it was submitted as one ${dueText} line instead of the printed lines. The full line list is below and on the attached PDF.${poLineNote}`,
       amountDueNote: `pay application, ${contractText} to date`,
       slackLines: [
-        `${label}: ${contractText} to date, less ${retainedText} retainage${paidCents != null ? `, less ${centsDollars(paidCents)} previous payments` : ''}, ${dueText} current payment due${paymentsExplainGap ? '' : ' (remaining balance per the email; the printed figures do not reconcile, so check them)'}. Submitted as one pay-application line, not the printed lines.`,
+        `${label}: ${contractText} to date, less ${retainedText} retainage${paidCents != null ? `, less ${centsDollars(paidCents)} previous payments` : ''}, ${dueText} current payment due. Submitted as one pay-application line, not the printed lines.`,
         ...slackPoLines,
       ],
     };

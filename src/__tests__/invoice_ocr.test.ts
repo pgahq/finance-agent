@@ -422,6 +422,18 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedRowsAddedOnSecondRead).toBeUndefined();
       });
 
+      it('accepts a second read whose added row merely contains a word like Late, since only retainage rows are refused', async () => {
+        const floral = fullRows.find(row => row.description === 'Fresh Cut Floral Centerpieces')!;
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseWith(productionRows))
+          .mockResolvedValueOnce(responseWith([...productionRows, { ...floral, description: 'Late checkout fee balance beam' }]));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.extractedInvoiceLines).toHaveLength(28);
+        expect(result?.extractedRowsAddedOnSecondRead).toEqual([{ description: 'Late checkout fee balance beam', totalPrice: '$4,050.00' }]);
+      });
+
       it('keeps the first read when the second read still does not match the printed total', async () => {
         const stillShort = productionRows.slice(0, 20);
         mockGetAiResponse.mockResolvedValueOnce(responseWith(productionRows)).mockResolvedValueOnce(responseWith(stillShort));
