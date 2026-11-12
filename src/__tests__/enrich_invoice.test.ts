@@ -1920,7 +1920,7 @@ describe('enrich_invoice', () => {
     const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
     expect(params.finalLines).toHaveLength(1);
     const notes = params.buildNotes([]);
-    expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" $59,153.20, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+    expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" $59,153.20, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
     expect(notes).not.toContain('Line total review');
   });
 

@@ -3257,7 +3257,7 @@ describe('create_invoice', () => {
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 130137.04 })]);
       const notes = submitArgs.buildNotes([]);
-      expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+      expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
       expect(notes).not.toContain('Amount check');
     });
 
@@ -3278,10 +3278,11 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedAmountDue).toBe('$130,137.04');
 
       const notes = submitArgs.buildNotes([]);
-      expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+      expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
       expect(notes).not.toContain('Balance invoice');
       expect(notes).not.toContain('Amount check');
       expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Line subtotal review');
 
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.balanceInvoice).toEqual(['Contract Sum to Date: $591,532.00 to date, less $59,153.20 retainage, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.']);

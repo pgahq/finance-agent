@@ -605,7 +605,7 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     expect(plan.applied).toBe(true);
     expect(plan.noteLabel).toBe('Pay application');
     expect(plan.line).toMatchObject({ quantity: 1, totalPrice: '$130,137.04' });
-    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Total retainage" $0.00, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
   });
 
   it('pins the single PO line for the $591,532.00 contract even though the base is the completed total', () => {
@@ -621,7 +621,7 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     expect(plan.applied).toBe(true);
     expect(plan.noteLabel).toBe('Pay application');
     expect(plan.poLines).toEqual([contractLine]);
-    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
+    expect(plan.note).toContain('"Total Completed and Stored to Date" is $532,378.80, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
     expect(plan.slackLines[0]).toBe('Total Completed and Stored to Date: $532,378.80 to date, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.');
   });
 
@@ -635,7 +635,7 @@ describe('planBalanceInvoice for the SUPIN-474922 pay application as printed', (
     const plan = planBalanceInvoice(printed({ poLines: [poLine('L1', 591532), poLine('L2', 12000)] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $532,378.80 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
+    expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $532,378.80 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
   });
 
   it('is what the old contract-sum base got wrong: $591,532.00 less payments is $189,290.24, not the amount due', () => {
@@ -722,7 +722,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
       tableNumber: 1,
     });
     expect(plan.poLines).toBeUndefined();
-    expect(plan.note).toContain('"Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+    expect(plan.note).toContain('"Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
     expect(plan.note).toContain('submitted as one $130,137.04 line instead of the printed lines');
     expect(plan.amountDueNote).toBe('pay application, $591,532.00 to date');
     expect(plan.slackLines).toEqual(['Contract Sum to Date: $591,532.00 to date, less $59,153.20 retainage, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.']);
@@ -746,7 +746,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
   it('reads retainage printed in parentheses or without a percent', () => {
     const plan = planBalanceInvoice(payAppInput({ retainage: { label: 'Less Retainage', percent: null, amount: '($59,153.20)' } }))!;
     expect(plan.applied).toBe(true);
-    expect(plan.note).toContain('less "Less Retainage" $59,153.20');
+    expect(plan.note).toContain('after "Less Retainage" $59,153.20');
   });
 
   it('does not apply and shows the arithmetic when the figures do not reconcile', () => {
@@ -812,6 +812,17 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Prior', amount: '$0.00' }, ...supin474922Payments] }))!;
     expect(plan.applied).toBe(true);
     expect(plan.line?.totalPrice).toBe('$130,137.04');
+  });
+
+  it('leaves the PO line to the merge when the only line is below the current payment due', () => {
+    const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 100000)] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.poLines).toBeUndefined();
+    expect(plan.note).toContain('check the PO line coding before approving');
+  });
+
+  it('does not review the line subtotal against rows when the subtotal is a completed-to-date total', () => {
+    expect(lineSubtotalReviewNote(supin474922Rows, { label: 'Total Completed and Stored to Date', amount: '$532,378.80' })).toBeUndefined();
   });
 
   it('does not take a "Customer Retention Services" row for retainage held', () => {
@@ -929,7 +940,7 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
       const plan = planBalanceInvoice(payAppInput({ poLines: [poLine('L1', 300000), poLine('L2', 291532)] }))!;
       expect(plan.applied).toBe(true);
       expect(plan.poLines).toBeUndefined();
-      expect(plan.note).toContain('No PO line is for $130,137.04, and none or several PO lines are for the $591,532.00 total to date, so the PO line was left to the line merge; check the PO line coding before approving.');
+      expect(plan.note).toContain('No PO line is for $130,137.04, and no single open PO line is for the $591,532.00 total to date or covers the payment due, so the PO line was left to the line merge; check the PO line coding before approving.');
       expect(plan.slackLines).toHaveLength(2);
     });
   });

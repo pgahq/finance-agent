@@ -208,6 +208,8 @@ export function lineSubtotalReviewNote(
   subtotalFreight = 0,
   secondRead?: SecondReadOutcome | null
 ): string | undefined {
+  // A pay application's completed-to-date total is not a total of the table rows (they carry scheduled values), so there is nothing to compare.
+  if (isCompletedToDateLabel(subtotal?.label)) return undefined;
   const printed = parseCanonicalChargeAmount(subtotal?.amount);
   const summed = sumExtractedLineCents(lines);
   if (printed == null || summed == null) return undefined;
@@ -498,12 +500,18 @@ function selectPayApplicationPoLine(poLines: PurchaseOrderLine[] | undefined, du
   const lines = poLines ?? [];
   const contractLines = lines.filter(line => poLineAmountCents(line) === contractCents && line.availableForInvoicing !== false);
   if (contractLines.length === 1) return { status: 'matched', line: contractLines[0], consumed: false };
-  if (lines.length === 1) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
-  return { status: 'unpinned', reason: `${exact.reason}, and none or several PO lines are for the ${centsDollars(contractCents)} total to date, so the PO line was left to the line merge` };
+  const onlyLineCents = lines.length === 1 ? poLineAmountCents(lines[0]) : undefined;
+  if (onlyLineCents != null && onlyLineCents >= dueCents) return { status: 'matched', line: lines[0], consumed: lines[0].availableForInvoicing === false };
+  return { status: 'unpinned', reason: `${exact.reason}, and no single open PO line is for the ${centsDollars(contractCents)} total to date or covers the payment due, so the PO line was left to the line merge` };
 }
 
 function paymentsText(payments: PrintedPriorPayment[] | null | undefined): string {
   return payments?.length === 1 ? `"${printable(payments[0].label)}"` : 'the previous payments';
+}
+
+/** "less X" for a deduction row, without repeating the word when the printed label already starts with it. */
+function lessWord(quotedLabel: string): string {
+  return /^"\s*less\b/i.test(quotedLabel) ? 'after' : 'less';
 }
 
 /**
@@ -602,9 +610,9 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
     const percentCheck = retainedCents != null && percent != null && Math.abs(Math.round(contractCents * percent / 100) - retainedCents) > 1
       ? ` ${formatPercent(percent)} of ${contractText} is ${centsDollars(Math.round(contractCents * percent / 100))}, not the printed retainage ${retainedText}; check the retainage against the PDF.`
       : '';
-    const retainageClause = retainedText != null ? `, less "${retainageLabel}"${percentText} ${retainedText}` : '';
+    const retainageClause = retainedText != null ? `, ${lessWord(`"${retainageLabel}"`)} "${retainageLabel}"${percentText} ${retainedText}` : '';
     const noPaymentsClause = input.priorPayments?.length ? ', and the printed previous payments total $0.00' : ' and no previous payments are printed';
-    const paidClause = paidCents != null ? `, less ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : settledCents === 0 ? noPaymentsClause : '';
+    const paidClause = paidCents != null ? `, ${lessWord(paymentsText(input.priorPayments))} ${paymentsText(input.priorPayments)} ${centsDollars(paidCents)}` : settledCents === 0 ? noPaymentsClause : '';
     const basis = `"${label}" is ${contractText}${retainageClause}${paidClause}, which leaves the ${dueText} current payment due${lineText}.${percentCheck}`;
     return {
       applied: true,
