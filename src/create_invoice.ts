@@ -1166,6 +1166,7 @@ async function processInvoiceCluster(
       settlementPrinted: hasPrintedSettlement({
         extractedPartialPayment: result.extractedPartialPayment,
         extractedPriorPayments: result.extractedPriorPayments,
+        extractedRetainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
       }),
       lineSubtotal: result.extractedLineSubtotal,
@@ -1236,7 +1237,7 @@ async function processInvoiceCluster(
     // The amount due is the better judge of missing rows when the printed total covers only part of the table, but
     // it says nothing on an invoice that bills a deposit, an advance, or what is left after payments.
     const creditCents = summaryCreditCents(result.extractedSummaryCharges, charges.lines);
-    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length
+    const amountDueGap = depositApplied || chargeWithheld || freightAsLines || result.extractedPartialPayment || result.extractedPriorPayments?.length || result.extractedRetainage
       ? undefined
       : reviewAmountDueGapCents({
         lines: charges.lines,
@@ -1283,6 +1284,7 @@ async function processInvoiceCluster(
       ? undefined
       : planBalanceInvoice({
         priorPayments: result.extractedPriorPayments,
+        retainage: result.extractedRetainage,
         emailBalanceDue: result.emailBalanceDue,
         lineSubtotal: result.extractedLineSubtotal,
         amountDue: extractedAmountDue,

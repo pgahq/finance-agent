@@ -117,7 +117,7 @@ jest.mock('../lib/ai.js', () => {
   const toOcrResult = (full: any) => {
     const headerText = Object.fromEntries(
       Object.entries(full ?? {})
-        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment', 'extractedPriorPayments'].includes(key))
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment', 'extractedPriorPayments', 'extractedRetainage'].includes(key))
         .map(([key, value]) => [key, text(value)])
     );
     return {
@@ -129,6 +129,7 @@ jest.mock('../lib/ai.js', () => {
       extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
       extractedPartialPayment: full?.extractedPartialPayment ?? { label: '', percent: '', amount: '' },
       extractedPriorPayments: full?.extractedPriorPayments ?? [],
+      extractedRetainage: full?.extractedRetainage ?? { label: '', percent: '', amount: '' },
       extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
       invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
       extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
@@ -1868,6 +1869,58 @@ describe('enrich_invoice', () => {
     expect(params.finalLines).toHaveLength(1);
     const notes = params.buildNotes([]);
     expect(notes).toContain('Balance invoice: "Total Contract Price" is $23,887.00 but the amount due is $5,909.50');
+    expect(notes).not.toContain('Line total review');
+  });
+
+  it('replaces the printed lines with one current-payment-due line on update (SUPIN-474922)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin474922Header, supin474922Rows } = require('./fixtures/supin_474922.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Berg Construction LLC', memo: 'transportation' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin474922Header,
+      extractedInvoiceLines: supin474922Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 130137.04, extendedAmount: 130137.04 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Contract Sum to Date $591,532.00)', quantity: 1, totalPrice: '$130,137.04' })]);
+    expect(built[6]).toBe(true);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines).toHaveLength(1);
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due');
     expect(notes).not.toContain('Line total review');
   });
 

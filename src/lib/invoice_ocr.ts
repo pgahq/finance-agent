@@ -256,6 +256,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
     partialPayment: result.extractedPartialPayment,
     priorPayments: result.extractedPriorPayments,
+    retainage: result.extractedRetainage,
   };
   // Rows, freight, and tax that already reach the amount due leave nothing missing, whatever part of the table a
   // printed subtotal covers (an agreement subtotal can leave a fuel row out).
@@ -342,6 +343,7 @@ export function mergeInvoiceEnrichment(
       extractedSecondReadOutcome: null,
       extractedPartialPayment: null,
       extractedPriorPayments: null,
+      extractedRetainage: null,
       extractedPurchaseOrderNumber: null,
       extractedAccountNumber: null,
       extractedSupplierReference: null,
@@ -387,6 +389,7 @@ export function mergeInvoiceEnrichment(
     extractedSecondReadOutcome: ocr.extractedSecondReadOutcome ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
+    extractedRetainage: ocr.extractedRetainage,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
     extractedAccountNumber: ocr.extractedAccountNumber,
     extractedSupplierReference: ocr.extractedSupplierReference,

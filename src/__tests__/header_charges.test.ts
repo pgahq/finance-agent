@@ -333,7 +333,7 @@ describe('placeSummaryCharges', () => {
     expect(placed.lines).toEqual([expect.objectContaining({ description: 'Decoration' })]);
   });
 
-  it.each([['Credit Applied'], ['Less Credit Memo 4411'], ['Prior Credit'], ['Account Credit'], ['Less Retainer'], ['Refund']])(
+  it.each([['Credit Applied'], ['Less Credit Memo 4411'], ['Prior Credit'], ['Account Credit'], ['Less Retainer'], ['Retainage'], ['Less 10% Retainage'], ['Retention'], ['Refund']])(
     'never adds the applied credit %s as a line and names it for review',
     (label) => {
       const placed = placeSummaryCharges({
@@ -753,6 +753,7 @@ describe('hasPrintedSettlement', () => {
   it.each([
     ['a partial payment', { extractedPartialPayment: { label: 'Deposit', percent: null, amount: '$10.00' } }],
     ['a prior payment', { extractedPriorPayments: [{ label: 'Payments Received', amount: '$10.00' }] }],
+    ['retainage', { extractedRetainage: { label: 'Retainage', percent: '10%', amount: '$10.00' } }],
     ['an email balance due', { emailBalanceDue: { amount: '$10.00', phrase: 'remaining balance' } }],
   ])('is true for %s', (_name, override) => {
     expect(hasPrintedSettlement({ ...noSettlement, ...override })).toBe(true);

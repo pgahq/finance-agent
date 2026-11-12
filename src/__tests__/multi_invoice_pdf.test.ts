@@ -70,6 +70,7 @@ function ocrResponseFor(numbers: string[], amountDue: string, poNumber: string):
     extractedLineSubtotal: { label: '', amount: '' },
     extractedPartialPayment: { label: '', percent: '', amount: '' },
     extractedPriorPayments: [],
+    extractedRetainage: { label: '', percent: '', amount: '' },
     extractedPurchaseOrderNumber: poNumber,
     extractedAccountNumber: '',
     extractedSupplierReference: '',

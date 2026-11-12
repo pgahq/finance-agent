@@ -269,7 +269,7 @@ const SUMMARY_ROW_WORDS = new Set([
 ]);
 // A credit memo, retainer, or refund applied to the bill settles it; it does not lower the cost of the goods,
 // and the credit may already be its own document in Workday.
-const SETTLEMENT_WORDS = new Set(['credit', 'credits', 'memo', 'memos', 'retainer', 'retainers', 'refund', 'refunds']);
+const SETTLEMENT_WORDS = new Set(['credit', 'credits', 'memo', 'memos', 'retainer', 'retainers', 'retainage', 'retention', 'refund', 'refunds']);
 const TOTAL_WORDS = new Set(['total', 'totals', 'subtotal', 'subtotals']);
 const GENERIC_SUMMARY_WORDS = new Set([
   'sub', 'grand', 'invoice', 'order', 'merchandise', 'goods', 'product', 'products', 'item', 'items',
@@ -870,13 +870,14 @@ function pretaxSubtotalFor(context: SinglePriceChargeContext): PretaxSubtotal | 
   return { label, cents, taxCents, amountDueCents };
 }
 
-/** Whether the document or email prints a deposit, a payment already received, or a remaining balance. */
+/** Whether the document or email prints a deposit, a payment already received, retainage, or a remaining balance. */
 export function hasPrintedSettlement(result: {
   extractedPartialPayment: unknown;
   extractedPriorPayments: unknown[] | null | undefined;
+  extractedRetainage?: unknown;
   emailBalanceDue: unknown;
 }): boolean {
-  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.emailBalanceDue);
+  return Boolean(result.extractedPartialPayment || result.extractedPriorPayments?.length || result.extractedRetainage || result.emailBalanceDue);
 }
 
 /**

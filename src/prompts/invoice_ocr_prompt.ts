@@ -65,6 +65,11 @@ export const InvoiceOcrSchema = z.object({
     label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
     amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
   })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
+  extractedRetainage: z.object({
+    label: z.string().describe('The exact printed label of the retainage row (e.g. "Retainage", "Less 10% Retainage", "Retention").'),
+    percent: z.string().describe('The retainage percentage printed (e.g. "10%"). Empty string when none is printed.'),
+    amount: z.string().describe('The retainage amount as printed (e.g. "$59,153.20"). Never compute it from a percentage.'),
+  }).describe('The retainage or retention the document holds back from the contract total to date (a construction pay application). Use empty strings when none is printed.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -96,6 +101,11 @@ export interface InvoiceOcrPriorPayment {
   label: string;
   amount: string;
 }
+export interface InvoiceOcrRetainage {
+  label: string;
+  percent: string | null;
+  amount: string;
+}
 export interface InvoiceOcrSummaryCharge {
   label: string;
   /** Null when the row prints only a rate. */
@@ -107,7 +117,7 @@ type InvoiceOcrLine = Omit<NullableText<InvoiceOcrResponse['extractedInvoiceLine
 };
 
 // The model response with empty strings and arrays turned back into null, matching InvoiceEnrichmentResult.
-export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments'> & {
+export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNumbersInDocument' | 'printedSupplier' | 'printedBillTo' | 'extractedPaymentTerms' | 'extractedInvoiceLines' | 'extractedOtherCharges' | 'extractedSummaryCharges' | 'extractedLineSubtotal' | 'extractedPartialPayment' | 'extractedPriorPayments' | 'extractedRetainage'> & {
   /** Every separate invoice number the model saw in the supplier invoice document; null when none. */
   invoiceNumbersInDocument?: string[] | null;
   extractedLineSubtotal: InvoiceOcrLineSubtotal | null;
@@ -117,6 +127,7 @@ export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNu
   extractedSecondReadOutcome?: 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
+  extractedRetainage: InvoiceOcrRetainage | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
@@ -193,7 +204,7 @@ export function normalizePrintedDate(value: string | null | undefined): string |
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
-    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments,
+    invoiceNumbersInDocument, extractedLineSubtotal, extractedPartialPayment, extractedPriorPayments, extractedRetainage,
     ...headerFields
   } = response;
   const paymentTerms = textOrNull(extractedPaymentTerms);
@@ -216,6 +227,13 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
       amount: (extractedPartialPayment?.amount ?? '').trim(),
     }
     : null;
+  const retainage = textOrNull(extractedRetainage?.amount)
+    ? {
+      label: (extractedRetainage?.label ?? '').trim(),
+      percent: textOrNull(extractedRetainage?.percent)?.trim() ?? null,
+      amount: (extractedRetainage?.amount ?? '').trim(),
+    }
+    : null;
   const invoiceNumbers = (invoiceNumbersInDocument ?? []).map(number => number.trim()).filter(Boolean);
   return {
     ...nullableTextFields(headerFields),
@@ -223,6 +241,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
     extractedLineSubtotal: lineSubtotal,
     extractedPartialPayment: partialPayment,
     extractedPriorPayments: priorPayments.length ? priorPayments : null,
+    extractedRetainage: retainage,
     extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     extractedSummaryCharges: summaryCharges.length ? summaryCharges : null,
@@ -298,6 +317,8 @@ When the invoice bills a deposit, advance, or partial payment instead of the ful
 
 When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
 
+A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") prints the contract sum to date, then retainage held back, then the certificates already paid, then the current payment due. Populate \`extractedRetainage\` with the printed label of the retainage row ("Retainage", "Less 10% Retainage", "Retention"), the percentage when one is printed, and the retainage amount as printed. Retainage is a settled row, so it never goes in \`extractedSummaryCharges\`, \`extractedOtherCharges\`, \`extractedPartialPayment\`, or \`extractedPriorPayments\`. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\`, put "Contract Sum to Date" or "Total Completed and Stored to Date" in \`extractedLineSubtotal\`, and put "Current Payment Due" in \`extractedAmountDue\`. For example, a pay application with Contract Sum to Date $591,532.00, Retainage 10% $59,153.20, Less Previous Certificates for Payment $402,241.76, and Current Payment Due $130,137.04 must return extractedLineSubtotal { label: "Contract Sum to Date", amount: "$591,532.00" }, extractedRetainage { label: "Retainage", percent: "10%", amount: "$59,153.20" }, extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$402,241.76" }], and extractedAmountDue "$130,137.04". Never compute an amount, and leave extractedRetainage's strings empty when the document prints no retainage.
+
 ---
 
 ## Part 5: Freight Amount
@@ -339,7 +360,7 @@ An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5
 Many invoices print priced rows in the totals block (next to Sub Total and Total) that are not in the line table, for example "Decoration $5.00", "Setup Charge $25.00", or "Merchandise Discount $13.80". List every such row in \`extractedSummaryCharges\` with its exact printed label and printed amount.
 
 - Include fees and charges (decoration, setup, screen, digitizing, service fees) and price reductions (discounts, allowances, rebates, promotions, coupons).
-- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds. Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
+- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds, and never a retainage or retention row (Part 4.5). Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
 - Copy the label exactly as printed.
 - Copy the amount exactly as printed, keeping a minus sign or parentheses when they are printed ("-$13.80", "($13.80)"). Do not add a minus sign that is not printed.
 - If only a rate is printed (for example "Discount 10%") and no amount, list the row with an empty amount. Never compute an amount from a rate.

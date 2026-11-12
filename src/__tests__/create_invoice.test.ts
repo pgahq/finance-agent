@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 // dependencies) fresh so those constants are re-evaluated against the current env.
 
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import { supin474922Header, supin474922Rows } from './fixtures/supin_474922.js';
 import {
   DELIVERY_LINE,
   PICKUP_LINE,
@@ -3206,6 +3207,101 @@ describe('create_invoice', () => {
     });
   });
 
+  describe('construction pay application with retainage (SUPIN-474922)', () => {
+    const appliedFallbacks = { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false };
+    const payAppEnrichment = (overrides: Record<string, unknown> = {}) => ({
+      ...baseEnrichmentResult,
+      ...supin474922Header,
+      extractedInvoiceLines: supin474922Rows,
+      ...overrides,
+    });
+    const poLine = (overrides: Record<string, unknown> = {}) => ({
+      lineOrder: 1,
+      purchaseOrderLineId: 'L1',
+      purchaseOrderDocumentNumber: 'PO-412562',
+      quantity: 1,
+      unitCost: 591532,
+      extendedAmount: 591532,
+      ...overrides,
+    });
+    const po = (lines: any[]) => ({
+      documentNumber: 'PO-412562',
+      company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
+      lines,
+    });
+    const run = async (enrichment: Record<string, unknown>, purchaseOrder?: any) => {
+      const mocks = freshRequire();
+      mocks.workday.loadPurchaseOrder.mockResolvedValue(purchaseOrder);
+      mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(enrichment);
+      mocks.invoiceLines.buildFinalInvoiceLines.mockImplementation((lines: any[]) => Promise.resolve({
+        lines: lines.map((line, index) => ({
+          lineOrder: index + 1,
+          description: line.description,
+          quantity: line.quantity,
+          unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')),
+          extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        })),
+        appliedFallbacks,
+      }));
+      await mocks.processor({ data: [attachmentRequest('new-invoices/req-pay-app/PGA App 3.pdf')] } as any);
+      return mocks;
+    };
+
+    it('books the $130,137.04 current payment due on the PO line, not the $591,532.00 contract sum', async () => {
+      const { workday, invoiceLines, slack } = await run(payAppEnrichment(), po([poLine()]));
+
+      const [candidates, poLines, , , , , quantityDisplayed] = invoiceLines.buildFinalInvoiceLines.mock.calls[0];
+      expect(candidates).toEqual([expect.objectContaining({
+        description: 'Pay application - current payment due (Contract Sum to Date $591,532.00)',
+        quantity: 1,
+        totalPrice: '$130,137.04',
+      })]);
+      expect(poLines).toEqual([expect.objectContaining({ purchaseOrderLineId: 'L1' })]);
+      expect(quantityDisplayed).toBe(true);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 130137.04 })]);
+      expect(submitArgs.extractedAmountDue).toBe('$130,137.04');
+
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20, less "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+      expect(notes).not.toContain('Balance invoice');
+      expect(notes).not.toContain('Amount check');
+      expect(notes).not.toContain('Line total review');
+
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.balanceInvoice).toEqual(['Contract Sum to Date: $591,532.00 to date, less $59,153.20 retainage, less $402,241.76 previous payments, $130,137.04 current payment due. Submitted as one pay-application line, not the printed lines.']);
+      expect(slackDetails.extracted.amountDueNote).toBe('pay application, $591,532.00 to date');
+      expect(slackDetails.lineCount).toBe(1);
+    });
+
+    it('still books the current payment due when the PO could not be loaded', async () => {
+      const { invoiceLines } = await run(payAppEnrichment(), undefined);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ totalPrice: '$130,137.04' })]);
+    });
+
+    it('keeps the printed lines and flags them when the figures do not reconcile', async () => {
+      const { workday, invoiceLines, slack } = await run(payAppEnrichment({
+        extractedRetainage: { label: 'Retainage', percent: '10%', amount: '$59,153.21' },
+      }), po([poLine()]));
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ description: 'Contract Sum to Date', totalPrice: '$591,532.00' })]);
+      const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
+      expect(notes).toContain('Pay application: This looks like a construction pay application with retainage, but the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04, so the printed lines were submitted unchanged.');
+      expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual(['Pay application not applied: the $591,532.00 contract total less $59,153.21 retainage and $402,241.76 in previous payments is $130,137.03, not the current payment due $130,137.04.']);
+    });
+
+    it('does not turn a retainage row read as a totals charge into an invoice line', async () => {
+      const { invoiceLines } = await run(payAppEnrichment({
+        extractedRetainage: null,
+        extractedPriorPayments: null,
+        extractedSummaryCharges: [{ label: 'Retainage', amount: '($59,153.20)' }],
+      }), po([poLine()]));
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toEqual([expect.objectContaining({ description: 'Contract Sum to Date' })]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(1);
+    });
+  });
+
   describe('PO supplier', () => {
     const poWithSupplier = {
       documentNumber: 'PO-414373',
@@ -5679,6 +5775,41 @@ describe('create_invoice', () => {
       const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
       expect(updateArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 5909.5 })]);
       expect(updateArgs.buildNotes([])).toContain('Balance invoice: "Total Contract Price" is $23,887.00 but the amount due is $5,909.50');
+    });
+
+    it('builds a pay-application line at the current payment due on a resend update (SUPIN-474922)', async () => {
+      const { processor, workday, invoiceEnrichment, invoiceLines, registry, loadEnv } = freshRequire();
+      enableClustering(loadEnv);
+      invoiceLines.buildFinalInvoiceLines.mockImplementation((lines: any[]) => Promise.resolve({
+        lines: lines.map((line, index) => ({
+          lineOrder: index + 1,
+          description: line.description,
+          quantity: line.quantity,
+          unitCost: Number(String(line.unitCost).replace(/[$,]/g, '')),
+          extendedAmount: Number(String(line.totalPrice).replace(/[$,]/g, '')),
+        })),
+        appliedFallbacks: {},
+      }));
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...baseEnrichmentResult,
+        ...supin474922Header,
+        extractedInvoiceLines: supin474922Rows,
+      });
+      registry.getConversationSupplierInvoice.mockResolvedValue(registeredInvoice());
+      workday.getSupplierInvoiceEditability.mockResolvedValue({ found: true, editable: true, status: 'Draft' });
+
+      await processor({
+        data: [{
+          conversationId: '1234567890',
+          clustered: true,
+          attachments: [{ ...attachmentRequest('new-invoices/req-2/v2.pdf', 'v2.pdf'), receivedAt: 200 }],
+        }],
+      } as any);
+
+      expect(workday.submitNewSupplierInvoice).not.toHaveBeenCalled();
+      const updateArgs = workday.submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(updateArgs.finalLines).toEqual([expect.objectContaining({ extendedAmount: 130137.04 })]);
+      expect(updateArgs.buildNotes([])).toContain('Pay application: "Contract Sum to Date" is $591,532.00, less "Retainage" (10%) $59,153.20');
     });
 
     it('sends the printed due date on a resend update', async () => {
