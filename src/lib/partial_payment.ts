@@ -449,10 +449,18 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined): 
   let total = 0;
   for (const payment of payments) {
     const amount = parseExtractedLineAmount(payment.amount);
-    if (amount == null || amount === 0) return undefined;
+    if (amount == null) return undefined;
     total += toCents(Math.abs(amount));
   }
-  return total;
+  return total > 0 ? total : undefined;
+}
+
+// A whole printed amount (`$59,153.20`, `(59,153.20)`, `59153.20-`), not text that merely contains digits.
+const WHOLE_AMOUNT = /^\(?\s*[-\u2212]?\s*\$?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*-?$/;
+
+function readPrintedAmount(raw: string | null | undefined): number | undefined {
+  const text = raw?.trim();
+  return text && WHOLE_AMOUNT.test(text) ? parseExtractedLineAmount(text) : undefined;
 }
 
 const RETAINAGE_LABEL_WORDS = new Set(['retainage', 'retention', 'retained']);
@@ -460,7 +468,7 @@ const RETAINAGE_LABEL_WORDS = new Set(['retainage', 'retention', 'retained']);
 /** Whether the row is labeled as a holdback and not as a release of one. */
 function isRetainageHeldLabel(label: string | null | undefined): boolean {
   const tokens = (normalizeLabel(label) ?? '').split(' ').filter(Boolean);
-  return tokens.some(token => RETAINAGE_LABEL_WORDS.has(token)) && !tokens.some(token => token === 'release' || token === 'released');
+  return tokens.some(token => RETAINAGE_LABEL_WORDS.has(token)) && !tokens.some(token => ['release', 'released', 'service', 'services'].includes(token));
 }
 
 /** Whether the document prints a readable, non-zero amount on a row labeled as retainage held. */
@@ -472,7 +480,7 @@ export function hasPrintedRetainage(retainage: PrintedRetainage | null | undefin
 /** The printed retainage in cents, or undefined when none is printed or the amount is zero. NaN when it is printed but unreadable. */
 function retainageCents(retainage: PrintedRetainage | null | undefined): number | undefined {
   if (!retainage?.amount) return undefined;
-  const amount = parseExtractedLineAmount(retainage.amount);
+  const amount = readPrintedAmount(retainage.amount);
   if (amount == null) return Number.NaN;
   return amount === 0 ? undefined : toCents(Math.abs(amount));
 }
@@ -527,7 +535,7 @@ export function planBalanceInvoice(input: BalanceInvoiceInput): PartialPaymentPl
   if (payApplication && !isRetainageHeldLabel(input.retainage?.label)) {
     return balanceNotApplied(`the printed row "${printable(input.retainage?.label)}" is not labeled as retainage held, so the figures cannot be checked`, true);
   }
-  if (payApplication && input.priorPayments?.some(payment => parseExtractedLineAmount(payment.amount) == null)) {
+  if (payApplication && input.priorPayments?.some(payment => readPrintedAmount(payment.amount) == null)) {
     return balanceNotApplied('a printed previous payment is not a readable amount, so the figures cannot be checked', true);
   }
   const settledCents = (paidCents ?? 0) + (retainedCents ?? 0);

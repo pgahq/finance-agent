@@ -692,6 +692,29 @@ describe('planBalanceInvoice for a pay application with retainage (SUPIN-474922)
     expect(plan.note).toContain('the document prints no contract sum to date to reconcile the retainage against');
   });
 
+  it.each(['TBD 59,153.20', 'see attached 59153.20', '10% 59,153.20'])('does not apply when the retainage "%s" only contains digits', (amount) => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, amount } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is not a readable amount');
+  });
+
+  it('does not apply when a previous payment only contains digits', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD 402,241.76' }] }))!;
+    expect(plan.applied).toBe(false);
+  });
+
+  it('counts a $0.00 previous payment row as none and still sums the other rows', () => {
+    const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Prior', amount: '$0.00' }, ...supin474922Payments] }))!;
+    expect(plan.applied).toBe(true);
+    expect(plan.line?.totalPrice).toBe('$130,137.04');
+  });
+
+  it('does not take a "Customer Retention Services" row for retainage held', () => {
+    const plan = planBalanceInvoice(payAppInput({ retainage: { ...supin474922Retainage, label: 'Customer Retention Services' } }))!;
+    expect(plan.applied).toBe(false);
+    expect(plan.note).toContain('is not labeled as retainage held');
+  });
+
   it('does not apply when a printed previous payment is not a readable amount', () => {
     const plan = planBalanceInvoice(payAppInput({ priorPayments: [{ label: 'Less Previous Certificates for Payment', amount: 'TBD' }] }))!;
     expect(plan.applied).toBe(false);

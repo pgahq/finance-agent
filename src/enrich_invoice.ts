@@ -436,8 +436,8 @@ async function processInvoice(
     }
     const composedLines = withComposedLineDescriptions(charges.lines);
     // A deposit invoice bills a printed amount smaller than its contract total, so one deposit line replaces the lines.
-    // A document that holds retainage back is a pay application, so the balance plan reconciles it, not the deposit plan.
-    const depositPlan = !submitsLines || chargeWithheld || freightAsLines || hasPrintedRetainage(result.extractedRetainage)
+    // A document that prints retainage is a pay application, so the balance plan reconciles it (or flags unreadable figures), not the deposit plan.
+    const depositPlan = !submitsLines || chargeWithheld || freightAsLines || result.extractedRetainage != null
       ? undefined
       : planPartialPayment({
         partialPayment: result.extractedPartialPayment,
