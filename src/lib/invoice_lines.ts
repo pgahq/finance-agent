@@ -1446,7 +1446,7 @@ interface BudgetSplitShares {
   includesHeaderCharges?: boolean;
 }
 
-function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number, grossCents?: number | null): BudgetSplitShares {
+export function budgetSplitCents(splits: EmailBudgetSplit[], baseCents: number, grossCents?: number | null): BudgetSplitShares {
   const kinds = splits.map(split => (
     split.amount?.trim() ? 'amount'
       : split.percent != null ? 'percent'

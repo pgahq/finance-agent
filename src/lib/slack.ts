@@ -250,6 +250,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     invoicePurchaseOrderNumber?: string;
     emailPurchaseOrderNumber?: string;
     purchaseOrderNotLinked?: boolean;
+    /** The PO on the invoice that was set aside because the email's budget coding applies. */
+    purchaseOrderNotUsed?: string;
     paymentTerms?: string;
   } | undefined;
   if (extracted?.invoiceDate) changeLines.push(`*Invoice Date* → ${extracted.invoiceDate}`);
@@ -270,6 +272,8 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
       : '';
     const linked = extracted.purchaseOrderNotLinked ? ' · coded from PO, not linked to PO lines' : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${line}${source}${linked}`);
+  } else if (extracted?.purchaseOrderNotUsed) {
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNotUsed} (not used: coded from the email's budget split)`);
   }
   if (extracted?.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
 
@@ -853,6 +857,8 @@ export interface EnrichmentNotification {
     purchaseOrderNumber?: string;
     /** Set when the email PO replaced a different PO printed on the invoice. */
     invoicePurchaseOrderNumber?: string;
+    /** The PO that was set aside because the email's budget coding applies. */
+    purchaseOrderNotUsed?: string;
     paymentTerms?: string;
   };
   poLineCount?: number;
@@ -955,6 +961,8 @@ export async function notifyEnrichmentResult(notification: EnrichmentNotificatio
     const lineSuffix = poLineCount !== undefined ? ` · ${poLineCount} line${poLineCount !== 1 ? 's' : ''} from PO` : '';
     const source = extracted.invoicePurchaseOrderNumber ? ` (from email; invoice shows ${extracted.invoicePurchaseOrderNumber})` : '';
     changeLines.push(`*PO #* → ${extracted.purchaseOrderNumber}${source}${lineSuffix}`);
+  } else if (extracted.purchaseOrderNotUsed) {
+    changeLines.push(`*PO #* → ${extracted.purchaseOrderNotUsed} (not used: coded from the email's budget split)`);
   }
   if (extracted.paymentTerms) changeLines.push(`*Payment Terms* → ${extracted.paymentTerms}`);
   if (suggestedCostCenters?.length) {

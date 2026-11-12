@@ -4783,6 +4783,136 @@ describe('create_invoice', () => {
       expect(slackDetails).not.toHaveProperty('lineReview');
     });
 
+    describe('a supplier whose email coding beats a printed PO', () => {
+      const PBD_WID = 'pbd-supplier-wid';
+      const poSupplierWid = 'po-supplier-wid';
+      const parsedPo = (supplierWid = PBD_WID) => ({
+        documentNumber: 'PO-414088',
+        company: { workdayId: 'po-company-wid', descriptor: 'PGA Company' },
+        supplier: { workdayId: supplierWid, descriptor: 'PBD INC' },
+        lines: [{ lineOrder: 1, purchaseOrderLineId: 'POL-1', purchaseOrderDocumentNumber: 'PO-414088', description: 'Printing' }],
+      });
+      const appliedSplit = {
+        lines: [
+          { lineOrder: 1, description: 'PBD', quantity: 0, unitCost: 0, extendedAmount: 15000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+          { lineOrder: 2, description: 'PBD', quantity: 0, unitCost: 0, extendedAmount: 20000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+        ],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+        relatedLobByCostCenter: new Map(),
+        emailBudgetSplit: {
+          applied: true,
+          budgets: [
+            { label: "Chris Kulinski's Budget", amountCents: 1500000, costCenterId: 'CC-Recruitment', spendCategoryId: 'SC-Sponsorships' },
+            { label: 'Brand and Marketing Budget', amountCents: 2000000, costCenterId: 'CC-Brand_&_Digital_Marketing', spendCategoryId: 'SC-Advertising_and_Promotion' },
+          ],
+        },
+      };
+      const pbdEnrichment = (overrides: Record<string, unknown> = {}) => ({
+        ...budgetEnrichment(),
+        supplier: {
+          ...baseEnrichmentResult.supplier,
+          resolvedSupplier: { workdayId: PBD_WID, supplierName: 'PBD INC', confidence: 1, reason: 'Exact match' },
+        },
+        extractedPurchaseOrderNumber: 'PO-414088',
+        ...overrides,
+      });
+      const run = async (options: { wids?: string; enrichment?: Record<string, unknown>; emailContext?: Record<string, unknown>; po?: ReturnType<typeof parsedPo> } = {}) => {
+        const mocks = freshRequire();
+        mocks.loadEnv.mockResolvedValue(options.wids === undefined ? {} : { EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: options.wids });
+        mockCompany310();
+        mocks.workday.loadPurchaseOrder.mockResolvedValue(options.po ?? parsedPo());
+        mocks.invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue(pbdEnrichment(options.enrichment));
+        mocks.invoiceLines.buildFinalInvoiceLines.mockResolvedValue(appliedSplit);
+        await mocks.processor({
+          data: [{
+            ...attachmentRequest('new-invoices/req-pbd/invoice.pdf'),
+            emailContext: { emailFrom: 'kyle@pgahq.com', subject: 'PBD invoice', plainTextBody: 'Company 310. Split $15,000 / $20,000. PO-414088', ...options.emailContext },
+          }]
+        } as any);
+        return mocks;
+      };
+
+      it('sets the PO aside and builds the lines from the email budgets', async () => {
+        const { workday, invoiceLines, slack } = await run({ wids: `other-wid, ${PBD_WID}` });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+          budgetSplits: [expect.objectContaining({ amount: '$15,000' }), expect.objectContaining({ amount: '$20,000' })],
+        }));
+        const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+        expect(submitArgs.supplierWID).toBe(PBD_WID);
+        expect(submitArgs.memo).not.toContain('PO-414088');
+        expect(submitArgs).not.toHaveProperty('omitPurchaseOrderLineReference');
+        const notes = submitArgs.buildNotes([]);
+        expect(notes).toContain('Purchase order: PO-414088 on the invoice was not used.');
+        expect(notes).toContain('Email budget split (one invoice line per budget)');
+        const slackDetails = slack.notifyResult.mock.calls[0][3];
+        expect(slackDetails.extracted.purchaseOrderNotUsed).toBe('PO-414088');
+        expect(slackDetails.extracted.purchaseOrderNumber).toBeUndefined();
+        expect(slackDetails.budgetSplit).toHaveLength(2);
+        expect(slackDetails).not.toHaveProperty('lineReview');
+      });
+
+      it('keeps the PO company so the default company does not drop the email coding', async () => {
+        const { workday, invoiceLines } = await run({ wids: PBD_WID, emailContext: { plainTextBody: 'Split $15,000 / $20,000. PO-414088' } });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1]).toEqual(expect.objectContaining({
+          companyWID: 'po-company-wid',
+          companyReferenceType: 'WID',
+        }));
+      });
+
+      it('matches a PO issued to a listed supplier when the invoice resolves to another supplier record', async () => {
+        const { invoiceLines } = await run({ wids: poSupplierWid, po: parsedPo(poSupplierWid) });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+      });
+
+      it('keeps the PO and its review warning for a supplier that is not listed', async () => {
+        const { workday, invoiceLines, slack } = await run({ wids: 'another-supplier-wid' });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([expect.objectContaining({ purchaseOrderLineId: 'POL-1' })]);
+        expect(workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([])).not.toContain('was not used');
+        expect(slack.notifyResult.mock.calls[0][3].extracted.purchaseOrderNumber).toBe('PO-414088');
+      });
+
+      it('keeps the PO when the list is empty', async () => {
+        const { invoiceLines } = await run();
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      });
+
+      it('keeps the PO that an AP Intercom note chose', async () => {
+        const { invoiceLines } = await run({
+          wids: PBD_WID,
+          enrichment: { extractedPurchaseOrderNumber: 'PO-411111' },
+          emailContext: { adminConversationParts: '<p>Use PO-414088 Line 1</p>' },
+        });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      });
+
+      it('keeps the PO when the email budgets do not add up to the invoice', async () => {
+        const base = budgetEnrichment();
+        const { invoiceLines } = await run({
+          wids: PBD_WID,
+          enrichment: {
+            emailBudgetSplits: [{ ...base.emailBudgetSplits[0], amount: '$10,000' }, base.emailBudgetSplits[1]],
+          },
+        });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      });
+
+      it('keeps the PO when the email names a single budget', async () => {
+        const base = budgetEnrichment();
+        const { invoiceLines } = await run({ wids: PBD_WID, enrichment: { emailBudgetSplits: [base.emailBudgetSplits[0]] } });
+
+        expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      });
+    });
+
     it('submits no header tax or freight when the email budgets total the amount due and the lines carry them', async () => {
       const { processor, workday, invoiceEnrichment, invoiceLines, slack } = freshRequire();
       mockCompany310();

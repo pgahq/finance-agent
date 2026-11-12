@@ -118,6 +118,7 @@ import { buildIntercomConversationUrl } from './lib/intercom.js';
 import { htmlToText } from './lib/html_text.js';
 import { emailCodingText, sourceEmailBody } from './lib/email_coding_text.js';
 import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
+import { emailCodingOverPurchaseOrder, formatPurchaseOrderSkippedNotes } from './lib/email_coding_over_po.js';
 import {
   resolveCompanyFromEmail,
   selectCompanyForCreateInvoice,
@@ -1063,7 +1064,21 @@ async function processInvoiceCluster(
       ? noteLineForInvoice(selectedPo.fromNote, result.extractedSuppliersInvoiceNumber)
       : { conflict: false };
     const pinnedPo = pinNotePurchaseOrderLine(selectedPo.purchaseOrder, noteLine.lineNumber);
-    const matchedPo = pinnedPo.purchaseOrder;
+    // A supplier on the email-coding list is coded from the email's budget splits, so its printed PO is set aside:
+    // no PO lines, supplier, memo or notes. Its header company stays a company source, since the default company
+    // would drop the email coding.
+    const emailCodingOverride = emailCodingOverPurchaseOrder({
+      invoiceSupplierWorkdayId: result.supplier.resolvedSupplier?.workdayId,
+      purchaseOrderSupplierWorkdayId: pinnedPo.purchaseOrder?.supplier?.workdayId,
+      purchaseOrderFromNote: Boolean(selectedPo.fromNote),
+      result,
+      emailCompany,
+    });
+    const skippedPo = emailCodingOverride ? pinnedPo.purchaseOrder : undefined;
+    if (skippedPo) {
+      debug(`Using the email budget coding instead of ${skippedPo.documentNumber}: the ${emailCodingOverride?.matchedSupplier === 'purchase_order' ? 'PO supplier' : 'invoice supplier'} is on the email-coding list`);
+    }
+    const matchedPo = skippedPo ? undefined : pinnedPo.purchaseOrder;
     const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
       purchaseOrderNumber: matchedPo?.documentNumber,
       purchaseOrderSupplier: matchedPo?.supplier,
@@ -1077,7 +1092,7 @@ async function processInvoiceCluster(
     });
     const submitSupplierWID = purchaseOrderSupplier?.workdayId ?? targetSupplierWID;
 
-    const poCompanyWID = matchedPo?.company?.workdayId;
+    const poCompanyWID = pinnedPo.purchaseOrder?.company?.workdayId;
     const defaultCompany = resolveDefaultCompany();
     const selectedCompany = selectCompanyForCreateInvoice({
       emailCompany,
@@ -1088,7 +1103,7 @@ async function processInvoiceCluster(
     const companyWID = selectedCompany.companyId;
     const companyReferenceType = selectedCompany.companyReferenceType;
     const usedDefaultCompany = selectedCompany.source === 'default';
-    const extractedPurchaseOrderNumber = matchedPo?.documentNumber ?? enrichmentPoNumber;
+    const extractedPurchaseOrderNumber = skippedPo ? undefined : matchedPo?.documentNumber ?? enrichmentPoNumber;
     const matchedPoLines = usedDefaultCompany ? undefined : matchedPo?.lines;
     const poClosedForInvoicing = Boolean(matchedPoLines?.length) && isPurchaseOrderClosedForInvoicing(matchedPo);
     const poLines = poClosedForInvoicing ? matchedPoLines : markPurchaseOrderLineAvailability(matchedPoLines);
@@ -1099,7 +1114,7 @@ async function processInvoiceCluster(
       purchaseOrderLineFallbackNote(label, extractedPurchaseOrderNumber) ?? label;
     // The default company codes no PO lines, so a note line is honored only when PO lines are used.
     const notePoLineNumber = pinnedPo.lineMissing || !matchedPoLines?.length ? undefined : noteLine.lineNumber;
-    const purchaseOrderSelectionNotes = formatPurchaseOrderSelectionNotes({
+    const purchaseOrderSelectionNotes = skippedPo ? formatPurchaseOrderSkippedNotes(skippedPo.documentNumber) : formatPurchaseOrderSelectionNotes({
       selected: selectedPo,
       invoicePurchaseOrderNumber: enrichmentPoNumber,
       emailPurchaseOrderNumber: emailPurchaseOrders.supplierPurchaseOrderNumber,
@@ -1108,7 +1123,7 @@ async function processInvoiceCluster(
       noteLineMissing: pinnedPo.lineMissing && !usedDefaultCompany,
       noteLineConflict: noteLine.conflict && Boolean(matchedPoLines?.length),
     });
-    const memoIdentifiers = memoIdentifiersFromEnrichment(result, extractedPurchaseOrderNumber);
+    const memoIdentifiers = memoIdentifiersFromEnrichment(skippedPo ? { ...result, extractedPurchaseOrderNumber: null } : result, extractedPurchaseOrderNumber);
     const memo = composeInvoiceMemo({
       ...memoIdentifiers,
       description: result.supplier.extractedInformation?.memo,
@@ -1510,7 +1525,7 @@ async function processInvoiceCluster(
       origin: selectedCompany.emailOrigin,
       conflictWith: selectedCompany.conflict?.with,
       conflictName: selectedCompany.conflict?.with === 'po'
-        ? matchedPo?.company?.descriptor
+        ? pinnedPo.purchaseOrder?.company?.descriptor
         : result.companyVerification?.recommended?.companyName,
     } : undefined;
     const emailCompanyNotes = emailCompanyReview ? formatEmailCompanyNotes(emailCompanyReview) : '';
@@ -1581,7 +1596,7 @@ async function processInvoiceCluster(
     } : selectedCompany.source === 'po' ? {
       status: 'po',
       appliedFrom: 'po',
-      appliedName: matchedPo?.company?.descriptor,
+      appliedName: pinnedPo.purchaseOrder?.company?.descriptor,
       appliedId: companyWID,
       recommendedName: result.companyVerification?.recommended?.companyName,
     } : selectedCompany.source === 'recommended' ? {
@@ -1633,6 +1648,7 @@ async function processInvoiceCluster(
         freightCleared,
         taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
+        ...(skippedPo ? { purchaseOrderNotUsed: skippedPo.documentNumber } : {}),
         ...(selectedPo.fromNote && matchedPo ? {
           purchaseOrderSource: 'note',
           ...(notePoLineNumber ? { purchaseOrderLine: notePoLineNumber } : {}),

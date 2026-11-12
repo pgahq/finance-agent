@@ -2147,6 +2147,115 @@ describe('enrich_invoice', () => {
     );
   });
 
+  describe('email budget coding for a supplier on the email-coding list', () => {
+    const coding = (cc: string, sc: string) => ({
+      event: null,
+      fund: null,
+      lineOfBusiness: null,
+      costCenter: { extracted: cc, name: cc, code: cc },
+      spendCategory: { extracted: sc, name: sc, referenceId: sc },
+    });
+    const poResponse = () => ({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-414088',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Supplier_Reference: {
+              descriptor: 'PBD INC',
+              ID: [{ $attributes: { type: 'WID' }, $value: 'pbd-wid' }]
+            },
+            Service_Line_Data: { Line_Number: 1, Service_Order_Line_ID: 'SVC-1', Description: 'Printing', Extended_Amount: 3613.39 }
+          }
+        }
+      }
+    });
+    const enrichment = (splitAmount: string) => ({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'PBD INC', memo: 'Printing' },
+        resolvedSupplier: { workdayId: 'pbd-wid', supplierName: 'PBD INC', confidence: 1, reason: 'Exact match' },
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: { status: 'matching', confidence: 0.85, extractedInformation: {}, recommended: null, reason: 'Company matches' },
+      extractedPurchaseOrderNumber: 'PO-414088',
+      extractedAmountDue: '$3,613.39',
+      extractedInvoiceLines: [
+        { description: 'Printing', quantity: null, unitCost: null, totalPrice: '$3,613.39', hasDiscount: false }
+      ],
+      emailWorktags: null,
+      emailBudgetSplits: [
+        { label: 'Fulfillment', amount: splitAmount, percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Fulfillment') },
+        { label: 'Printing', amount: '$2,091.38', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Printing') },
+        { label: 'Postage', amount: '$489.41', percent: null, equalShare: null, ...coding('CC-Membership Dues', 'SC-Postage') },
+      ],
+    });
+    const run = async (wids: string, splitAmount = '$1,032.60') => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const loadEnv = require('@pga/lambda-env').default;
+      const invoiceLines = require('../lib/invoice_lines.js');
+      getPurchaseOrder.mockResolvedValueOnce(poResponse());
+      enrichmentResponse.mockResolvedValueOnce(enrichment(splitAmount));
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue({
+        lines: [{ lineOrder: 1, description: 'Printing', quantity: 0, unitCost: 0, extendedAmount: 3613.39 }],
+        appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      });
+      loadEnv.mockResolvedValue({ EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: wids });
+      try {
+        await processor({
+          data: [{
+            workdayID: 'test-invoice-id',
+            invoiceStatusAsText: 'Draft',
+            supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+            company1: { descriptor: 'Test Company', id: 'COMP-1' },
+            OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+          }]
+        } as any);
+      } finally {
+        loadEnv.mockResolvedValue({});
+      }
+      return { invoiceLines, params: (submitSupplierInvoiceUpdate as jest.Mock).mock.calls[0][1] };
+    };
+
+    it('sets the PO aside and notes it when the email budgets apply', async () => {
+      const { invoiceLines, params } = await run('pbd-wid');
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toBeUndefined();
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][4]).toEqual(expect.objectContaining({
+        budgetSplits: [
+          expect.objectContaining({ amount: '$1,032.60' }),
+          expect.objectContaining({ amount: '$2,091.38' }),
+          expect.objectContaining({ amount: '$489.41' }),
+        ],
+      }));
+      expect(params.buildNotes([])).toContain('Purchase order: PO-414088 on the invoice was not used.');
+      expect(params.memo ?? '').not.toContain('PO-414088');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0].extracted).toEqual(expect.objectContaining({ purchaseOrderNotUsed: 'PO-414088' }));
+      expect(notifyEnrichmentResult.mock.calls.at(-1)?.[0].extracted.purchaseOrderNumber).toBeUndefined();
+    });
+
+    it('keeps the PO for a supplier that is not listed', async () => {
+      const { invoiceLines, params } = await run('another-wid');
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+      expect(params.buildNotes([])).not.toContain('was not used');
+    });
+
+    it('keeps the PO when the email budgets do not add up to the invoice', async () => {
+      const { invoiceLines } = await run('pbd-wid', '$1,000.00');
+
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toHaveLength(1);
+    });
+  });
+
   it('bills delivery and pickup rows on their PO service lines instead of header freight (SUPIN-472110)', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');

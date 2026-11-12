@@ -35,6 +35,13 @@ describe('SAM template', () => {
     expect(circleci).not.toMatch(/INVOICE_ATTACHMENT_CLUSTERING_ENABLED|InvoiceAttachmentClusteringEnabled/);
   });
 
+  it('reads the email-coding supplier list from SSM at runtime, not a deploy parameter', () => {
+    expect(globals).toMatch(
+      /EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS:\s*ssm:\/finance-agent\/email-coding-overrides-po-supplier-wids/
+    );
+    expect(circleci).not.toMatch(/EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS/);
+  });
+
   it('loads the Vercel AI Gateway key from SSM instead of an OpenAI key', () => {
     expect(globals).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
     expect(globals).not.toMatch(/OPENAI_API_KEY|openai-api-key/);

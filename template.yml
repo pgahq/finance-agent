@@ -94,6 +94,8 @@ Globals:
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
+        # Read at cold start. Comma-separated Workday supplier WIDs whose invoices are coded from the email's budget splits instead of a printed PO; missing resolves to empty, which keeps every PO in charge.
+        EMAIL_CODING_OVERRIDES_PO_SUPPLIER_WIDS: ssm:/finance-agent/email-coding-overrides-po-supplier-wids
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key

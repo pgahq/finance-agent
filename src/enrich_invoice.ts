@@ -79,6 +79,7 @@ import type { AppliedFallback, PurchaseOrderLine, PurchaseOrderSupplier } from '
 import { formatPurchaseOrderSupplierNotes, purchaseOrderSupplierReviewLine, resolvePurchaseOrderSupplier } from './lib/po_supplier.js';
 import { resolveCompanyFromEmail } from './lib/reference_ids.js';
 import { budgetCompanyOptions, budgetSplitOptions, buildEmailWorktags } from './lib/email_worktags.js';
+import { emailCodingOverPurchaseOrder, formatPurchaseOrderSkippedNotes } from './lib/email_coding_over_po.js';
 import { emailCodingText } from './lib/email_coding_text.js';
 import { invoiceAttachmentClusteringMode } from './lib/invoice_attachment_clustering_flag.js';
 import { snapshotAgentWrite, snapshotEnrichBaseline } from './lib/invoice_snapshots.js';
@@ -312,6 +313,23 @@ async function processInvoice(
       }
       if (purchaseOrderNumber === emailPurchaseOrderNumber) emailPurchaseOrderNotFound = true;
     }
+    // A supplier on the email-coding list is coded from the email's budget splits, so its printed PO is set aside.
+    const emailCodingOverride = poLines?.length && extractedPurchaseOrderNumber
+      ? emailCodingOverPurchaseOrder({
+        invoiceSupplierWorkdayId: resolvedSupplierWID,
+        purchaseOrderSupplierWorkdayId: poSupplier?.workdayId,
+        result,
+        emailCompany,
+      })
+      : undefined;
+    const skippedPurchaseOrderNumber = emailCodingOverride ? extractedPurchaseOrderNumber : undefined;
+    if (skippedPurchaseOrderNumber) {
+      debug(`Using the email budget coding instead of ${skippedPurchaseOrderNumber}: the ${emailCodingOverride?.matchedSupplier === 'purchase_order' ? 'PO supplier' : 'invoice supplier'} is on the email-coding list`);
+      extractedPurchaseOrderNumber = undefined;
+      poLines = undefined;
+      poSupplier = undefined;
+      poClosedForInvoicing = false;
+    }
     const purchaseOrderSupplier = await resolvePurchaseOrderSupplier(context.dbConnection, {
       purchaseOrderNumber: extractedPurchaseOrderNumber,
       purchaseOrderSupplier: poSupplier,
@@ -325,7 +343,7 @@ async function processInvoice(
       },
     });
     const submitSupplierWID = purchaseOrderSupplier?.workdayId ?? targetSupplierWID;
-    const purchaseOrderSelectionNotes = formatEnrichPurchaseOrderSelectionNotes({
+    const purchaseOrderSelectionNotes = skippedPurchaseOrderNumber ? formatPurchaseOrderSkippedNotes(skippedPurchaseOrderNumber) : formatEnrichPurchaseOrderSelectionNotes({
       emailPurchaseOrderNumber,
       emailPurchaseOrderNotFound,
       invoicePurchaseOrderNumber,
@@ -605,8 +623,8 @@ async function processInvoice(
     const totalsChargeReview = [summaryCharges.reviewNote, settledSummary.reviewNote].filter(Boolean).join(' ') || undefined;
 
     const memoIdentifiers = memoIdentifiersFromEnrichment(
-      result,
-      extractedPurchaseOrderNumber ?? normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber)
+      skippedPurchaseOrderNumber ? { ...result, extractedPurchaseOrderNumber: null } : result,
+      extractedPurchaseOrderNumber ?? (skippedPurchaseOrderNumber ? undefined : normalizePurchaseOrderNumber(result.extractedPurchaseOrderNumber))
     );
     const memo = hasMemoIdentifiers(memoIdentifiers)
       ? composeInvoiceMemo({
@@ -781,6 +799,7 @@ async function processInvoice(
         freightCleared,
         taxCleared,
         purchaseOrderNumber: extractedPurchaseOrderNumber,
+        ...(skippedPurchaseOrderNumber ? { purchaseOrderNotUsed: skippedPurchaseOrderNumber } : {}),
         ...(extractedPurchaseOrderNumber && extractedPurchaseOrderNumber === emailPurchaseOrderNumber
           && invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== emailPurchaseOrderNumber
           ? { invoicePurchaseOrderNumber }
