@@ -319,7 +319,7 @@ type FormMathResult =
 
 /** A label for a failure reason. Digits and currency signs are dropped so an amount in a label never reaches the alert. */
 function diagnosticLabel(text: string | null | undefined): string {
-  return cleanText(text ?? '').replace(/[$\d]/g, '').replace(/\s+/g, ' ').trim();
+  return cleanText((text ?? '').normalize('NFKC')).replace(/[\p{N}\p{Sc}]/gu, '').replace(/\s+/g, ' ').trim();
 }
 
 function oversized(look: ReimbursementFormMath): boolean {
@@ -359,8 +359,9 @@ export function formMathResult(look: ReimbursementFormMath): FormMathResult {
     const label = cleanText(column.label);
     const shown = diagnosticLabel(label);
     if (AGGREGATE_ROW.test(label)) return { failure: `the column "${shown}" is a total, not an expense category` };
-    if (seen.has(label.toLowerCase())) return { failure: `the column "${shown}" is listed more than once` };
-    seen.add(label.toLowerCase());
+    const key = label.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    if (seen.has(key)) return { failure: `the column "${shown}" is listed more than once` };
+    seen.add(key);
     if (isBlank(column.total)) return { failure: `the column "${shown}" has no printed total` };
     const columnTotal = parseEmailAmount(column.total);
     if (columnTotal === undefined) return { failure: `the total of column "${shown}" could not be read as a dollar amount` };
@@ -375,7 +376,7 @@ export function formMathResult(look: ReimbursementFormMath): FormMathResult {
     columns.push({ label, total: formatChargeDollars(columnTotal) });
   }
   if (columnSum !== cents(total)) return { failure: 'the column totals do not add up to the form total' };
-  return { total, totalText: readableText(look.grandTotal ?? ''), summary: { label: totalLabel, columns } };
+  return { total, totalText: cleanText(look.grandTotal ?? ''), summary: { label: totalLabel, columns } };
 }
 
 type Look = { passed: { total: number; totalText: string; summary: FormMathSummary } } | { failed: string; noTotal: boolean };

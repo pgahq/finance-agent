@@ -399,6 +399,23 @@ describe('formMathResult', () => {
     }
   });
 
+  it('drops full-width and other Unicode digits and currency signs from labels in failure reasons', () => {
+    const reason = (result: ReturnType<typeof formMathResult>) => ('failure' in result ? result.failure : '');
+    expect(reason(formMathResult(withColumn('Meals', { label: 'Meals \uFF11\uFF15\uFF10\uFF10.\uFF13\uFF10 \uFFE5 \u0661\u0662 total' })))).toBe('the column "Meals . total" is a total, not an expense category');
+    expect(reason(formMathResult(gridLook({ grandTotalLabel: 'Total \u20AC\u2461 due' })))).not.toMatch(/[\p{N}\p{Sc}]/u);
+  });
+
+  it('treats column labels that differ only in punctuation, width, or case as the same column', () => {
+    const look = gridLook({
+      columns: [
+        { label: 'Ground Transport', total: '$750.15', entries: ['$750.15'] },
+        { label: 'ground-transport.', total: '$750.15', entries: ['$750.15'] },
+      ],
+      grandTotal: '$1,500.30',
+    });
+    expect(formMathResult(look)).toMatchObject({ failure: expect.stringContaining('is listed more than once') });
+  });
+
   it('accepts amounts padded with spaces the way an accounting field prints them', () => {
     expect(formMathResult(withColumn('Meals', { total: `$ ${' '.repeat(90)}39.70`, entries: ['0', `$${' '.repeat(90)}39.70`] }))).toMatchObject({ total: 1500.3 });
     expect(formMathResult(withColumn('Meals', { entries: ['0', '39.'.concat('7'.repeat(80))] }))).toEqual({
