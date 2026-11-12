@@ -2482,6 +2482,14 @@ function createWorkQueueTag(tagId: string): WorkQueueTag {
   };
 }
 
+// Added only when the document printed bank details and the tag's reference ID is configured: Workday rejects an unknown tag ID.
+function bankingInfoWorkQueueTags(bankingInfoIncluded: boolean | undefined): WorkQueueTag[] {
+  const tagID = process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+  if (!bankingInfoIncluded || !tagID) return [];
+  debug(`Adding banking-info work queue tag: ${tagID}`);
+  return [createWorkQueueTag(tagID)];
+}
+
 export async function getSupplierInvoiceWithAttachments(
   context: { workdayConfig: WorkdayConfig; s3Config: { bucketName: string } },
   workdayID: string
@@ -2842,6 +2850,8 @@ export interface SubmitSupplierInvoiceUpdateParams {
   paymentTermsId?: string;
   omitPurchaseOrderLineReference?: boolean;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
+  /** The documents print supplier bank details; adds the banking-info work queue tag when one is configured. */
+  bankingInfoIncluded?: boolean;
 }
 
 export async function submitSupplierInvoiceUpdate(
@@ -2870,6 +2880,7 @@ export async function submitSupplierInvoiceUpdate(
     paymentTermsId,
     omitPurchaseOrderLineReference,
     attachments,
+    bankingInfoIncluded,
   }: SubmitSupplierInvoiceUpdateParams
 ): Promise<{
   success: boolean;
@@ -2903,7 +2914,11 @@ export async function submitSupplierInvoiceUpdate(
   const client = await buildResourceManagementClient(context);
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+  const tags = [
+    ...(agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : []),
+    ...bankingInfoWorkQueueTags(bankingInfoIncluded),
+  ];
+  const workQueueTags = tags.length ? tags : undefined;
 
   if (agentModifiedTagID) {
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
@@ -2989,6 +3004,8 @@ export interface SubmitNewSupplierInvoiceParams {
   conversationUrl?: string;
   /** Never retry on the default supplier: a payment to this supplier must not move to a generic one. */
   keepSupplier?: boolean;
+  /** The documents print supplier bank details; adds the banking-info work queue tag when one is configured. */
+  bankingInfoIncluded?: boolean;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -3022,6 +3039,7 @@ export async function submitNewSupplierInvoice(
     omitPurchaseOrderLineReference,
     conversationUrl,
     keepSupplier,
+    bankingInfoIncluded,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -3054,7 +3072,8 @@ export async function submitNewSupplierInvoice(
   }).reconciliations.some(reconciliation => reconciliation.unreconciled);
   const tagIDs = [agentModifiedTagID, hasAmountMismatch ? amountMismatchTagID : undefined]
     .filter((tagID): tagID is string => Boolean(tagID));
-  const workQueueTags = tagIDs.length ? tagIDs.map(tagID => createWorkQueueTag(tagID)) : undefined;
+  const tags = [...tagIDs.map(tagID => createWorkQueueTag(tagID)), ...bankingInfoWorkQueueTags(bankingInfoIncluded)];
+  const workQueueTags = tags.length ? tags : undefined;
 
   if (agentModifiedTagID) {
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);
@@ -3135,6 +3154,7 @@ export interface AnnotateSupplierInvoiceParams {
   invoiceWorkdayID: string;
   notes?: string;
   memo?: string;
+  bankingInfoIncluded?: boolean;
 }
 
 export async function annotateSupplierInvoice(
@@ -3142,7 +3162,8 @@ export async function annotateSupplierInvoice(
   {
     invoiceWorkdayID,
     notes,
-    memo
+    memo,
+    bankingInfoIncluded,
   }: AnnotateSupplierInvoiceParams
 ): Promise<{ success: boolean; message?: string }> {
   debug('Updating Supplier Invoice data (notes/memo) via SOAP');
@@ -3161,7 +3182,11 @@ export async function annotateSupplierInvoice(
   const client = await buildResourceManagementClient(context);
 
   const agentModifiedTagID = process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
-  const workQueueTags = agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : undefined;
+  const tags = [
+    ...(agentModifiedTagID ? [createWorkQueueTag(agentModifiedTagID)] : []),
+    ...bankingInfoWorkQueueTags(bankingInfoIncluded),
+  ];
+  const workQueueTags = tags.length ? tags : undefined;
 
   if (agentModifiedTagID) {
     debug(`Adding agent-modified work queue tag: ${agentModifiedTagID}`);

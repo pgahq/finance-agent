@@ -65,6 +65,7 @@ export const InvoiceOcrSchema = z.object({
     label: z.string().describe('The exact printed label of the row (e.g. "Less deposit paid", "Previous payments").'),
     amount: z.string().describe('The amount as printed (e.g. "$17,977.50"). Never compute it.'),
   })).describe('Payments, deposits, or credits the document shows as already received, which reduce the amount due. Return an empty array when none is printed.'),
+  bankingInfoPrinted: z.boolean().describe('True when any document prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire instructions. False otherwise. Never copy the numbers themselves.'),
   extractedPurchaseOrderNumber: printedText(enrichment.extractedPurchaseOrderNumber),
   extractedAccountNumber: printedText(enrichment.extractedAccountNumber),
   extractedSupplierReference: printedText(enrichment.extractedSupplierReference),
@@ -386,6 +387,18 @@ Extract these identifiers independently when they appear on the invoice or in a 
 3. **Customer ID** (\`extractedCustomerId\`): "Customer ID", **"Bill-To Customer ID"**, "Customer #", "Cust ID". If this value is the same as \`extractedAccountNumber\`, leave customer ID null and keep the account number.
 
 4. **Service period** (\`extractedServicePeriod\`): billing/service window as shown, including inside a line description (e.g. "Service Period: 2026 - September"). Also "Billing Period", "Period Covered", "Pay Date Range", "Week Ending", or From/To. Return the dates or period only, without the label in front of them (\`09/28/2026 - 10/11/2026\`, not \`Pay Date Range 09/28/2026 - 10/11/2026\`). Keep the document wording for the dates; do not invent dates.
+
+---
+
+## Part 7.6: Bank Details
+
+Set \`bankingInfoPrinted\` to true when any supplier invoice document prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire payment instructions. An electronic-payments block that lists an ABA or routing number with an account number counts, as does a notice that the supplier's banking information changed when it prints those details. Do not copy any bank number or account name into any other field; report only the true or false.
+
+Set it to false when the documents print only:
+- a mailing address for checks ("Remit To", "Make checks payable to")
+- an online payment link, a payment portal, or a card payment option
+- PGA's own account number, customer ID, or invoice number
+- a notice that banking details changed or a request to call or email for them, with no bank details printed
 
 ---
 

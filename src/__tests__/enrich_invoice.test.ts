@@ -124,6 +124,7 @@ jest.mock('../lib/ai.js', () => {
       printedSupplier: textFields(full?.supplier?.extractedInformation),
       printedBillTo: textFields(full?.companyVerification?.extractedInformation),
       ...headerText,
+      bankingInfoPrinted: full?.bankingInfoPrinted ?? false,
       extractedOtherCharges: full?.extractedOtherCharges ?? [],
       extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
       extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
@@ -884,6 +885,51 @@ describe('enrich_invoice', () => {
         paymentTermsId: undefined,
       }
     );
+  });
+
+  it('passes the banking-info flag to the Workday update and says so in the note', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Test Supplier', memo: 'Test invoice' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedInvoiceDate: '2026-04-15',
+      bankingInfoPrinted: true,
+    });
+
+    const mockEvent = {
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    };
+
+    await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+    expect(submitSupplierInvoiceUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ bankingInfoIncluded: true })
+    );
+    const { buildNotes } = submitSupplierInvoiceUpdate.mock.calls[0][1];
+    expect(buildNotes([])).toContain('Banking information is printed on this invoice. Verify it before payment.');
   });
 
   it('uses the existing Workday supplier name when the extracted name has no letters', async () => {

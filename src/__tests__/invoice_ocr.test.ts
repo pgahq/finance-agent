@@ -78,6 +78,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedPriorPayments: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: null,
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
@@ -132,6 +133,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedPriorPayments: [],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: '',
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
@@ -1043,6 +1045,7 @@ describe('invoice OCR pass', () => {
         extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
+        bankingInfoPrinted: true,
         extractedServicePeriod: 'Sept 28 - Oct 2',
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
@@ -1054,6 +1057,18 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment({ ...matchingResult, extractedPaymentTerms: null }, ocrResult).extractedPaymentTerms)
         .toEqual({ name: 'Due on receipt', workdayId: null });
       expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedPaymentTerms: null }).extractedPaymentTerms).toBeNull();
+    });
+
+    it('carries the banking-info flag from the document read and leaves it null when none ran', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, ocrResult).bankingInfoPrinted).toBe(true);
+      expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).bankingInfoPrinted).toBeNull();
+    });
+
+    it('asks the document read for a banking-info flag without copying the bank numbers', () => {
+      expect(invoiceOcrPrompt).toContain('bankingInfoPrinted');
+      expect(invoiceOcrPrompt).toContain('Do not copy any bank number');
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
     });
 
     it('leaves document fields empty when no document was read', () => {

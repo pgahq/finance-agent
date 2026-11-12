@@ -5928,6 +5928,44 @@ describe('Workday utilities', () => {
       });
     });
 
+    it('adds the banking-info work queue tag only when the documents print bank details and the tag is configured', async () => {
+      const tagIds = (request: any) => ([] as any[])
+        .concat(request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? [])
+        .flatMap((tag: any) => tag.ID.map((id: any) => `${id.$attributes.type}:${id.$value}`));
+      const submit = async (params: { bankingInfoIncluded?: boolean }) => {
+        const mockClient = mockSoapClient();
+        let captured: any;
+        mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+          captured = request;
+          callback(null, { Supplier_Invoice_Reference: { ID: [{ $attributes: { type: 'WID' }, $value: 'new-invoice-wid' }] } });
+        });
+        await submitNewSupplierInvoiceForTest(params);
+        return captured;
+      };
+      process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'modified-tag';
+      try {
+        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92';
+        expect(tagIds(await submit({ bankingInfoIncluded: true }))).toEqual([
+          'Work_Queue_Tag_ID:modified-tag',
+          'Work_Queue_Tag_ID:SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92',
+        ]);
+        expect(tagIds(await submit({ bankingInfoIncluded: false }))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
+        expect(tagIds(await submit({}))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
+
+        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = '';
+        expect(tagIds(await submit({ bankingInfoIncluded: true }))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
+        delete process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+        expect(tagIds(await submit({ bankingInfoIncluded: true }))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
+
+        delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'banking-tag';
+        expect(tagIds(await submit({ bankingInfoIncluded: true }))).toEqual(['Work_Queue_Tag_ID:banking-tag']);
+      } finally {
+        delete process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+        delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      }
+    });
+
     it('should submit a request without a Supplier_Invoice_Reference so Workday creates a new invoice', async () => {
       const mockClient = mockSoapClient();
 

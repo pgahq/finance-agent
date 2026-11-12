@@ -453,6 +453,10 @@ export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string
   return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
 }
 
+export function formatBankingInfoNotes(result: InvoiceEnrichmentResult): string {
+  return result.bankingInfoPrinted ? '\n\nBanking information is printed on this invoice. Verify it before payment.' : '';
+}
+
 export function formatWorkQueueAssigneeNotes(
   appliedFallbacks: Array<{ label?: string }>,
   options: {

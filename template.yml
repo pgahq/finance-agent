@@ -56,6 +56,12 @@ Parameters:
       UTC weekday (0-6, 6 = Saturday) when this Workday tenant is overwritten with production data, or
       "none". Scoring skips that day and closes invoices the refresh removed instead of treating them as deletions.
     Default: "none"
+  BankingInfoTagRefId:
+    Type: String
+    Description: >-
+      Work_Queue_Tag_ID of the "Banking Info Included" Workday work queue tag, added to invoices whose documents print
+      supplier bank details. Empty disables the tag. Workday auto-generates this ID per tenant and rejects an unknown one.
+    Default: ""
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -86,6 +92,7 @@ Globals:
         WORKDAY_CLIENT_SECRET: ssm:/finance-agent/workday-client-secret
         WORKDAY_REFRESH_TOKEN: ssm:/finance-agent/workday-refresh-token
         WORKDAY_AGENT_MODIFIED_TAG_WID: FINAGENT-invoice-modified
+        WORKDAY_BANKING_INFO_TAG_REF_ID: !Ref BankingInfoTagRefId
         WORKDAY_DEFAULT_SUPPLIER_WID: 29ce29920bac1001634359c103bb0000
         WORKDAY_DEFAULT_COMPANY_NAME: Default OCR Company
         FALLBACK_FUND_ID: !Ref FallbackFundId
