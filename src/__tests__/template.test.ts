@@ -114,6 +114,16 @@ describe('SAM template', () => {
       expect(template).not.toMatch(/TYPESAFE_API_KEY/);
     });
 
+    it('keeps the Jev validation-field classifier off by default, opt-in per stack from CircleCI, with no new secret', () => {
+      const parameter = globals.match(/JevValidationFieldMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
+      expect(parameter).toMatch(/Default: "off"/);
+      expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
+      expect(circleci).toMatch(/JevValidationFieldMode=\$\{JEV_VALIDATION_FIELD_MODE:-off\}/);
+      expect(template).toMatch(/JEV_VALIDATION_FIELD_MODE:\s*!Ref JevValidationFieldMode/);
+      expect(template.match(/JEV_VALIDATION_FIELD_MODE:/g)).toHaveLength(1);
+      expect(template).not.toMatch(/jev-validation-field-mode/);
+    });
+
     it('takes the audit channel from CircleCI per environment', () => {
       expect(globals).toMatch(/AuditSlackChannelId:/);
       expect(globals).not.toMatch(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}Default:/);

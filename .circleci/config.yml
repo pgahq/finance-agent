@@ -60,6 +60,7 @@ references:
             TenantRefreshWeekday=$TENANT_REFRESH_WEEKDAY
             AuditSlackChannelId=$AUDIT_SLACK_CHANNEL_ID
             JevAuditMode=${JEV_AUDIT_MODE:-off}
+            JevValidationFieldMode=${JEV_VALIDATION_FIELD_MODE:-off}
 
 jobs:
   build:

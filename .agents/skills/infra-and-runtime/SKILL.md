@@ -60,6 +60,16 @@ answers that never fail. If you raise the Timeout, batch size, or per-call
 timeout, recheck that budget. Set the parameter to `off` to stop all Jev traffic; see
 `agent-invoice-scoring`.
 
+## Jev validation-field mode
+
+`JevValidationFieldMode` (`off`, `shadow`, `on`; default `off`; CircleCI passes
+`JEV_VALIDATION_FIELD_MODE`, `off` when unset) sets `JEV_VALIDATION_FIELD_MODE` as a
+template Global, because the classifier runs inside the create and enrich
+processors' submit retry. It adds no secret or egress. A call is capped at 5 seconds
+and falls back to the `gpt-5.4-mini` classifier, so it adds at most that to a failed
+submit's retry. Set the parameter to `off` to stop its Jev traffic; see
+`integrations-and-external-contracts`.
+
 ## Change checklist
 
 - Edit `Globals.Function` for settings that should apply to every function

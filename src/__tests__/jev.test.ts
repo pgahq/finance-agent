@@ -2,9 +2,10 @@ jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 jest.mock('ai', () => ({ experimental_decide: jest.fn() }));
 
 import { experimental_decide as decide } from 'ai';
-import { DEFAULT_JEV_BUDGET_MS, DEFAULT_JEV_MODEL, jevBudgetFromEnv, jevDecide, jevMinConfidence, jevMode, jevModelName, resetJevBreaker, startJevBudget, type JevQuestion } from '../lib/jev.js';
+import { DEFAULT_JEV_BUDGET_MS, DEFAULT_JEV_MODEL, isPinnedJevModel, jevBudgetFromEnv, jevDecide, jevMinConfidence, jevMode, jevModelName, parseJevMode, resetJevBreaker, startJevBudget, type JevQuestion } from '../lib/jev.js';
 
 const mockDecide = decide as unknown as jest.Mock;
+const mockDebug = jest.requireMock<{ debug: jest.Mock }>('@pga/logger').debug;
 
 const questions: Record<string, JevQuestion> = {
   who: { type: 'choice', instructions: 'Who?', criteria: { agent: 'a', business: 'b' } },
@@ -168,5 +169,54 @@ describe('Jev time budget', () => {
     await jevDecide({}, questions, {});
     await expect(jevDecide({}, questions, {})).resolves.toBeUndefined();
     now.mockRestore();
+  });
+});
+
+describe('parseJevMode', () => {
+  it('reads on and shadow case-insensitively and treats everything else as off', () => {
+    expect(parseJevMode('on')).toBe('on');
+    expect(parseJevMode(' Shadow ')).toBe('shadow');
+    expect(parseJevMode('true')).toBe('off');
+    expect(parseJevMode('')).toBe('off');
+    expect(parseJevMode(undefined)).toBe('off');
+  });
+});
+
+describe('pinned model versions', () => {
+  it.each([['typesafe-ai/jev-1.14.0', true], ['typesafe-ai/jev-1.13.0', true], ['typesafe-ai/jev', false], ['typesafe-ai/jev-latest', false], ['jev-1.14.0', false], ['openai/gpt-5.4', false]])(
+    'isPinnedJevModel(%s) is %s',
+    (model, expected) => {
+      expect(isPinnedJevModel(model)).toBe(expected);
+    }
+  );
+
+  it('makes no request, and says why, when JEV_MODEL is not a pinned version', async () => {
+    await expect(jevDecide({}, questions, { JEV_MODEL: 'typesafe-ai/jev-latest' })).resolves.toBeUndefined();
+
+    expect(mockDecide).not.toHaveBeenCalled();
+    expect(mockDebug).toHaveBeenCalledWith('Jev decision failed; falling back to the rule', expect.objectContaining({ model: 'typesafe-ai/jev-latest', errorName: 'JevConfigurationError' }));
+  });
+});
+
+describe('jevDecide logging and per-call timeout', () => {
+  it('logs the error class and status but never the provider message, which can echo the request', async () => {
+    mockDebug.mockClear();
+    mockDecide.mockRejectedValue(Object.assign(new Error('bad request: supplier Acme Golf invoice 4471'), { name: 'AI_APICallError', statusCode: 400, isRetryable: false }));
+
+    await expect(jevDecide({}, questions, {})).resolves.toBeUndefined();
+
+    expect(mockDebug).toHaveBeenCalledWith('Jev decision failed; falling back to the rule', expect.objectContaining({ errorName: 'AI_APICallError', statusCode: 400, isRetryable: false }));
+    expect(JSON.stringify(mockDebug.mock.calls)).not.toContain('Acme Golf');
+  });
+
+  it('cuts a call short at the caller timeout when that is below JEV_TIMEOUT_MS', async () => {
+    mockDecide.mockImplementation((request: { abortSignal: AbortSignal }) => new Promise((_resolve, reject) => {
+      request.abortSignal.addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    const startedAt = Date.now();
+
+    await expect(jevDecide({}, questions, { JEV_TIMEOUT_MS: '60000' }, { timeoutMs: 20 })).resolves.toBeUndefined();
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 });
