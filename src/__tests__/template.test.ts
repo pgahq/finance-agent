@@ -102,6 +102,10 @@ describe('SAM template', () => {
       const parameter = globals.match(/JevAuditMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
       expect(parameter).toMatch(/Default: "off"/);
       expect(circleci).toMatch(/JevAuditMode=\$\{JEV_AUDIT_MODE:-off\}/);
+      const devJob = circleci.split('deploy-to-dev:')[1]?.split('deploy-to-prod:')[0] ?? '';
+      const prodJob = circleci.split('deploy-to-prod:')[1]?.split('workflows:')[0] ?? '';
+      expect(devJob).toMatch(/JEV_AUDIT_MODE:\s*shadow/);
+      expect(prodJob).not.toMatch(/JEV_AUDIT_MODE/);
       expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
       expect(resourceBlock('ScoreInvoicesProcessor')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
       expect(resourceBlock('ScoreDigestFunction')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);

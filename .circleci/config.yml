@@ -125,6 +125,8 @@ jobs:
       TENANT_REFRESH_WEEKDAY: "6"
       # #notify-finance-agent-audit-dev
       AUDIT_SLACK_CHANNEL_ID: C0C6VS0BDPA
+      # Jev scores the audit in shadow beside the rules; the rules stay official.
+      JEV_AUDIT_MODE: shadow
 
   deploy-to-prod:
     <<: *deploy_container_config
