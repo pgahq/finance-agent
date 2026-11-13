@@ -2798,6 +2798,18 @@ describe('create_invoice', () => {
       expect(submitArgs.extractedTaxAmount).toBe('2354.16');
     });
 
+    it('passes the banking-info flag to the new invoice and notes it for AP only when bank details are printed', async () => {
+      const printed = await run(supin472322ProductionRows, { bankingInfoPrinted: true });
+      const printedArgs = printed.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(printedArgs.bankingInfoIncluded).toBe(true);
+      expect(printedArgs.buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
+
+      const absent = await run(supin472322ProductionRows, { bankingInfoPrinted: false });
+      const absentArgs = absent.workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(absentArgs).not.toHaveProperty('bankingInfoIncluded');
+      expect(absentArgs.buildNotes([])).not.toContain('Banking information');
+    });
+
     it('says $1,388.00 is not carried by any row after a second read finds none, not $3,388.00', async () => {
       const { workday, slack } = await run(supin472322ProductionRows, { extractedSecondReadOutcome: 'rejected' });
 

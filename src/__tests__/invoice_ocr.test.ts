@@ -78,6 +78,7 @@ const ocrResult: InvoiceOcrResult = {
   extractedPriorPayments: null,
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: null,
   extractedSupplierReferenceKind: null,
   extractedCustomerId: null,
@@ -132,6 +133,7 @@ const ocrResponse: InvoiceOcrResponse = {
   extractedPriorPayments: [],
   extractedPurchaseOrderNumber: 'PO-414007',
   extractedAccountNumber: 'AC-1033562',
+  bankingInfoPrinted: true,
   extractedSupplierReference: '',
   extractedSupplierReferenceKind: '',
   extractedCustomerId: ' ',
@@ -818,6 +820,16 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedSecondReadOutcome).toBeNull();
       });
 
+      it('keeps the banking-info flag when only the second read saw the bank details', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows, { bankingInfoPrinted: false }))
+          .mockResolvedValueOnce(responseFor(supin472322Rows, { bankingInfoPrinted: true }));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.bankingInfoPrinted).toBe(true);
+      });
+
       it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
         let now = 1_000_000;
         const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -1043,6 +1055,7 @@ describe('invoice OCR pass', () => {
         extractedOtherCharges: [{ label: 'EnvChg Tax', amount: '$17.00' }],
         extractedPurchaseOrderNumber: 'PO-414007',
         extractedAccountNumber: 'AC-1033562',
+        bankingInfoPrinted: true,
         extractedServicePeriod: 'Sept 28 - Oct 2',
         invoiceLineQuantityDisplayed: true,
         extractedInvoiceLines: ocrResult.extractedInvoiceLines,
@@ -1054,6 +1067,18 @@ describe('invoice OCR pass', () => {
       expect(mergeInvoiceEnrichment({ ...matchingResult, extractedPaymentTerms: null }, ocrResult).extractedPaymentTerms)
         .toEqual({ name: 'Due on receipt', workdayId: null });
       expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedPaymentTerms: null }).extractedPaymentTerms).toBeNull();
+    });
+
+    it('carries the banking-info flag from the document read and leaves it null when none ran', () => {
+      expect(mergeInvoiceEnrichment(matchingResult, ocrResult).bankingInfoPrinted).toBe(true);
+      expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
+      expect(mergeInvoiceEnrichment(matchingResult, undefined).bankingInfoPrinted).toBeNull();
+    });
+
+    it('asks the document read for a banking-info flag without copying the bank numbers', () => {
+      expect(invoiceOcrPrompt).toContain('bankingInfoPrinted');
+      expect(invoiceOcrPrompt).toContain('Do not copy any bank number');
+      expect(normalizeInvoiceOcrResult({ ...ocrResponse, bankingInfoPrinted: false }).bankingInfoPrinted).toBe(false);
     });
 
     it('leaves document fields empty when no document was read', () => {

@@ -72,6 +72,7 @@ function ocrResponseFor(numbers: string[], amountDue: string, poNumber: string):
     extractedPriorPayments: [],
     extractedPurchaseOrderNumber: poNumber,
     extractedAccountNumber: '',
+    bankingInfoPrinted: false,
     extractedSupplierReference: '',
     extractedSupplierReferenceKind: '',
     extractedCustomerId: '',
