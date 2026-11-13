@@ -40,6 +40,25 @@ describe('score rows', () => {
     });
   });
 
+  it('reads the stored Jev verdict from a JSON string or object, and leaves it unset when absent', () => {
+    const verdict = { model: 'typesafe-ai/jev-1.14.0', entryOutcome: 'submitted_clean' };
+    expect(rowToInvoiceScore({ workday_invoice_wid: 'w', jev_shadow: JSON.stringify(verdict) }).jevShadow).toEqual(verdict);
+    expect(rowToInvoiceScore({ workday_invoice_wid: 'w', jev_shadow: verdict }).jevShadow).toEqual(verdict);
+    expect(rowToInvoiceScore({ workday_invoice_wid: 'w', jev_shadow: null }).jevShadow).toBeUndefined();
+  });
+
+  it('writes the Jev verdict as the last upsert parameter and overwrites it on update', async () => {
+    const { db, query } = mockDb();
+    const jevShadow = { model: 'm', entryOutcome: 'submitted_clean' as const };
+    await upsertInvoiceScore(db, { workdayInvoiceWid: 'w', terminal: false, jevShadow });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toContain('jev_shadow = EXCLUDED.jev_shadow');
+    expect(params).toHaveLength(21);
+    expect(JSON.parse(String(params?.[20]))).toEqual(jevShadow);
+    await upsertInvoiceScore(db, { workdayInvoiceWid: 'w', terminal: false });
+    expect(query.mock.calls[1][1]?.[20]).toBeNull();
+  });
+
   it('reads unknown stored enum values as unset', () => {
     const score = rowToInvoiceScore({ workday_invoice_wid: 'w', origin: 'import', outcome: 'mystery', cancel_basis: 'guess', terminal: 't' });
     expect(score.origin).toBeUndefined();

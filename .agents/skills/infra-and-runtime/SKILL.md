@@ -46,6 +46,17 @@ Do not change these when the ask is "stop Lambda retries":
 
 Those run inside a single invocation.
 
+## Jev audit mode
+
+`JevAuditMode` (`off`, `shadow`, `on`; default `shadow`) sets `JEV_AUDIT_MODE`
+on `ScoreInvoicesProcessor` and `ScoreDigestFunction` only. It adds no secret,
+VPC route, or egress beyond the existing `AI_GATEWAY_API_KEY` Global. Each
+invoice costs a few Jev calls of at most 15s each (one retry); `jevDecide`'s
+circuit breaker (three failures, five minutes) keeps an outage inside the
+processor's 900s with `PROCESSOR_BATCH_SIZE` 20. If you raise either, recheck
+that budget. Set the parameter to `off` to stop all Jev traffic; see
+`agent-invoice-scoring`.
+
 ## Change checklist
 
 - Edit `Globals.Function` for settings that should apply to every function

@@ -1,6 +1,8 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import { fetchConversationMessages, getIntercomConfig } from './lib/intercom.js';
+import { jevModelName, jevMode, type JevMode } from './lib/jev.js';
+import { jevAttributeCancel, jevScoredChanges, jevSupplierVoidOrCredit } from './lib/jev_audit.js';
 import {
   attributeCancel,
   cancelReasonMappingFromEnv,
@@ -17,6 +19,7 @@ import {
   tenantRefreshWeekday,
   type CancelEvidence,
   type InvoiceStatusRow,
+  type JevShadow,
   type StatusClass,
 } from './lib/invoice_score.js';
 import {
@@ -86,18 +89,39 @@ function enrichAgentChangedFields(snapshots: AgentInvoiceSnapshot[], latest: Age
   return diffScoredFields(baseline.fields, latest.fields).map((change) => change.field);
 }
 
+/** A Jev bug or outage must never fail or change the official score, so every Jev call goes through here. */
+async function tryJev<T>(label: string, run: () => Promise<T | undefined>): Promise<T | undefined> {
+  try {
+    return await run();
+  } catch (error) {
+    debug('Jev call failed; the rules stand', { label, error });
+    return undefined;
+  }
+}
+
+interface SupplierThreadVerdict {
+  /** The pattern's answer; `read_failed` when the conversation could not be read, undefined when there was nothing to read. */
+  rule: boolean | 'read_failed' | undefined;
+  jev?: { voided: boolean; probability: number };
+}
+
 async function supplierVoidOrCreditInThread(
   conversationId: string | undefined,
-  sinceUnixSeconds: number
-): Promise<boolean | 'read_failed' | undefined> {
-  if (!conversationId || !process.env.INTERCOM_ACCESS_TOKEN) return undefined;
+  sinceUnixSeconds: number,
+  mode: JevMode
+): Promise<SupplierThreadVerdict> {
+  if (!conversationId || !process.env.INTERCOM_ACCESS_TOKEN) return { rule: undefined };
+  let messages: Awaited<ReturnType<typeof fetchConversationMessages>>;
   try {
-    const messages = await fetchConversationMessages(getIntercomConfig(process.env), conversationId);
-    return mentionsSupplierVoidOrCredit(messages, sinceUnixSeconds);
+    messages = await fetchConversationMessages(getIntercomConfig(process.env), conversationId);
   } catch (error) {
     debug('Could not read the Intercom conversation for cancel evidence', { conversationId, error });
-    return 'read_failed';
+    return { rule: 'read_failed' };
   }
+  const rule = mentionsSupplierVoidOrCredit(messages, sinceUnixSeconds);
+  if (mode === 'off') return { rule };
+  const jev = await tryJev('supplier void or credit', () => jevSupplierVoidOrCredit(messages, sinceUnixSeconds));
+  return { rule, ...(jev ? { jev } : {}) };
 }
 
 async function gatherCancelEvidence(
@@ -110,9 +134,10 @@ async function gatherCancelEvidence(
     current: unknown;
     currentFields?: ScoredFields;
     now: Date;
+    mode: JevMode;
   }
-): Promise<CancelEvidence> {
-  const { score, snapshots, latest, status, current, currentFields, now } = input;
+): Promise<{ evidence: CancelEvidence; jevVoid?: NonNullable<JevShadow['supplierVoidOrCredit']> }> {
+  const { score, snapshots, latest, status, current, currentFields, now, mode } = input;
   const db = context.dbConnection;
   const firstWrite = snapshots.find((snapshot) => AGENT_WRITE_SOURCES.includes(snapshot.source)) ?? latest;
   // Get_Supplier_Invoices returns the cancel reason on the invoice; the optional WQL field is a fallback.
@@ -183,11 +208,18 @@ async function gatherCancelEvidence(
     }
   }
 
-  const voided = await supplierVoidOrCreditInThread(latest.conversationId, Math.floor(firstWrite.createdAt.getTime() / 1000));
-  if (voided === 'read_failed') evidence.conversationReadFailed = true;
-  else if (voided !== undefined) evidence.supplierVoidOrCreditInThread = voided;
+  const thread = await supplierVoidOrCreditInThread(latest.conversationId, Math.floor(firstWrite.createdAt.getTime() / 1000), mode);
+  if (thread.rule === 'read_failed') {
+    evidence.conversationReadFailed = true;
+  } else {
+    const voided = mode === 'on' && thread.jev ? thread.jev.voided : thread.rule;
+    if (voided !== undefined) evidence.supplierVoidOrCreditInThread = voided;
+  }
+  const jevVoid = thread.jev && typeof thread.rule === 'boolean'
+    ? { jev: thread.jev.voided, probability: thread.jev.probability, rule: thread.rule }
+    : undefined;
 
-  return evidence;
+  return { evidence, ...(jevVoid ? { jevVoid } : {}) };
 }
 
 function removedByTenantRefresh(latest: AgentInvoiceSnapshot, now: Date): boolean {
@@ -233,6 +265,10 @@ export async function scoreInvoice(
   score.releaseSha = latest.releaseSha ?? score.releaseSha;
   score.clusteringMode = latest.clusteringMode ?? score.clusteringMode;
 
+  const mode = jevMode();
+  const shadow: JevShadow = { ...(existing?.jevShadow ?? {}), model: jevModelName() };
+  const shadowBefore = JSON.stringify(shadow);
+
   const statusConfig = statusConfigFromEnv();
   let statusClass: StatusClass = classifyStatus(item.status ?? undefined, statusConfig);
   const statusText = item.status?.invoiceStatusAsText;
@@ -268,15 +304,25 @@ export async function scoreInvoice(
     score.finalReadAt = now;
     score.terminal = true;
   } else if (statusClass === 'canceled' || statusClass === 'not_found') {
-    const evidence = await gatherCancelEvidence(context, {
-      score, snapshots, latest, status: item.status, current, currentFields, now,
+    const { evidence, jevVoid } = await gatherCancelEvidence(context, {
+      score, snapshots, latest, status: item.status, current, currentFields, now, mode,
     });
     if (invoiceReadFailed) evidence.invoiceReadFailed = true;
-    const attribution = attributeCancel(
+    const ruleAttribution = attributeCancel(
       evidence,
       cancelReasonMappingFromEnv(),
       positiveNumber(process.env.SCORE_EARLY_CANCEL_HOURS, DEFAULT_EARLY_CANCEL_HOURS)
     );
+    let attribution = ruleAttribution;
+    if (mode !== 'off') {
+      if (jevVoid) shadow.supplierVoidOrCredit = jevVoid;
+      const jevEvidence = jevVoid ? { ...evidence, supplierVoidOrCreditInThread: jevVoid.jev } : evidence;
+      const decision = await tryJev('cancel attribution', () => jevAttributeCancel(jevEvidence, ruleAttribution));
+      if (decision) {
+        shadow.cancel = { ...decision.result, ...(decision.confidence !== undefined ? { confidence: decision.confidence } : {}) };
+        if (mode === 'on') attribution = decision.result;
+      }
+    }
     score.outcome = statusClass === 'canceled' ? 'canceled' : 'deleted';
     score.cancelReason = evidence.cancelReason;
     score.cancelAttribution = attribution.attribution;
@@ -290,12 +336,36 @@ export async function scoreInvoice(
     const enteredThisRun = !score.entryReadAt;
     if (enteredThisRun) {
       applyEntry(score, { snapshots, latest, currentFields: currentFields!, statusText, now });
+      if (mode !== 'off') {
+        const jevChanges = await tryJev('entry diff', () => jevScoredChanges(latest.fields, currentFields!, {
+          agentChangedFields: enrichAgentChangedFields(snapshots, latest),
+          supplier: latest.fields.supplier,
+        }));
+        if (jevChanges) {
+          shadow.entryDiff = jevChanges;
+          shadow.entryOutcome = entryOutcome(jevChanges);
+          if (mode === 'on') {
+            score.entryDiff = jevChanges;
+            score.outcome = shadow.entryOutcome;
+          }
+        }
+      }
     }
     if (isTerminalStatus(statusClass)) {
       const late = !enteredThisRun && score.entryFields
         ? scoreChanges(diffScoredFields(score.entryFields, currentFields!), enrichAgentChangedFields(snapshots, latest))
         : [];
       score.lateDiff = late;
+      if (mode !== 'off' && !enteredThisRun && score.entryFields) {
+        const jevLate = await tryJev('late diff', () => jevScoredChanges(score.entryFields!, currentFields!, {
+          agentChangedFields: enrichAgentChangedFields(snapshots, latest),
+          supplier: latest.fields.supplier,
+        }));
+        if (jevLate) {
+          shadow.lateDiff = jevLate;
+          if (mode === 'on') score.lateDiff = jevLate;
+        }
+      }
       score.finalStatus = statusText;
       score.finalReadAt = now;
       score.terminal = true;
@@ -303,6 +373,7 @@ export async function scoreInvoice(
     }
   }
 
+  if (mode !== 'off' && JSON.stringify(shadow) !== shadowBefore) score.jevShadow = shadow;
   await upsertInvoiceScore(db, score);
   debug('Scored agent invoice', {
     workdayInvoiceWid: score.workdayInvoiceWid,

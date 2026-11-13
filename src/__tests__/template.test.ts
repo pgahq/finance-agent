@@ -98,6 +98,17 @@ describe('SAM template', () => {
       expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);
     });
 
+    it('runs Jev in shadow by default on exactly the scoring and digest functions, with no new secret', () => {
+      const parameter = globals.match(/JevAuditMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
+      expect(parameter).toMatch(/Default: shadow/);
+      expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
+      expect(resourceBlock('ScoreInvoicesProcessor')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
+      expect(resourceBlock('ScoreDigestFunction')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
+      expect(template.match(/JEV_AUDIT_MODE:/g)).toHaveLength(2);
+      expect(template).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
+      expect(template).not.toMatch(/TYPESAFE_API_KEY/);
+    });
+
     it('takes the audit channel from CircleCI per environment', () => {
       expect(globals).toMatch(/AuditSlackChannelId:/);
       expect(globals).not.toMatch(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}Default:/);
