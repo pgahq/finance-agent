@@ -458,6 +458,47 @@ describe('selectBalancePoLine', () => {
       expect((result as { exact: boolean }).exact).toBe(lineCents === 1200000);
     }
   });
+
+  it('derives a covering amount from quantity x unit cost when extendedAmount is absent', () => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment', quantity: 2, unitCost: 6750 } as any;
+    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false });
+  });
+
+  it('refuses a quantity-derived amount that is short of the balance', () => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment', quantity: 2, unitCost: 4000 } as any;
+    expect(selectBalancePoLine([line], 1200000)).toEqual({
+      status: 'unmatched',
+      reason: "the PO's final-payment line is only $8,000.00, less than the $12,000.00 amount due",
+    });
+  });
+
+  it.each([
+    ['Infinity extendedAmount', { extendedAmount: Number.POSITIVE_INFINITY }],
+    ['missing quantity with a unit cost', { quantity: undefined, unitCost: 100 }],
+    ['missing unit cost with a quantity', { quantity: 2, unitCost: undefined }],
+    ['non-finite quantity', { quantity: Number.POSITIVE_INFINITY, unitCost: 100 }],
+  ])('treats %s as unreadable, not as a match', (_name, overrides) => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment', ...overrides } as any;
+    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'unmatched', reason: 'no PO line is for $12,000.00' });
+  });
+
+  it.each([
+    ['a zero amount', 0],
+    ['a negative amount', -500],
+  ])('does not treat %s as covering the balance', (_name, extendedAmount) => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment', extendedAmount } as any;
+    const result = selectBalancePoLine([line], 1200000);
+    expect(result.status).toBe('unmatched');
+    expect((result as { reason: string }).reason).toContain("the PO's final-payment line is only");
+  });
+
+  it('lets an exact match win even when another line also reads as a final payment', () => {
+    // selectDepositPoLine's exact rule runs first and returns as soon as it finds the one line at the exact
+    // amount, before the several-described-candidates ambiguity check ever looks at the other line.
+    const exact = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment, exact', extendedAmount: 12000 } as any;
+    const other = { lineOrder: 2, purchaseOrderLineId: 'L2', description: 'Remaining balance, unrelated', extendedAmount: 20000 } as any;
+    expect(selectBalancePoLine([exact, other], 1200000)).toEqual({ status: 'matched', line: exact, consumed: false, exact: true });
+  });
 });
 
 describe('planPartialPayment', () => {
@@ -800,6 +841,40 @@ describe('planBalanceInvoice', () => {
       })!;
       expect(plan.applied).toBe(false);
       expect(plan.note).toContain("the PO's final-payment line is only $9,000.00, less than the $12,000.00 amount due");
+    });
+
+    it('does not pick the covering line when another described candidate is undersized', () => {
+      const covering = { ...remainingBalanceFinalPaymentPoLine[0], purchaseOrderLineId: 'PL-EX1' };
+      const undersized = { lineOrder: 2, purchaseOrderLineId: 'PL-EX5', description: 'Remaining balance, catering', extendedAmount: 9000 } as any;
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: [covering, undersized],
+      })!;
+      expect(plan.applied).toBe(false);
+      expect(plan.line).toBeUndefined();
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('2 PO lines could be the remaining-balance line; check which one applies');
+    });
+
+    it('does not pick the covering line when another described candidate has an unreadable amount', () => {
+      const covering = { ...remainingBalanceFinalPaymentPoLine[0], purchaseOrderLineId: 'PL-EX1' };
+      const unreadable = { lineOrder: 2, purchaseOrderLineId: 'PL-EX6', description: 'Remaining balance, catering', extendedAmount: undefined } as any;
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: [covering, unreadable],
+      })!;
+      expect(plan.applied).toBe(false);
+      expect(plan.line).toBeUndefined();
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('2 PO lines could be the remaining-balance line; check which one applies');
     });
   });
 });
