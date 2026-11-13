@@ -1871,6 +1871,59 @@ describe('enrich_invoice', () => {
     expect(notes).not.toContain('Line total review');
   });
 
+  it('replaces the printed lines with one current-payment-due line on update (SUPIN-474922)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { supin474922Header, supin474922Rows } = require('./fixtures/supin_474922.js');
+
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Example Construction LLC', memo: 'transportation' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...supin474922Header,
+      extractedInvoiceLines: supin474922Rows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 183750, extendedAmount: 183750 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Total Completed and Stored to Date $551,250.00)', quantity: 1, totalPrice: '$183,750.00' })]);
+    expect(built[6]).toBe(true);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines).toHaveLength(1);
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $551,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due (1 printed line).');
+    expect(notes).not.toContain('Line subtotal review');
+    expect(notes).not.toContain('Line total review');
+  });
+
   describe('printed due date', () => {
     // IBS invoice 1026465: Invoice Date 10/10/26, Due Date 11/11/26, Net 30.
     const ibsEnrichment = {
