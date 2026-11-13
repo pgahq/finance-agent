@@ -2482,9 +2482,9 @@ function createWorkQueueTag(tagId: string): WorkQueueTag {
   };
 }
 
-// Added only when the document printed bank details and the tag's reference ID is configured: Workday rejects an unknown tag ID.
+// Added only when the documents print bank details and the tag's reference ID is configured: Workday fails the write on an unknown tag ID.
 function bankingInfoWorkQueueTags(bankingInfoIncluded: boolean | undefined): WorkQueueTag[] {
-  const tagID = process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+  const tagID = process.env.WORKDAY_BANKING_INFO_TAG_REF_ID?.trim();
   if (!bankingInfoIncluded || !tagID) return [];
   debug(`Adding banking-info work queue tag: ${tagID}`);
   return [createWorkQueueTag(tagID)];

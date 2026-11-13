@@ -929,7 +929,7 @@ describe('enrich_invoice', () => {
       expect.objectContaining({ bankingInfoIncluded: true })
     );
     const { buildNotes } = submitSupplierInvoiceUpdate.mock.calls[0][1];
-    expect(buildNotes([])).toContain('Banking information is printed on this invoice. Verify it before payment.');
+    expect(buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
   });
 
   it('uses the existing Workday supplier name when the extracted name has no letters', async () => {

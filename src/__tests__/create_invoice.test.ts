@@ -2802,7 +2802,7 @@ describe('create_invoice', () => {
       const printed = await run(supin472322ProductionRows, { bankingInfoPrinted: true });
       const printedArgs = printed.workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(printedArgs.bankingInfoIncluded).toBe(true);
-      expect(printedArgs.buildNotes([])).toContain('Banking information is printed on this invoice. Verify it before payment.');
+      expect(printedArgs.buildNotes([])).toContain('Banking information is printed in the attached documents. Verify it before payment.');
 
       const absent = await run(supin472322ProductionRows, { bankingInfoPrinted: false });
       const absentArgs = absent.workday.submitNewSupplierInvoice.mock.calls[0][1];

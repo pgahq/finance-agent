@@ -125,8 +125,8 @@ jobs:
       TENANT_REFRESH_WEEKDAY: "6"
       # #notify-finance-agent-audit-dev
       AUDIT_SLACK_CHANNEL_ID: C0C6VS0BDPA
-      # Work_Queue_Tag_ID of "Banking Info Included" in the implementation tenant.
-      BANKING_INFO_TAG_REF_ID: SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92
+      # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
+      BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
 
   deploy-to-prod:
     <<: *deploy_container_config

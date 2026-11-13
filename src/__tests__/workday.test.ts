@@ -2040,6 +2040,57 @@ describe('Workday utilities', () => {
       );
     });
 
+    it('adds the banking-info work queue tag to an update only when flagged and keeps the invoice\'s tags', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-01-01',
+                Control_Amount_Total: '100.00',
+                Work_Queue_Information_Data: {
+                  Work_Queue_Tags_Reference: [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: 'banking-tag' }] }]
+                }
+              }
+            }
+          }
+        });
+      });
+      const captured: any[] = [];
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        captured.push(request);
+        callback(null, { Response_Data: { success: true } });
+      });
+      const tagIds = (request: any) => ([] as any[])
+        .concat(request.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? [])
+        .flatMap((tag: any) => tag.ID.map((id: any) => id.$value));
+      process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'modified-tag';
+      process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'banking-tag';
+      try {
+        await submitSupplierInvoiceUpdateForTest({ bankingInfoIncluded: true });
+        await submitSupplierInvoiceUpdateForTest({ bankingInfoIncluded: false });
+      } finally {
+        delete process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+        delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      }
+
+      expect(tagIds(captured[0])).toEqual(['banking-tag', 'modified-tag']);
+      expect(tagIds(captured[1])).toEqual(['banking-tag', 'modified-tag']);
+    });
+
     it('should include memo when provided', async () => {
       const mockClient = {
         setSecurity: jest.fn(),
@@ -2607,7 +2658,7 @@ describe('Workday utilities', () => {
             ...invoiceData,
           } } } });
         }),
-        Submit_Supplier_Invoice: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
       };
       const { soap } = require('strong-soap');
       soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
@@ -5944,10 +5995,10 @@ describe('Workday utilities', () => {
       };
       process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'modified-tag';
       try {
-        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92';
+        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'Supplier_Bank_Information';
         expect(tagIds(await submit({ bankingInfoIncluded: true }))).toEqual([
           'Work_Queue_Tag_ID:modified-tag',
-          'Work_Queue_Tag_ID:SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92',
+          'Work_Queue_Tag_ID:Supplier_Bank_Information',
         ]);
         expect(tagIds(await submit({ bankingInfoIncluded: false }))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
         expect(tagIds(await submit({}))).toEqual(['Work_Queue_Tag_ID:modified-tag']);
@@ -6239,6 +6290,32 @@ describe('Workday utilities', () => {
         expect(result.appliedFallbacks).toEqual(expect.arrayContaining([omitted]));
         expect(result.priorFailures).toEqual([expect.objectContaining({ attempt: 1, message: expect.stringContaining(message.slice(0, 20)) })]);
         expect(buildNotes).toHaveBeenLastCalledWith(expect.arrayContaining([omitted]), expect.any(Array));
+      });
+
+      it('keeps the banking-info tag, once, on the retry after a validation fault', async () => {
+        const mockClient = mockSoapClient();
+        const capturedRequests: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(validationFault('Due Date must not be earlier than Invoice Date.'), null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            capturedRequests.push(request);
+            callback(null, createdResponse);
+          });
+        process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = 'banking-tag';
+        try {
+          await submitNewSupplierInvoiceForTest({ ...ibs, bankingInfoIncluded: true });
+        } finally {
+          delete process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+        }
+
+        expect(capturedRequests).toHaveLength(2);
+        for (const request of capturedRequests) {
+          const tags = ([] as any[]).concat(invoiceData(request).Work_Queue_Information_Data?.Work_Queue_Tags_Reference ?? []);
+          expect(tags.flatMap((tag: any) => tag.ID.map((id: any) => id.$value)).filter((id: string) => id === 'banking-tag')).toEqual(['banking-tag']);
+        }
       });
 
       it('fails a duplicate supplier invoice number with no due date retry', async () => {
@@ -8924,6 +9001,53 @@ describe('Workday utilities', () => {
       await annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID });
 
       expect(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Invoice_Date).toBe('2024-03-15');
+    });
+
+    it('adds the banking-info tag to an annotation and keeps the tags already on the invoice', async () => {
+      const mockClient = {
+        setSecurity: jest.fn(),
+        setEndpoint: jest.fn(),
+        Get_Supplier_Invoices: jest.fn(),
+        Submit_Supplier_Invoice: jest.fn()
+      };
+      const { soap } = require('strong-soap');
+      soap.createClient.mockImplementation((_wsdlPath: any, _options: any, callback: any) => {
+        callback(null, mockClient);
+      });
+      mockClient.Get_Supplier_Invoices.mockImplementation((_request: any, callback: any) => {
+        callback(null, {
+          Response_Data: {
+            Supplier_Invoice: {
+              Supplier_Invoice_Data: {
+                Invoice_Number: '12345',
+                Company_Reference: { ID: 'company-wid' },
+                Currency_Reference: { ID: 'USD' },
+                Invoice_Date: '2024-03-15',
+                Control_Amount_Total: '100.00',
+                Work_Queue_Information_Data: {
+                  Work_Queue_Tags_Reference: [{ ID: [{ $attributes: { type: 'Work_Queue_Tag_ID' }, $value: 'ap-added-tag' }] }]
+                }
+              }
+            }
+          }
+        });
+      });
+      let capturedRequest: any;
+      mockClient.Submit_Supplier_Invoice.mockImplementation((request: any, callback: any) => {
+        capturedRequest = request;
+        callback(null, { Response_Data: { success: true } });
+      });
+      process.env.WORKDAY_AGENT_MODIFIED_TAG_WID = 'modified-tag';
+      process.env.WORKDAY_BANKING_INFO_TAG_REF_ID = ' banking-tag ';
+      try {
+        await annotateSupplierInvoice(mockContext, { invoiceWorkdayID: mockInvoiceWorkdayID, bankingInfoIncluded: true });
+      } finally {
+        delete process.env.WORKDAY_BANKING_INFO_TAG_REF_ID;
+        delete process.env.WORKDAY_AGENT_MODIFIED_TAG_WID;
+      }
+
+      const tags = ([] as any[]).concat(capturedRequest.Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Work_Queue_Information_Data.Work_Queue_Tags_Reference);
+      expect(tags.flatMap((tag: any) => tag.ID.map((id: any) => id.$value))).toEqual(['ap-added-tag', 'modified-tag', 'banking-tag']);
     });
 
     it('should throw instead of defaulting when annotating an invoice without an existing invoice date', async () => {

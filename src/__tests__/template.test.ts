@@ -23,7 +23,7 @@ describe('SAM template', () => {
     expect(globals).toMatch(/WORKDAY_BANKING_INFO_TAG_REF_ID:\s*!Ref BankingInfoTagRefId/);
     expect(globals).toMatch(/BankingInfoTagRefId:[\s\S]*?Default: ""/);
     expect(circleci).toMatch(/BankingInfoTagRefId=\$BANKING_INFO_TAG_REF_ID/);
-    expect(circleci).toMatch(/BANKING_INFO_TAG_REF_ID:\s*SUPPLIER_INVOICE_WORK_QUEUE_TAG-9-92/);
+    expect(circleci).toMatch(/BANKING_INFO_TAG_REF_ID:\s*Supplier_Bank_Information/);
     expect(circleci).toMatch(/BANKING_INFO_TAG_REF_ID:\s*""/);
   });
 

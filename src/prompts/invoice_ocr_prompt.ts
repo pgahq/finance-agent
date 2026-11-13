@@ -392,7 +392,7 @@ Extract these identifiers independently when they appear on the invoice or in a 
 
 ## Part 7.6: Bank Details
 
-Set \`bankingInfoPrinted\` to true when any supplier invoice document prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire payment instructions. An electronic-payments block that lists an ABA or routing number with an account number counts, as does a notice that the supplier's banking information changed when it prints those details. Do not copy any bank number or account name into any other field; report only the true or false.
+Set \`bankingInfoPrinted\` to true when any attached document, including a supporting file, prints bank details a payer would use to send money to the supplier: a bank account number, a routing or ABA number, a SWIFT/BIC or IBAN, or ACH or wire payment instructions. An electronic-payments block that lists an ABA or routing number with an account number counts, as does a notice that the supplier's banking information changed when it prints those details. Do not copy any bank number or account name into any other field; report only the true or false.
 
 Set it to false when the documents print only:
 - a mailing address for checks ("Remit To", "Make checks payable to")

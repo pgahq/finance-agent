@@ -454,7 +454,7 @@ export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string
 }
 
 export function formatBankingInfoNotes(result: InvoiceEnrichmentResult): string {
-  return result.bankingInfoPrinted ? '\n\nBanking information is printed on this invoice. Verify it before payment.' : '';
+  return result.bankingInfoPrinted ? '\n\nBanking information is printed in the attached documents. Verify it before payment.' : '';
 }
 
 export function formatWorkQueueAssigneeNotes(
