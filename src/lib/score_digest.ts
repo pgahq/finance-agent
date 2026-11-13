@@ -240,7 +240,7 @@ const FIELD_LABELS: Record<ScoredFieldName, string> = {
   'line.removed': 'Lines removed',
 };
 
-const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
+export const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
   replacement: 'AP keyed a replacement',
   duplicate: 'duplicate',
   duplicate_reason: 'duplicate (cancel reason)',
@@ -250,11 +250,12 @@ const BASIS_LABELS: Partial<Record<CancelBasis, string>> = {
   agent_tag: 'agent error tag',
   ap_label: 'AP label',
   invoice_unreadable: 'invoice could not be read',
+  jev: 'Jev judgment',
 };
 
-const percent = (rate: number) => `${Math.round(rate * 100)}%`;
+export const percent = (rate: number) => `${Math.round(rate * 100)}%`;
 
-function plural(count: number, noun: string): string {
+export function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
@@ -278,17 +279,17 @@ function escapeSlackText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function invoiceLink(link: { workdayInvoiceWid: string; workdayInvoiceNumber?: string }): string {
+export function invoiceLink(link: { workdayInvoiceWid: string; workdayInvoiceNumber?: string }): string {
   const label = escapeSlackText(link.workdayInvoiceNumber ?? link.workdayInvoiceWid).replace(/\|/g, '/').replace(/`/g, "'");
   const url = buildWorkdayObjectDeeplink(encodeURIComponent(link.workdayInvoiceWid));
   return url ? `<${url}|${label}>` : `\`${label}\``;
 }
 
-function section(text: string): SlackBlock {
+export function section(text: string): SlackBlock {
   return { type: 'section', text: { type: 'mrkdwn', text: text.length > 2900 ? `${text.slice(0, 2899)}…` : text } };
 }
 
-const OUTCOME_LABELS: Record<Outcome, string> = {
+export const OUTCOME_LABELS: Record<Outcome, string> = {
   submitted_clean: 'submitted with no material change',
   submitted_edited: 'submitted with AP edits',
   denied: 'denied',

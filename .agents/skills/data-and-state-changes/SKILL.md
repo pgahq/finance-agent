@@ -64,6 +64,15 @@ Write only through `src/lib/invoice_snapshots.ts` and
 `src/lib/invoice_scores.ts`; the `agent-invoice-scoring` skill covers behavior.
 None of them is pruned yet.
 
+`agent_invoice_scores.jev_shadow` (JSONB, nullable) holds Jev's verdicts for the
+audit (see `agent-invoice-scoring`). It is in `CREATE_AGENT_INVOICE_SCORES_TABLE`
+for new databases and added to existing ones by
+`ADD_AGENT_INVOICE_SCORES_JEV_SHADOW`, which runs right after the table create.
+That block checks `information_schema` first so a warm cold start takes no lock,
+and skips on `duplicate_column` if two cold starts race. The column is additive
+and nullable, so rolling the code back leaves it unused. `upsertInvoiceScore`
+writes it as the last parameter.
+
 ## Shared pool lifetime
 
 The Postgres `Pool` is process-global. Do not close it after individual RAG

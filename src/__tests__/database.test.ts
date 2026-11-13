@@ -184,6 +184,12 @@ describe('Database Library', () => {
       ];
       for (const fragment of scoringSchema) expect(position(fragment)).toBeGreaterThan(position('invoice_cluster_plans'));
       expect(position('CREATE OR REPLACE VIEW agent_invoice_touches')).toBeGreaterThan(position('CREATE TABLE IF NOT EXISTS agent_invoice_scores'));
+      const addJev = position('ADD COLUMN jev_shadow JSONB');
+      expect(addJev).toBeGreaterThan(position('CREATE TABLE IF NOT EXISTS agent_invoice_scores'));
+      expect(addJev).toBeLessThan(position('idx_agent_invoice_scores_entry_read_at'));
+      const addJevSql = initSql[addJev];
+      expect(addJevSql).toContain("column_name = 'jev_shadow'");
+      expect(addJevSql).toContain('duplicate_column');
     });
 
     it('resets the pool when schema initialization fails', async () => {

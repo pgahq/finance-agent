@@ -9,6 +9,8 @@ import {
   tenantRefreshWeekday,
   scoreChanges,
   statusConfigFromEnv,
+  supplierMessagesAfter,
+  FACT_CANCEL_BASES,
   type CancelReasonMapping,
   type StatusClass,
 } from '../lib/invoice_score.js';
@@ -188,5 +190,27 @@ describe('mentionsSupplierVoidOrCredit', () => {
     expect(mentionsSupplierVoidOrCredit([{ authorType: 'user', partType: 'note', createdAt: 200, body }], 100)).toBe(false);
     expect(mentionsSupplierVoidOrCredit([{ createdAt: 200, body }], 100)).toBe(false);
     expect(mentionsSupplierVoidOrCredit([{ authorType: 'lead', createdAt: 200, body: 'We voided invoice 123.' }], 100)).toBe(true);
+  });
+});
+
+describe('supplierMessagesAfter', () => {
+  it('keeps supplier-side comments after the write and drops AP replies, notes, and older messages', () => {
+    const messages = [
+      { createdAt: 10, body: 'before', authorType: 'user' },
+      { createdAt: 20, body: 'supplier', authorType: 'contact' },
+      { createdAt: 20, body: 'lead', authorType: 'lead' },
+      { createdAt: 20, body: 'ap', authorType: 'admin' },
+      { createdAt: 20, body: 'note', authorType: 'user', partType: 'note' },
+      { body: 'undated', authorType: 'user' },
+    ];
+    expect(supplierMessagesAfter(messages, 15).map((message) => message.body)).toEqual(['supplier', 'lead']);
+    expect(supplierMessagesAfter(messages).map((message) => message.body)).toEqual(['before', 'supplier', 'lead', 'undated']);
+  });
+
+  it('does not treat a signal-based cancel basis as a fact Jev must keep', () => {
+    expect(FACT_CANCEL_BASES.has('ap_label')).toBe(true);
+    for (const basis of ['wrong_document', 'supplier_void_or_credit', 'early_draft_cancel', 'no_signal', 'jev'] as const) {
+      expect(FACT_CANCEL_BASES.has(basis)).toBe(false);
+    }
   });
 });
