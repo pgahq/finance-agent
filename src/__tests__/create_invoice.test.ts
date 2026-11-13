@@ -3200,11 +3200,10 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual(['Remaining-balance invoice not applied: no PO line is for $5,909.50.']);
     });
 
-    it('books the balance on the PO\'s only line even when that line is not described as a final payment', async () => {
-      // A PO with exactly one line has nothing else it could be: the sole-line fallback in selectBalancePoLine
-      // picks it even though this line reads as the full contract, not a "final payment". Uses the same
-      // single-line fixture as the selectBalancePoLine unit tests, so a change to its shape or amount updates
-      // both places.
+    it('does not use the sole-line fallback when the signal is the email, not printed payments', async () => {
+      // The sole-line fallback (and every non-exact match) is gated to the signal where printed deposits
+      // reconcile the gap; this fixture's trigger is the email alone (extractedPriorPayments is null), so a
+      // PO with one line that is not an exact amount match is left unmatched rather than guessed at.
       const po = {
         documentNumber: 'PO-472750',
         company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
@@ -3212,9 +3211,9 @@ describe('create_invoice', () => {
       };
       const { workday, invoiceLines } = await run(balanceEnrichment({ extractedPurchaseOrderNumber: 'PO-472750' }), po);
 
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([expect.objectContaining({ purchaseOrderLineId: 'PL-EX1' })]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(3);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
-      expect(notes).toContain('under that line; AP should follow up with the PO owner about the difference.');
+      expect(notes).toContain('no PO line is for $5,909.50');
     });
 
     it('still books the balance when the PO could not be loaded', async () => {

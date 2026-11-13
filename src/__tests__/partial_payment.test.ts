@@ -325,7 +325,7 @@ describe('selectDepositPoLine', () => {
   it('does not pin when no line or several open lines have that amount', () => {
     expect(selectDepositPoLine(poLines, 100)).toEqual({ status: 'unmatched', reason: 'no PO line is for $1.00' });
     const twins = [poLines[0], { ...poLines[0], purchaseOrderLineId: 'OTHER', lineOrder: 3 }];
-    expect(selectDepositPoLine(twins, 3442950)).toEqual({ status: 'unmatched', reason: 'several PO lines are for $34,429.50' });
+    expect(selectDepositPoLine(twins, 3442950)).toEqual({ status: 'unmatched', reason: 'several PO lines are for $34,429.50', ambiguous: true });
   });
 
   it('prefers the open line over a consumed one with the same amount', () => {
@@ -342,13 +342,13 @@ describe('selectDepositPoLine', () => {
 describe('selectBalancePoLine', () => {
   it('matches an exact amount the same way selectDepositPoLine does, with no "final payment" wording needed', () => {
     const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Rooms block', extendedAmount: 1200 } as any;
-    expect(selectBalancePoLine([line], 120000)).toEqual({ status: 'matched', line, consumed: false, exact: true });
+    expect(selectBalancePoLine([line], 120000)).toEqual({ status: 'matched', line, consumed: false, exact: true, described: false });
   });
 
   it('still reports several exact matches as ambiguous without relaxing to the covering rule', () => {
     const a = { lineOrder: 1, purchaseOrderLineId: 'L1', extendedAmount: 1200 } as any;
     const b = { lineOrder: 2, purchaseOrderLineId: 'L2', extendedAmount: 1200 } as any;
-    expect(selectBalancePoLine([a, b], 120000)).toEqual({ status: 'unmatched', reason: 'several PO lines are for $1,200.00' });
+    expect(selectBalancePoLine([a, b], 120000)).toEqual({ status: 'unmatched', reason: 'several PO lines are for $1,200.00', ambiguous: true });
   });
 
   it('has no PO to pick from when there are no lines', () => {
@@ -388,12 +388,12 @@ describe('selectBalancePoLine', () => {
   it('picks the one final-payment line even when other, unrelated PO lines are present', () => {
     const final = remainingBalanceFinalPaymentPoLine[0];
     const other = { lineOrder: 2, purchaseOrderLineId: 'OTHER', description: 'Rooms block', extendedAmount: 5000 } as any;
-    expect(selectBalancePoLine([other, final], 1200000)).toEqual({ status: 'matched', line: final, consumed: false, exact: false });
+    expect(selectBalancePoLine([other, final], 1200000)).toEqual({ status: 'matched', line: final, consumed: false, exact: false, described: true });
   });
 
   it('falls back to the PO\'s one line when nothing is described as a final payment', () => {
     const line = remainingBalanceUnlabeledSinglePoLine[0];
-    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false });
+    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false, described: false });
   });
 
   it('does not use the sole-line fallback when the PO has more than one line and none is described', () => {
@@ -416,9 +416,15 @@ describe('selectBalancePoLine', () => {
     });
   });
 
-  it('marks a matched final-payment line consumed when it is already fully invoiced or closed', () => {
+  it('does not match a consumed final-payment line on a non-exact amount', () => {
+    // Unlike the deposit rule's exact-match case, a non-exact match never takes a consumed line: the final
+    // invoice line would be coded from it but not linked to it (`markConsumedPoLineReferences` drops the
+    // reference), which would make the overage note's "booked on this line" claim false.
     const consumed = { ...remainingBalanceFinalPaymentPoLine[0], availableForInvoicing: false };
-    expect(selectBalancePoLine([consumed], 1200000)).toEqual({ status: 'matched', line: consumed, consumed: true, exact: false });
+    expect(selectBalancePoLine([consumed], 1200000)).toEqual({
+      status: 'unmatched',
+      reason: "the PO's final-payment line is already fully invoiced or closed",
+    });
   });
 
   it('is ambiguous between two described candidates even when one is consumed and only the open one covers the balance', () => {
@@ -461,7 +467,7 @@ describe('selectBalancePoLine', () => {
 
   it('derives a covering amount from quantity x unit cost when extendedAmount is absent', () => {
     const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment', quantity: 2, unitCost: 6750 } as any;
-    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false });
+    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false, described: true });
   });
 
   it('refuses a quantity-derived amount that is short of the balance', () => {
@@ -497,7 +503,18 @@ describe('selectBalancePoLine', () => {
     // amount, before the several-described-candidates ambiguity check ever looks at the other line.
     const exact = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Final payment, exact', extendedAmount: 12000 } as any;
     const other = { lineOrder: 2, purchaseOrderLineId: 'L2', description: 'Remaining balance, unrelated', extendedAmount: 20000 } as any;
-    expect(selectBalancePoLine([exact, other], 1200000)).toEqual({ status: 'matched', line: exact, consumed: false, exact: true });
+    expect(selectBalancePoLine([exact, other], 1200000)).toEqual({ status: 'matched', line: exact, consumed: false, exact: true, described: false });
+  });
+
+  it('does not allow a non-exact match when the caller has not confirmed it for this signal', () => {
+    // planBalanceInvoice passes this false for every trigger except printed deposits reconciling the gap.
+    const final = remainingBalanceFinalPaymentPoLine[0];
+    expect(selectBalancePoLine([final], 1200000, false)).toEqual({ status: 'unmatched', reason: 'no PO line is for $12,000.00' });
+  });
+
+  it('still reports an exact match when non-exact matching is disallowed', () => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Rooms block', extendedAmount: 1200 } as any;
+    expect(selectBalancePoLine([line], 120000, false)).toEqual({ status: 'matched', line, consumed: false, exact: true, described: false });
   });
 });
 
@@ -803,7 +820,9 @@ describe('planBalanceInvoice', () => {
       expect(plan.note).toContain('2 PO lines could be the remaining-balance line; check which one applies');
     });
 
-    it('books the balance on a covering final-payment PO line when the signal is the email, not printed payments', () => {
+    it('does not take a covering-but-not-exact PO line when the signal is the email, not printed payments', () => {
+      // AP confirmed the non-exact PO-line match only for the signal where printed deposits reconcile the
+      // gap; an email-only balance signal keeps the pre-PR exact-match-only rule until AP sees that case too.
       const plan = planBalanceInvoice({
         priorPayments: null,
         emailBalanceDue: { amount: remainingBalanceOverageHeader.extractedAmountDue, phrase: 'remaining balance' },
@@ -812,12 +831,29 @@ describe('planBalanceInvoice', () => {
         lines: remainingBalanceOverageRows,
         poLines: remainingBalanceFinalPaymentPoLine,
       })!;
-      expect(plan.applied).toBe(true);
-      expect(plan.poLines).toEqual([remainingBalanceFinalPaymentPoLine[0]]);
-      expect(plan.note).toContain('under that line');
+      expect(plan.applied).toBe(false);
+      expect(plan.poLines).toBeUndefined();
+      expect(plan.note).toContain('no PO line is for $12,000.00');
     });
 
-    it('does not guess between several final-payment lines when the signal is the email, not printed payments', () => {
+    it('still takes an exact PO-line match when the signal is the email, not printed payments', () => {
+      const exactLine = { lineOrder: 1, purchaseOrderLineId: 'PL-EXACT', description: 'Event services', extendedAmount: 12000 } as any;
+      const plan = planBalanceInvoice({
+        priorPayments: null,
+        emailBalanceDue: { amount: remainingBalanceOverageHeader.extractedAmountDue, phrase: 'remaining balance' },
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: [exactLine],
+      })!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([exactLine]);
+      expect(plan.note).not.toContain('under that line');
+    });
+
+    it('falls back to the pre-PR exact-match-only reason for several non-exact lines when the signal is the email', () => {
+      // The ambiguity check never runs for this signal, since selectBalancePoLine returns the plain
+      // exact-match result before looking at any line's description.
       const plan = planBalanceInvoice({
         priorPayments: null,
         emailBalanceDue: { amount: remainingBalanceOverageHeader.extractedAmountDue, phrase: 'remaining balance' },
@@ -827,7 +863,8 @@ describe('planBalanceInvoice', () => {
         poLines: remainingBalanceAmbiguousPoLines,
       })!;
       expect(plan.applied).toBe(false);
-      expect(plan.note).toContain('2 PO lines could be the remaining-balance line; check which one applies');
+      expect(plan.note).toContain('no PO line is for $12,000.00');
+      expect(plan.note).not.toContain('could be the remaining-balance line');
     });
 
     it('does not book a final-payment PO line that is smaller than the balance', () => {
