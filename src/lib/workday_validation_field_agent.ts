@@ -72,7 +72,7 @@ function validationFieldState(validation: WorkdayValidationFieldInput['validatio
 }
 
 function lastXpathSegment(xpath: string | undefined): string | undefined {
-  const segment = xpath?.split('/').filter(Boolean).pop()?.replace(/\[\d+\]$/, '').replace(/^wd:/, '');
+  const segment = xpath?.split('/').filter(Boolean).pop()?.replace(/\[[^\]]*\]/g, '').replace(/^[^:]+:/, '');
   return segment || undefined;
 }
 

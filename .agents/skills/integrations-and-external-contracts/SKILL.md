@@ -186,7 +186,7 @@ decides anything that is written to Workday as a value.
   duplicate-invoice-number check still runs first and never reaches Jev. `shadow`
   runs Jev beside the `gpt-5.4-mini` tool loop (which stays the answer) and logs
   `Jev shadow validation field`, including when the tool loop fails; `on` returns
-  Jev's field at probability 0.8 or more (`JEV_VALIDATION_FIELD_MIN_PROBABILITY`)
+  Jev's field at probability 0.8 or more (fixed in code as `JEV_VALIDATION_FIELD_MIN_PROBABILITY`, not configurable)
   and otherwise, or on any Jev failure, runs the tool loop. The call is capped at
   5 seconds (`jevDecide`'s `timeoutMs`), and the shared circuit breaker (three
   failures, five minutes) applies; the audit's time budget does not, because only

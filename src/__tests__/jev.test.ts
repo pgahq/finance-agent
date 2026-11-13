@@ -217,6 +217,14 @@ describe('jevDecide logging and per-call timeout', () => {
 
     await expect(jevDecide({}, questions, { JEV_TIMEOUT_MS: '60000' }, { timeoutMs: 20 })).resolves.toBeUndefined();
 
-    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+});
+
+describe('inherited object keys', () => {
+  it.each(['toString', 'constructor', 'hasOwnProperty'])('does not accept %s as a choice that was offered', async (choice) => {
+    mockDecide.mockResolvedValue({ answers: { who: { type: 'choice', choice, probabilities: { [choice]: 0.9, agent: 0.1 } }, flag: { type: 'boolean', probability: 0.5 } } });
+
+    await expect(jevDecide({}, questions, {})).resolves.toBeUndefined();
   });
 });

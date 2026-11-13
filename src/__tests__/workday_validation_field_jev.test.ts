@@ -99,13 +99,13 @@ describe('classifyWorkdayValidationField with Jev', () => {
       expect(mockToolLoopAgent).not.toHaveBeenCalled();
     });
 
-    it('sends only the validation text, the offered fields, and the TypeSafe pin with zero data retention', async () => {
+    it('sends only the validation message, detail message, and XPath, the offered fields, and the TypeSafe pin with zero data retention', async () => {
       jevAnswers({ 'worktag:lob': 0.93, 'worktag:costCenter': 0.04, supplier: 0.01, unknown: 0.02 }, 'worktag:lob');
 
-      await classifyWorkdayValidationField(input);
+      await classifyWorkdayValidationField({ ...input, validation: { ...input.validation, detailMessage: 'Line of Business is required for this cost center.' } });
 
       const [request] = mockDecide.mock.calls[0] as [{ state: unknown; questions: { retryField: { criteria: Record<string, string> } }; providerOptions: unknown; abortSignal: AbortSignal }];
-      expect(request.state).toEqual({ message: input.validation.message, xpath: input.validation.xpath });
+      expect(request.state).toEqual({ message: input.validation.message, detailMessage: 'Line of Business is required for this cost center.', xpath: input.validation.xpath });
       expect(Object.keys(request.questions.retryField.criteria)).toEqual(['worktag:lob', 'worktag:costCenter', 'supplier', 'unknown']);
       expect(request.providerOptions).toEqual({ gateway: { only: ['typesafe-ai'], zeroDataRetention: true } });
       expect(request.abortSignal).toBeInstanceOf(AbortSignal);
@@ -174,6 +174,37 @@ describe('classifyWorkdayValidationField with Jev', () => {
 
       expect(decision.retryField).toBe('worktag:costCenter');
       expect(mockDecide).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['/wd:A[1]/wd:Worktags_Reference[last()]', 'Worktags_Reference'],
+      ['/ns1:A[1]/ns1:Worktags_Reference[2][@x="y"]', 'Worktags_Reference'],
+      ['Worktags_Reference', 'Worktags_Reference'],
+    ])('reports the final element name of %s', async (xpath, field) => {
+      jevAnswers({ 'worktag:lob': 0.93, 'worktag:costCenter': 0.04, supplier: 0.01, unknown: 0.02 }, 'worktag:lob');
+
+      const decision = await classifyWorkdayValidationField({ ...input, validation: { ...input.validation, xpath } });
+
+      expect(decision.workdayField).toBe(field);
+    });
+
+    it('omits the field name when there is no XPath', async () => {
+      jevAnswers({ 'worktag:lob': 0.93, 'worktag:costCenter': 0.04, supplier: 0.01, unknown: 0.02 }, 'worktag:lob');
+
+      const decision = await classifyWorkdayValidationField({ ...input, validation: { message: input.validation.message } });
+
+      expect(decision.workdayField).toBeUndefined();
+    });
+
+    it('stops asking Jev after three failures in a row and keeps using the language model', async () => {
+      mockDecide.mockRejectedValue(new Error('gateway down'));
+      for (let call = 0; call < 3; call += 1) await classifyWorkdayValidationField(input);
+      expect(mockDecide).toHaveBeenCalledTimes(3);
+
+      const decision = await classifyWorkdayValidationField(input);
+
+      expect(decision.retryField).toBe('worktag:costCenter');
+      expect(mockDecide).toHaveBeenCalledTimes(3);
     });
 
     it('never asks Jev about a duplicate supplier invoice number', async () => {

@@ -171,7 +171,7 @@ export async function jevDecide(
       } else {
         const probabilities = answer?.probabilities;
         const choice = answer?.choice;
-        if (answer?.type !== 'choice' || typeof choice !== 'string' || !probabilities || !(choice in question.criteria)) {
+        if (answer?.type !== 'choice' || typeof choice !== 'string' || !probabilities || !Object.prototype.hasOwnProperty.call(question.criteria, choice)) {
           throw new Error(`Jev answered ${id} with an unexpected shape`);
         }
         out.choices[id] = {

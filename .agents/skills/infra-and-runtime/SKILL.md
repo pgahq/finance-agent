@@ -65,9 +65,17 @@ timeout, recheck that budget. Set the parameter to `off` to stop all Jev traffic
 `JevValidationFieldMode` (`off`, `shadow`, `on`; default `off`; CircleCI passes
 `JEV_VALIDATION_FIELD_MODE`, `off` when unset) sets `JEV_VALIDATION_FIELD_MODE` as a
 template Global, because the classifier runs inside the create and enrich
-processors' submit retry. It adds no secret or egress. A call is capped at 5 seconds
-and falls back to the `gpt-5.4-mini` classifier, so it adds at most that to a failed
-submit's retry. Set the parameter to `off` to stop its Jev traffic; see
+processors' submit retry; only that code path reads it. It adds no secret, but while
+it is `shadow` or `on` the Workday validation message, detail message, and XPath go
+to TypeSafe through the existing gateway key (zero data retention), which is why it
+is off until the vendor review is done. Latency, worst case, per failed submit
+retry: `on` waits up to 5 seconds for Jev and then, if Jev is not accepted, runs the
+same `gpt-5.4-mini` tool loop as before, so the bound is 5 seconds plus that loop's
+own; `shadow` runs both at once, so it takes the slower of the two: it adds time only
+when Jev is slower than the tool loop, and then at most the difference, up to Jev's
+5-second cap. Both sit inside the Lambda
+`Timeout` of 600 seconds, and no step takes a deadline signal (the submit path has
+none). Set the parameter to `off` to stop its Jev traffic; see
 `integrations-and-external-contracts`.
 
 ## Change checklist
