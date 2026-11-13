@@ -793,7 +793,7 @@ describe('planBalanceInvoice', () => {
       );
     });
 
-    it('books the balance on the PO\'s only line even with no final-payment wording', () => {
+    it('books the balance on the PO\'s only line even with no final-payment wording, with no "follow up" framing', () => {
       const plan = planBalanceInvoice({
         priorPayments: remainingBalanceOverageDeposits,
         emailBalanceDue: null,
@@ -804,7 +804,31 @@ describe('planBalanceInvoice', () => {
       })!;
       expect(plan.applied).toBe(true);
       expect(plan.poLines).toEqual([remainingBalanceUnlabeledSinglePoLine[0]]);
-      expect(plan.note).toContain('under that line');
+      expect(plan.note).toContain('under that line.');
+      // The sole-line fallback carries no "final payment" description, so unlike the described-line case above,
+      // the note does not tell AP to follow up with the PO owner: an undescribed line reading larger can have a
+      // cause the code has not checked (for example, see the next test, a deposit already billed on this line).
+      expect(plan.note).not.toContain('follow up with the PO owner');
+    });
+
+    it('does not claim an overage to follow up on when the PO\'s one line is sized for the full contract', () => {
+      // A one-line PO for the whole $42,650.00 contract, with the $30,650.00 in deposits already billed against
+      // that same line, reads as a $30,650.00 overage once the $12,000.00 balance books on it. That overage is
+      // exactly the deposits, not unexplained headroom, so the note must not send AP to the PO owner for it.
+      const fullContractLine = [{ lineOrder: 1, purchaseOrderLineId: 'PL-EX1', description: 'Event services', extendedAmount: 42650 }] as any[];
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: fullContractLine,
+      })!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([fullContractLine[0]]);
+      expect(plan.note).toContain('$30,650.00 under that line.');
+      expect(plan.note).not.toContain('follow up with the PO owner');
+      expect(plan.slackLines).toContainEqual(expect.stringContaining('$30,650.00 under that line.'));
     });
 
     it('does not guess when several PO lines could be the final-payment line', () => {
