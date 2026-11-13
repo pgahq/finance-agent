@@ -4,7 +4,7 @@ description: >-
   Documents finance-agent HTTP APIs and external integrations (Intercom
   create-invoice, Gmail create-invoice, Gmail Workspace add-on, enrich-invoice,
   Workday, Vercel AI Gateway, SSM and Secrets Manager). Use when changing
-  model or embedding calls, AI_GATEWAY_API_KEY, POST /create-invoice,
+  model or embedding calls, Jev or jevDecide, AI_GATEWAY_API_KEY, POST /create-invoice,
   POST /create-invoice/gmail, POST /gmail-addon, Intercom Data Connectors,
   Gmail labels, bearer auth tokens, attachment upload contracts, Workday
   invoice memos, line item descriptions, supplier invoice numbers (check-print
@@ -239,6 +239,7 @@ The short lowercase description is line `Memo`, generated **after** that concate
 | `GMAIL_ADDON_OAUTH_CLIENT_ID` | CI reads `gcloud workspace-add-ons get-authorization` (CFT `GmailAddonOauthClientId`) | Audience for the **user** ID token (`authorizationEventObject.userIdToken`) |
 | `GMAIL_ADDON_SERVICE_ACCOUNT_EMAIL` | Same `get-authorization` `serviceAccountEmail` (CFT `GmailAddonServiceAccountEmail`) | Expected `email` on the **system** ID token in `Authorization` |
 | `INVOICE_ATTACHMENT_CLUSTERING_ENABLED` | SSM `/finance-agent/invoice-attachment-clustering-enabled` (plain String, created by hand per account; not in the template or CircleCI) | Runtime toggle for create-invoice attachment clustering (one invoke per conversation, one Workday invoice per cluster). Only the exact value `true` enables it; `shadow` keeps one invoice per PDF and Slacks the clustering plan only; a missing parameter resolves to empty and leaves it off. `lambda-env` reads SSM once per container, so a flip applies as new containers start; update the function configuration to force it immediately. Read inside the handler after `loadEnv()`, never as a module-level constant. |
+| `JEV_VALIDATION_FIELD_MODE` | CFT `JevValidationFieldMode` (default `off`; CircleCI passes `JEV_VALIDATION_FIELD_MODE`, `off` when unset), template Global | `off`, `shadow`, or `on` for the Jev validation-field classifier (see Jev). Not a secret |
 | `WORKDAY_UI_BASE_URL` | CFT `WorkdayUiBaseUrl` (`https://impl.workday.com` on `deploy-to-dev`, `https://www.myworkday.com` on `deploy-to-prod`) | Slack Workday object deep links. SOAP still uses `WORKDAY_DOMAIN`. |
 
 The add-on Gmail path uses the signed-in user's OAuth access token
@@ -259,17 +260,39 @@ Every language model and embedding call goes through the Vercel AI Gateway with 
 
 `createLanguageModel` adds middleware that logs each failed provider attempt (`AI model attempt failed`: status, `isRetryable`, `Retry-After`) and any attempt of 30s or more (`Slow AI model attempt`), because the SDK drops earlier attempt errors when the Lambda deadline aborts a retry backoff. A deadline abort surfaces as `ProcessorDeadlineError` (`src/lib/deadline.ts`) instead of the SDK's `Delay was aborted`; Slack shows a generic out-of-time message that makes no claim about Workday state, and the deadline log reports the real remaining time.
 
-### Jev (audit scoring)
+### Jev (audit scoring and the validation-field classifier)
 
 `src/lib/jev.ts` calls `typesafe-ai/jev-1.14.0` (`JEV_MODEL` overrides) with
 the AI SDK's `experimental_decide` (needs `ai` 7.0.128 or later; the API is
 experimental, so it is the only file that imports it). Questions are typed
 `boolean` or `choice` against one state object. The request is pinned with
 `{ gateway: { only: ['typesafe-ai'], zeroDataRetention: true } }` and has no
-fallback model. It uses the same `AI_GATEWAY_API_KEY`. It is used only by the
-audit scoring in `ScoreInvoicesProcessor` and `ScoreDigest`, never by invoice
-creation, enrichment, or any Workday write. See `agent-invoice-scoring` for what
-it decides and `JEV_AUDIT_MODE`.
+fallback model. It uses the same `AI_GATEWAY_API_KEY`. `JEV_MODEL` must be a
+pinned version (`typesafe-ai/jev-1.14.0`, never `jev` or `jev-latest`, because zero
+data retention is stated for pinned versions only): any other value makes
+`jevDecide` log `JevConfigurationError` and return `undefined`, so the rule or
+language model stands. A failure logs only the error class, status, and retry
+hints, never the provider's message, which can echo the request. Jev never
+decides anything that is written to Workday as a value.
+
+- Audit scoring (`ScoreInvoicesProcessor`, `ScoreDigest`): see
+  `agent-invoice-scoring` for what it decides and `JEV_AUDIT_MODE`.
+- Validation-field classifier (`classifyWorkdayValidationField`, mode
+  `JEV_VALIDATION_FIELD_MODE` from the `JevValidationFieldMode` parameter, default
+  `off`): one `choice` question whose options are the allowed retry fields plus
+  `unknown`, over only the validation message, detail message, and XPath. The
+  duplicate-invoice-number check still runs first and never reaches Jev. `shadow`
+  runs Jev beside the `gpt-5.4-mini` tool loop (which stays the answer) and logs
+  `Jev shadow validation field`, including when the tool loop fails; `on` returns
+  Jev's field at probability 0.8 or more (fixed in code as `JEV_VALIDATION_FIELD_MIN_PROBABILITY`, not configurable)
+  and otherwise, or on any Jev failure, runs the tool loop. The call is capped at
+  5 seconds (`jevDecide`'s `timeoutMs`), and the shared circuit breaker (three
+  failures, five minutes) applies; the audit's time budget does not, because only
+  the scoring processor starts one. The retry it picks only drops a fallback value
+  before the same draft write: `Submit: false` and `keepSupplier` are untouched.
+  `shadow` and `on` both send validation text (which can name suppliers, cost
+  centers, and invoice numbers) to TypeSafe, so finish the vendor review before
+  setting the parameter to anything but `off`.
 
 ### Invoice enrichment: Haiku OCR, then gpt-5.4 matching
 

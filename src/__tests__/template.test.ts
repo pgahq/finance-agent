@@ -103,20 +103,30 @@ describe('SAM template', () => {
       expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);
     });
 
-    it('keeps Jev off by default, opt-in per stack from CircleCI, on exactly the scoring and digest functions, with no new secret', () => {
+    it('keeps Jev off by default, opts dev and prod into shadow from CircleCI, on exactly the scoring and digest functions, with no new secret', () => {
       const parameter = globals.match(/JevAuditMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
       expect(parameter).toMatch(/Default: "off"/);
       expect(circleci).toMatch(/JevAuditMode=\$\{JEV_AUDIT_MODE:-off\}/);
       const devJob = circleci.split('deploy-to-dev:')[1]?.split('deploy-to-prod:')[0] ?? '';
       const prodJob = circleci.split('deploy-to-prod:')[1]?.split('workflows:')[0] ?? '';
       expect(devJob).toMatch(/JEV_AUDIT_MODE:\s*shadow/);
-      expect(prodJob).not.toMatch(/JEV_AUDIT_MODE/);
+      expect(prodJob).toMatch(/JEV_AUDIT_MODE:\s*shadow/);
       expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
       expect(resourceBlock('ScoreInvoicesProcessor')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
       expect(resourceBlock('ScoreDigestFunction')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
       expect(template.match(/JEV_AUDIT_MODE:/g)).toHaveLength(2);
       expect(template).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
       expect(template).not.toMatch(/TYPESAFE_API_KEY/);
+    });
+
+    it('keeps the Jev validation-field classifier off by default, opt-in per stack from CircleCI, with no new secret', () => {
+      const parameter = globals.match(/JevValidationFieldMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
+      expect(parameter).toMatch(/Default: "off"/);
+      expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
+      expect(circleci).toMatch(/JevValidationFieldMode=\$\{JEV_VALIDATION_FIELD_MODE:-off\}/);
+      expect(template).toMatch(/JEV_VALIDATION_FIELD_MODE:\s*!Ref JevValidationFieldMode/);
+      expect(template.match(/JEV_VALIDATION_FIELD_MODE:/g)).toHaveLength(1);
+      expect(template).not.toMatch(/jev-validation-field-mode/);
     });
 
     it('takes the audit channel from CircleCI per environment', () => {
