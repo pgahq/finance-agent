@@ -21,9 +21,14 @@ const JEV_PROVIDER = 'typesafe-ai';
  * `shadow` scores with the rules and stores Jev's verdicts; `on` scores with Jev; `off` never calls it. Anything
  * else, including unset or a typo, is `off`: Jev sends invoice and supplier data to a vendor, so it is opt-in.
  */
-export function jevMode(env: NodeJS.ProcessEnv = process.env): JevMode {
-  const value = env.JEV_AUDIT_MODE?.trim().toLowerCase();
+export function parseJevMode(raw: string | undefined): JevMode {
+  const value = raw?.trim().toLowerCase();
   return value === 'on' || value === 'shadow' ? value : 'off';
+}
+
+/** The audit's mode (`JEV_AUDIT_MODE`). Each other use of Jev has its own mode variable. */
+export function jevMode(env: NodeJS.ProcessEnv = process.env): JevMode {
+  return parseJevMode(env.JEV_AUDIT_MODE);
 }
 
 export function jevMinConfidence(env: NodeJS.ProcessEnv = process.env): number {
@@ -33,6 +38,13 @@ export function jevMinConfidence(env: NodeJS.ProcessEnv = process.env): number {
 
 export function jevModelName(env: NodeJS.ProcessEnv = process.env): string {
   return env.JEV_MODEL?.trim() || DEFAULT_JEV_MODEL;
+}
+
+const PINNED_JEV_MODEL = /^typesafe-ai\/jev-\d+\.\d+\.\d+$/;
+
+/** Zero data retention is stated for pinned versions only, so `jev` and `jev-latest` are never called. */
+export function isPinnedJevModel(model: string): boolean {
+  return PINNED_JEV_MODEL.test(model);
 }
 
 function jevTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -124,12 +136,18 @@ function recordJevFailure(): void {
 export async function jevDecide(
   state: Record<string, unknown>,
   questions: Record<string, JevQuestion>,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  /** `timeoutMs` shortens this call below `JEV_TIMEOUT_MS`, for a caller that cannot wait that long. */
+  options: { timeoutMs?: number } = {}
 ): Promise<JevAnswers | undefined> {
   if (!Object.keys(questions).length) return { choices: {}, booleans: {} };
   if (Date.now() < breakerOpenUntil) return undefined;
   if (jevSpentMs >= jevBudgetMs) return undefined;
   const model = jevModelName(env);
+  if (!isPinnedJevModel(model)) {
+    debug('Jev decision failed; falling back to the rule', { model, errorName: 'JevConfigurationError', reason: 'JEV_MODEL must be a pinned version such as ' + DEFAULT_JEV_MODEL });
+    return undefined;
+  }
   const startedAt = Date.now();
   try {
     const result = await decide({
@@ -137,7 +155,7 @@ export async function jevDecide(
       state: state as DecisionState,
       questions,
       maxRetries: 1,
-      abortSignal: AbortSignal.timeout(jevTimeoutMs(env)),
+      abortSignal: AbortSignal.timeout(Math.min(jevTimeoutMs(env), options.timeoutMs ?? Number.POSITIVE_INFINITY)),
       providerOptions: { gateway: { only: [JEV_PROVIDER], zeroDataRetention: true } },
     });
     const answers = result.answers as unknown as Record<string, RawAnswer>;
@@ -153,7 +171,7 @@ export async function jevDecide(
       } else {
         const probabilities = answer?.probabilities;
         const choice = answer?.choice;
-        if (answer?.type !== 'choice' || typeof choice !== 'string' || !probabilities || !(choice in question.criteria)) {
+        if (answer?.type !== 'choice' || typeof choice !== 'string' || !probabilities || !Object.prototype.hasOwnProperty.call(question.criteria, choice)) {
           throw new Error(`Jev answered ${id} with an unexpected shape`);
         }
         out.choices[id] = {
@@ -167,7 +185,9 @@ export async function jevDecide(
     return out;
   } catch (error) {
     recordJevFailure();
-    debug('Jev decision failed; falling back to the rule', { model, error: error instanceof Error ? error.message : String(error) });
+    // Provider error text can echo the request (supplier and email text), so only the class, status, and retry hints are logged.
+    const failure = error as { name?: string; statusCode?: number; isRetryable?: boolean };
+    debug('Jev decision failed; falling back to the rule', { model, errorName: failure?.name, statusCode: failure?.statusCode, isRetryable: failure?.isRetryable });
     return undefined;
   } finally {
     jevSpentMs += Date.now() - startedAt;
