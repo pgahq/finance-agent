@@ -75,6 +75,18 @@ Parameters:
       - "off"
       - shadow
       - "on"
+  JevValidationFieldMode:
+    Type: String
+    Description: >-
+      How the Workday validation-field classifier uses TypeSafe's Jev model through the AI Gateway. "off" never calls it;
+      "shadow" calls it and only logs how it compares while the gpt-5.4-mini classifier decides; "on" lets an answer at
+      probability 0.8 or more decide. Anything but "off" sends the Workday validation message, detail message, and XPath
+      to TypeSafe via Vercel AI Gateway (zero data retention), so it stays off until the vendor review is done.
+    Default: "off"
+    AllowedValues:
+      - "off"
+      - shadow
+      - "on"
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -114,6 +126,7 @@ Globals:
         INVOICE_MOD_ENABLED: !Ref InvoiceModEnabled
         # Read at cold start. `true` = on, `shadow` = report-only; missing resolves to empty, which leaves clustering off.
         INVOICE_ATTACHMENT_CLUSTERING_ENABLED: ssm:/finance-agent/invoice-attachment-clustering-enabled
+        JEV_VALIDATION_FIELD_MODE: !Ref JevValidationFieldMode
         FALLBACK_SPEND_CATEGORY_ID: !Ref DefaultOcrSpendCategoryId
         FALLBACK_LOB_ID: !Ref FallbackLineOfBusinessId
         AI_GATEWAY_API_KEY: ssm:/finance-agent/ai-gateway-api-key

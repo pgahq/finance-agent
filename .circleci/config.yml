@@ -61,6 +61,7 @@ references:
             AuditSlackChannelId=$AUDIT_SLACK_CHANNEL_ID
             BankingInfoTagRefId=$BANKING_INFO_TAG_REF_ID
             JevAuditMode=${JEV_AUDIT_MODE:-off}
+            JevValidationFieldMode=${JEV_VALIDATION_FIELD_MODE:-off}
 
 jobs:
   build:
