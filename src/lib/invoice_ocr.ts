@@ -5,7 +5,7 @@ import { invoiceOcrPrompt, InvoiceOcrSchema, normalizeInvoiceOcrResult, type Inv
 import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/enrich_invoice_prompt.js';
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
-import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
+import { amountDueGapCents, amountDueShortfallCents, isRetainageHeldLabel, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
 import { isTaxLikeChargeLabel, summaryCreditCents } from './header_charges.js';
 import { formatChargeDollars, normalizeLabel } from './invoice_lines.js';
 
@@ -256,6 +256,7 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
     creditCents: summaryCreditCents(result.extractedSummaryCharges, lines),
     partialPayment: result.extractedPartialPayment,
     priorPayments: result.extractedPriorPayments,
+    retainage: result.extractedRetainage,
   };
   // Rows, freight, and tax that already reach the amount due leave nothing missing, whatever part of the table a
   // printed subtotal covers (an agreement subtotal can leave a fuel row out).
@@ -313,7 +314,7 @@ function secondReadClosesGap(
   }
   if (plan.subtotalShortfall !== undefined) {
     const retriedCents = sumExtractedLineCents(retriedRows);
-    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents;
+    return retriedCents !== undefined && retriedCents === plan.subtotalRowsCents && added.every(row => !isRetainageHeldLabel(row.description));
   }
   return false;
 }
@@ -342,6 +343,7 @@ export function mergeInvoiceEnrichment(
       extractedSecondReadOutcome: null,
       extractedPartialPayment: null,
       extractedPriorPayments: null,
+      extractedRetainage: null,
       extractedPurchaseOrderNumber: null,
       extractedAccountNumber: null,
       extractedSupplierReference: null,
@@ -387,6 +389,7 @@ export function mergeInvoiceEnrichment(
     extractedSecondReadOutcome: ocr.extractedSecondReadOutcome ?? null,
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
+    extractedRetainage: ocr.extractedRetainage,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
     extractedAccountNumber: ocr.extractedAccountNumber,
     extractedSupplierReference: ocr.extractedSupplierReference,

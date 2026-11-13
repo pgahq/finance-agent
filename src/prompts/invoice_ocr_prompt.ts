@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { InvoiceEnrichmentSchema } from './enrich_invoice_prompt.js';
+import { isRetainageHeldLabel } from '../lib/retainage_label.js';
 
 const enrichment = InvoiceEnrichmentSchema.shape;
 const extractedLine = enrichment.extractedInvoiceLines.unwrap().element.shape;
@@ -96,6 +97,11 @@ export interface InvoiceOcrPriorPayment {
   label: string;
   amount: string;
 }
+export interface InvoiceOcrRetainage {
+  label: string;
+  percent: string | null;
+  amount: string;
+}
 export interface InvoiceOcrSummaryCharge {
   label: string;
   /** Null when the row prints only a rate. */
@@ -117,6 +123,8 @@ export type InvoiceOcrResult = Omit<NullableText<InvoiceOcrResponse>, 'invoiceNu
   extractedSecondReadOutcome?: 'rejected' | 'inconclusive' | 'not_lines' | 'failed' | 'skipped' | null;
   extractedPartialPayment: InvoiceOcrPartialPayment | null;
   extractedPriorPayments: InvoiceOcrPriorPayment[] | null;
+  /** The retainage row of a pay application, split out of the printed payment rows by code (the schema has no room for another object). */
+  extractedRetainage: InvoiceOcrRetainage | null;
   extractedOtherCharges: InvoiceOcrOtherCharge[] | null;
   extractedSummaryCharges: InvoiceOcrSummaryCharge[] | null;
   printedSupplier: NullableText<InvoiceOcrResponse['printedSupplier']>;
@@ -190,6 +198,8 @@ export function normalizePrintedDate(value: string | null | undefined): string |
   return null;
 }
 
+// A pay application's retainage is read as one of the printed payment rows (a deduction from the contract total), then split out here.
+
 export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): InvoiceOcrResult {
   const {
     printedSupplier, printedBillTo, extractedPaymentTerms, extractedInvoiceLines, extractedOtherCharges, extractedSummaryCharges,
@@ -206,15 +216,20 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
   const lineSubtotal = textOrNull(extractedLineSubtotal?.amount)
     ? { label: (extractedLineSubtotal?.label ?? '').trim(), amount: (extractedLineSubtotal?.amount ?? '').trim() }
     : null;
-  const priorPayments = (extractedPriorPayments ?? [])
+  const printedRows = (extractedPriorPayments ?? [])
     .filter(payment => payment.amount.trim())
     .map(payment => ({ label: payment.label.trim(), amount: payment.amount.trim() }));
+  const retainageRow = printedRows.find(row => isRetainageHeldLabel(row.label));
+  const priorPayments = printedRows.filter(row => row !== retainageRow);
   const partialPayment = textOrNull(extractedPartialPayment?.amount)
     ? {
       label: (extractedPartialPayment?.label ?? '').trim(),
       percent: textOrNull(extractedPartialPayment?.percent)?.trim() ?? null,
       amount: (extractedPartialPayment?.amount ?? '').trim(),
     }
+    : null;
+  const retainage = retainageRow
+    ? { label: retainageRow.label, percent: retainageRow.label.match(/(\d+(?:\.\d+)?)\s*%/)?.[0].replace(/\s+/g, '') ?? null, amount: retainageRow.amount }
     : null;
   const invoiceNumbers = (invoiceNumbersInDocument ?? []).map(number => number.trim()).filter(Boolean);
   return {
@@ -223,6 +238,7 @@ export function normalizeInvoiceOcrResult(response: InvoiceOcrResponse): Invoice
     extractedLineSubtotal: lineSubtotal,
     extractedPartialPayment: partialPayment,
     extractedPriorPayments: priorPayments.length ? priorPayments : null,
+    extractedRetainage: retainage,
     extractedDueDate: normalizePrintedDate(headerFields.extractedDueDate),
     extractedOtherCharges: otherCharges.length ? otherCharges : null,
     extractedSummaryCharges: summaryCharges.length ? summaryCharges : null,
@@ -298,7 +314,7 @@ When the invoice bills a deposit, advance, or partial payment instead of the ful
 
 When the document shows payments, deposits, or credits already received that reduce the amount due (for example "Less deposit paid", "Previous payments", "Payments received", or "Payments applied"), list each such row in \`extractedPriorPayments\` with its exact printed label and amount as printed. These rows are settled, so they never go in \`extractedPartialPayment\`, \`extractedLineSubtotal\`, or the other charge fields. For example, an invoice with Total Contract Price $23,887.00, Payments Received $17,977.50, and Balance Due $5,909.50 must return extractedLineSubtotal { label: "Total Contract Price", amount: "$23,887.00" }, extractedPriorPayments [{ label: "Payments Received", amount: "$17,977.50" }], and extractedAmountDue "$5,909.50". Never compute an amount, and return an empty array when the document prints no such row.
 
-A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") bills only what was earned since the last certificate, so the contract sum is never the amount to book. Its lines run: 3 Contract Sum to Date, 4 Total Completed and Stored to Date, 5 Retainage, 6 Total Earned Less Retainage, 7 Less Previous Certificates for Payment, 8 Current Payment Due, and 9 Balance to Finish. Put the work completed to date in \`extractedLineSubtotal\`: "Total Completed and Stored to Date" (line 4) when the form prints it, and "Contract Sum to Date" (line 3) only when no completed-to-date figure is printed, which is not expected on a G702 (the two match only when the work is 100% done). On a pay application this overrides the line-table total above. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\` and put "Current Payment Due" in \`extractedAmountDue\`. "Balance to Finish, including retainage" (line 9) and the per-line BALANCE column are what remains of the contract, never a payment, so never list them in \`extractedPriorPayments\`. For example, a pay application with Contract Sum to Date $612,500.00, Total Completed and Stored to Date $551,250.00, Less Previous Certificates for Payment $367,500.00, Current Payment Due $183,750.00, and Balance to Finish $61,250.00 must return extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$551,250.00" } (not the contract sum), extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$367,500.00" }] (the $61,250.00 balance to finish is not listed), and extractedAmountDue "$183,750.00". Never compute an amount.
+A construction pay application or progress billing (an AIA G702 "Application and Certificate for Payment") bills only what was earned since the last certificate, so the contract sum is never the amount to book. Its lines run: 3 Contract Sum to Date, 4 Total Completed and Stored to Date, 5 Retainage (a percentage of the completed work), 6 Total Earned Less Retainage, 7 Less Previous Certificates for Payment, 8 Current Payment Due, and 9 Balance to Finish. Put the work completed to date in \`extractedLineSubtotal\`: "Total Completed and Stored to Date" (line 4) when the form prints it, and "Contract Sum to Date" (line 3) only when no completed-to-date figure is printed, which is not expected on a G702 (the two match only when the work is 100% done). On a pay application this overrides the line-table total above. List "Less Previous Certificates for Payment" in \`extractedPriorPayments\`, and also list the retainage row there when it prints a retainage amount (keeping any percentage in the label; code separates it from the payments). Put "Current Payment Due" in \`extractedAmountDue\`. "Balance to Finish, including retainage" (line 9) and the per-line BALANCE column are what remains of the contract, never retainage or a payment, so never list them in \`extractedPriorPayments\`. Retainage never goes in \`extractedSummaryCharges\`, \`extractedOtherCharges\`, or \`extractedPartialPayment\`. For example, a pay application with Contract Sum to Date $612,500.00, Total Completed and Stored to Date $551,250.00, Total retainage $0.00, Less Previous Certificates for Payment $367,500.00, Current Payment Due $183,750.00, and Balance to Finish $61,250.00 must return extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$551,250.00" } (not the contract sum), extractedPriorPayments [{ label: "Less Previous Certificates for Payment", amount: "$367,500.00" }] (the $61,250.00 balance to finish is not listed), and extractedAmountDue "$183,750.00". When the same form holds back 10% ($55,125.00), it also lists { label: "Retainage 10%", amount: "$55,125.00" }. Never compute an amount, and list no retainage row when the document prints none.
 
 ---
 
@@ -341,7 +357,7 @@ An invoice can print more than one tax row, for example "Sales Tax 8.25%" and "5
 Many invoices print priced rows in the totals block (next to Sub Total and Total) that are not in the line table, for example "Decoration $5.00", "Setup Charge $25.00", or "Merchandise Discount $13.80". List every such row in \`extractedSummaryCharges\` with its exact printed label and printed amount.
 
 - Include fees and charges (decoration, setup, screen, digitizing, service fees) and price reductions (discounts, allowances, rebates, promotions, coupons).
-- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds. Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
+- Do not list the merchandise subtotal or any other subtotal, freight, shipping, handling, delivery, sales tax or any tax row, the total, amount due, balance, payments, deposits, applied credits, credit memos, retainers, or refunds, and never a retainage or retention row (Part 4.5). Freight and tax go in Parts 5, 5.5, and 5.6. A label such as "Merchandise Discount" or "Merchandise Allowance" is a discount, not a subtotal, so list it.
 - Copy the label exactly as printed.
 - Copy the amount exactly as printed, keeping a minus sign or parentheses when they are printed ("-$13.80", "($13.80)"). Do not add a minus sign that is not printed.
 - If only a rate is printed (for example "Discount 10%") and no amount, list the row with an empty amount. Never compute an amount from a rate.
@@ -403,7 +419,7 @@ First, set \`invoiceLineQuantityDisplayed\` from the document layout (column hea
 - **true** when the invoice shows a quantity column or per-line quantity values (Qty, Quantity, etc.)
 - **false** when there is no quantity column and no per-line quantity values on the merchandise lines
 
-Extract the individual line items from the invoice document:
+Extract the individual line items from the invoice document. A retainage or retention row of a pay application (Part 4.5) is never a line item:
 
 1. For each line item, extract:
    - **Description cells**: Every meaningful text cell on **that invoice row**, in left-to-right document order. Do not use only the column labeled Description / Item / Service. Include Activity, Resource, Consultant, Employee, Staff, Person, Role, SKU, Item #, Part #, Product, Service, Description, Project, Location, and any other identifying text on the row. Skip empty cells, quantity, rate, amount, Notes, and Comments. Populate \`descriptionCells\` with those values. Code concatenates \`descriptionCells\` into description and drops cells that match the line's printed quantity, unit cost, or amount.

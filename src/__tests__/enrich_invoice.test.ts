@@ -117,7 +117,7 @@ jest.mock('../lib/ai.js', () => {
   const toOcrResult = (full: any) => {
     const headerText = Object.fromEntries(
       Object.entries(full ?? {})
-        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment', 'extractedPriorPayments'].includes(key))
+        .filter(([key]) => key.startsWith('extracted') && !['extractedPaymentTerms', 'extractedInvoiceLines', 'extractedOtherCharges', 'extractedSummaryCharges', 'extractedLineSubtotal', 'extractedPartialPayment', 'extractedPriorPayments', 'extractedRetainage'].includes(key))
         .map(([key, value]) => [key, text(value)])
     );
     return {
@@ -128,7 +128,8 @@ jest.mock('../lib/ai.js', () => {
       extractedSummaryCharges: full?.extractedSummaryCharges ?? [],
       extractedLineSubtotal: full?.extractedLineSubtotal ?? { label: '', amount: '' },
       extractedPartialPayment: full?.extractedPartialPayment ?? { label: '', percent: '', amount: '' },
-      extractedPriorPayments: full?.extractedPriorPayments ?? [],
+      // The model lists retainage among the printed payment rows; code splits it out.
+      extractedPriorPayments: [...(full?.extractedRetainage ? [{ label: full.extractedRetainage.label, amount: full.extractedRetainage.amount }] : []), ...(full?.extractedPriorPayments ?? [])],
       extractedPaymentTerms: text(full?.extractedPaymentTerms?.name),
       invoiceLineQuantityDisplayed: full?.invoiceLineQuantityDisplayed,
       extractedInvoiceLines: (full?.extractedInvoiceLines ?? []).map((line: any) => ({
@@ -1914,13 +1915,12 @@ describe('enrich_invoice', () => {
     } as any);
 
     const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
-    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Total Completed and Stored to Date $551,250.00)', quantity: 1, totalPrice: '$183,750.00' })]);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Contract Sum to Date $612,500.00)', quantity: 1, totalPrice: '$183,750.00' })]);
     expect(built[6]).toBe(true);
     const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
     expect(params.finalLines).toHaveLength(1);
     const notes = params.buildNotes([]);
-    expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $551,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due (1 printed line).');
-    expect(notes).not.toContain('Line subtotal review');
+    expect(notes).toContain('Pay application: "Contract Sum to Date" is $612,500.00, less "Retainage" $61,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due');
     expect(notes).not.toContain('Line total review');
   });
 
