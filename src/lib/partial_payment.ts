@@ -325,10 +325,14 @@ type BalancePoSelection =
 /**
  * The PO line that covers a remaining balance that is smaller than the PO line (the PO's one line for the full
  * contract, used after earlier deposits, is often larger than what is left to bill). An exact-amount match
- * (`selectDepositPoLine`'s rule) wins first and keeps its messages. Short of that, the one line described as a
- * final or remaining payment, or the PO's only line when none is described that way, is matched when its amount
- * is at least the balance; several such lines, or one that is smaller than the balance, are left unmatched rather
- * than guessed at.
+ * (`selectDepositPoLine`'s rule) wins first and keeps its messages. Short of that, there is at most one other
+ * candidate to consider: the one PO line described as a final or remaining payment, or the PO's only line when
+ * none is described that way. Two or more lines described as a final or remaining payment are always left
+ * unmatched for AP to pick between, regardless of their amounts (covering, short, or unreadable) or whether one
+ * is consumed, because the description — not the amount — is what makes a line a plausible candidate at all, and
+ * we cannot tell which one the invoice is paying off. The sole remaining candidate is matched only when its
+ * amount is at least the balance; a candidate smaller than the balance, or one whose amount cannot be read, is
+ * left unmatched rather than guessed at.
  */
 export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, balanceCents: number): BalancePoSelection {
   if (!poLines?.length) return { status: 'no_po' };
@@ -338,26 +342,20 @@ export function selectBalancePoLine(poLines: PurchaseOrderLine[] | undefined, ba
   if (exact.status === 'unmatched' && exact.reason.startsWith('several PO lines are for')) return exact;
 
   const described = poLines.filter(line => isFinalPaymentLineLabel(line.description));
-  const candidates = described.length > 0 ? described : (poLines.length === 1 ? poLines : []);
-  const covering = candidates.filter(line => (poLineAmountCents(line) ?? -1) >= balanceCents);
-  if (covering.length === 1) {
-    const line = covering[0];
-    return { status: 'matched', line, consumed: line.availableForInvoicing === false, exact: poLineAmountCents(line) === balanceCents };
+  if (described.length > 1) {
+    return { status: 'unmatched', reason: `${described.length} PO lines could be the remaining-balance line; check which one applies` };
   }
-  if (covering.length > 1) {
-    return { status: 'unmatched', reason: `${covering.length} PO lines could be the remaining-balance line; check which one applies` };
-  }
-  const short = candidates.filter(line => {
-    const cents = poLineAmountCents(line);
-    return cents != null && cents < balanceCents;
-  });
-  if (short.length === 1) {
+  const candidate = described[0] ?? (poLines.length === 1 ? poLines[0] : undefined);
+  if (!candidate) return exact;
+  const cents = poLineAmountCents(candidate);
+  if (cents == null) return exact;
+  if (cents < balanceCents) {
     return {
       status: 'unmatched',
-      reason: `the PO's final-payment line is only ${centsDollars(poLineAmountCents(short[0]) as number)}, less than the ${centsDollars(balanceCents)} amount due`,
+      reason: `the PO's final-payment line is only ${centsDollars(cents)}, less than the ${centsDollars(balanceCents)} amount due`,
     };
   }
-  return exact;
+  return { status: 'matched', line: candidate, consumed: candidate.availableForInvoicing === false, exact: cents === balanceCents };
 }
 
 export interface PartialPaymentInput {

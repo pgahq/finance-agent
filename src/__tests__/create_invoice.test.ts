@@ -11,6 +11,7 @@ import {
   remainingBalanceOverageHeader,
   remainingBalanceOverageRows,
   remainingBalanceShortPoLine,
+  remainingBalanceUnlabeledSinglePoLine,
 } from './fixtures/remaining_balance_po_overage.js';
 import {
   DELIVERY_LINE,
@@ -3201,15 +3202,17 @@ describe('create_invoice', () => {
 
     it('books the balance on the PO\'s only line even when that line is not described as a final payment', async () => {
       // A PO with exactly one line has nothing else it could be: the sole-line fallback in selectBalancePoLine
-      // picks it even though this line reads as the full contract, not a "final payment".
+      // picks it even though this line reads as the full contract, not a "final payment". Uses the same
+      // single-line fixture as the selectBalancePoLine unit tests, so a change to its shape or amount updates
+      // both places.
       const po = {
         documentNumber: 'PO-472750',
         company: { workdayId: 'pga-company-wid', descriptor: 'The Professional Golfers Association of America' },
-        lines: [{ lineOrder: 1, purchaseOrderLineId: 'L1', purchaseOrderDocumentNumber: 'PO-472750', quantity: 1, unitCost: 23887 }],
+        lines: remainingBalanceUnlabeledSinglePoLine.map((line: any) => ({ ...line, purchaseOrderDocumentNumber: 'PO-472750' })),
       };
       const { workday, invoiceLines } = await run(balanceEnrichment({ extractedPurchaseOrderNumber: 'PO-472750' }), po);
 
-      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([expect.objectContaining({ purchaseOrderLineId: 'L1' })]);
+      expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][1]).toEqual([expect.objectContaining({ purchaseOrderLineId: 'PL-EX1' })]);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
       expect(notes).toContain('under that line; AP should follow up with the PO owner about the difference.');
     });
@@ -3283,12 +3286,18 @@ describe('create_invoice', () => {
       expect(notes).toContain('"Sub-Total" is $42,650.00, and $30,650.00 was already paid, which leaves the $12,000.00 amount due (3 printed lines).');
       expect(notes).toContain('The invoice was booked for $12,000.00 on the PO\'s "Final payment for all remaining event charges" line ($13,500.00), $1,500.00 under that line; AP should follow up with the PO owner about the difference.');
       expect(notes).not.toContain('check before approving');
+      // A reconciled balance booking is intentionally reduced to one due line, so it must clear the printed-vs-due
+      // mismatch rather than leaving it flagged alongside a note that says the line was already handled.
+      expect(notes).not.toContain('Line total review');
+      expect(notes).not.toContain('Amount check');
 
       const slackDetails = slack.notifyResult.mock.calls[0][3];
       expect(slackDetails.balanceInvoice).toContainEqual(
         'Booked $12,000.00 on the PO\'s "Final payment for all remaining event charges" line ($13,500.00), $1,500.00 under that line.'
       );
       expect(slackDetails.lineCount).toBe(1);
+      expect(slackDetails).not.toHaveProperty('lineReview');
+      expect(slackDetails).not.toHaveProperty('chargeCheck');
     });
 
     it('falls back to the printed lines when several PO lines could be the final payment', async () => {
@@ -3301,8 +3310,16 @@ describe('create_invoice', () => {
       expect(invoiceLines.buildFinalInvoiceLines.mock.calls[0][0]).toHaveLength(3);
       const notes = workday.submitNewSupplierInvoice.mock.calls[0][1].buildNotes([]);
       expect(notes).toContain('2 PO lines could be the remaining-balance line; check which one applies');
-      expect(slack.notifyResult.mock.calls[0][3].balanceInvoice).toEqual([
+      // A rejected candidate must not clear the printed-vs-due mismatch: it stays flagged for review, not
+      // silently booked as though the balance line had been applied.
+      expect(notes).toContain('Line total review: Invoice lines total $42,650.00, but the amount due $12,000.00');
+      const slackDetails = slack.notifyResult.mock.calls[0][3];
+      expect(slackDetails.balanceInvoice).toEqual([
         'Remaining-balance invoice not applied: 2 PO lines could be the remaining-balance line; check which one applies.',
+      ]);
+      expect(slackDetails.lineReview).toEqual([
+        'Line total review: Invoice lines total $42,650.00, but the amount due $12,000.00 less freight $0.00 and tax $0.00 is $12,000.00.'
+        + ' Check for a duplicated or summary line, or a payment, credit, or discount applied outside the lines, before approving.',
       ]);
     });
 

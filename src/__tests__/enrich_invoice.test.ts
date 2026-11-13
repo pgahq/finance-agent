@@ -1871,6 +1871,86 @@ describe('enrich_invoice', () => {
     expect(notes).not.toContain('Line total review');
   });
 
+  it('books one balance line on a PO final-payment line larger than the balance, on an update (fictional fixture)', async () => {
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder, submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const {
+      remainingBalanceOverageRows,
+      remainingBalanceOverageDeposits,
+      remainingBalanceFinalPaymentPoLine,
+    } = require('./fixtures/remaining_balance_po_overage.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-EX0001',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Service_Line_Data: {
+              Line_Number: 1,
+              Service_Order_Line_ID: remainingBalanceFinalPaymentPoLine[0].purchaseOrderLineId,
+              Description: remainingBalanceFinalPaymentPoLine[0].description,
+              Extended_Amount: remainingBalanceFinalPaymentPoLine[0].extendedAmount
+            }
+          }
+        }
+      }
+    });
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'A Fictional Venue', memo: 'event services' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      extractedPurchaseOrderNumber: 'PO-EX0001',
+      extractedAmountDue: '$12,000.00',
+      extractedLineSubtotal: { label: 'Sub-Total', amount: '$42,650.00' },
+      extractedPriorPayments: remainingBalanceOverageDeposits,
+      extractedInvoiceLines: remainingBalanceOverageRows,
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementationOnce(async (extracted: Array<{ description: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 12000, extendedAmount: 12000 })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: '24953$4729', id: '0627e00a601c1001085f64bd33e20000' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
+    expect(built[0]).toHaveLength(1);
+    // The matched PO line, and only that line, is passed through to the merge step - the same narrowing
+    // planBalanceInvoice's poLines field already proves at the unit level.
+    expect(built[1]).toEqual([expect.objectContaining({ purchaseOrderLineId: remainingBalanceFinalPaymentPoLine[0].purchaseOrderLineId })]);
+    const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
+    expect(params.finalLines).toHaveLength(1);
+    const notes = params.buildNotes([]);
+    expect(notes).toContain('The invoice was booked for $12,000.00 on the PO\'s "Final payment for all remaining event charges" line ($13,500.00), $1,500.00 under that line; AP should follow up with the PO owner about the difference.');
+    expect(notes).not.toContain('Line total review');
+  });
+
   describe('printed due date', () => {
     // IBS invoice 1026465: Invoice Date 10/10/26, Due Date 11/11/26, Net 30.
     const ibsEnrichment = {
