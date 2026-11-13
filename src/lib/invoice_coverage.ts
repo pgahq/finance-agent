@@ -10,6 +10,9 @@ import { executeWorkdayQuery, getWorkQueueTagWIDs } from './workday.js';
  * created or enriched. An invoice counts as agent supported when it carries the agent's work queue tag or has a row in
  * `agent_invoice_snapshots` (AP can replace the tag; older invoices predate snapshots). `invoiceCreatedBy` cannot
  * identify agent invoices (it names the AP teammate who started the Intercom action), so it only splits the rest.
+ * Invoices from a known supplier XML feed (`AUTOMATED_SUPPLIER_WIDS`) with no creator were not keyed by a person, so
+ * they are counted as `automated` and left out of the share. Any other invoice with no creator stays uncovered
+ * (`uncovered_integration`): a blank creator alone does not prove no person prepared it.
  */
 
 export const AGENT_MODIFIED_TAG_REF_ID = process.env.WORKDAY_AGENT_MODIFIED_TAG_REF_ID || 'FINAGENT-invoice-modified';
@@ -27,6 +30,22 @@ export const DEFAULT_COVERAGE_COMPANY_WIDS = [
   'cab0b1d2505a01bbec0c611a82276ded', // PGA Golf Properties, Inc.
   'cab0b1d2505a01086d9d4a1a822757ed', // PGA Golf Enterprises
 ];
+
+/**
+ * Suppliers whose invoices an integration loads (supplier XML), as Workday supplier WIDs as `supplier` returns them.
+ * Override with a comma-separated `AUTOMATED_SUPPLIER_WIDS`. The defaults were read from the `supplier` reference of
+ * production invoices SUPIN-468084 (Amazon) and SUPIN-468900 (ODP); a wrong WID leaves that supplier's invoices in
+ * `uncovered_integration`, so the digest's automated-by-supplier list is where a miss shows.
+ */
+export const DEFAULT_AUTOMATED_SUPPLIER_WIDS = [
+  'c3fdce78966e0130831180dbec011221', // AMAZON CAPITAL SERVICES INC
+  '4945efb5366901493845fe7fed012cde', // ODP BUSINESS SOLUTIONS LLC (Office Depot, S-017791)
+];
+
+export function automatedSupplierWids(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = (env.AUTOMATED_SUPPLIER_WIDS ?? '').split(',').map((wid) => wid.trim()).filter(Boolean);
+  return configured.length ? configured : DEFAULT_AUTOMATED_SUPPLIER_WIDS;
+}
 
 export function coverageCompanyWids(env: NodeJS.ProcessEnv = process.env): string[] {
   const configured = (env.COVERAGE_COMPANY_WIDS ?? '').split(',').map((wid) => wid.trim()).filter(Boolean);
@@ -49,7 +68,8 @@ export type CoverageCategory =
   | 'agent_notes_only'
   | 'uncovered_ocr'
   | 'uncovered_manual'
-  | 'uncovered_integration';
+  | 'uncovered_integration'
+  | 'automated';
 
 const AGENT_CATEGORIES: CoverageCategory[] = ['agent_created', 'agent_enriched', 'agent_notes_only'];
 const UNCOVERED_CATEGORIES: CoverageCategory[] = ['uncovered_ocr', 'uncovered_manual', 'uncovered_integration'];
@@ -59,6 +79,7 @@ export interface CoverageRow {
   workdayInvoiceNumber?: string;
   companyWid?: string;
   supplier?: string;
+  supplierWid?: string;
   creator?: string;
   hasAgentTag: boolean;
   isOcr: boolean;
@@ -169,6 +190,7 @@ export async function loadCoverageRows(
       ...(typeof record.invoiceNumber === 'string' ? { workdayInvoiceNumber: record.invoiceNumber } : {}),
       ...(reference(record.company1)?.id ? { companyWid: reference(record.company1)!.id } : {}),
       ...(reference(record.supplier)?.descriptor ? { supplier: reference(record.supplier)!.descriptor } : {}),
+      ...(reference(record.supplier)?.id ? { supplierWid: reference(record.supplier)!.id } : {}),
       ...(reference(record.invoiceCreatedBy)?.descriptor ? { creator: reference(record.invoiceCreatedBy)!.descriptor } : {}),
       hasAgentTag: tags.some((tag) => tagWids.has(reference(tag)?.id ?? '')),
       isOcr: Array.isArray(ocr) ? ocr.length > 0 : Boolean(ocr),
@@ -224,13 +246,17 @@ const ENRICH_SOURCES = new Set(['enrich']);
 /**
  * Labels each invoice, checking in this order: outside the scoped companies, canceled (kept out of the share), agent
  * supported (tag or snapshot), then how the rest got into Workday. An empty creator is not agent support by itself.
+ * A Workday OCR invoice with no creator stays `uncovered_ocr`, because the agent should have enriched it. Only a
+ * known XML supplier with no creator is `automated`; any other invoice with no creator is `uncovered_integration`.
  */
 export function classifyCoverage(
   rows: CoverageRow[],
   snapshotSources: ReadonlyMap<string, string[]>,
-  companyWids: Iterable<string> = coverageCompanyWids()
+  companyWids: Iterable<string> = coverageCompanyWids(),
+  automatedWids: Iterable<string> = automatedSupplierWids()
 ): ClassifiedInvoice[] {
   const inScope = new Set(companyWids);
+  const automatedSuppliers = new Set(automatedWids);
   return rows.map((row): ClassifiedInvoice => {
     const sources = snapshotSources.get(row.workdayInvoiceWid);
     let category: CoverageCategory;
@@ -241,6 +267,7 @@ export function classifyCoverage(
     } else if (row.hasAgentTag) category = 'agent_notes_only';
     else if (row.isOcr) category = 'uncovered_ocr';
     else if (row.creator) category = 'uncovered_manual';
+    else if (row.supplierWid && automatedSuppliers.has(row.supplierWid)) category = 'automated';
     else category = 'uncovered_integration';
     return { ...row, category };
   });
@@ -250,12 +277,12 @@ export type CoverageCounts = Record<CoverageCategory, number>;
 
 export interface CoverageTotals {
   counts: CoverageCounts;
-  /** Invoices in the share: in scope and not canceled. */
+  /** Invoices in the share: in scope, not canceled, and not automated. */
   invoices: number;
   supported: number;
   /** supported / invoices; undefined when there were no invoices. */
   share?: number;
-  /** The same share with integration-created invoices (no creator) left out of the denominator. */
+  /** The same share with the other no-creator invoices (`uncovered_integration`) left out of the denominator. */
   shareWithoutIntegrations?: number;
 }
 
@@ -272,6 +299,7 @@ export function coverageTotals(invoices: ClassifiedInvoice[]): CoverageTotals {
     uncovered_ocr: 0,
     uncovered_manual: 0,
     uncovered_integration: 0,
+    automated: 0,
   };
   for (const invoice of invoices) counts[invoice.category] += 1;
   const supported = AGENT_CATEGORIES.reduce((sum, category) => sum + counts[category], 0);
@@ -305,6 +333,8 @@ export interface CoverageSummary {
   totals: CoverageTotals;
   previous?: CoverageTotals;
   topSuppliers: Array<{ name: string; count: number }>;
+  /** Suppliers of the automated invoices, each with one invoice to open, so AP can check that only supplier feeds land there. */
+  automatedSuppliers: Array<{ name: string; count: number; sample?: CoverageLink }>;
   /** AP teammates who keyed invoices by hand, with how many of their invoices went through the agent. */
   creators: CoverageCreator[];
   links: CoverageLink[];
@@ -314,6 +344,16 @@ export interface CoverageSummary {
 
 const byCountThenName = <T extends { name: string }>(count: (item: T) => number) => (a: T, b: T) =>
   count(b) - count(a) || a.name.localeCompare(b.name);
+
+function linkTo(invoice: ClassifiedInvoice): CoverageLink {
+  return {
+    workdayInvoiceWid: invoice.workdayInvoiceWid,
+    ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
+    ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
+    ...(invoice.creator ? { creator: invoice.creator } : {}),
+    category: invoice.category,
+  };
+}
 
 /** One invoice per creator in turn, biggest groups first, so a single teammate's batch does not fill the list. */
 function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): CoverageLink[] {
@@ -329,13 +369,7 @@ function sampleUncovered(uncovered: ClassifiedInvoice[], limit: number): Coverag
       if (links.length >= limit) break;
       const invoice = group[round];
       if (!invoice) continue;
-      links.push({
-        workdayInvoiceWid: invoice.workdayInvoiceWid,
-        ...(invoice.workdayInvoiceNumber ? { workdayInvoiceNumber: invoice.workdayInvoiceNumber } : {}),
-        ...(invoice.supplier ? { supplier: invoice.supplier } : {}),
-        ...(invoice.creator ? { creator: invoice.creator } : {}),
-        category: invoice.category,
-      });
+      links.push(linkTo(invoice));
     }
   }
   return links;
@@ -349,12 +383,16 @@ export function summarizeCoverage(
 ): CoverageSummary {
   const top = limits.top ?? COVERAGE_TOP_LIMIT;
   const uncovered = current.filter((invoice) => UNCOVERED_CATEGORIES.includes(invoice.category));
-
-  const suppliers = new Map<string, number>();
-  for (const invoice of uncovered) {
-    const name = invoice.supplier ?? '(no supplier)';
-    suppliers.set(name, (suppliers.get(name) ?? 0) + 1);
-  }
+  const topBySupplier = (invoices: ClassifiedInvoice[]) => {
+    const suppliers = new Map<string, { name: string; count: number; first: ClassifiedInvoice }>();
+    for (const invoice of invoices) {
+      const name = invoice.supplier ?? '(no supplier)';
+      const entry = suppliers.get(name) ?? { name, count: 0, first: invoice };
+      entry.count += 1;
+      suppliers.set(name, entry);
+    }
+    return [...suppliers.values()].sort(byCountThenName((item) => item.count)).slice(0, top);
+  };
 
   const creators = new Map<string, CoverageCreator>();
   for (const invoice of current) {
@@ -368,10 +406,9 @@ export function summarizeCoverage(
   return {
     totals: coverageTotals(current),
     ...(previous ? { previous: coverageTotals(previous) } : {}),
-    topSuppliers: [...suppliers.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort(byCountThenName((item) => item.count))
-      .slice(0, top),
+    topSuppliers: topBySupplier(uncovered).map(({ name, count }) => ({ name, count })),
+    automatedSuppliers: topBySupplier(current.filter((invoice) => invoice.category === 'automated'))
+      .map(({ name, count, first }) => ({ name, count, sample: linkTo(first) })),
     creators: [...creators.values()]
       .filter((creator) => creator.byHand > 0)
       .sort(byCountThenName((item) => item.byHand))
@@ -431,6 +468,7 @@ export function dailyCoverage(invoices: ClassifiedInvoice[], startDay: string, e
 const COVERAGE_DAILY_COLUMNS = [
   'created_day', 'invoices', 'agent_created', 'agent_enriched', 'agent_notes_only', 'uncovered_ocr',
   'uncovered_manual', 'uncovered_integration', 'canceled', 'coverage_share', 'coverage_share_without_integrations',
+  'automated',
 ];
 
 /** Multi-row upsert for `rows` days, with `COVERAGE_DAILY_COLUMNS` placeholders per row. */
@@ -459,6 +497,7 @@ export function coverageDayParams(days: CoverageDay[]): unknown[] {
     totals.counts.canceled,
     totals.share ?? null,
     totals.shareWithoutIntegrations ?? null,
+    totals.counts.automated,
   ]);
 }
 

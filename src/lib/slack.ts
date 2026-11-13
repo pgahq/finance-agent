@@ -166,7 +166,33 @@ function multipleInvoicesMessage(value: unknown): string | undefined {
   return typeof message === 'string' && message.trim() ? message : undefined;
 }
 
+function appendReimbursementManualEntryBlock(blocks: SlackBlock[], entry: Record<string, unknown>): boolean {
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? escapeSlackMrkdwn(value.trim()) : undefined);
+  const reason = text(entry.reason);
+  if (!reason) return false;
+  const notConfirmed = new Set(Array.isArray(entry.notConfirmed) ? entry.notConfirmed : []);
+  const lines = [
+    `Not created: ${reason}.`,
+    ...(text(entry.payeeName) ? [`Payee on the form: ${text(entry.payeeName)}`] : []),
+    ...(notConfirmed.has('payeeName') ? ['Payee on the form: not confirmed. Read it from the form.'] : []),
+    ...(text(entry.formAmount) ? [`Amount to Pay on the form: ${text(entry.formAmount)}`] : []),
+    ...(notConfirmed.has('formAmount') ? ['Amount to Pay on the form: not confirmed. Read it from the form.'] : []),
+    ...(text(entry.emailAmount) ? [`Amount in the email: ${text(entry.emailAmount)}`] : []),
+    ...(notConfirmed.has('emailAmount') ? ['Amount in the email: not confirmed. Read it from the email.'] : []),
+    'Nothing was written to Workday. Before entering this reimbursement manually, check this conversation for an invoice already created from the form, so the person is not paid twice.',
+  ];
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: truncateSlackText(`*Reimbursement packet*\n${lines.map((line) => `• ${line}`).join('\n')}`) }
+  });
+  return true;
+}
+
 function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<string, unknown>): void {
+  if (details.reimbursementManualEntry && typeof details.reimbursementManualEntry === 'object'
+    && appendReimbursementManualEntryBlock(blocks, details.reimbursementManualEntry as Record<string, unknown>)) {
+    return;
+  }
   const changeLines: string[] = [];
   const fallbackLines: string[] = [];
 
@@ -286,6 +312,15 @@ function appendCreateInvoiceSuccessBlocks(blocks: SlackBlock[], details: Record<
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: truncateSlackText(`*Multiple invoices in one PDF*\n${escapeSlackText(multipleInvoices)}`) }
+    });
+  }
+  const reimbursementLines = Array.isArray(details.reimbursement)
+    ? details.reimbursement.filter((line): line is string => typeof line === 'string')
+    : [];
+  if (reimbursementLines.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: truncateSlackText(`*Reimbursement*\n${reimbursementLines.map((line) => `• ${escapeSlackMrkdwn(line)}`).join('\n')}`) }
     });
   }
   if (fallbackLines.length) {
@@ -698,6 +733,7 @@ export async function notifyResult(
       needsManualReview?: unknown;
       canceledNotReplaced?: unknown;
       inProgressElsewhere?: unknown;
+      reimbursementManualEntry?: unknown;
     } | undefined
     : undefined;
   // Resend outcomes must stay visible even when Workday returned no invoice number, so fall back to the WID.
@@ -709,6 +745,7 @@ export async function notifyResult(
   const skipLabel = createDetails?.inProgressElsewhere === true
     ? 'another run is processing it'
     : createDetails?.canceledNotReplaced === true ? 'canceled; not replaced' : 'nothing new';
+  const reimbursementManualEntry = Boolean(createDetails?.reimbursementManualEntry);
   const invoiceRef = resendInvoiceLabel ? ` for \`${resendInvoiceLabel}\`` : '';
 
   const shadowDetails = lambdaName === 'create_invoice_shadow' && status === 'success'
@@ -725,6 +762,8 @@ export async function notifyResult(
     ? `⏱️ *${lambdaName}* ran out of time after ${timeText}`
     : shadowPlan
     ? `👀 *${lambdaName}* would create ${shadowInvoiceCount} invoice${shadowInvoiceCount === 1 ? '' : 's'} from ${shadowPdfCount} PDF${shadowPdfCount === 1 ? '' : 's'} (shadow: nothing written) in ${timeText}`
+    : reimbursementManualEntry
+    ? `⚠️ *${lambdaName}* found a reimbursement packet it cannot book; enter it manually (no invoice created) in ${timeText}`
     : needsManualReview
     ? `⚠️ *${lambdaName}* needs manual review${invoiceRef} (resend not applied) in ${timeText}`
     : skippedInvoice

@@ -516,6 +516,8 @@ interface buildSubmitInvoiceDataOptions {
   currentInvoice: any;
   supplierWID?: string;
   defaultSupplierWID?: string;
+  /** The supplier was chosen for a reason the default supplier cannot stand in for (a reimbursement payee): never retry on it. */
+  keepSupplier?: boolean;
   companyWID?: string;
   companyReferenceType?: string;
   workQueueTags?: WorkQueueTag[];
@@ -558,6 +560,8 @@ interface buildSubmitInvoiceDataOptions {
   applyAmountOnlyLineRetry?: boolean;
   /** Workday rejected quantity 0 on PO-linked lines: those lines were resent as one unit at the line amount. */
   applyPositivePoQuantityRetry?: boolean;
+  /** The positive-quantity retry left off PO-linked lines that bill nothing, because they have no amount to send as one unit. */
+  zeroAmountPoLinesLeftOff?: boolean;
   currencyWID?: string;
   attachments?: Array<{ fileName: string; contentType: string; base64Content: string }>;
   assigneeWID?: string;
@@ -594,6 +598,7 @@ export const OMITTED_SHIP_TO_ADDRESS_LABEL = 'omitted line ship-to address (Work
 export const AMOUNT_ONLY_RETRY_LABEL = 'quantity and unit cost set to zero';
 export const AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL = 'quantity and unit cost set to zero (quantity 1 at the line amount on lines linked to a quantity-based PO line)';
 export const POSITIVE_PO_QUANTITY_LABEL = 'quantity 1 at the line amount for PO-linked lines that had no quantity';
+export const ZERO_AMOUNT_PO_LINES_LABEL = 'left off PO-linked lines that bill $0.00 (Workday needs a quantity above zero on them)';
 export const OMITTED_PO_PASSTHROUGH_WORKTAGS_LABEL = 'omitted PO pass-through worktags (kept PO split rows)';
 const FALLBACK_FIELDS: ClassifierFallbackField[] = ['supplier', 'invoiceDate', 'paymentTerms', 'worktag:fund', 'worktag:costCenter', 'worktag:spendCategory', 'worktag:event', 'worktag:lob'];
 
@@ -1036,7 +1041,7 @@ function getAppliedFallbacks(options: buildSubmitInvoiceDataOptions, submittedCh
   }
 
   if (options.applyPositivePoQuantityRetry) {
-    fallbacks.push({ field: 'positiveQuantityPurchaseOrderLine', label: POSITIVE_PO_QUANTITY_LABEL });
+    fallbacks.push({ field: 'positiveQuantityPurchaseOrderLine', label: positivePoQuantityRetryLabel(options) });
   }
 
   if (options.omitAssigneeReference) {
@@ -1231,28 +1236,50 @@ function getAmountOnlyLineRetryBuildOptions(
   };
 }
 
+function positivePoQuantityRetryLabel(options: buildSubmitInvoiceDataOptions): string {
+  if (!options.zeroAmountPoLinesLeftOff) return POSITIVE_PO_QUANTITY_LABEL;
+  return options.finalLines?.some(line => line.forcePositivePoQuantity)
+    ? `${POSITIVE_PO_QUANTITY_LABEL}; ${ZERO_AMOUNT_PO_LINES_LABEL}`
+    : ZERO_AMOUNT_PO_LINES_LABEL;
+}
+
+function zeroQuantityPoLines(options: buildSubmitInvoiceDataOptions): any[] {
+  return ([] as any[])
+    .concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? [])
+    .filter((line: any) => line.Purchase_Order_Line_Reference && Number(line.Quantity) === 0);
+}
+
+type PositivePoQuantityRetryResult =
+  | { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string }
+  | { skipped: 'noZeroQuantityLine' | 'cannotFix' | 'alreadyApplied' };
+
 // Lines that would go out with a PO line reference and quantity 0, read from the payload itself so the
-// retry covers every such line, not only the one Workday names.
+// retry covers every such line, not only the one Workday names. A line with an amount goes out as one unit;
+// a line that bills nothing is left off.
+function planPositivePoQuantityRetry(options: buildSubmitInvoiceDataOptions): PositivePoQuantityRetryResult {
+  if (options.applyPositivePoQuantityRetry || !options.finalLines?.length) return { skipped: 'alreadyApplied' };
+  const zeroQuantityLines = zeroQuantityPoLines(options);
+  if (zeroQuantityLines.length === 0) return { skipped: 'noZeroQuantityLine' };
+  const zeroQuantityLineOrders = new Set(zeroQuantityLines.map((line: any) => line.Line_Order as number));
+  const finalLines = applyPositivePoQuantityRetry(options.finalLines, zeroQuantityLineOrders);
+  const buildOptions = {
+    ...options,
+    finalLines,
+    applyPositivePoQuantityRetry: true,
+    zeroAmountPoLinesLeftOff: options.finalLines.some(line =>
+      zeroQuantityLineOrders.has(line.lineOrder) && !finalLines.some(kept => kept.lineOrder === line.lineOrder)),
+  };
+  // Payload Line_Order values can come from OCR lines rather than finalLines, so confirm the retry
+  // payload really sends fewer quantity-0 PO-linked lines than the one that failed.
+  if (zeroQuantityPoLines(buildOptions).length >= zeroQuantityLines.length) return { skipped: 'cannotFix' };
+  return { buildOptions, fallbackLabel: positivePoQuantityRetryLabel(buildOptions) };
+}
+
 function getPositivePoQuantityRetryBuildOptions(
   options: buildSubmitInvoiceDataOptions
 ): { buildOptions: buildSubmitInvoiceDataOptions; fallbackLabel: string } | undefined {
-  if (options.applyPositivePoQuantityRetry || !options.finalLines?.length) return undefined;
-  const zeroQuantityLineOrders = new Set(
-    ([] as any[])
-      .concat(buildSubmitInvoiceData(options).Invoice_Line_Replacement_Data ?? [])
-      .filter((line: any) => line.Purchase_Order_Line_Reference && Number(line.Quantity) === 0)
-      .map((line: any) => line.Line_Order as number)
-  );
-  if (zeroQuantityLineOrders.size === 0) return undefined;
-  const finalLines = applyPositivePoQuantityRetry(options.finalLines, zeroQuantityLineOrders);
-  const buildOptions = { ...options, finalLines, applyPositivePoQuantityRetry: true };
-  // Payload Line_Order values can come from OCR lines rather than finalLines, so confirm the retry
-  // payload really sends a positive quantity on one of the lines that failed.
-  const fixesALine = ([] as any[])
-    .concat(buildSubmitInvoiceData(buildOptions).Invoice_Line_Replacement_Data ?? [])
-    .some((line: any) => zeroQuantityLineOrders.has(line.Line_Order) && Number(line.Quantity) > 0);
-  if (!fixesALine) return undefined;
-  return { buildOptions, fallbackLabel: POSITIVE_PO_QUANTITY_LABEL };
+  const plan = planPositivePoQuantityRetry(options);
+  return 'buildOptions' in plan ? plan : undefined;
 }
 
 function getQuantitySplitUnlinkRetryBuildOptions(
@@ -1333,11 +1360,16 @@ async function getValidationFallbackField(
   }
 
   if (isPositiveQuantityRequiredForPoLineError(validationText)) {
-    if (getPositivePoQuantityRetryBuildOptions(options)) {
-      debug('Validation requires a positive quantity on PO-linked lines; retrying with quantity 1 at the line amount');
+    const plan = planPositivePoQuantityRetry(options);
+    if ('buildOptions' in plan) {
+      debug('Validation requires a positive quantity on PO-linked lines; retrying with quantity 1 at the line amount and without lines that bill $0.00');
       return 'positiveQuantityPurchaseOrderLine';
     }
-    debug('Validation requires a positive quantity on PO-linked lines but no line was sent with quantity 0; skipping retry');
+    debug(plan.skipped === 'cannotFix'
+      ? 'Validation requires a positive quantity on PO-linked lines; lines were sent with quantity 0 but the retry cannot change them (no priced line would remain); skipping retry'
+      : plan.skipped === 'alreadyApplied'
+        ? 'Validation requires a positive quantity on PO-linked lines but the positive-quantity retry was already applied; skipping retry'
+        : 'Validation requires a positive quantity on PO-linked lines but no PO-linked line was sent with quantity 0; skipping retry');
     return undefined;
   }
 
@@ -1429,6 +1461,7 @@ function getFallbackRetryBuildOptions(
     &&
     defaultSupplierWID
     && normalizeSupplierWID(options.supplierWID) !== defaultSupplierWID
+    && !options.keepSupplier
     && !submitLinksPurchaseOrderLines(options)
   ) {
     return {
@@ -2954,6 +2987,8 @@ export interface SubmitNewSupplierInvoiceParams {
   assigneeWID?: string;
   omitPurchaseOrderLineReference?: boolean;
   conversationUrl?: string;
+  /** Never retry on the default supplier: a payment to this supplier must not move to a generic one. */
+  keepSupplier?: boolean;
 }
 
 // Creates a brand-new Supplier Invoice in Workday (no Supplier_Invoice_Reference on the request)
@@ -2986,6 +3021,7 @@ export async function submitNewSupplierInvoice(
     assigneeWID,
     omitPurchaseOrderLineReference,
     conversationUrl,
+    keepSupplier,
   }: SubmitNewSupplierInvoiceParams
 ): Promise<{
   success: boolean;
@@ -3060,6 +3096,7 @@ export async function submitNewSupplierInvoice(
       assigneeWID,
       omitPurchaseOrderLineReference,
       conversationUrl,
+      ...(keepSupplier ? { keepSupplier } : {}),
     },
     buildNotes,
     operationName: 'submitNewSupplierInvoice',

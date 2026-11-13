@@ -683,6 +683,58 @@ describe('notifyResult', () => {
     expect(texts).toContain('skipped resend (another run is processing it)');
   });
 
+  it('says a reimbursement packet needs manual entry and that nothing was written', async () => {
+    await notifyResult('create_invoice', 'success', 9000, {
+      reimbursementManualEntry: {
+        reason: 'the reimbursement form prints no Amount to Pay',
+        payeeName: 'Morgan <T> Ellery',
+        emailAmount: '$900.00',
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('found a reimbursement packet it cannot book; enter it manually (no invoice created)');
+    expect(texts).toContain('Not created: the reimbursement form prints no Amount to Pay.');
+    expect(texts).toContain('Payee on the form: Morgan &lt;T&gt; Ellery');
+    expect(texts).toContain('Amount in the email: $900.00');
+    expect(texts).toContain('Nothing was written to Workday. Before entering this reimbursement manually, check this conversation for an invoice already created from the form');
+    expect(texts).not.toContain('function ran');
+  });
+
+  it('says an unconfirmed amount, payee, or email amount is not confirmed instead of showing a guess', async () => {
+    await notifyResult('create_invoice', 'success', 9000, {
+      reimbursementManualEntry: {
+        reason: "the reads of the packet did not give one confirmed Amount to Pay, and the form's own totals could not confirm it (the column totals do not add up to the form total)",
+        notConfirmed: ['payeeName', 'formAmount', 'emailAmount'],
+      },
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('Not created: the reads of the packet did not give one confirmed Amount to Pay');
+    expect(texts).toContain('Payee on the form: not confirmed. Read it from the form.');
+    expect(texts).toContain('Amount to Pay on the form: not confirmed. Read it from the form.');
+    expect(texts).toContain('Amount in the email: not confirmed. Read it from the email.');
+    expect(texts).not.toMatch(/\$\d/);
+    expect(texts).toContain('Nothing was written to Workday.');
+  });
+
+  it('shows the payee and approved amount of a booked reimbursement', async () => {
+    await notifyResult('create_invoice', 'success', 12000, {
+      invoiceWID: 'new-invoice-wid',
+      invoiceNumber: 'SUPIN-412729',
+      reimbursement: [
+        'Payee: MORGAN T ELLERY (S-000123), matched by name',
+        "Amount: $1,000.00 from the form's Amount to Pay",
+        'Receipts and folios were not booked as invoice lines.',
+      ],
+    });
+
+    const texts = postedSlackTexts(global.fetch as jest.Mock);
+    expect(texts).toContain('created `SUPIN-412729`');
+    expect(texts).toContain('*Reimbursement*');
+    expect(texts).toContain("• Amount: $1,000.00 from the form's Amount to Pay");
+  });
+
   it('names the canceled invoice a new create replaces', async () => {
     await notifyResult('create_invoice', 'success', 12000, {
       invoiceWID: 'new-invoice-wid',

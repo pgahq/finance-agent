@@ -1,5 +1,5 @@
 import { debug } from '@pga/logger';
-import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
+import { loadPurchaseOrder, annotateSupplierInvoice, executeWorkdayQuery, getAllPaymentTerms, getAllWorkdayCompanies, getRelatedWorktagsForCostCenters, getSupplierInvoiceEditability, getSupplierInvoiceWithAttachments, getWorkdayConfig, isPurchaseOrderClosedForInvoicing, formatPurchaseOrderLineFallbackNotes, QUANTITY_PO_LINE_REFERENCE_LABEL, POSITIVE_PO_QUANTITY_LABEL, ZERO_AMOUNT_PO_LINES_LABEL, AMOUNT_ONLY_RETRY_LABEL, AMOUNT_ONLY_RETRY_PO_QUANTITY_LABEL, isPurchaseOrderLineAvailableForInvoicing, markPurchaseOrderLineAvailability, parsePurchaseOrder, parsePurchaseOrderLines, submitNewSupplierInvoice, submitSupplierInvoiceUpdate, ZENDESK_URL_ATTRIBUTE_ID } from '../lib/workday.js';
 import type { PurchaseOrderLine } from '../lib/workday.js';
 import { isWorkdayValidationError } from '../lib/invoice_validation_failures.js';
 import { normalizeSupplierInvoiceLineAmounts, resolveHeaderChargeAmounts } from '../lib/invoice_lines.js';
@@ -5794,6 +5794,87 @@ describe('Workday utilities', () => {
 
         expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
       });
+
+      it('retries the positive-quantity fault without the PO-linked line that bills $0.00', async () => {
+        const mockClient = mockSoapClient();
+        const captured: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback(positiveQuantityFault, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback(null, newInvoiceResponse);
+          });
+        const zeroed = (line: any) => ({ ...line, purchaseOrderLineQuantity: undefined });
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [
+            zeroed(poLinked(1, 'Business Approved Free Diagnostics', 0, 0, 0)),
+            zeroed(poLinked(2, 'Display', 1, 659, 659)),
+          ] as any,
+        });
+
+        expect(result.success).toBe(true);
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+        expect(linesOf(captured[0])).toHaveLength(2);
+        expect(linesOf(captured[0])[0]).toMatchObject({ Quantity: 0, Extended_Amount: 0 });
+        const retryLines = linesOf(captured[1]);
+        expect(retryLines).toHaveLength(1);
+        expect(retryLines[0]).toMatchObject({ Item_Description: 'Display', Quantity: 1, Unit_Cost: 659, Extended_Amount: 659 });
+        expect(retryLines[0].Purchase_Order_Line_Reference).toBeDefined();
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ field: 'positiveQuantityPurchaseOrderLine', label: ZERO_AMOUNT_PO_LINES_LABEL }),
+        ]));
+      });
+
+      it('names both repairs when one PO-linked line is sent as one unit and a $0.00 line is left off', async () => {
+        const mockClient = mockSoapClient();
+        const captured: any[] = [];
+        mockClient.Submit_Supplier_Invoice
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback(positiveQuantityFault, null);
+          })
+          .mockImplementationOnce((request: any, callback: any) => {
+            captured.push(request);
+            callback(null, newInvoiceResponse);
+          });
+        const zeroed = (line: any) => ({ ...line, purchaseOrderLineQuantity: undefined });
+
+        const result = await submitNewSupplierInvoiceForTest({
+          finalLines: [
+            zeroed(poLinked(1, 'Free diagnostics', 0, 0, 0)),
+            zeroed(poLinked(2, 'Late Fee', 0, 0, 40)),
+          ] as any,
+        });
+
+        expect(result.success).toBe(true);
+        const retryLines = linesOf(captured[1]);
+        expect(retryLines).toHaveLength(1);
+        expect(retryLines[0]).toMatchObject({ Item_Description: 'Late Fee', Quantity: 1, Unit_Cost: 40, Extended_Amount: 40 });
+        expect(result.appliedFallbacks).toEqual(expect.arrayContaining([
+          expect.objectContaining({ label: `${POSITIVE_PO_QUANTITY_LABEL}; ${ZERO_AMOUNT_PO_LINES_LABEL}` }),
+        ]));
+      });
+
+      it('does not retry when the only PO-linked quantity-0 lines bill $0.00 and no priced line would remain', async () => {
+        const mockClient = mockSoapClient();
+        mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+          callback(positiveQuantityFault, null);
+        });
+        const { debug } = require('@pga/logger');
+        debug.mockClear();
+
+        await expect(submitNewSupplierInvoiceForTest({
+          finalLines: [{ ...poLinked(1, 'Free diagnostics', 0, 0, 0), purchaseOrderLineQuantity: undefined }] as any,
+        })).rejects.toThrow('Enter a quantity that is greater than zero');
+
+        expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+        expect(debug).toHaveBeenCalledWith(expect.stringContaining('the retry cannot change them'));
+        expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('no PO-linked line was sent with quantity 0'));
+      });
     });
 
     describe('SUPIN-467011 header tax with a printed environmental charge', () => {
@@ -7795,6 +7876,25 @@ describe('Workday utilities', () => {
         ],
       });
       expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(2);
+    });
+
+    it('never retries on the default supplier when the supplier must be kept (reimbursement payee)', async () => {
+      const mockClient = mockSoapClient();
+      process.env.WORKDAY_DEFAULT_SUPPLIER_WID = 'default-supplier-wid';
+      const { classifyWorkdayValidationField } = require('../lib/workday_validation_field_agent.js');
+      mockClient.Submit_Supplier_Invoice.mockImplementation((_request: any, callback: any) => {
+        callback(Object.assign(new Error('Validation_Fault: supplier is invalid'), {
+          detail: { Validation_Fault: { Validation_Error: { Message: 'Validation_Fault: supplier is invalid' } } },
+        }), null);
+      });
+
+      await expect(submitNewSupplierInvoiceForTest({ keepSupplier: true })).rejects.toMatchObject({
+        message: 'Validation_Fault: supplier is invalid',
+      });
+      expect(mockClient.Submit_Supplier_Invoice).toHaveBeenCalledTimes(1);
+      expect(classifyWorkdayValidationField).not.toHaveBeenCalled();
+      expect(mockClient.Submit_Supplier_Invoice.mock.calls[0][0].Submit_Supplier_Invoice_Request.Supplier_Invoice_Data.Supplier_Reference.ID[0].$value)
+        .toBe(mockSupplierID);
     });
 
     describe('PO supplier', () => {
