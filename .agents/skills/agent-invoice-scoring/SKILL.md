@@ -143,7 +143,7 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
 - `JEV_AUDIT_MODE` (`JevAuditMode` parameter, default `off`; `JEV_MODEL`,
   `JEV_MIN_CONFIDENCE`, `JEV_TIMEOUT_MS`, `JEV_BUDGET_MS` optional). Unset, blank,
   or an unknown value is `off`; a stack opts in by setting `JEV_AUDIT_MODE` in
-  its CircleCI job (passed as `JevAuditMode`; `deploy-to-dev` and `deploy-to-prod` both set `shadow`): `off` never calls Jev;
+  its CircleCI job (passed as `JevAuditMode`; `deploy-to-dev` and `deploy-to-prod` both set `on`): `off` never calls Jev;
   `shadow` stores Jev's verdicts in `agent_invoice_scores.jev_shadow` and the
   rules stay the official score; `on` makes Jev's verdicts the official score.
   Tests force `off` (`jest.setup.ts`).
@@ -183,6 +183,20 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
   same. A failed Jev reply is logged and never fails the run or the posted
   record. In `on` mode the official post is already Jev-scored and no reply is
   posted.
+- What `on` gives up, so nobody has to read the processor to find out:
+  - Where Jev overrides a rule result (`entryDiff`, `lateDiff`, `outcome`, cancel
+    attribution and basis), the rule result is not stored. `jev_shadow` holds
+    Jev's answer too, `ScoredChange.jev.staticCategory` keeps the static
+    category, and nothing keeps the rule's line pairing. With the Jev reply off,
+    nothing in the channel shows where Jev and the rules disagree. Keeping the
+    rule result beside Jev's in `on` mode is not implemented.
+  - The supplier void or credit signal also comes from Jev
+    (`mode === 'on' && thread.jev ? thread.jev.voided : thread.rule`).
+  - `export-eval-cases` builds `materialChanges` and `conventionChanges` from
+    `score.entryDiff`, so eval labels come from Jev's material vs convention
+    split.
+  - A terminal row is never scored again, so rows written under `on` keep Jev's
+    values after a rollback to `shadow` or `off`; only new scoring changes back.
 
 ## Touches
 
