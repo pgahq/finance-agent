@@ -142,7 +142,7 @@ export const InvoiceEnrichmentSchema = z.object({
   extractedRetainage: z.object({
     label: z.string().describe('The exact printed label of the retainage row (e.g. "Retainage", "Less 10% Retainage").'),
     percent: z.string().nullable().describe('The retainage percentage printed (e.g. "10%"). Null when none is printed.'),
-    amount: z.string().describe('The retainage amount as printed (e.g. "$59,153.20").'),
+    amount: z.string().describe('The retainage amount as printed (e.g. "$61,250.00").'),
   }).nullable().optional().describe('The retainage or retention the document holds back from the contract total to date (a construction pay application). Null when none is printed.'),
 
   invoiceNumbersInDocument: z.array(z.string()).nullable().optional().describe('Every separate invoice number the document reader found in the supplier invoice document, set by code from the document read and never by a model. Null when none was printed.'),

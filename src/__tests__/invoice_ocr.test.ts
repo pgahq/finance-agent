@@ -954,37 +954,37 @@ describe('invoice OCR pass', () => {
     });
 
     it('splits the retainage row out of the printed payment rows (SUPIN-474922)', () => {
-      const certificates = { label: 'Less Previous Certificates for Payment', amount: '$402,241.76' };
+      const certificates = { label: 'Less Previous Certificates for Payment', amount: '$367,500.00' };
       const normalized = normalizeInvoiceOcrResult(response({
-        extractedPriorPayments: [{ label: ' Less 10% Retainage ', amount: ' $59,153.20 ' }, certificates],
+        extractedPriorPayments: [{ label: ' Less 10% Retainage ', amount: ' $61,250.00 ' }, certificates],
       }));
-      expect(normalized.extractedRetainage).toEqual({ label: 'Less 10% Retainage', percent: '10%', amount: '$59,153.20' });
+      expect(normalized.extractedRetainage).toEqual({ label: 'Less 10% Retainage', percent: '10%', amount: '$61,250.00' });
       expect(normalized.extractedPriorPayments).toEqual([certificates]);
       expect(normalizeInvoiceOcrResult(response({
-        extractedPriorPayments: [{ label: 'Retainage', amount: '$59,153.20' }],
-      }))).toMatchObject({ extractedRetainage: { label: 'Retainage', percent: null, amount: '$59,153.20' }, extractedPriorPayments: null });
+        extractedPriorPayments: [{ label: 'Retainage', amount: '$61,250.00' }],
+      }))).toMatchObject({ extractedRetainage: { label: 'Retainage', percent: null, amount: '$61,250.00' }, extractedPriorPayments: null });
       expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [certificates] })).extractedRetainage).toBeNull();
       expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [] })).extractedRetainage).toBeNull();
     });
 
     it.each(['Total Earned Less Retainage', 'Balance to Finish, including retainage', 'Deposit retained'])('does not split the "%s" row out as retainage held, and keeps looking for the real retainage row', label => {
-      const other = { label, amount: '$532,378.80' };
-      const retainage = { label: 'Retainage 10%', amount: '$53,237.88' };
+      const other = { label, amount: '$551,250.00' };
+      const retainage = { label: 'Retainage 10%', amount: '$55,125.00' };
       const normalized = normalizeInvoiceOcrResult(response({ extractedPriorPayments: [other, retainage] }));
-      expect(normalized.extractedRetainage).toEqual({ label: 'Retainage 10%', percent: '10%', amount: '$53,237.88' });
+      expect(normalized.extractedRetainage).toEqual({ label: 'Retainage 10%', percent: '10%', amount: '$55,125.00' });
       expect(normalized.extractedPriorPayments).toEqual([other]);
       expect(normalizeInvoiceOcrResult(response({ extractedPriorPayments: [other] })).extractedRetainage).toBeNull();
     });
 
     it('does not split a retainage release row out as retainage held', () => {
-      const release = { label: 'Retainage Released', amount: '$59,153.20' };
+      const release = { label: 'Retainage Released', amount: '$61,250.00' };
       const normalized = normalizeInvoiceOcrResult(response({ extractedPriorPayments: [release] }));
       expect(normalized.extractedRetainage).toBeNull();
       expect(normalized.extractedPriorPayments).toEqual([release]);
     });
 
     it('carries retainage through the merge, and is empty without OCR', () => {
-      const retainage = { label: 'Retainage', percent: '10%', amount: '$59,153.20' };
+      const retainage = { label: 'Retainage', percent: '10%', amount: '$61,250.00' };
       expect(mergeInvoiceEnrichment(matchingResult, { ...ocrResult, extractedRetainage: retainage }).extractedRetainage).toEqual(retainage);
       expect(mergeInvoiceEnrichment(matchingResult, undefined).extractedRetainage).toBeNull();
     });
@@ -1031,9 +1031,9 @@ describe('invoice OCR pass', () => {
     });
 
     it('tells the model to read a pay application from the completed-to-date line, using the SUPIN-474922 figures', () => {
-      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $591,532.00, Total Completed and Stored to Date $532,378.80, Total retainage $0.00');
-      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$532,378.80" } (not the contract sum)');
-      expect(invoiceOcrPrompt).toContain('(the $59,153.20 balance to finish is not listed)');
+      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $612,500.00, Total Completed and Stored to Date $551,250.00, Total retainage $0.00');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$551,250.00" } (not the contract sum)');
+      expect(invoiceOcrPrompt).toContain('(the $61,250.00 balance to finish is not listed)');
       expect(invoiceOcrPrompt).toContain('never list them in `extractedPriorPayments`');
     });
 
@@ -1231,7 +1231,7 @@ describe('invoice OCR pass', () => {
     });
 
     it('asks for retainage on a pay application with the SUPIN-474922 example and keeps it out of totals charges', () => {
-      expect(invoiceOcrPrompt).toContain('extractedAmountDue "$130,137.04"');
+      expect(invoiceOcrPrompt).toContain('extractedAmountDue "$183,750.00"');
       expect(invoiceOcrPrompt).toContain('never a retainage or retention row (Part 4.5)');
       expect(InvoiceOcrSchema.shape).not.toHaveProperty('extractedRetainage');
     });

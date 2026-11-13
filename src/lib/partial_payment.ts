@@ -463,7 +463,7 @@ function priorPaymentCents(payments: PrintedPriorPayment[] | null | undefined, z
   return total > 0 ? total : undefined;
 }
 
-// A whole printed amount (`$59,153.20`, `(59,153.20)`, `59153.20-`), not text that merely contains digits.
+// A whole printed amount (`$61,250.00`, `(61,250.00)`, `61250.00-`), not text that merely contains digits.
 const WHOLE_AMOUNT = /^\(?\s*[-\u2212]?\s*\$?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*\)?\s*-?$/;
 
 function readPrintedAmount(raw: string | null | undefined): number | undefined {
