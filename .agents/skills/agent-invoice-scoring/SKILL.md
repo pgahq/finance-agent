@@ -143,7 +143,7 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
 - `JEV_AUDIT_MODE` (`JevAuditMode` parameter, default `off`; `JEV_MODEL`,
   `JEV_MIN_CONFIDENCE`, `JEV_TIMEOUT_MS`, `JEV_BUDGET_MS` optional). Unset, blank,
   or an unknown value is `off`; a stack opts in by setting `JEV_AUDIT_MODE` in
-  its CircleCI job (passed as `JevAuditMode`; `deploy-to-dev` and `deploy-to-prod` both set `shadow`): `off` never calls Jev;
+  its CircleCI job (passed as `JevAuditMode`; `deploy-to-dev` sets `shadow`, `deploy-to-prod` leaves it `off`): `off` never calls Jev;
   `shadow` stores Jev's verdicts in `agent_invoice_scores.jev_shadow` and the
   rules stay the official score; `on` makes Jev's verdicts the official score.
   Tests force `off` (`jest.setup.ts`).

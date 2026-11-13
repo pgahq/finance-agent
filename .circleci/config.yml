@@ -145,8 +145,6 @@ jobs:
       TENANT_REFRESH_WEEKDAY: none
       # #notify-finance-agent-audit
       AUDIT_SLACK_CHANNEL_ID: C0C5W6B0G4V
-      # Jev scores the audit in shadow beside the rules; the rules stay official.
-      JEV_AUDIT_MODE: shadow
 
 workflows:
   version: 2
