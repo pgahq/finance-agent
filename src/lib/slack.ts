@@ -170,11 +170,15 @@ function appendReimbursementManualEntryBlock(blocks: SlackBlock[], entry: Record
   const text = (value: unknown) => (typeof value === 'string' && value.trim() ? escapeSlackMrkdwn(value.trim()) : undefined);
   const reason = text(entry.reason);
   if (!reason) return false;
+  const notConfirmed = new Set(Array.isArray(entry.notConfirmed) ? entry.notConfirmed : []);
   const lines = [
     `Not created: ${reason}.`,
     ...(text(entry.payeeName) ? [`Payee on the form: ${text(entry.payeeName)}`] : []),
+    ...(notConfirmed.has('payeeName') ? ['Payee on the form: not confirmed. Read it from the form.'] : []),
     ...(text(entry.formAmount) ? [`Amount to Pay on the form: ${text(entry.formAmount)}`] : []),
+    ...(notConfirmed.has('formAmount') ? ['Amount to Pay on the form: not confirmed. Read it from the form.'] : []),
     ...(text(entry.emailAmount) ? [`Amount in the email: ${text(entry.emailAmount)}`] : []),
+    ...(notConfirmed.has('emailAmount') ? ['Amount in the email: not confirmed. Read it from the email.'] : []),
     'Nothing was written to Workday. Before entering this reimbursement manually, check this conversation for an invoice already created from the form, so the person is not paid twice.',
   ];
   blocks.push({

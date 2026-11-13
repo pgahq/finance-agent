@@ -92,6 +92,8 @@ export interface ScoredChange extends FieldChange {
   category: ChangeCategory;
   /** False when the enrich agent left this field as OCR had it, so AP fixed OCR, not the agent. */
   agentOwned: boolean;
+  /** Set when Jev decided `category`: its probability that AP corrected an agent error, and what the static field list says. */
+  jev?: { probability: number; staticCategory: ChangeCategory };
 }
 
 export function categoryOf(field: ScoredFieldName): ChangeCategory {
@@ -172,11 +174,38 @@ export const CANCEL_BASES = [
   'wrong_document',
   'per_pdf_without_clustering',
   'supplier_void_or_credit',
+  'jev',
   'early_draft_cancel',
   'invoice_unreadable',
   'no_signal',
 ] as const;
 export type CancelBasis = typeof CANCEL_BASES[number];
+
+/**
+ * Bases that rest on a Workday fact or AP's own call. Jev never overrides these; it only decides the cancels the
+ * softer rules (wrong document, extra PDF, supplier message, early cancel, no signal) would have handled.
+ */
+export const FACT_CANCEL_BASES: ReadonlySet<CancelBasis> = new Set<CancelBasis>([
+  'ap_label',
+  'agent_reason',
+  'agent_tag',
+  'business_reason',
+  'duplicate_reason',
+  'replacement',
+  'duplicate',
+  'invoice_unreadable',
+]);
+
+/** What Jev decided for one invoice, stored beside the official score. `on` mode scores with these values. */
+export interface JevShadow {
+  model: string;
+  cancel?: { attribution: CancelAttribution; basis: CancelBasis; confidence?: number };
+  supplierVoidOrCredit?: { jev: boolean; probability: number; rule?: boolean };
+  /** Entry stage: the changes under Jev's line pairing and classification, and the outcome they give. */
+  entryDiff?: ScoredChange[];
+  entryOutcome?: Outcome;
+  lateDiff?: ScoredChange[];
+}
 
 export interface CancelReasonMapping {
   business: string[];
@@ -304,18 +333,26 @@ const SUPPLIER_VOID_OR_CREDIT_PATTERN =
 /** Intercom author types for the customer side of a conversation (the supplier). */
 const SUPPLIER_AUTHOR_TYPES = new Set(['user', 'lead', 'contact']);
 
+export interface SupplierThreadMessage {
+  createdAt?: number;
+  body?: string;
+  authorType?: string;
+  partType?: string;
+}
+
+/** Supplier-authored messages after the agent's write. AP replies, internal notes, and bots never count. */
+export function supplierMessagesAfter(messages: SupplierThreadMessage[], afterUnixSeconds?: number): SupplierThreadMessage[] {
+  return messages.filter((message) =>
+    SUPPLIER_AUTHOR_TYPES.has(message.authorType ?? '')
+    && message.partType !== 'note'
+    && (afterUnixSeconds == null || (message.createdAt != null && message.createdAt >= afterUnixSeconds))
+  );
+}
+
 /**
  * True when a supplier message after the agent's write says the invoice was voided or credited. AP replies, internal
  * notes, and bot messages never count, so an AP note cannot clear the agent of a cancel it caused.
  */
-export function mentionsSupplierVoidOrCredit(
-  messages: Array<{ createdAt?: number; body?: string; authorType?: string; partType?: string }>,
-  afterUnixSeconds?: number
-): boolean {
-  return messages.some((message) =>
-    SUPPLIER_AUTHOR_TYPES.has(message.authorType ?? '')
-    && message.partType !== 'note'
-    && (afterUnixSeconds == null || (message.createdAt != null && message.createdAt >= afterUnixSeconds))
-    && SUPPLIER_VOID_OR_CREDIT_PATTERN.test(message.body ?? '')
-  );
+export function mentionsSupplierVoidOrCredit(messages: SupplierThreadMessage[], afterUnixSeconds?: number): boolean {
+  return supplierMessagesAfter(messages, afterUnixSeconds).some((message) => SUPPLIER_VOID_OR_CREDIT_PATTERN.test(message.body ?? ''));
 }

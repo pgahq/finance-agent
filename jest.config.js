@@ -22,6 +22,7 @@ export default {
   },
   transformIgnorePatterns: [`/node_modules/(?!(${esmOnlyPackages.join('|')})/)`],
   testEnvironment: 'node',
+  setupFiles: ['<rootDir>/jest.setup.ts'],
   testMatch: ['**/__tests__/**/*.test.ts'],
   collectCoverageFrom: [
     'src/**/*.ts',

@@ -60,6 +60,7 @@ references:
             TenantRefreshWeekday=$TENANT_REFRESH_WEEKDAY
             AuditSlackChannelId=$AUDIT_SLACK_CHANNEL_ID
             BankingInfoTagRefId=$BANKING_INFO_TAG_REF_ID
+            JevAuditMode=${JEV_AUDIT_MODE:-off}
 
 jobs:
   build:
@@ -127,6 +128,8 @@ jobs:
       AUDIT_SLACK_CHANNEL_ID: C0C6VS0BDPA
       # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
       BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
+      # Jev scores the audit in shadow beside the rules; the rules stay official.
+      JEV_AUDIT_MODE: shadow
 
   deploy-to-prod:
     <<: *deploy_container_config
@@ -147,6 +150,8 @@ jobs:
       AUDIT_SLACK_CHANNEL_ID: C0C5W6B0G4V
       # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
       BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
+      # Jev scores the audit in shadow beside the rules; the rules stay official.
+      JEV_AUDIT_MODE: shadow
 
 workflows:
   version: 2

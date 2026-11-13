@@ -46,6 +46,20 @@ Do not change these when the ask is "stop Lambda retries":
 
 Those run inside a single invocation.
 
+## Jev audit mode
+
+`JevAuditMode` (`off`, `shadow`, `on`; default `off`; CircleCI passes
+`JEV_AUDIT_MODE` from the job environment, `off` when unset) sets `JEV_AUDIT_MODE`
+on `ScoreInvoicesProcessor` and `ScoreDigestFunction` only. It adds no secret,
+VPC route, or egress beyond the existing `AI_GATEWAY_API_KEY` Global. Each
+invoice costs a few Jev calls of at most 15s each (one retry); `jevDecide`'s
+circuit breaker (three failures, five minutes) keeps an outage inside the
+processor's 900s with `PROCESSOR_BATCH_SIZE` 20, and the per-invocation Jev time
+budget (`JEV_BUDGET_MS`, default 300s, started in the processor) covers slow
+answers that never fail. If you raise the Timeout, batch size, or per-call
+timeout, recheck that budget. Set the parameter to `off` to stop all Jev traffic; see
+`agent-invoice-scoring`.
+
 ## Change checklist
 
 - Edit `Globals.Function` for settings that should apply to every function

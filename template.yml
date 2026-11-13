@@ -63,6 +63,18 @@ Parameters:
       invoices whose documents print supplier bank details. Empty disables the tag (set per environment in CircleCI).
       Workday rejects an unknown ID.
     Default: ""
+  JevAuditMode:
+    Type: String
+    Description: >-
+      How the audit uses TypeSafe's Jev model through the AI Gateway. "off" never calls it; "shadow" calls it, stores its
+      verdicts and posts a Jev-scored thread reply under each audit post while the rules stay the official score;
+      "on" makes Jev's verdicts the official score. Anything but "off" sends invoice values and supplier Intercom text
+      to TypeSafe via Vercel AI Gateway (zero data retention), so it is off until a stack opts in.
+    Default: "off"
+    AllowedValues:
+      - "off"
+      - shadow
+      - "on"
   WorkdayUiBaseUrl:
     Type: String
     Description: Workday UI host for object deep links (implementation vs production)
@@ -823,6 +835,7 @@ Resources:
       Environment:
         Variables:
           CANCEL_REASON_ATTRIBUTION: !Ref CancelReasonAttribution
+          JEV_AUDIT_MODE: !Ref JevAuditMode
           # WQL alias for Supplier's Invoice Number on supplierInvoices; finds an invoice AP re-keyed after a cancel.
           SCORE_SUPPLIERS_INVOICE_NUMBER_WQL_FIELD: suppliersInvoiceNumber
           INTERCOM_ACCESS_TOKEN: ssm:/finance-agent/intercom-access-token
@@ -846,6 +859,7 @@ Resources:
       Environment:
         Variables:
           AUDIT_SLACK_CHANNEL_ID: !Ref AuditSlackChannelId
+          JEV_AUDIT_MODE: !Ref JevAuditMode
           AUDIT_SLACK_BOT_TOKEN: ssm:/finance-agent/audit-slack-bot-token
       VpcConfig:
         SecurityGroupIds:
