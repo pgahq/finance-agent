@@ -1163,11 +1163,11 @@ describe('invoice OCR pass', () => {
     });
 
     it('tells the model to read a pay application from the completed-to-date line, using the SUPIN-474922 figures', () => {
-      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $591,532.00, Total Completed and Stored to Date $532,378.80');
-      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$532,378.80" } (not the contract sum)');
-      expect(invoiceOcrPrompt).toContain('(the $59,153.20 balance to finish is not listed)');
+      expect(invoiceOcrPrompt).toContain('Contract Sum to Date $612,500.00, Total Completed and Stored to Date $551,250.00');
+      expect(invoiceOcrPrompt).toContain('extractedLineSubtotal { label: "Total Completed and Stored to Date", amount: "$551,250.00" } (not the contract sum)');
+      expect(invoiceOcrPrompt).toContain('(the $61,250.00 balance to finish is not listed)');
       expect(invoiceOcrPrompt).toContain('never list them in `extractedPriorPayments`');
-      expect(invoiceOcrPrompt).toContain('extractedAmountDue "$130,137.04"');
+      expect(invoiceOcrPrompt).toContain('extractedAmountDue "$183,750.00"');
     });
 
     it('asks for totals-block fees and discounts with the SUPIN-470485 example, keeping printed signs', () => {

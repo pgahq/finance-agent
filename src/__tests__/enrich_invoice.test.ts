@@ -1881,7 +1881,7 @@ describe('enrich_invoice', () => {
       supplier: {
         status: 'matching',
         confidence: 0.9,
-        extractedInformation: { supplierName: 'Berg Construction LLC', memo: 'transportation' },
+        extractedInformation: { supplierName: 'Example Construction LLC', memo: 'transportation' },
         resolvedSupplier: null,
         potentialDuplicateSuppliers: null,
         recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
@@ -1898,7 +1898,7 @@ describe('enrich_invoice', () => {
       extractedInvoiceLines: supin474922Rows,
     });
     invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string }>) => ({
-      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 130137.04, extendedAmount: 130137.04 })),
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: 1, unitCost: 183750, extendedAmount: 183750 })),
       appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
       relatedLobByCostCenter: new Map()
     }));
@@ -1914,12 +1914,12 @@ describe('enrich_invoice', () => {
     } as any);
 
     const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1);
-    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Total Completed and Stored to Date $532,378.80)', quantity: 1, totalPrice: '$130,137.04' })]);
+    expect(built[0]).toEqual([expect.objectContaining({ description: 'Pay application - current payment due (Total Completed and Stored to Date $551,250.00)', quantity: 1, totalPrice: '$183,750.00' })]);
     expect(built[6]).toBe(true);
     const params = submitSupplierInvoiceUpdate.mock.calls.at(-1)[1];
     expect(params.finalLines).toHaveLength(1);
     const notes = params.buildNotes([]);
-    expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $532,378.80, after "Less Previous Certificates for Payment" $402,241.76, which leaves the $130,137.04 current payment due (1 printed line).');
+    expect(notes).toContain('Pay application: "Total Completed and Stored to Date" is $551,250.00, after "Less Previous Certificates for Payment" $367,500.00, which leaves the $183,750.00 current payment due (1 printed line).');
     expect(notes).not.toContain('Line subtotal review');
     expect(notes).not.toContain('Line total review');
   });
