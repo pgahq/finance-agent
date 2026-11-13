@@ -11,6 +11,7 @@ import {
   reviewAmountDueGapCents,
   secondReadRowsNote,
   subtotalFreightCents,
+  selectBalancePoLine,
   selectDepositPoLine,
   sumExtractedLineCents,
   type BalanceInvoiceInput,
@@ -27,6 +28,15 @@ import { supin472322Header, supin472322PoLines, supin472322ProductionRows, supin
 import { summaryCreditCents } from '../lib/header_charges.js';
 import { supin472108Header, supin472108ProductionRows, supin472108Rows } from './fixtures/supin_472108.js';
 import { supin471692Header, supin471692Payments, supin471692Rows } from './fixtures/supin_471692.js';
+import {
+  remainingBalanceAmbiguousPoLines,
+  remainingBalanceFinalPaymentPoLine,
+  remainingBalanceOverageDeposits,
+  remainingBalanceOverageHeader,
+  remainingBalanceOverageRows,
+  remainingBalanceShortPoLine,
+  remainingBalanceUnlabeledSinglePoLine,
+} from './fixtures/remaining_balance_po_overage.js';
 
 const poLines = supin470584PoLines as any[];
 
@@ -329,6 +339,85 @@ describe('selectDepositPoLine', () => {
   });
 });
 
+describe('selectBalancePoLine', () => {
+  it('matches an exact amount the same way selectDepositPoLine does, with no "final payment" wording needed', () => {
+    const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Rooms block', extendedAmount: 1200 } as any;
+    expect(selectBalancePoLine([line], 120000)).toEqual({ status: 'matched', line, consumed: false, exact: true });
+  });
+
+  it('still reports several exact matches as ambiguous without relaxing to the covering rule', () => {
+    const a = { lineOrder: 1, purchaseOrderLineId: 'L1', extendedAmount: 1200 } as any;
+    const b = { lineOrder: 2, purchaseOrderLineId: 'L2', extendedAmount: 1200 } as any;
+    expect(selectBalancePoLine([a, b], 120000)).toEqual({ status: 'unmatched', reason: 'several PO lines are for $1,200.00' });
+  });
+
+  it('has no PO to pick from when there are no lines', () => {
+    expect(selectBalancePoLine(undefined, 120000)).toEqual({ status: 'no_po' });
+    expect(selectBalancePoLine([], 120000)).toEqual({ status: 'no_po' });
+  });
+
+  describe('a line description, matched or not', () => {
+    const covers = (description: string | undefined) => {
+      const line = { lineOrder: 1, purchaseOrderLineId: 'L1', description, extendedAmount: 13500 } as any;
+      const other = { lineOrder: 2, purchaseOrderLineId: 'L2', description: 'Unrelated rooms block', extendedAmount: 20000 } as any;
+      return selectBalancePoLine([line, other], 1200000).status === 'matched';
+    };
+
+    it.each([
+      ['Final payment for all remaining event charges', true],
+      ['Final Payment', true],
+      ['Remaining Balance', true],
+      ['Remaining balance due on final invoice', true],
+      ['Final remaining balance', true],
+      ['FINAL PAYMENT - EVENT SERVICES', true],
+      ['Final walkthrough', false],
+      ['Remaining rooms to block', false],
+      ['Payment', false],
+      ['Balance', false],
+      ['Event services', false],
+      [undefined, false],
+    ])('description %j is treated as a final-payment line: %s', (description, expected) => {
+      expect(covers(description)).toBe(expected);
+    });
+  });
+
+  it('picks the one final-payment line even when other, unrelated PO lines are present', () => {
+    const final = remainingBalanceFinalPaymentPoLine[0];
+    const other = { lineOrder: 2, purchaseOrderLineId: 'OTHER', description: 'Rooms block', extendedAmount: 5000 } as any;
+    expect(selectBalancePoLine([other, final], 1200000)).toEqual({ status: 'matched', line: final, consumed: false, exact: false });
+  });
+
+  it('falls back to the PO\'s one line when nothing is described as a final payment', () => {
+    const line = remainingBalanceUnlabeledSinglePoLine[0];
+    expect(selectBalancePoLine([line], 1200000)).toEqual({ status: 'matched', line, consumed: false, exact: false });
+  });
+
+  it('does not use the sole-line fallback when the PO has more than one line and none is described', () => {
+    const a = { lineOrder: 1, purchaseOrderLineId: 'L1', description: 'Rooms block', extendedAmount: 20000 } as any;
+    const b = { lineOrder: 2, purchaseOrderLineId: 'L2', description: 'Catering', extendedAmount: 20000 } as any;
+    expect(selectBalancePoLine([a, b], 1200000)).toEqual({ status: 'unmatched', reason: 'no PO line is for $12,000.00' });
+  });
+
+  it('does not guess between several lines that could be the final payment', () => {
+    expect(selectBalancePoLine(remainingBalanceAmbiguousPoLines, 1200000)).toEqual({
+      status: 'unmatched',
+      reason: '2 PO lines could be the remaining-balance line; check which one applies',
+    });
+  });
+
+  it('refuses a final-payment line that is smaller than the balance', () => {
+    expect(selectBalancePoLine(remainingBalanceShortPoLine, 1200000)).toEqual({
+      status: 'unmatched',
+      reason: "the PO's final-payment line is only $9,000.00, less than the $12,000.00 amount due",
+    });
+  });
+
+  it('marks a matched final-payment line consumed when it is already fully invoiced or closed', () => {
+    const consumed = { ...remainingBalanceFinalPaymentPoLine[0], availableForInvoicing: false };
+    expect(selectBalancePoLine([consumed], 1200000)).toEqual({ status: 'matched', line: consumed, consumed: true, exact: false });
+  });
+});
+
 describe('planPartialPayment', () => {
   it('replaces the SUPIN-470584 lines with one deposit line pinned to the deposit PO line', () => {
     const plan = planPartialPayment(input())!;
@@ -568,8 +657,11 @@ describe('planBalanceInvoice', () => {
       expect(plan.poLines).toEqual([balancePo[1]]);
     });
 
-    it('does not apply when the PO has lines but none is the balance', () => {
-      const plan = planBalanceInvoice(balanceInput({ poLines: [balancePo[0]] }))!;
+    it('does not apply when the PO has several lines and none is the balance or described as a final payment', () => {
+      // Two unlabeled lines, neither exactly the balance: not a single-line PO and no final-payment wording,
+      // so this is still the "no eligible candidate" case, unchanged from before this PO line was added.
+      const other = { lineOrder: 3, purchaseOrderLineId: 'L3', quantity: 1, unitCost: 100 } as any;
+      const plan = planBalanceInvoice(balanceInput({ poLines: [balancePo[0], other] }))!;
       expect(plan.applied).toBe(false);
       expect(plan.note).toContain('no PO line is for $5,909.50');
     });
@@ -579,6 +671,66 @@ describe('planBalanceInvoice', () => {
       expect(plan.applied).toBe(true);
       expect(plan.note).toContain('check whether this balance was billed before approving');
       expect(plan.slackLines).toHaveLength(2);
+    });
+
+    it('books the balance on a final-payment PO line that is larger than the balance, noting the amount it came in under', () => {
+      // Driven by printed deposits that reconcile the subtotal to the amount due (not an email balance).
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: remainingBalanceFinalPaymentPoLine,
+      })!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([remainingBalanceFinalPaymentPoLine[0]]);
+      expect(plan.line).toMatchObject({ quantity: 1, unitCost: '$12,000.00', totalPrice: '$12,000.00' });
+      expect(plan.note).toContain('The invoice was booked for $12,000.00 on the PO\'s "Final payment for all remaining event charges" line ($13,500.00), $1,500.00 under that line; AP should follow up with the PO owner about the difference.');
+      expect(plan.note).not.toContain('check before approving');
+      expect(plan.slackLines).toContainEqual(
+        'Booked $12,000.00 on the PO\'s "Final payment for all remaining event charges" line ($13,500.00), $1,500.00 under that line.'
+      );
+    });
+
+    it('books the balance on the PO\'s only line even with no final-payment wording', () => {
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: remainingBalanceUnlabeledSinglePoLine,
+      })!;
+      expect(plan.applied).toBe(true);
+      expect(plan.poLines).toEqual([remainingBalanceUnlabeledSinglePoLine[0]]);
+      expect(plan.note).toContain('under that line');
+    });
+
+    it('does not guess when several PO lines could be the final-payment line', () => {
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: remainingBalanceAmbiguousPoLines,
+      })!;
+      expect(plan.applied).toBe(false);
+      expect(plan.note).toContain('2 PO lines could be the remaining-balance line; check which one applies');
+    });
+
+    it('does not book a final-payment PO line that is smaller than the balance', () => {
+      const plan = planBalanceInvoice({
+        priorPayments: remainingBalanceOverageDeposits,
+        emailBalanceDue: null,
+        lineSubtotal: remainingBalanceOverageHeader.extractedLineSubtotal,
+        amountDue: remainingBalanceOverageHeader.extractedAmountDue,
+        lines: remainingBalanceOverageRows,
+        poLines: remainingBalanceShortPoLine,
+      })!;
+      expect(plan.applied).toBe(false);
+      expect(plan.note).toContain("the PO's final-payment line is only $9,000.00, less than the $12,000.00 amount due");
     });
   });
 });
