@@ -103,6 +103,22 @@ describe('SAM template', () => {
       expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);
     });
 
+    it('keeps Jev off by default, opt-in per stack from CircleCI, on exactly the scoring and digest functions, with no new secret', () => {
+      const parameter = globals.match(/JevAuditMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
+      expect(parameter).toMatch(/Default: "off"/);
+      expect(circleci).toMatch(/JevAuditMode=\$\{JEV_AUDIT_MODE:-off\}/);
+      const devJob = circleci.split('deploy-to-dev:')[1]?.split('deploy-to-prod:')[0] ?? '';
+      const prodJob = circleci.split('deploy-to-prod:')[1]?.split('workflows:')[0] ?? '';
+      expect(devJob).toMatch(/JEV_AUDIT_MODE:\s*shadow/);
+      expect(prodJob).not.toMatch(/JEV_AUDIT_MODE/);
+      expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
+      expect(resourceBlock('ScoreInvoicesProcessor')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
+      expect(resourceBlock('ScoreDigestFunction')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
+      expect(template.match(/JEV_AUDIT_MODE:/g)).toHaveLength(2);
+      expect(template).toMatch(/AI_GATEWAY_API_KEY:\s*ssm:\/finance-agent\/ai-gateway-api-key/);
+      expect(template).not.toMatch(/TYPESAFE_API_KEY/);
+    });
+
     it('takes the audit channel from CircleCI per environment', () => {
       expect(globals).toMatch(/AuditSlackChannelId:/);
       expect(globals).not.toMatch(/AuditSlackChannelId:\n(?: {4}.*\n)*? {4}Default:/);

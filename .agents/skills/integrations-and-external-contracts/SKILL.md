@@ -259,6 +259,18 @@ Every language model and embedding call goes through the Vercel AI Gateway with 
 
 `createLanguageModel` adds middleware that logs each failed provider attempt (`AI model attempt failed`: status, `isRetryable`, `Retry-After`) and any attempt of 30s or more (`Slow AI model attempt`), because the SDK drops earlier attempt errors when the Lambda deadline aborts a retry backoff. A deadline abort surfaces as `ProcessorDeadlineError` (`src/lib/deadline.ts`) instead of the SDK's `Delay was aborted`; Slack shows a generic out-of-time message that makes no claim about Workday state, and the deadline log reports the real remaining time.
 
+### Jev (audit scoring)
+
+`src/lib/jev.ts` calls `typesafe-ai/jev-1.14.0` (`JEV_MODEL` overrides) with
+the AI SDK's `experimental_decide` (needs `ai` 7.0.128 or later; the API is
+experimental, so it is the only file that imports it). Questions are typed
+`boolean` or `choice` against one state object. The request is pinned with
+`{ gateway: { only: ['typesafe-ai'], zeroDataRetention: true } }` and has no
+fallback model. It uses the same `AI_GATEWAY_API_KEY`. It is used only by the
+audit scoring in `ScoreInvoicesProcessor` and `ScoreDigest`, never by invoice
+creation, enrichment, or any Workday write. See `agent-invoice-scoring` for what
+it decides and `JEV_AUDIT_MODE`.
+
 ### Invoice enrichment: Haiku OCR, then gpt-5.4 matching
 
 `enrichInvoiceFromAttachments` (create and enrich) makes two model calls and merges them into the unchanged `InvoiceEnrichmentResult`, so callers, line building, and scoring do not change.

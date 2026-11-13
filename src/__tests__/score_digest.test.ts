@@ -779,6 +779,95 @@ describe('score digest handler', () => {
     expect(payloadOf(0).blocks.map((block) => block.text?.text ?? '').join('\n')).not.toContain('Agent coverage');
     delete process.env.SCORE_TENANT_REFRESH_WEEKDAY;
   });
+
+  describe('Jev-scored reply', () => {
+    const jevShadow = { model: 'typesafe-ai/jev-1.14.0', entryOutcome: 'submitted_clean', entryDiff: [] };
+    const dailyRows = () => [
+      { workday_invoice_wid: 'w1', workday_invoice_number: 'SUPIN-1', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false, jev_shadow: jevShadow },
+      { workday_invoice_wid: 'w2', workday_invoice_number: 'SUPIN-2', entry_read_at: new Date(Date.now() - 60_000), outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false },
+    ];
+    const earlier = { workday_invoice_wid: 'w0', entry_read_at: new Date(Date.now() - 3 * 86_400_000), outcome: 'submitted_clean', entry_diff: [], terminal: false };
+    const textOf = (call: number) => payloadOf(call).blocks.map((block) => block.text?.text ?? block.elements?.map((element) => element.text).join(' ') ?? '').join('\n');
+
+    afterEach(() => {
+      process.env.JEV_AUDIT_MODE = 'off';
+    });
+
+    async function runDaily(mode: string) {
+      process.env.JEV_AUDIT_MODE = mode;
+      fetchMock.mockClear();
+      routeQueries({ digest: dailyRows(), entered: [...dailyRows(), earlier] });
+      await handler({ mode: 'daily' });
+    }
+
+    it('posts the Jev-scored touch lead and comparison in the lead\'s thread while the official post stays the same', async () => {
+      await runDaily('off');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const official = payloadOf(0);
+
+      await runDaily('shadow');
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(payloadOf(0)).toEqual(official);
+      const reply = payloadOf(3);
+      expect(reply.thread_ts).toBe(LEAD_TS);
+      expect(reply.blocks.some((block) => block.type === 'header' && block.text?.text === '50% of invoices needed 0 touches today (1 of 2)')).toBe(true);
+      expect(official.blocks[0]).toEqual({ type: 'header', text: { type: 'plain_text', text: '0% of invoices needed 0 touches today (0 of 2)' } });
+      const chartUrl = (blocks: typeof reply.blocks) => blocks.find((block) => block.type === 'image')?.image_url ?? '';
+      expect(chartUrl(official.blocks)).toMatch(/^https:\/\/quickchart\.io\/chart\?/);
+      expect(chartUrl(reply.blocks)).toMatch(/^https:\/\/quickchart\.io\/chart\?/);
+      expect(chartUrl(reply.blocks)).not.toBe(chartUrl(official.blocks));
+      expect(textOf(3)).toContain('Jev-scored');
+      expect(textOf(3)).toContain('Jev vs rules');
+      expect(textOf(3)).toContain('Outcome (clean or edited): 0 of 1 agree');
+    });
+
+    it('posts no Jev reply when Jev is off, scores everything by Jev, or no invoice carries a verdict', async () => {
+      await runDaily('off');
+      await runDaily('on');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      process.env.JEV_AUDIT_MODE = 'shadow';
+      fetchMock.mockClear();
+      const bare = dailyRows().map(({ jev_shadow: _jev, ...row }) => row);
+      routeQueries({ digest: bare, entered: bare });
+      await handler({ mode: 'daily' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not fail the run or the posted record when the Jev reply cannot be posted', async () => {
+      process.env.JEV_AUDIT_MODE = 'shadow';
+      fetchMock.mockClear();
+      routeQueries({ digest: dailyRows(), entered: dailyRows() });
+      fetchMock
+        .mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS }))
+        .mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS }))
+        .mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS }))
+        .mockResolvedValueOnce(slackAnswer({ ok: false, error: 'invalid_blocks' }));
+      await expect(handler({ mode: 'daily' })).resolves.toBeUndefined();
+      expect(recordedPost()?.[1]?.[0]).toBe('daily');
+
+      fetchMock.mockClear();
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS })).mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS }))
+        .mockResolvedValueOnce(slackAnswer({ ok: true, ts: LEAD_TS })).mockRejectedValueOnce(new Error('network'));
+      await expect(handler({ mode: 'daily' })).resolves.toBeUndefined();
+    });
+
+    it('replies under the weekly digest with the week\'s comparison', async () => {
+      process.env.JEV_AUDIT_MODE = 'shadow';
+      const entered = [
+        { workday_invoice_wid: 'w1', entry_read_at: lastSunday, outcome: 'submitted_edited', entry_diff: [costCenterChange], terminal: false, jev_shadow: jevShadow },
+        { workday_invoice_wid: 'w2', entry_read_at: lastSunday, outcome: 'submitted_clean', entry_diff: [], terminal: false },
+      ];
+      routeQueries({ digest: entered, entered });
+      await handler({});
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(payloadOf(0).thread_ts).toBeUndefined();
+      expect(payloadOf(1).thread_ts).toBe(LEAD_TS);
+      expect(textOf(1)).toContain('Jev vs rules');
+      expect(textOf(1)).toContain('Zero-touch share: 100% by Jev, 50% by the rules');
+    });
+  });
 });
 
 describe('agent coverage in the weekly digest', () => {
