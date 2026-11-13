@@ -53,7 +53,7 @@ describe('compareJev', () => {
       score({ jevShadow: { model: 'm', entryDiff: [costCenter('convention', { jev: { probability: 0.1, staticCategory: 'material' } })], entryOutcome: 'submitted_clean' } }),
       score({
         outcome: 'canceled', entryDiff: undefined, cancelAttribution: 'unattributed', cancelBasis: 'no_signal',
-        jevShadow: { model: 'm', cancel: { attribution: 'business', basis: 'jev' }, supplierVoidOrCredit: { jev: true, probability: 0.9, rule: false } },
+        jevShadow: { model: 'm', cancel: { attribution: 'business', basis: 'jev', confidence: 0.9 }, supplierVoidOrCredit: { jev: true, probability: 0.9, rule: false } },
       }),
     ]);
     expect(comparison.compared).toBe(3);
@@ -65,6 +65,22 @@ describe('compareJev', () => {
     expect(comparison.disagreements.map((item) => item.text)).toEqual([
       expect.stringContaining('cancel unattributed (no signal) by the rules, business (Jev judgment) by Jev'),
       expect.stringContaining('by the rules'),
+    ]);
+  });
+
+  it('counts only cancels Jev judged, and names AP\'s label as AP rather than the rules', () => {
+    const fact = score({
+      outcome: 'canceled', entryDiff: undefined, cancelAttribution: 'business', cancelBasis: 'business_reason',
+      jevShadow: { model: 'm', cancel: { attribution: 'business', basis: 'business_reason' } },
+    });
+    const labeled = score({
+      outcome: 'canceled', entryDiff: undefined, cancelAttribution: 'agent', cancelBasis: 'ap_label',
+      jevShadow: { model: 'm', cancel: { attribution: 'business', basis: 'jev', confidence: 0.9 } },
+    });
+    const comparison = compareJev([fact, labeled]);
+    expect(comparison.cancels).toEqual({ agree: 0, of: 1 });
+    expect(comparison.disagreements.map((item) => item.text)).toEqual([
+      'cancel agent (AP label) by AP, business (Jev judgment) by Jev',
     ]);
   });
 

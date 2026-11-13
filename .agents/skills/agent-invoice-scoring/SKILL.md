@@ -140,8 +140,10 @@ lines the exact pass leaves over (`diffScoredFieldsWithJev`). Digest text and
 chart building are not Jev's. Code: `src/lib/jev.ts` (the only caller of the
 AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`.
 
-- `JEV_AUDIT_MODE` (`JevAuditMode` parameter, default `shadow`; `JEV_MODEL`,
-  `JEV_MIN_CONFIDENCE`, `JEV_TIMEOUT_MS` optional): `off` never calls Jev;
+- `JEV_AUDIT_MODE` (`JevAuditMode` parameter, default `off`; `JEV_MODEL`,
+  `JEV_MIN_CONFIDENCE`, `JEV_TIMEOUT_MS`, `JEV_BUDGET_MS` optional). Unset, blank,
+  or an unknown value is `off`; a stack opts in by setting `JEV_AUDIT_MODE` in
+  its CircleCI job (passed as `JevAuditMode`): `off` never calls Jev;
   `shadow` stores Jev's verdicts in `agent_invoice_scores.jev_shadow` and the
   rules stay the official score; `on` makes Jev's verdicts the official score.
   Tests force `off` (`jest.setup.ts`).
@@ -155,11 +157,15 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
   stands for that decision. Three failures in a row skip Jev for five minutes so
   an outage cannot exhaust the processor's 900s. Verdicts a request could not
   answer are not stored, so a stored verdict never claims Jev ran when it did
-  not. A stored `jev_shadow` survives rescoring in a later stage.
+  not. A stored `jev_shadow` survives rescoring in a later stage. A slow answer
+  does not trip the breaker, so each processor invocation also has a Jev time
+  budget (`startJevBudget`, `JEV_BUDGET_MS`, default 300s): once Jev has used it,
+  the rest of the batch is scored by the rules.
 - A cancel the rules settled from a Workday fact or AP's label (`FACT_CANCEL_BASES`)
   is not sent to Jev. Otherwise Jev picks agent, business, or unattributed;
-  below `JEV_MIN_CONFIDENCE` (0.8) it stays unattributed. A confident Jev
-  choice has basis `jev`.
+  below `JEV_MIN_CONFIDENCE` (0.8), or when Jev says unattributed, the rule's
+  result stands, so `on` mode never removes an attribution the rules made for
+  lack of confidence. A confident agent or business choice has basis `jev`.
 - A change is `material` when Jev's probability that it fixes an agent mistake
   is at least the threshold, else `convention`. The static category is kept in
   `ScoredChange.jev.staticCategory`. Changes on fields the agent did not own keep
@@ -172,7 +178,8 @@ AI SDK's `experimental_decide`), `src/lib/jev_audit.ts`, `src/lib/jev_digest.ts`
   reply under the official daily or weekly post: the same
   `touchCalloutBlocks`/`touchChartUrl`/`touchPeriod` over `jevScoreView` scores,
   then a "Jev vs rules" comparison and up to five largest disagreements
-  (`compareJev`). `score_touches.ts` is not touched, so the chart style is the
+  (`compareJev`). The cancel line counts only cancels Jev judged (not fact
+  bases it was not asked about) and names AP's label as AP. `score_touches.ts` is not touched, so the chart style is the
   same. A failed Jev reply is logged and never fails the run or the posted
   record. In `on` mode the official post is already Jev-scored and no reply is
   posted.

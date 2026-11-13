@@ -17,10 +17,13 @@ export const DEFAULT_JEV_TIMEOUT_MS = 15_000;
 /** Invoice data goes only to the model's own vendor, as with the other gateway models. */
 const JEV_PROVIDER = 'typesafe-ai';
 
-/** `shadow` (the default) scores with the rules and stores Jev's verdicts; `on` scores with Jev; `off` never calls it. */
+/**
+ * `shadow` scores with the rules and stores Jev's verdicts; `on` scores with Jev; `off` never calls it. Anything
+ * else, including unset or a typo, is `off`: Jev sends invoice and supplier data to a vendor, so it is opt-in.
+ */
 export function jevMode(env: NodeJS.ProcessEnv = process.env): JevMode {
   const value = env.JEV_AUDIT_MODE?.trim().toLowerCase();
-  return value === 'off' || value === 'on' || value === 'shadow' ? value : 'shadow';
+  return value === 'on' || value === 'shadow' ? value : 'off';
 }
 
 export function jevMinConfidence(env: NodeJS.ProcessEnv = process.env): number {
@@ -78,15 +81,33 @@ function topProbability(probabilities: Record<string, number>, choice: string): 
   return finiteNumber(probabilities[choice]) ?? Math.max(0, ...Object.values(probabilities).filter((value) => Number.isFinite(value)));
 }
 
+export const DEFAULT_JEV_BUDGET_MS = 300_000;
+let jevBudgetMs = Number.POSITIVE_INFINITY;
+let jevSpentMs = 0;
+
+/** Wall-clock Jev may use in one processor invocation before the rest of the batch is scored by the rules. */
+export function jevBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const value = Number(env.JEV_BUDGET_MS);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_JEV_BUDGET_MS;
+}
+
+/** Start a fresh Jev time budget; the processor calls this once per invocation. */
+export function startJevBudget(budgetMs: number = jevBudgetFromEnv()): void {
+  jevBudgetMs = budgetMs;
+  jevSpentMs = 0;
+}
+
 const BREAKER_FAILURES = 3;
 const BREAKER_OPEN_MS = 5 * 60 * 1000;
 let consecutiveFailures = 0;
 let breakerOpenUntil = 0;
 
-/** Test hook: forget earlier failures so one test's outage does not skip Jev in the next. */
+/** Test hook: forget earlier failures and spent time so one test's outage does not skip Jev in the next. */
 export function resetJevBreaker(): void {
   consecutiveFailures = 0;
   breakerOpenUntil = 0;
+  jevBudgetMs = Number.POSITIVE_INFINITY;
+  jevSpentMs = 0;
 }
 
 function recordJevFailure(): void {
@@ -97,7 +118,8 @@ function recordJevFailure(): void {
 /**
  * Asks every question against one shared state in a single request. Returns `undefined` on any failure (timeout,
  * gateway error, an answer of an unexpected shape), so a caller never has to handle Jev being down. After
- * three failures in a row it skips Jev for five minutes, so an outage costs a scoring batch seconds, not its timeout.
+ * three failures in a row it skips Jev for five minutes, so an outage costs a scoring batch seconds, not its timeout,
+ * and once a started budget is spent (slow answers never trip the breaker) it skips Jev for the rest of the invocation.
  */
 export async function jevDecide(
   state: Record<string, unknown>,
@@ -106,7 +128,9 @@ export async function jevDecide(
 ): Promise<JevAnswers | undefined> {
   if (!Object.keys(questions).length) return { choices: {}, booleans: {} };
   if (Date.now() < breakerOpenUntil) return undefined;
+  if (jevSpentMs >= jevBudgetMs) return undefined;
   const model = jevModelName(env);
+  const startedAt = Date.now();
   try {
     const result = await decide({
       model,
@@ -145,5 +169,7 @@ export async function jevDecide(
     recordJevFailure();
     debug('Jev decision failed; falling back to the rule', { model, error: error instanceof Error ? error.message : String(error) });
     return undefined;
+  } finally {
+    jevSpentMs += Date.now() - startedAt;
   }
 }

@@ -27,7 +27,7 @@ export interface JevCancelDecision {
 /**
  * Cancels the rules settled from a Workday fact or AP's label keep that result. For the rest (wrong document, extra
  * PDF, supplier message, early cancel, no signal) Jev picks `agent`, `business`, or `unattributed` from the evidence;
- * below the confidence threshold the cancel stays `unattributed` so AP's labeling flow is unchanged.
+ * below the confidence threshold, or when Jev says unattributed, the rule's result stands.
  */
 export async function jevAttributeCancel(
   evidence: CancelEvidence,
@@ -55,10 +55,7 @@ export async function jevAttributeCancel(
   if (choice !== 'unattributed' && answer.confidence >= jevMinConfidence(env)) {
     return { result: { attribution: choice, basis: 'jev' }, confidence: answer.confidence };
   }
-  return {
-    result: rule.attribution === 'unattributed' ? rule : { attribution: 'unattributed', basis: 'no_signal' },
-    confidence: answer.confidence,
-  };
+  return { result: rule, confidence: answer.confidence };
 }
 
 function messageText(message: SupplierThreadMessage): string {

@@ -34,19 +34,18 @@ describe('jevAttributeCancel', () => {
     expect(mockDecide.mock.calls[0][0]).toEqual({ evidence: { primaryAttachmentKind: 'supporting' } });
   });
 
-  it('leaves a low-confidence or unattributed choice unattributed, keeping the rule basis when it was unattributed', async () => {
+  it('keeps the rule result when Jev is unsure or says unattributed, and records its confidence', async () => {
+    const rules = [
+      { attribution: 'agent', basis: 'wrong_document' },
+      { attribution: 'business', basis: 'supplier_void_or_credit' },
+      { attribution: 'unattributed', basis: 'early_draft_cancel' },
+    ] as const;
     mockDecide.mockResolvedValue({ choices: { cancel: choice('business', 0.5) }, booleans: {} });
-    await expect(jevAttributeCancel({}, { attribution: 'unattributed', basis: 'early_draft_cancel' }, env)).resolves.toEqual({
-      result: { attribution: 'unattributed', basis: 'early_draft_cancel' },
-      confidence: 0.5,
-    });
-    await expect(jevAttributeCancel({}, { attribution: 'agent', basis: 'wrong_document' }, env)).resolves.toEqual({
-      result: { attribution: 'unattributed', basis: 'no_signal' },
-      confidence: 0.5,
-    });
+    for (const rule of rules) {
+      await expect(jevAttributeCancel({}, rule, env)).resolves.toEqual({ result: rule, confidence: 0.5 });
+    }
     mockDecide.mockResolvedValue({ choices: { cancel: choice('unattributed', 0.99) }, booleans: {} });
-    const decision = await jevAttributeCancel({}, { attribution: 'unattributed', basis: 'no_signal' }, env);
-    expect(decision?.result.attribution).toBe('unattributed');
+    await expect(jevAttributeCancel({}, rules[0], env)).resolves.toEqual({ result: rules[0], confidence: 0.99 });
   });
 
   it('returns undefined when Jev cannot answer', async () => {

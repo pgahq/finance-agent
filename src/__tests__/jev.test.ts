@@ -2,7 +2,7 @@ jest.mock('@pga/logger', () => ({ debug: jest.fn() }));
 jest.mock('ai', () => ({ experimental_decide: jest.fn() }));
 
 import { experimental_decide as decide } from 'ai';
-import { DEFAULT_JEV_MODEL, jevDecide, jevMinConfidence, jevMode, jevModelName, resetJevBreaker, type JevQuestion } from '../lib/jev.js';
+import { DEFAULT_JEV_BUDGET_MS, DEFAULT_JEV_MODEL, jevBudgetFromEnv, jevDecide, jevMinConfidence, jevMode, jevModelName, resetJevBreaker, startJevBudget, type JevQuestion } from '../lib/jev.js';
 
 const mockDecide = decide as unknown as jest.Mock;
 
@@ -17,11 +17,13 @@ beforeEach(() => {
 });
 
 describe('jevMode and settings', () => {
-  it('defaults to shadow and accepts only off, shadow, or on', () => {
-    expect(jevMode({})).toBe('shadow');
+  it('is off unless shadow or on is asked for, so a blank or a typo sends nothing', () => {
+    expect(jevMode({})).toBe('off');
     expect(jevMode({ JEV_AUDIT_MODE: ' ON ' })).toBe('on');
+    expect(jevMode({ JEV_AUDIT_MODE: 'Shadow' })).toBe('shadow');
     expect(jevMode({ JEV_AUDIT_MODE: 'off' })).toBe('off');
-    expect(jevMode({ JEV_AUDIT_MODE: 'maybe' })).toBe('shadow');
+    expect(jevMode({ JEV_AUDIT_MODE: '' })).toBe('off');
+    expect(jevMode({ JEV_AUDIT_MODE: 'of' })).toBe('off');
   });
 
   it('reads the model and the confidence threshold with safe defaults', () => {
@@ -114,5 +116,57 @@ describe('jevDecide', () => {
       .mockRejectedValueOnce(new Error('x')).mockResolvedValue(ok);
     for (let i = 0; i < 4; i++) await jevDecide({}, questions, {});
     await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+  });
+});
+
+describe('Jev time budget', () => {
+  const ok = {
+    answers: { who: { type: 'choice', choice: 'agent', probabilities: { agent: 1 } }, flag: { type: 'boolean', probability: 0 } },
+  };
+
+  it('reads the budget from the environment with a safe default', () => {
+    expect(jevBudgetFromEnv({})).toBe(DEFAULT_JEV_BUDGET_MS);
+    expect(jevBudgetFromEnv({ JEV_BUDGET_MS: '1000' })).toBe(1000);
+    expect(jevBudgetFromEnv({ JEV_BUDGET_MS: '-1' })).toBe(DEFAULT_JEV_BUDGET_MS);
+  });
+
+  it('skips Jev once slow-but-successful answers have used the budget, until a new one is started', async () => {
+    let clock = 0;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    mockDecide.mockImplementation(async () => {
+      clock += 14_000;
+      return ok;
+    });
+    startJevBudget(30_000);
+    await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+    await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+    await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+    expect(mockDecide).toHaveBeenCalledTimes(3);
+    await expect(jevDecide({}, questions, {})).resolves.toBeUndefined();
+    expect(mockDecide).toHaveBeenCalledTimes(3);
+
+    startJevBudget(30_000);
+    await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+    now.mockRestore();
+  });
+
+  it('counts time spent on failed calls too, and is unlimited until a budget is started', async () => {
+    let clock = 0;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    mockDecide.mockImplementation(async () => {
+      clock += 40_000;
+      throw new Error('timed out');
+    });
+    await jevDecide({}, questions, {});
+    mockDecide.mockImplementation(async () => ok);
+    await expect(jevDecide({}, questions, {})).resolves.toBeDefined();
+    startJevBudget(30_000);
+    mockDecide.mockImplementation(async () => {
+      clock += 40_000;
+      throw new Error('timed out');
+    });
+    await jevDecide({}, questions, {});
+    await expect(jevDecide({}, questions, {})).resolves.toBeUndefined();
+    now.mockRestore();
   });
 });

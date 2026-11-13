@@ -101,7 +101,7 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
       if (change.category !== categoryOf(change.field)) comparison.categories.reclassified += 1;
     }
 
-    if (shadow.cancel && (score.outcome === 'canceled' || score.outcome === 'deleted')) {
+    if (shadow.cancel?.confidence !== undefined && (score.outcome === 'canceled' || score.outcome === 'deleted')) {
       comparison.cancels.of += 1;
       if (score.cancelAttribution === shadow.cancel.attribution) {
         comparison.cancels.agree += 1;
@@ -109,7 +109,7 @@ export function compareJev(scores: InvoiceScore[]): JevComparison {
         comparison.disagreements.push({
           score,
           weight: 3,
-          text: `cancel ${attributionLabel(score.cancelAttribution, score.cancelBasis)} by the rules, ${attributionLabel(shadow.cancel.attribution, shadow.cancel.basis)} by Jev`,
+          text: `cancel ${attributionLabel(score.cancelAttribution, score.cancelBasis)} by ${score.cancelBasis === 'ap_label' ? 'AP' : 'the rules'}, ${attributionLabel(shadow.cancel.attribution, shadow.cancel.basis)} by Jev`,
         });
       }
     }

@@ -98,9 +98,10 @@ describe('SAM template', () => {
       expect(template).not.toMatch(/AUDIT_SLACK_WEBHOOK_URL|audit-slack-webhook-url/);
     });
 
-    it('runs Jev in shadow by default on exactly the scoring and digest functions, with no new secret', () => {
+    it('keeps Jev off by default, opt-in per stack from CircleCI, on exactly the scoring and digest functions, with no new secret', () => {
       const parameter = globals.match(/JevAuditMode:\n(?: {4}.*\n| {6}.*\n)+/)?.[0] ?? '';
-      expect(parameter).toMatch(/Default: shadow/);
+      expect(parameter).toMatch(/Default: "off"/);
+      expect(circleci).toMatch(/JevAuditMode=\$\{JEV_AUDIT_MODE:-off\}/);
       expect(parameter).toMatch(/- "off"\n\s*- shadow\n\s*- "on"/);
       expect(resourceBlock('ScoreInvoicesProcessor')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);
       expect(resourceBlock('ScoreDigestFunction')).toMatch(/JEV_AUDIT_MODE:\s*!Ref JevAuditMode/);

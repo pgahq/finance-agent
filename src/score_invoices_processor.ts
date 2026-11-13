@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { withProcessorHandler, type ProcessingContext } from './lib/handlers.js';
 import { fetchConversationMessages, getIntercomConfig } from './lib/intercom.js';
-import { jevModelName, jevMode, type JevMode } from './lib/jev.js';
+import { jevModelName, jevMode, startJevBudget, type JevMode } from './lib/jev.js';
 import { jevAttributeCancel, jevScoredChanges, jevSupplierVoidOrCredit } from './lib/jev_audit.js';
 import {
   attributeCancel,
@@ -392,6 +392,7 @@ export async function scoreInvoice(
 export const processor = withProcessorHandler<ScoreInvoiceItem>(async (context, items) => {
   const failures: Array<{ workdayInvoiceWid: string; message: string }> = [];
   let scored = 0;
+  startJevBudget();
   for (const item of items ?? []) {
     try {
       if (await scoreInvoice(context, item)) scored += 1;

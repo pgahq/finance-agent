@@ -62,8 +62,8 @@ Parameters:
       How the audit uses TypeSafe's Jev model through the AI Gateway. "off" never calls it; "shadow" calls it, stores its
       verdicts and posts a Jev-scored thread reply under each audit post while the rules stay the official score;
       "on" makes Jev's verdicts the official score. Anything but "off" sends invoice values and supplier Intercom text
-      to TypeSafe via Vercel AI Gateway (zero data retention).
-    Default: shadow
+      to TypeSafe via Vercel AI Gateway (zero data retention), so it is off until a stack opts in.
+    Default: "off"
     AllowedValues:
       - "off"
       - shadow
