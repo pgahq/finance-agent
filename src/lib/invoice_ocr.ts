@@ -133,6 +133,8 @@ export async function extractInvoiceDocuments(
     let rejection: Record<string, unknown> | undefined;
     try {
       const retried = await read(retryPlan.instruction);
+      // Bank details seen by either read count, whichever read supplies the rows.
+      if (retried.bankingInfoPrinted) result = { ...result, bankingInfoPrinted: true };
       const retriedRows = retried.extractedInvoiceLines ?? [];
       const added = rowsAddedBySecondRead(firstRows, retriedRows);
       // A second read replaces the first only when it keeps every first-read row and the rows it adds close the

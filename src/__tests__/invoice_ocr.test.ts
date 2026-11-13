@@ -820,6 +820,16 @@ describe('invoice OCR pass', () => {
         expect(result?.extractedSecondReadOutcome).toBeNull();
       });
 
+      it('keeps the banking-info flag when only the second read saw the bank details', async () => {
+        mockGetAiResponse
+          .mockResolvedValueOnce(responseFor(supin472322ProductionRows, { bankingInfoPrinted: false }))
+          .mockResolvedValueOnce(responseFor(supin472322Rows, { bankingInfoPrinted: true }));
+
+        const result = await extractInvoiceDocuments([pdf]);
+
+        expect(result?.bankingInfoPrinted).toBe(true);
+      });
+
       it('skips the second read when the first read was slow, which a timeout would turn into a lost invoice', async () => {
         let now = 1_000_000;
         const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);

@@ -60,8 +60,8 @@ Parameters:
     Type: String
     Description: >-
       Work_Queue_Tag_ID of the "Supplier Bank information is Available (priority)" Workday work queue tag, added to
-      invoices whose documents print supplier bank details. Empty disables the tag (set per environment in CircleCI;
-      production stays empty until the tag is confirmed there). Workday rejects an unknown ID.
+      invoices whose documents print supplier bank details. Empty disables the tag (set per environment in CircleCI).
+      Workday rejects an unknown ID.
     Default: ""
   WorkdayUiBaseUrl:
     Type: String

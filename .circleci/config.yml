@@ -145,8 +145,8 @@ jobs:
       TENANT_REFRESH_WEEKDAY: none
       # #notify-finance-agent-audit
       AUDIT_SLACK_CHANNEL_ID: C0C5W6B0G4V
-      # Empty disables the banking-info tag. Set the production Work_Queue_Tag_ID once the tag exists there.
-      BANKING_INFO_TAG_REF_ID: ""
+      # Work_Queue_Tag_ID of "Supplier Bank information is Available (priority)".
+      BANKING_INFO_TAG_REF_ID: Supplier_Bank_Information
 
 workflows:
   version: 2

@@ -19,12 +19,11 @@ describe('SAM template', () => {
     expect(globals).toMatch(/MaximumRetryAttempts:\s*0\b/);
   });
 
-  it('wires the banking-info tag from a per-environment parameter that is empty in production', () => {
+  it('wires the banking-info tag from a per-environment parameter set for dev and production', () => {
     expect(globals).toMatch(/WORKDAY_BANKING_INFO_TAG_REF_ID:\s*!Ref BankingInfoTagRefId/);
     expect(globals).toMatch(/BankingInfoTagRefId:[\s\S]*?Default: ""/);
     expect(circleci).toMatch(/BankingInfoTagRefId=\$BANKING_INFO_TAG_REF_ID/);
-    expect(circleci).toMatch(/BANKING_INFO_TAG_REF_ID:\s*Supplier_Bank_Information/);
-    expect(circleci).toMatch(/BANKING_INFO_TAG_REF_ID:\s*""/);
+    expect(circleci.match(/BANKING_INFO_TAG_REF_ID:\s*Supplier_Bank_Information/g)).toHaveLength(2);
   });
 
   it('wires INTERCOM_APP_ID from the IntercomAppId parameter', () => {
