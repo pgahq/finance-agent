@@ -19,6 +19,7 @@ import { reimbursementFormMathPrompt, type ReimbursementFormMath } from '../prom
 import { defaultModel } from '../lib/models.js';
 import { attachmentContentParts } from '../lib/invoice_ocr.js';
 import { parseCanonicalChargeAmount } from '../lib/invoice_lines.js';
+import { composeSuppliersInvoiceNumber } from '../lib/invoice_memo.js';
 import {
   applyReimbursementToEnrichment,
   decideReimbursement,
@@ -230,6 +231,8 @@ describe('packetDisagreement', () => {
 
   it('flags a different form date, including the same date in another format only when it differs', () => {
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: 'Nov 2, 2026' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11.02.26' }))).toBeUndefined();
+    expect(packetDisagreement(packet({ formDate: '11.02.2026' }), packet({ formDate: '11.03.2026' }))).toBe('the form date');
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: '11/03/2026' }))).toBe('the form date');
     expect(packetDisagreement(packet({ formDate: '11/02/2026' }), packet({ formDate: null }))).toBe('the form date');
   });
@@ -846,10 +849,24 @@ describe('decideReimbursement', () => {
   });
 
   it('stops when the form has no readable date, since the draft would have no number', async () => {
-    for (const formDate of [null, 'last Tuesday']) {
+    for (const formDate of [null, 'last Tuesday', '13.01.2026', '11.10-26']) {
       const decision = await decideReimbursement(db as never, packet({ formDate }));
       expect(decision).toMatchObject({ outcome: 'manual_entry', manual: { reason: expect.stringContaining('no readable date') } });
     }
+  });
+
+  it('books a form date printed with dots exactly like the same date with slashes', async () => {
+    const slashed = await decideReimbursement(db as never, packet({ formDate: '11/10/2026' }));
+    if (slashed.outcome !== 'apply') throw new Error('expected apply');
+    for (const formDate of ['11.10.26', '11.10.2026']) {
+      const dotted = await decideReimbursement(db as never, packet({ formDate }));
+      expect(dotted).toEqual(slashed);
+    }
+    expect(slashed.reimbursement.invoiceDate).toBe('2026-11-10');
+    expect(composeSuppliersInvoiceNumber({
+      invoiceDate: slashed.reimbursement.invoiceDate,
+      supplierName: slashed.reimbursement.payee.supplierName,
+    })).toBe('MORG111026');
   });
 
   it('stops when the packet names no payee', async () => {

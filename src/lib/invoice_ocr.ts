@@ -6,7 +6,7 @@ import type { InvoiceEnrichmentResult, InvoiceMatchingResult } from '../prompts/
 import { officeKind, toModelDocument } from './office_to_pdf.js';
 import type { PresignedAttachment } from './types.js';
 import { amountDueGapCents, amountDueShortfallCents, lineSubtotalShortfallCents, NOT_BILLED_WORDS, subtotalFreightCents, sumExtractedLineCents } from './partial_payment.js';
-import { isTaxLikeChargeLabel, summaryCreditCents } from './header_charges.js';
+import { isPayrollTaxCharge, isTaxLikeChargeLabel, summaryCreditCents, type PayrollTaxContext } from './header_charges.js';
 import { formatChargeDollars, normalizeLabel } from './invoice_lines.js';
 
 export interface InvoiceAttachmentRole {
@@ -133,6 +133,8 @@ export async function extractInvoiceDocuments(
     let rejection: Record<string, unknown> | undefined;
     try {
       const retried = await read(retryPlan.instruction);
+      // Bank details seen by either read count, whichever read supplies the rows.
+      if (retried.bankingInfoPrinted) result = { ...result, bankingInfoPrinted: true };
       const retriedRows = retried.extractedInvoiceLines ?? [];
       const added = rowsAddedBySecondRead(firstRows, retriedRows);
       // A second read replaces the first only when it keeps every first-read row and the rows it adds close the
@@ -211,7 +213,7 @@ function describeRejectedSecondRead(
   const toSum = (rows: typeof retriedRows) => sumExtractedLineCents(rows as InvoiceOcrResult['extractedInvoiceLines'] & object);
   // Rows that total the amount-due gap but read as tax, a balance, a payment, or a finance charge are refused as not lines.
   const notLines = dropped === 0 && plan.amountDueShortfall !== undefined && unmatched.length > 0
-    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description));
+    && toSum(unmatched) === plan.amountDueShortfall && unmatched.some(row => isNonLineRowLabel(row.description, { lines: retriedRows }));
   const outcome = notLines ? 'not_lines' : unmatched.length === 0 && dropped === 0 ? 'rejected' : 'inconclusive';
   return {
     outcome,
@@ -295,8 +297,13 @@ function missingRowsPlan(result: InvoiceOcrResult): MissingRowsPlan | undefined 
 
 const NON_LINE_ROW_WORDS = new Set(['payment', 'payments', 'finance', 'interest', 'past', 'overdue', 'outstanding', 'late', 'prior']);
 
-/** Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. */
-function isNonLineRowLabel(description: string): boolean {
+/**
+ * Whether a row's label reads as tax, a balance or payment, or a finance charge: money that is not a line. On a
+ * payroll recharge, a payroll or employment tax row (a bare "Taxes" row included) is a line, not header tax, so
+ * `context` (the rows the retry would keep) lets a recovered payroll tax row pass instead of being rejected here.
+ */
+function isNonLineRowLabel(description: string, context?: PayrollTaxContext): boolean {
+  if (context && isPayrollTaxCharge(description, context)) return false;
   const tokens = (normalizeLabel(description) ?? '').split(' ');
   return isTaxLikeChargeLabel(description) || tokens.some(token => NOT_BILLED_WORDS.has(token) || NON_LINE_ROW_WORDS.has(token));
 }
@@ -309,7 +316,7 @@ function secondReadClosesGap(
   if (plan.amountDueShortfall !== undefined) {
     // The instruction names the gap, so a tax, balance, payment, or finance row that equals it must not pass for a
     // missed line.
-    if (sumExtractedLineCents(added) === plan.amountDueShortfall && added.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0 && !isNonLineRowLabel(row.description))) return true;
+    if (sumExtractedLineCents(added) === plan.amountDueShortfall && added.every(row => (sumExtractedLineCents([row]) ?? -1) >= 0 && !isNonLineRowLabel(row.description, { lines: retriedRows }))) return true;
   }
   if (plan.subtotalShortfall !== undefined) {
     const retriedCents = sumExtractedLineCents(retriedRows);
@@ -343,6 +350,7 @@ export function mergeInvoiceEnrichment(
       extractedPartialPayment: null,
       extractedPriorPayments: null,
       extractedPurchaseOrderNumber: null,
+      bankingInfoPrinted: null,
       extractedAccountNumber: null,
       extractedSupplierReference: null,
       extractedSupplierReferenceKind: null,
@@ -388,6 +396,7 @@ export function mergeInvoiceEnrichment(
     extractedPartialPayment: ocr.extractedPartialPayment,
     extractedPriorPayments: ocr.extractedPriorPayments,
     extractedPurchaseOrderNumber: ocr.extractedPurchaseOrderNumber,
+    bankingInfoPrinted: ocr.bankingInfoPrinted,
     extractedAccountNumber: ocr.extractedAccountNumber,
     extractedSupplierReference: ocr.extractedSupplierReference,
     extractedSupplierReferenceKind: ocr.extractedSupplierReferenceKind,

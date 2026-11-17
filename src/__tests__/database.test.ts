@@ -382,6 +382,14 @@ describe('Database Library', () => {
       expect(result).toEqual(mockResults);
     });
 
+    it('breaks equal scores by Workday ID so the order does not depend on the plan', async () => {
+      mockQuery.mockResolvedValue([]);
+
+      await searchDocuments({ query: mockQuery, close: jest.fn() }, [0.1, 0.2, 0.3], 'Net 30', 'payment_terms', 10);
+
+      expect(mockQuery.mock.calls[0][0] as string).toContain('ORDER BY similarity DESC, workday_id ASC');
+    });
+
     it('does not boost company substring LIKE to 1.0', async () => {
       const mockConnection = {
         query: mockQuery,

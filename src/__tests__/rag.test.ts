@@ -355,6 +355,68 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(result[1]?.similarity).toBe(0.88);
     });
 
+    it('ranks a plain Net term above tied discount terms when the invoice prints no discount', async () => {
+      const row = (workday_id: string, name: string, similarity: string) => ({
+        workday_id,
+        type: 'payment_terms',
+        content: `Payment Terms: ${name}`,
+        metadata: { name },
+        similarity,
+      });
+      mockSearchDocuments.mockResolvedValue([
+        row('wid-d3', '3% 30 Net 30', '1'),
+        row('wid-d2', '2% 10 Net 30', '1'),
+        row('wid-plain', 'Net 30', '0.99'),
+      ]);
+
+      const result = await queryDocuments({ query: '30 NET', documentType: 'payment_terms' });
+
+      expect(result.map((r) => r.workday_id)).toEqual(['wid-plain', 'wid-d2', 'wid-d3']);
+    });
+
+    it('requests a larger candidate pool for payment terms so a small limit does not drop the plain term before reranking', async () => {
+      const row = (workday_id: string, name: string, similarity: string) => ({
+        workday_id, type: 'payment_terms', content: `Payment Terms: ${name}`, metadata: { name }, similarity,
+      });
+      const all = [
+        row('wid-d3', '3% 30 Net 30', '1'),
+        row('wid-d2', '2% 10 Net 30', '1'),
+        row('wid-plain', 'Net 30', '0.4'),
+      ];
+      // Mirrors the real SQL: ORDER BY similarity DESC, workday_id ASC LIMIT <sqlLimit>, so a small SQL
+      // limit truncates by score alone before this module ever sees the payment terms it excluded.
+      mockSearchDocuments.mockImplementation((...args: unknown[]) => {
+        const sqlLimit = args[4] as number;
+        return Promise.resolve([...all].sort((a, b) => parseFloat(b.similarity) - parseFloat(a.similarity)).slice(0, sqlLimit));
+      });
+
+      const result = await queryDocuments({ query: '30 NET', documentType: 'payment_terms', limit: 1 });
+
+      expect(mockSearchDocuments.mock.calls[0][4]).toBeGreaterThanOrEqual(1000);
+      expect(result.map((r) => r.workday_id)).toEqual(['wid-plain']);
+    });
+
+    it('caps the payment-terms SQL limit even when the caller requests far more results', async () => {
+      mockSearchDocuments.mockResolvedValue([]);
+
+      await queryDocuments({ query: '30 NET', documentType: 'payment_terms', limit: 50_000 });
+
+      // A caller-supplied limit must never raise the SQL side above the fixed pool: this is a genuine
+      // upper bound on worst-case query/transfer/sort cost, not only a floor.
+      expect(mockSearchDocuments.mock.calls[0][4]).toBeLessThan(50_000);
+    });
+
+    it('keeps an exact plain payment-terms match even when its similarity is below the threshold', async () => {
+      const row = (workday_id: string, name: string, similarity: string) => ({
+        workday_id, type: 'payment_terms', content: `Payment Terms: ${name}`, metadata: { name }, similarity,
+      });
+      mockSearchDocuments.mockResolvedValue([row('wid-plain', 'Net 30', '0.1')]);
+
+      const result = await queryDocuments({ query: '30 NET', documentType: 'payment_terms', similarityThreshold: 0.3 });
+
+      expect(result.map((r) => r.workday_id)).toEqual(['wid-plain']);
+    });
+
     it('should handle empty query', async () => {
       await expect(queryDocuments({
         query: ''
