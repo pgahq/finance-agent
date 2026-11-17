@@ -117,12 +117,12 @@ export function createSpendCategoryContent(sc: any): string {
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
-// Payment terms have no caller-facing pagination need and the catalog is small, so this module never
-// caps the SQL side for them: every row of type payment_terms is fetched and reranked below, and only
-// then truncated to the caller's requested limit. A capped pool would still let the SQL LIMIT exclude a
-// plain term before rankPaymentTermsSearchResults gets to rank it above a same- or higher-scoring
-// discount term — fetching everything removes that failure mode outright instead of just shrinking it.
-const PAYMENT_TERMS_SQL_LIMIT = Number.MAX_SAFE_INTEGER;
+// No real Workday org's payment-terms catalog approaches this size (a few dozen terms is typical), so this
+// is never the active constraint in normal operation — rankPaymentTermsSearchResults below always reranks
+// the whole real catalog before the result is truncated to the caller's requested limit. It still bounds
+// worst-case query/transfer/sort/log cost if the cache were ever corrupted into many rows for one type,
+// unlike requesting an unbounded (e.g. Number.MAX_SAFE_INTEGER) SQL limit.
+const PAYMENT_TERMS_CANDIDATE_POOL = 1000;
 
 // RAG query interface
 export interface RAGQuery {
@@ -164,7 +164,10 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
     const db = await getDatabaseConnection(process.env);
 
     const isPaymentTerms = documentType === 'payment_terms';
-    const sqlLimit = isPaymentTerms ? PAYMENT_TERMS_SQL_LIMIT : limit;
+    // A fixed pool, not Math.max(limit, ...): the caller's limit never raises the SQL side for payment
+    // terms, so this is a genuine upper bound, not just a floor. Ranking and truncation to the caller's
+    // limit both happen afterward in JS regardless of how many rows searchDocuments returns.
+    const sqlLimit = isPaymentTerms ? PAYMENT_TERMS_CANDIDATE_POOL : limit;
 
     // Use hybrid search that combines semantic similarity with exact text matching
     const results = await searchDocuments(

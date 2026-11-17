@@ -1,7 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
 import { getDatabaseConnection, getDocumentsByWorkdayIds } from './database.js';
-import { applyPaymentTermsDiscountRule, describePaymentTerms, paymentTermsNameOf } from './payment_terms_match.js';
+import { applyPaymentTermsDiscountRule, describePaymentTerms, paymentTermsKey, paymentTermsNameOf } from './payment_terms_match.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import {
   extractSupplierNoteHints,
@@ -65,16 +65,17 @@ async function cachedPaymentTermsName(workdayId: string): Promise<string | undef
   const db = await getDatabaseConnection(process.env);
   const documents = await getDocumentsByWorkdayIds(db, 'payment_terms', [workdayId]);
   if (documents.length === 0) return undefined;
-  const names = new Set(documents.map((document) => paymentTermsNameOf({
+  const names = documents.map((document) => paymentTermsNameOf({
     content: document.content,
     metadata: document.metadata && typeof document.metadata === 'object' ? document.metadata as Record<string, unknown> : undefined,
-  })));
-  // The cache has no uniqueness guarantee on (type, workdayId) (see data-and-state-changes skill). Any
-  // disagreement among rows for this ID — including one row parsing to an empty/invalid name — cannot be
-  // trusted, so it is treated as unavailable rather than silently preferring whichever row parsed cleanly.
-  if (names.size !== 1) return undefined;
-  const [name] = names;
-  return name || undefined;
+  }));
+  // The cache has no uniqueness guarantee on (type, workdayId) (see data-and-state-changes skill). Rows
+  // that normalize to the same key (e.g. "Net 30" vs "NET 30") are the same term; a real disagreement —
+  // including one row parsing to an empty/invalid name, whose key is '' — cannot be trusted, so it is
+  // treated as unavailable rather than silently preferring whichever row parsed cleanly.
+  const keys = new Set(names.map((name) => paymentTermsKey(name)));
+  if (keys.size !== 1) return undefined;
+  return names.find((name) => name) || undefined;
 }
 
 // AP: with no discount percentage printed on the invoice, a discount payment term is never used.
@@ -484,13 +485,15 @@ export function formatMemoIdentifierNotes(
 }
 
 // Builds on describePaymentTerms so the Workday-resolved/rejected/unverified wording matches Slack exactly;
-// notes additionally carry the Workday ID, which Slack does not need, for anyone looking the term up directly.
+// notes additionally carry the Workday ID, which Slack does not need, so AP can look the term up directly —
+// including the refused/unverified term's ID (candidateWorkdayId), even though it is never submitted.
 export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPaymentTerms) return '';
-  const { name, workdayId, resolvedName, rejectedDiscountTerm, unverified } = result.extractedPaymentTerms;
+  const { name, workdayId, resolvedName, rejectedDiscountTerm, unverified, candidateWorkdayId } = result.extractedPaymentTerms;
   const described = describePaymentTerms({ name, resolvedName, rejectedDiscountTerm, unverified });
   if (rejectedDiscountTerm || unverified) {
-    return `\n\nPayment Terms (from document): ${described}`;
+    const idSuffix = candidateWorkdayId ? ` (Workday ID: ${candidateWorkdayId})` : '';
+    return `\n\nPayment Terms (from document): ${described}${idSuffix}`;
   }
   const idSuffix = workdayId ? ` (Workday ID: ${workdayId})` : ' (no Workday match found)';
   return `\n\nPayment Terms (from document): ${described}${idSuffix}`;

@@ -206,13 +206,14 @@ export const InvoiceEnrichmentSchema = z.object({
 
 type InvoiceEnrichmentSchemaResult = z.infer<typeof InvoiceEnrichmentSchema>;
 
-// The model fills name and workdayId; resolvedName, rejectedDiscountTerm, and unverified are added in code
-// after matching (see applyPaymentTermsDiscountRule in payment_terms_match.ts).
+// The model fills name and workdayId; resolvedName, rejectedDiscountTerm, unverified, and candidateWorkdayId
+// are added in code after matching (see applyPaymentTermsDiscountRule in payment_terms_match.ts).
 export type InvoiceEnrichmentResult = Omit<InvoiceEnrichmentSchemaResult, 'extractedPaymentTerms'> & {
   extractedPaymentTerms: (NonNullable<InvoiceEnrichmentSchemaResult['extractedPaymentTerms']> & {
     resolvedName?: string | null;
     rejectedDiscountTerm?: string | null;
     unverified?: boolean;
+    candidateWorkdayId?: string | null;
   }) | null;
 };
 

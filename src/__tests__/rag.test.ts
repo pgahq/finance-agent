@@ -392,10 +392,18 @@ Primary Address: 100 PGA Tour Blvd`);
 
       const result = await queryDocuments({ query: '30 NET', documentType: 'payment_terms', limit: 1 });
 
-      // No heuristic cap: every row of type payment_terms is requested, so the SQL LIMIT itself can
-      // never be the reason a candidate was excluded, however large the catalog grows.
-      expect(mockSearchDocuments.mock.calls[0][4]).toBe(Number.MAX_SAFE_INTEGER);
+      expect(mockSearchDocuments.mock.calls[0][4]).toBeGreaterThanOrEqual(1000);
       expect(result.map((r) => r.workday_id)).toEqual(['wid-plain']);
+    });
+
+    it('caps the payment-terms SQL limit even when the caller requests far more results', async () => {
+      mockSearchDocuments.mockResolvedValue([]);
+
+      await queryDocuments({ query: '30 NET', documentType: 'payment_terms', limit: 50_000 });
+
+      // A caller-supplied limit must never raise the SQL side above the fixed pool: this is a genuine
+      // upper bound on worst-case query/transfer/sort cost, not only a floor.
+      expect(mockSearchDocuments.mock.calls[0][4]).toBeLessThan(50_000);
     });
 
     it('keeps an exact plain payment-terms match even when its similarity is below the threshold', async () => {

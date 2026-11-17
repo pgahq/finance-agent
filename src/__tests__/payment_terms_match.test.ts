@@ -67,6 +67,25 @@ describe('paymentTermsNameOf', () => {
     expect(paymentTermsNameOf({ content: 'Cost Center: Some Unrelated Record', metadata: undefined })).toBe('');
     expect(paymentTermsNameOf({ content: undefined, metadata: undefined })).toBe('');
   });
+
+  it('rejects a row whose metadata name and content disagree', () => {
+    expect(paymentTermsNameOf({ content: 'Payment Terms: 3% 30 Net 30', metadata: { name: 'Net 30' } })).toBe('');
+  });
+
+  it('does not fall back to content when metadata is present but invalid', () => {
+    expect(paymentTermsNameOf({ content: 'Payment Terms: Net 30', metadata: { name: '' } })).toBe('');
+    expect(paymentTermsNameOf({ content: 'Payment Terms: Net 30', metadata: { name: 'a'.repeat(200) } })).toBe('');
+    expect(paymentTermsNameOf({ content: 'Payment Terms: Net 30', metadata: { name: null } })).toBe('');
+    expect(paymentTermsNameOf({ content: 'Payment Terms: Net 30', metadata: { name: 42 } })).toBe('');
+  });
+
+  it('accepts metadata and content that agree, ignoring case and spacing', () => {
+    expect(paymentTermsNameOf({ content: 'Payment Terms: NET 30', metadata: { name: 'Net 30' } })).toBe('Net 30');
+  });
+
+  it('trusts metadata alone when content carries no second representation', () => {
+    expect(paymentTermsNameOf({ content: undefined, metadata: { name: 'Net 30' } })).toBe('Net 30');
+  });
 });
 
 describe('rankPaymentTermsSearchResults', () => {
@@ -112,7 +131,9 @@ describe('applyPaymentTermsDiscountRule', () => {
       { name: '30 NET', workdayId: 'wid-d3' },
       async () => '3% 30 Net 30'
     );
-    expect(result).toEqual({ name: '30 NET', workdayId: null, resolvedName: null, rejectedDiscountTerm: '3% 30 Net 30' });
+    expect(result).toEqual({
+      name: '30 NET', workdayId: null, resolvedName: null, rejectedDiscountTerm: '3% 30 Net 30', candidateWorkdayId: 'wid-d3',
+    });
   });
 
   it('keeps a discount term when the invoice prints the discount', async () => {
@@ -130,7 +151,7 @@ describe('applyPaymentTermsDiscountRule', () => {
 
   it('fails closed when the name cannot be verified and the invoice prints no discount', async () => {
     const terms = { name: '30 NET', workdayId: 'wid-x' };
-    const expected = { name: '30 NET', workdayId: null, resolvedName: null, unverified: true };
+    const expected = { name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-x' };
     await expect(applyPaymentTermsDiscountRule(terms, async () => undefined)).resolves.toEqual(expected);
     await expect(applyPaymentTermsDiscountRule(terms, async () => { throw new Error('db down'); })).resolves.toEqual(expected);
   });
@@ -144,7 +165,7 @@ describe('applyPaymentTermsDiscountRule', () => {
   it('fails closed on a name that is too long or multiline to trust', async () => {
     const terms = { name: '30 NET', workdayId: 'wid-x' };
     await expect(applyPaymentTermsDiscountRule(terms, async () => 'Net 30\n3% 10 Net 30')).resolves.toEqual(
-      { name: '30 NET', workdayId: null, resolvedName: null, unverified: true }
+      { name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-x' }
     );
   });
 
@@ -183,9 +204,17 @@ describe('describePaymentTerms and notes', () => {
     expect(formatPaymentTermsNotes(base)).toBe(
       '\n\nPayment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
     );
+    const rejectedWithId = { extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30', candidateWorkdayId: 'wid-d3' } } as unknown as InvoiceEnrichmentResult;
+    expect(formatPaymentTermsNotes(rejectedWithId)).toBe(
+      '\n\nPayment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount) (Workday ID: wid-d3)'
+    );
     const unverified = { extractedPaymentTerms: { name: '30 NET', workdayId: null, unverified: true } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(unverified)).toBe(
       '\n\nPayment Terms (from document): 30 NET (no Workday match; the matched term\'s name could not be confirmed safe)'
+    );
+    const unverifiedWithId = { extractedPaymentTerms: { name: '30 NET', workdayId: null, unverified: true, candidateWorkdayId: 'wid-x' } } as unknown as InvoiceEnrichmentResult;
+    expect(formatPaymentTermsNotes(unverifiedWithId)).toBe(
+      '\n\nPayment Terms (from document): 30 NET (no Workday match; the matched term\'s name could not be confirmed safe) (Workday ID: wid-x)'
     );
     const resolvedSameName = { extractedPaymentTerms: { name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(resolvedSameName)).toBe('\n\nPayment Terms (from document): 30 NET (Workday ID: wid-plain)');
@@ -230,7 +259,21 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
 
     expect(getDocumentsByWorkdayIds).toHaveBeenCalledWith({}, 'payment_terms', ['wid-d3']);
     expect(result.extractedPaymentTerms).toEqual({
-      name: '30 NET', workdayId: null, resolvedName: null, rejectedDiscountTerm: '3% 30 Net 30',
+      name: '30 NET', workdayId: null, resolvedName: null, rejectedDiscountTerm: '3% 30 Net 30', candidateWorkdayId: 'wid-d3',
+    });
+  });
+
+  it('does not use a discount term when a single cache row\'s metadata and content disagree', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-d3'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValue([
+      { workday_id: 'wid-d3', content: 'Payment Terms: 3% 30 Net 30', metadata: { name: 'Net 30' } },
+    ]);
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms).toEqual({
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-d3',
     });
   });
 
@@ -254,7 +297,7 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
     const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
 
     expect(result.extractedPaymentTerms).toEqual({
-      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-d3',
     });
   });
 
@@ -279,7 +322,7 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
     const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
 
     expect(result.extractedPaymentTerms).toEqual({
-      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-d3',
     });
   });
 
@@ -294,7 +337,7 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
     const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
 
     expect(result.extractedPaymentTerms).toEqual({
-      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: 'wid-d3',
     });
   });
 
@@ -309,5 +352,19 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
     const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
 
     expect(result.extractedPaymentTerms).toEqual({ name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' });
+  });
+
+  it('uses the name when duplicate cache rows for the same Workday ID agree only up to case', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-plain'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValue([
+      { workday_id: 'wid-plain', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      { workday_id: 'wid-plain', content: 'Payment Terms: NET 30', metadata: { name: 'NET 30' } },
+    ]);
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms?.workdayId).toBe('wid-plain');
+    expect(result.extractedPaymentTerms?.resolvedName).toBeTruthy();
   });
 });

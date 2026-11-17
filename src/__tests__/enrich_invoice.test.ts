@@ -2046,7 +2046,7 @@ describe('enrich_invoice', () => {
       const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
       expect(params.paymentTermsId).toBeUndefined();
       expect(params.buildNotes([])).toContain(
-        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount) (Workday ID: NET_30)'
       );
       const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
       expect(notification.extracted.paymentTerms).toBe(

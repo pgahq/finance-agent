@@ -39,17 +39,33 @@ export interface PaymentTermsRankable {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * createPaymentTermsContent and createMetadata both write from the same Workday name on every sync, so a
+ * well-formed row's two representations always agree. Metadata is the primary source; a row is trusted
+ * only when metadata is either absent (fall back to content) or present, valid, and in agreement with a
+ * parseable content value. Metadata present but invalid, or metadata that disagrees with content, makes
+ * the whole row untrusted (returns '') rather than silently preferring or falling back to one side.
+ */
 export function paymentTermsNameOf(result: Pick<PaymentTermsRankable, 'content' | 'metadata'>): string {
-  const fromMetadata = result.metadata?.name;
-  if (typeof fromMetadata === 'string') {
-    const validated = validatedPaymentTermsName(fromMetadata);
-    if (validated) return validated;
-  }
+  const metadata = result.metadata;
+  const hasMetadataName = Boolean(metadata) && Object.prototype.hasOwnProperty.call(metadata, 'name');
   const content = result.content ?? '';
-  // Only trust content that actually looks like the "Payment Terms: <name>" format createPaymentTermsContent
-  // writes; without metadata.name, arbitrary cache content (wrong field, wrong document) is not a name.
-  if (!PAYMENT_TERMS_CONTENT_PREFIX.test(content)) return '';
-  return validatedPaymentTermsName(content.replace(PAYMENT_TERMS_CONTENT_PREFIX, '')) ?? '';
+  const hasContentPrefix = PAYMENT_TERMS_CONTENT_PREFIX.test(content);
+  const contentName = hasContentPrefix ? validatedPaymentTermsName(content.replace(PAYMENT_TERMS_CONTENT_PREFIX, '')) : undefined;
+
+  if (hasMetadataName) {
+    const fromMetadata = metadata!.name;
+    // A present name key that is not a usable string (null, a number, or an invalid string) makes the row
+    // untrusted immediately; it is not treated the same as metadata.name being absent.
+    const metadataName = typeof fromMetadata === 'string' ? validatedPaymentTermsName(fromMetadata) : undefined;
+    if (!metadataName) return '';
+    if (hasContentPrefix && (!contentName || paymentTermsKey(metadataName) !== paymentTermsKey(contentName))) return '';
+    return metadataName;
+  }
+
+  // Only trust content that actually looks like the "Payment Terms: <name>" format; with no metadata.name
+  // key at all, arbitrary cache content (wrong field, wrong document) is not a name.
+  return contentName ?? '';
 }
 
 /**
@@ -86,6 +102,8 @@ export interface PaymentTermsResolution {
   rejectedDiscountTerm?: string | null;
   /** Set when the invoice prints no discount and the matched term's Workday name could not be confirmed safe. */
   unverified?: boolean;
+  /** The Workday ID that was refused or could not be verified, kept only so the note can point AP at it directly; never submitted (workdayId stays null). */
+  candidateWorkdayId?: string | null;
 }
 
 /**
@@ -109,10 +127,10 @@ export async function applyPaymentTermsDiscountRule<T extends PaymentTermsResolu
   }
   if (!resolvedName) {
     if (printedHasDiscount) return terms;
-    return { ...terms, workdayId: null, resolvedName: null, unverified: true };
+    return { ...terms, workdayId: null, resolvedName: null, unverified: true, candidateWorkdayId: terms.workdayId };
   }
   if (!printedHasDiscount && hasDiscountPercent(resolvedName)) {
-    return { ...terms, workdayId: null, resolvedName: null, rejectedDiscountTerm: resolvedName };
+    return { ...terms, workdayId: null, resolvedName: null, rejectedDiscountTerm: resolvedName, candidateWorkdayId: terms.workdayId };
   }
   return { ...terms, resolvedName };
 }

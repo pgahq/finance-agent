@@ -495,7 +495,7 @@ describe('create_invoice', () => {
       invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
       invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
         ...ibsEnrichmentResult,
-        extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30' },
+        extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30', candidateWorkdayId: 'DISC_30' },
       });
 
       await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
@@ -504,7 +504,7 @@ describe('create_invoice', () => {
       expect(submitArgs.paymentTermsId).toBeUndefined();
       const notes = submitArgs.buildNotes([]);
       expect(notes).toContain(
-        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount) (Workday ID: DISC_30)'
       );
       expect(slack.notifyResult).toHaveBeenCalledWith(
         'create_invoice',
