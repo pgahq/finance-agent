@@ -31,6 +31,7 @@ import {
   formatSupplierNotes,
   formatTaxAmountNotes,
 } from './lib/invoice_enrichment.js';
+import { describePaymentTerms } from './lib/payment_terms_match.js';
 import {
   applyInvoiceMemoIdentifiersToLines,
   composeInvoiceMemo,
@@ -788,7 +789,7 @@ async function processInvoice(
           && invoicePurchaseOrderNumber && invoicePurchaseOrderNumber !== emailPurchaseOrderNumber
           ? { invoicePurchaseOrderNumber }
           : {}),
-        paymentTerms: result.extractedPaymentTerms?.name,
+        paymentTerms: result.extractedPaymentTerms ? describePaymentTerms(result.extractedPaymentTerms) : undefined,
       },
       poLineCount: poLines?.length,
       ...(chargeCheck.length || fallbacks.chargeReconciliationLabels?.length
