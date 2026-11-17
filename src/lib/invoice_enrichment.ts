@@ -63,12 +63,18 @@ export type { InvoiceAttachmentRole };
 
 async function cachedPaymentTermsName(workdayId: string): Promise<string | undefined> {
   const db = await getDatabaseConnection(process.env);
-  const [document] = await getDocumentsByWorkdayIds(db, 'payment_terms', [workdayId]);
-  if (!document) return undefined;
-  return paymentTermsNameOf({
+  const documents = await getDocumentsByWorkdayIds(db, 'payment_terms', [workdayId]);
+  if (documents.length === 0) return undefined;
+  const names = new Set(documents.map((document) => paymentTermsNameOf({
     content: document.content,
     metadata: document.metadata && typeof document.metadata === 'object' ? document.metadata as Record<string, unknown> : undefined,
-  }) || undefined;
+  })));
+  // The cache has no uniqueness guarantee on (type, workdayId) (see data-and-state-changes skill). Any
+  // disagreement among rows for this ID — including one row parsing to an empty/invalid name — cannot be
+  // trusted, so it is treated as unavailable rather than silently preferring whichever row parsed cleanly.
+  if (names.size !== 1) return undefined;
+  const [name] = names;
+  return name || undefined;
 }
 
 // AP: with no discount percentage printed on the invoice, a discount payment term is never used.
@@ -78,12 +84,15 @@ async function applyPaymentTermsRule(result: InvoiceEnrichmentResult): Promise<I
     try {
       return await cachedPaymentTermsName(workdayId);
     } catch (error) {
-      debug('Payment terms name lookup failed; keeping the model match:', error);
+      debug('Payment terms name lookup failed:', error);
       return undefined;
     }
   });
   if (extractedPaymentTerms.rejectedDiscountTerm) {
     debug(`Payment terms "${extractedPaymentTerms.name}" matched discount term "${extractedPaymentTerms.rejectedDiscountTerm}" with no discount printed; leaving the terms unmatched`);
+  }
+  if (extractedPaymentTerms.unverified) {
+    debug(`Payment terms "${extractedPaymentTerms.name}" matched a Workday term whose name could not be confirmed, with no discount printed; leaving the terms unmatched`);
   }
   return { ...result, extractedPaymentTerms };
 }
@@ -474,16 +483,17 @@ export function formatMemoIdentifierNotes(
   return parts.length ? `\n\n${parts.join('\n\n')}` : '';
 }
 
+// Builds on describePaymentTerms so the Workday-resolved/rejected/unverified wording matches Slack exactly;
+// notes additionally carry the Workday ID, which Slack does not need, for anyone looking the term up directly.
 export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPaymentTerms) return '';
-  const { name, workdayId, resolvedName, rejectedDiscountTerm } = result.extractedPaymentTerms;
-  if (rejectedDiscountTerm) {
-    return `\n\nPayment Terms (from document): ${describePaymentTerms({ name, rejectedDiscountTerm })}`;
+  const { name, workdayId, resolvedName, rejectedDiscountTerm, unverified } = result.extractedPaymentTerms;
+  const described = describePaymentTerms({ name, resolvedName, rejectedDiscountTerm, unverified });
+  if (rejectedDiscountTerm || unverified) {
+    return `\n\nPayment Terms (from document): ${described}`;
   }
-  const resolvedSuffix = workdayId
-    ? ` (resolved: ${resolvedName ? `${resolvedName}, ` : ''}${workdayId})`
-    : ' (no Workday match found)';
-  return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
+  const idSuffix = workdayId ? ` (Workday ID: ${workdayId})` : ' (no Workday match found)';
+  return `\n\nPayment Terms (from document): ${described}${idSuffix}`;
 }
 
 export function formatWorkQueueAssigneeNotes(

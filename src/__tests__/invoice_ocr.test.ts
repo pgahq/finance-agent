@@ -17,6 +17,9 @@ jest.mock('../lib/ai.js', () => ({ getAiResponse: jest.fn() }));
 
 jest.mock('../lib/database.js', () => ({
   getDatabaseConnection: jest.fn().mockResolvedValue({ query: jest.fn().mockResolvedValue([]) }),
+  getDocumentsByWorkdayIds: jest.fn().mockResolvedValue([
+    { workday_id: 'Immediate', content: 'Payment Terms: Due on receipt', metadata: { name: 'Due on receipt' } },
+  ]),
 }));
 
 jest.mock('../lib/reference_ids.js', () => ({
@@ -1210,7 +1213,10 @@ describe('invoice OCR pass', () => {
       expect(matchingContent[0].text).toContain('Matching Workday purchase order PO-414007');
       expect(matchingContent[0].text).toContain('Subject: Invoice 401');
 
-      expect(result).toEqual(mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)));
+      expect(result).toEqual({
+        ...mergeInvoiceEnrichment(matchingResult, normalizeInvoiceOcrResult(ocrResponse)),
+        extractedPaymentTerms: { name: 'Due on receipt', workdayId: 'Immediate', resolvedName: 'Due on receipt' },
+      });
     });
 
     it('throws when OCR fails and never calls the matching model', async () => {

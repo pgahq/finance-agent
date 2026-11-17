@@ -19,6 +19,7 @@ import {
   describePaymentTerms,
   hasDiscountPercent,
   isExactPaymentTermsMatch,
+  paymentTermsNameOf,
   rankPaymentTermsSearchResults,
 } from '../lib/payment_terms_match.js';
 
@@ -37,6 +38,9 @@ describe('hasDiscountPercent', () => {
     ['30 NET', false],
     ['Due on receipt', false],
     ['', false],
+    ['3 percent 30 Net 30', true],
+    ['2.5 Percent 10 Net 45', true],
+    ['a high percentage of invoices', false],
   ])('%s -> %s', (text, expected) => {
     expect(hasDiscountPercent(text)).toBe(expected);
   });
@@ -51,6 +55,17 @@ describe('isExactPaymentTermsMatch', () => {
   it('does not treat a discount term as the plain term', () => {
     expect(isExactPaymentTermsMatch('30 NET', '3% 30 Net 30')).toBe(false);
     expect(isExactPaymentTermsMatch('Net 30', 'Net 45')).toBe(false);
+  });
+
+  it('treats "%" and spelled-out "percent" as the same discount term', () => {
+    expect(isExactPaymentTermsMatch('2% 10 Net 30', '2 percent 10 Net 30')).toBe(true);
+  });
+});
+
+describe('paymentTermsNameOf', () => {
+  it('rejects content that does not look like "Payment Terms: <name>"', () => {
+    expect(paymentTermsNameOf({ content: 'Cost Center: Some Unrelated Record', metadata: undefined })).toBe('');
+    expect(paymentTermsNameOf({ content: undefined, metadata: undefined })).toBe('');
   });
 });
 
@@ -113,10 +128,24 @@ describe('applyPaymentTermsDiscountRule', () => {
     expect(result).toEqual({ name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' });
   });
 
-  it('leaves the match alone when the name cannot be looked up', async () => {
+  it('fails closed when the name cannot be verified and the invoice prints no discount', async () => {
     const terms = { name: '30 NET', workdayId: 'wid-x' };
+    const expected = { name: '30 NET', workdayId: null, resolvedName: null, unverified: true };
+    await expect(applyPaymentTermsDiscountRule(terms, async () => undefined)).resolves.toEqual(expected);
+    await expect(applyPaymentTermsDiscountRule(terms, async () => { throw new Error('db down'); })).resolves.toEqual(expected);
+  });
+
+  it('keeps an unverifiable match when the invoice already prints a discount', async () => {
+    const terms = { name: '3% 30 Net 30', workdayId: 'wid-x' };
     await expect(applyPaymentTermsDiscountRule(terms, async () => undefined)).resolves.toBe(terms);
     await expect(applyPaymentTermsDiscountRule(terms, async () => { throw new Error('db down'); })).resolves.toBe(terms);
+  });
+
+  it('fails closed on a name that is too long or multiline to trust', async () => {
+    const terms = { name: '30 NET', workdayId: 'wid-x' };
+    await expect(applyPaymentTermsDiscountRule(terms, async () => 'Net 30\n3% 10 Net 30')).resolves.toEqual(
+      { name: '30 NET', workdayId: null, resolvedName: null, unverified: true }
+    );
   });
 
   it('does nothing without a match', async () => {
@@ -143,13 +172,25 @@ describe('describePaymentTerms and notes', () => {
     );
   });
 
-  it('puts the same explanation in the Workday note', () => {
+  it('says the match could not be confirmed safe', () => {
+    expect(describePaymentTerms({ name: '30 NET', unverified: true })).toBe(
+      '30 NET (no Workday match; the matched term\'s name could not be confirmed safe)'
+    );
+  });
+
+  it('puts the same explanation in the Workday note, with the Workday ID as an extra detail', () => {
     const base = { extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30' } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(base)).toBe(
       '\n\nPayment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
     );
-    const resolved = { extractedPaymentTerms: { name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' } } as unknown as InvoiceEnrichmentResult;
-    expect(formatPaymentTermsNotes(resolved)).toBe('\n\nPayment Terms (from document): 30 NET (resolved: Net 30, wid-plain)');
+    const unverified = { extractedPaymentTerms: { name: '30 NET', workdayId: null, unverified: true } } as unknown as InvoiceEnrichmentResult;
+    expect(formatPaymentTermsNotes(unverified)).toBe(
+      '\n\nPayment Terms (from document): 30 NET (no Workday match; the matched term\'s name could not be confirmed safe)'
+    );
+    const resolvedSameName = { extractedPaymentTerms: { name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' } } as unknown as InvoiceEnrichmentResult;
+    expect(formatPaymentTermsNotes(resolvedSameName)).toBe('\n\nPayment Terms (from document): 30 NET (Workday ID: wid-plain)');
+    const resolvedDifferentName = { extractedPaymentTerms: { name: '30 NET', workdayId: 'wid-eom', resolvedName: 'Net 30 EOM' } } as unknown as InvoiceEnrichmentResult;
+    expect(formatPaymentTermsNotes(resolvedDifferentName)).toBe('\n\nPayment Terms (from document): 30 NET (Workday: Net 30 EOM) (Workday ID: wid-eom)');
     const unmatched = { extractedPaymentTerms: { name: '30 NET', workdayId: null } } as unknown as InvoiceEnrichmentResult;
     expect(formatPaymentTermsNotes(unmatched)).toBe('\n\nPayment Terms (from document): 30 NET (no Workday match found)');
   });
@@ -205,13 +246,68 @@ describe('enrichInvoiceFromAttachments payment terms', () => {
     expect(result.extractedPaymentTerms).toEqual({ name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' });
   });
 
-  it('keeps the model match when the cache lookup fails', async () => {
+  it('fails closed when the cache lookup fails and the invoice prints no discount', async () => {
     (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
     (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-d3'));
     (getDocumentsByWorkdayIds as jest.Mock).mockRejectedValue(new Error('db down'));
 
     const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
 
-    expect(result.extractedPaymentTerms).toEqual({ name: '30 NET', workdayId: 'wid-d3' });
+    expect(result.extractedPaymentTerms).toEqual({
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+    });
+  });
+
+  it('keeps an unverifiable match when the cache lookup fails but the invoice prints a discount', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('3% 30 Net 30'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-d3'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockRejectedValue(new Error('db down'));
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms).toEqual({ name: '3% 30 Net 30', workdayId: 'wid-d3' });
+  });
+
+  it('fails closed when duplicate cache rows for the same Workday ID disagree on the name', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-d3'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValue([
+      { workday_id: 'wid-d3', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      { workday_id: 'wid-d3', content: 'Payment Terms: 3% 30 Net 30', metadata: { name: '3% 30 Net 30' } },
+    ]);
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms).toEqual({
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+    });
+  });
+
+  it('fails closed when one of two duplicate cache rows for the same Workday ID is malformed', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-d3'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValue([
+      { workday_id: 'wid-d3', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      { workday_id: 'wid-d3', content: 'unrelated record with no payment terms prefix', metadata: undefined },
+    ]);
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms).toEqual({
+      name: '30 NET', workdayId: null, resolvedName: null, unverified: true,
+    });
+  });
+
+  it('uses the name when duplicate cache rows for the same Workday ID agree', async () => {
+    (extractInvoiceDocuments as jest.Mock).mockResolvedValue(ocr('30 NET'));
+    (getAiResponse as jest.Mock).mockResolvedValue(matching('wid-plain'));
+    (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValue([
+      { workday_id: 'wid-plain', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      { workday_id: 'wid-plain', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+    ]);
+
+    const result = await enrichInvoiceFromAttachments({} as never, [], existingSupplier);
+
+    expect(result.extractedPaymentTerms).toEqual({ name: '30 NET', workdayId: 'wid-plain', resolvedName: 'Net 30' });
   });
 });

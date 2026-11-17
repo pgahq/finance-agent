@@ -3,7 +3,7 @@ import { embed, gateway, tool } from 'ai';
 import { z } from 'zod';
 import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
-import { rankPaymentTermsSearchResults } from './payment_terms_match.js';
+import { isExactPaymentTermsMatch, paymentTermsNameOf, rankPaymentTermsSearchResults } from './payment_terms_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
 import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
@@ -117,6 +117,12 @@ export function createSpendCategoryContent(sc: any): string {
 // Default configuration for RAG queries
 export const DEFAULT_RAG_LIMIT = 100;
 export const DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.3;
+// Payment terms have no caller-facing pagination need and the catalog is small, so this module never
+// caps the SQL side for them: every row of type payment_terms is fetched and reranked below, and only
+// then truncated to the caller's requested limit. A capped pool would still let the SQL LIMIT exclude a
+// plain term before rankPaymentTermsSearchResults gets to rank it above a same- or higher-scoring
+// discount term — fetching everything removes that failure mode outright instead of just shrinking it.
+const PAYMENT_TERMS_SQL_LIMIT = Number.MAX_SAFE_INTEGER;
 
 // RAG query interface
 export interface RAGQuery {
@@ -157,32 +163,39 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
 
     const db = await getDatabaseConnection(process.env);
 
+    const isPaymentTerms = documentType === 'payment_terms';
+    const sqlLimit = isPaymentTerms ? PAYMENT_TERMS_SQL_LIMIT : limit;
+
     // Use hybrid search that combines semantic similarity with exact text matching
     const results = await searchDocuments(
       db,
       queryEmbedding,
       query,
       documentType || 'supplier', // Default to supplier if no type specified
-      limit
+      sqlLimit
     );
 
-    // Filter by similarity threshold and transform results
-    let ragResults: RAGResult[] = results
-      .filter(row => parseFloat(row.similarity) >= similarityThreshold)
-      .map(row => ({
-        workday_id: row.workday_id,
-        type: row.type,
-        content: row.content,
-        metadata: row.metadata,
-        similarity: parseFloat(row.similarity)
-      }));
+    const scored: RAGResult[] = results.map(row => ({
+      workday_id: row.workday_id,
+      type: row.type,
+      content: row.content,
+      metadata: row.metadata,
+      similarity: parseFloat(row.similarity)
+    }));
 
-    if (documentType === 'cost_center') {
-      ragResults = rankCostCenterSearchResults(ragResults, query);
-    }
-
-    if (documentType === 'payment_terms') {
-      ragResults = rankPaymentTermsSearchResults(ragResults, query);
+    let ragResults: RAGResult[];
+    if (isPaymentTerms) {
+      // Rank the whole pool before the threshold filters anything out: an exact plain-term match is kept
+      // regardless of similarity, since the printed text and the catalog can diverge in wording (e.g.
+      // "30 NET" vs. "Net 30") without that meaning the term is a weak match.
+      ragResults = rankPaymentTermsSearchResults(scored, query)
+        .filter(result => isExactPaymentTermsMatch(query, paymentTermsNameOf(result)) || result.similarity >= similarityThreshold)
+        .slice(0, limit);
+    } else {
+      ragResults = scored.filter(result => result.similarity >= similarityThreshold);
+      if (documentType === 'cost_center') {
+        ragResults = rankCostCenterSearchResults(ragResults, query);
+      }
     }
 
     // Consolidated RAG results log

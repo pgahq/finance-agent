@@ -1989,7 +1989,11 @@ describe('enrich_invoice', () => {
       const { enrichmentResponse } = require('../lib/ai.js');
       const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
       const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
       enrichmentResponse.mockResolvedValueOnce(ibsEnrichment);
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: Net 30', metadata: { name: 'Net 30' } },
+      ]);
 
       await expect(processor(mockEvent as any)).resolves.not.toThrow();
 
@@ -2000,6 +2004,54 @@ describe('enrich_invoice', () => {
       expect(notification.extracted).toEqual(expect.objectContaining({ invoiceDate: '2026-10-10', dueDate: '2026-11-11' }));
       expect(notification.extracted).not.toHaveProperty('dueDateNotApplied');
       expect(notification).not.toHaveProperty('appliedFallbackLabels');
+    });
+
+    it('shows the Workday-resolved payment terms name in the note and Slack when it reads differently', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        extractedPaymentTerms: { name: '30 NET', workdayId: 'NET_30' },
+      });
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: Net 30 EOM', metadata: { name: 'Net 30 EOM' } },
+      ]);
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params).toEqual(expect.objectContaining({ paymentTermsId: 'NET_30' }));
+      expect(params.buildNotes([])).toContain('Payment Terms (from document): 30 NET (Workday: Net 30 EOM) (Workday ID: NET_30)');
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted.paymentTerms).toBe('30 NET (Workday: Net 30 EOM)');
+    });
+
+    it('shows a refused discount term in the note and Slack, and updates with no payment terms', async () => {
+      const { enrichmentResponse } = require('../lib/ai.js');
+      const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');
+      const { notifyEnrichmentResult } = require('../lib/slack.js');
+      const { getDocumentsByWorkdayIds } = require('../lib/database.js');
+      enrichmentResponse.mockResolvedValueOnce({
+        ...ibsEnrichment,
+        extractedPaymentTerms: { name: '30 NET', workdayId: 'NET_30' },
+      });
+      (getDocumentsByWorkdayIds as jest.Mock).mockResolvedValueOnce([
+        { workday_id: 'NET_30', content: 'Payment Terms: 3% 30 Net 30', metadata: { name: '3% 30 Net 30' } },
+      ]);
+
+      await expect(processor(mockEvent as any)).resolves.not.toThrow();
+
+      const params = submitSupplierInvoiceUpdate.mock.calls[0][1];
+      expect(params.paymentTermsId).toBeUndefined();
+      expect(params.buildNotes([])).toContain(
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+      );
+      const notification = notifyEnrichmentResult.mock.calls.at(-1)[0];
+      expect(notification.extracted.paymentTerms).toBe(
+        '30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+      );
     });
 
     it('only notes the due date when it annotates the invoice without a supplier to submit', async () => {

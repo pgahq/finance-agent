@@ -464,6 +464,60 @@ describe('create_invoice', () => {
       expect(slack.notifyResult.mock.calls[0][3].extracted).not.toHaveProperty('dueDateNotApplied');
     });
 
+    it('shows the Workday-resolved payment terms name in the note and Slack when it reads differently', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...ibsEnrichmentResult,
+        extractedPaymentTerms: { name: '30 NET', resolvedName: 'Net 30 EOM', workdayId: 'NET_30' },
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs).toMatchObject({ paymentTermsId: 'NET_30' });
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain('Payment Terms (from document): 30 NET (Workday: Net 30 EOM) (Workday ID: NET_30)');
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({ paymentTerms: '30 NET (Workday: Net 30 EOM)' }),
+        }),
+      );
+    });
+
+    it('shows a refused discount term in the note and Slack, and sends no payment terms', async () => {
+      process.env.INVOICE_MOD_ENABLED = 'true';
+      const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
+      invoiceLines.buildFinalInvoiceLines.mockResolvedValue(defaultFinalLines);
+      invoiceEnrichment.enrichInvoiceFromAttachments.mockResolvedValue({
+        ...ibsEnrichmentResult,
+        extractedPaymentTerms: { name: '30 NET', workdayId: null, rejectedDiscountTerm: '3% 30 Net 30' },
+      });
+
+      await processor({ data: [attachmentRequest('new-invoices/req-1/invoice.pdf')] } as any);
+
+      const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
+      expect(submitArgs.paymentTermsId).toBeUndefined();
+      const notes = submitArgs.buildNotes([]);
+      expect(notes).toContain(
+        'Payment Terms (from document): 30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)'
+      );
+      expect(slack.notifyResult).toHaveBeenCalledWith(
+        'create_invoice',
+        'success',
+        expect.any(Number),
+        expect.objectContaining({
+          extracted: expect.objectContaining({
+            paymentTerms: '30 NET (no Workday match; "3% 30 Net 30" was not used because the invoice shows no discount)',
+          }),
+        }),
+      );
+    });
+
     it('notes a due date removed on retry once, not again under fallback values, and marks it in Slack', async () => {
       process.env.INVOICE_MOD_ENABLED = 'true';
       const { processor, workday, slack, invoiceEnrichment, invoiceLines } = freshRequire();
