@@ -3,6 +3,7 @@ import { embed, gateway, tool } from 'ai';
 import { z } from 'zod';
 import { includeCompaniesMatchingBillToAddress, tagCompaniesByAddress } from './company_address_match.js';
 import { rankCostCenterSearchResults } from './cost_center_match.js';
+import { rankPaymentTermsSearchResults } from './payment_terms_match.js';
 import { parseCompanySearchQuery } from './company_search_query.js';
 import { parseRelatedLob } from './related_worktags.js';
 import { getDatabaseConnection, getDocumentsByType, searchDocuments } from './database.js';
@@ -178,6 +179,10 @@ export async function queryDocuments(ragQuery: RAGQuery): Promise<RAGResult[]> {
 
     if (documentType === 'cost_center') {
       ragResults = rankCostCenterSearchResults(ragResults, query);
+    }
+
+    if (documentType === 'payment_terms') {
+      ragResults = rankPaymentTermsSearchResults(ragResults, query);
     }
 
     // Consolidated RAG results log

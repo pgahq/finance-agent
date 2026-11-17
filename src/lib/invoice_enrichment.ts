@@ -1,6 +1,7 @@
 import { debug } from '@pga/logger';
 import { getAiResponse } from './ai.js';
-import { getDatabaseConnection } from './database.js';
+import { getDatabaseConnection, getDocumentsByWorkdayIds } from './database.js';
+import { applyPaymentTermsDiscountRule, describePaymentTerms, paymentTermsNameOf } from './payment_terms_match.js';
 import { formatReferenceDirectory, resolveReferenceCodesFromText } from './reference_ids.js';
 import {
   extractSupplierNoteHints,
@@ -59,6 +60,33 @@ async function buildSupplierHintText(emailContext: InvoiceData['emailContext']):
 }
 
 export type { InvoiceAttachmentRole };
+
+async function cachedPaymentTermsName(workdayId: string): Promise<string | undefined> {
+  const db = await getDatabaseConnection(process.env);
+  const [document] = await getDocumentsByWorkdayIds(db, 'payment_terms', [workdayId]);
+  if (!document) return undefined;
+  return paymentTermsNameOf({
+    content: document.content,
+    metadata: document.metadata && typeof document.metadata === 'object' ? document.metadata as Record<string, unknown> : undefined,
+  }) || undefined;
+}
+
+// AP: with no discount percentage printed on the invoice, a discount payment term is never used.
+async function applyPaymentTermsRule(result: InvoiceEnrichmentResult): Promise<InvoiceEnrichmentResult> {
+  if (!result.extractedPaymentTerms?.workdayId) return result;
+  const extractedPaymentTerms = await applyPaymentTermsDiscountRule(result.extractedPaymentTerms, async (workdayId) => {
+    try {
+      return await cachedPaymentTermsName(workdayId);
+    } catch (error) {
+      debug('Payment terms name lookup failed; keeping the model match:', error);
+      return undefined;
+    }
+  });
+  if (extractedPaymentTerms.rejectedDiscountTerm) {
+    debug(`Payment terms "${extractedPaymentTerms.name}" matched discount term "${extractedPaymentTerms.rejectedDiscountTerm}" with no discount printed; leaving the terms unmatched`);
+  }
+  return { ...result, extractedPaymentTerms };
+}
 
 export async function enrichInvoiceFromAttachments(
   invoice: WorkdayInvoice,
@@ -172,7 +200,7 @@ export async function enrichInvoiceFromAttachments(
       ]
     }) as InvoiceMatchingResult;
 
-    const merged = mergeInvoiceEnrichment(matching, ocr);
+    const merged = await applyPaymentTermsRule(mergeInvoiceEnrichment(matching, ocr));
     if (reimbursement) return applyReimbursementToEnrichment(merged, reimbursement);
     return existingSupplier ? merged : await resolveSupplierByNameEvidence(merged, ocr?.printedSupplier.remitToAddress);
 
@@ -448,8 +476,13 @@ export function formatMemoIdentifierNotes(
 
 export function formatPaymentTermsNotes(result: InvoiceEnrichmentResult): string {
   if (!result.extractedPaymentTerms) return '';
-  const { name, workdayId } = result.extractedPaymentTerms;
-  const resolvedSuffix = workdayId ? ` (resolved: ${workdayId})` : ' (no Workday match found)';
+  const { name, workdayId, resolvedName, rejectedDiscountTerm } = result.extractedPaymentTerms;
+  if (rejectedDiscountTerm) {
+    return `\n\nPayment Terms (from document): ${describePaymentTerms({ name, rejectedDiscountTerm })}`;
+  }
+  const resolvedSuffix = workdayId
+    ? ` (resolved: ${resolvedName ? `${resolvedName}, ` : ''}${workdayId})`
+    : ' (no Workday match found)';
   return `\n\nPayment Terms (from document): ${name}${resolvedSuffix}`;
 }
 

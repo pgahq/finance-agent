@@ -33,6 +33,7 @@ import {
   formatWorkQueueAssigneeNotes,
   type InvoiceAttachmentRole,
 } from './lib/invoice_enrichment.js';
+import { describePaymentTerms } from './lib/payment_terms_match.js';
 import {
   clusterMaxReceivedAt,
   isInvoiceAttachmentClusteringEnabled,
@@ -1647,7 +1648,7 @@ async function processInvoiceCluster(
           purchaseOrderSource: 'conversation',
           invoicePurchaseOrderNumber: enrichmentPoNumber,
         } : {}),
-        paymentTerms: result.extractedPaymentTerms?.name,
+        paymentTerms: result.extractedPaymentTerms ? describePaymentTerms(result.extractedPaymentTerms) : undefined,
       },
       lineCount: finalLines.length,
       ...(lineReview.length ? { lineReview } : {}),

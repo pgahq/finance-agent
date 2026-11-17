@@ -355,6 +355,25 @@ Primary Address: 100 PGA Tour Blvd`);
       expect(result[1]?.similarity).toBe(0.88);
     });
 
+    it('ranks a plain Net term above tied discount terms when the invoice prints no discount', async () => {
+      const row = (workday_id: string, name: string, similarity: string) => ({
+        workday_id,
+        type: 'payment_terms',
+        content: `Payment Terms: ${name}`,
+        metadata: { name },
+        similarity,
+      });
+      mockSearchDocuments.mockResolvedValue([
+        row('wid-d3', '3% 30 Net 30', '1'),
+        row('wid-d2', '2% 10 Net 30', '1'),
+        row('wid-plain', 'Net 30', '0.99'),
+      ]);
+
+      const result = await queryDocuments({ query: '30 NET', documentType: 'payment_terms' });
+
+      expect(result.map((r) => r.workday_id)).toEqual(['wid-plain', 'wid-d2', 'wid-d3']);
+    });
+
     it('should handle empty query', async () => {
       await expect(queryDocuments({
         query: ''

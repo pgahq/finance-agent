@@ -204,7 +204,15 @@ export const InvoiceEnrichmentSchema = z.object({
 
 });
 
-export type InvoiceEnrichmentResult = z.infer<typeof InvoiceEnrichmentSchema>;
+type InvoiceEnrichmentSchemaResult = z.infer<typeof InvoiceEnrichmentSchema>;
+
+// The model fills name and workdayId; resolvedName and rejectedDiscountTerm are added in code after matching.
+export type InvoiceEnrichmentResult = Omit<InvoiceEnrichmentSchemaResult, 'extractedPaymentTerms'> & {
+  extractedPaymentTerms: (NonNullable<InvoiceEnrichmentSchemaResult['extractedPaymentTerms']> & {
+    resolvedName?: string | null;
+    rejectedDiscountTerm?: string | null;
+  }) | null;
+};
 
 // The matching pass sees the OCR JSON, not the documents, and returns only matching, coding, and payment-terms resolution.
 export const InvoiceMatchingSchema = InvoiceEnrichmentSchema.pick({
@@ -336,8 +344,9 @@ Always verify the company (buyer/recipient) assignment:
 
 If the invoice document extraction includes \`extractedPaymentTerms\`:
 
-1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry.
-2. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
+1. Use the **findPaymentTerms** tool with that name to find the best matching Workday payment terms entry. Results come back already ranked: an exact match first, then plain terms (such as "Net 30"), then terms that carry a discount percentage. Take the first result unless it clearly names different terms than the invoice.
+2. Never choose a payment term whose name contains a percentage discount (for example "2% 10 Net 30") unless the extracted payment terms text itself shows a discount percentage. A printed "30 NET" or "Net 30" is plain Net 30, not a discount term. When no plain term fits, set \`workdayId\` to null instead of choosing a discount term.
+3. Populate \`extractedPaymentTerms\` with the extracted name unchanged and the resolved \`workdayId\` (the Payment_Terms_ID from the best match). If no match is found via the tool, set \`workdayId\` to null.
 
 If the extraction has no payment terms, omit \`extractedPaymentTerms\` entirely.
 
