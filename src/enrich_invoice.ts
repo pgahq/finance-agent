@@ -361,7 +361,7 @@ async function processInvoice(
       poLines: canModifyInvoice && Boolean(submitSupplierWID) && !poClosedForInvoicing ? poLines : undefined,
       // Payroll or employment tax is coded like its sibling rows: never pinned to a PO service line, even a
       // long label (`Employer Payroll Taxes`) that would otherwise satisfy the matcher's length guard.
-      excludeFromMatching: line => isPayrollTaxCharge(line.description, { lines: payrollTaxCharges.lines, poLines }),
+      excludeFromMatching: line => isPayrollTaxCharge(line.description, { lines: result.extractedInvoiceLines ?? payrollTaxCharges.lines, poLines }),
     });
     if (placedCharges.placed.length) debug('Placed on PO service lines', placedCharges.placed);
     const printedLines = placedCharges.lines;

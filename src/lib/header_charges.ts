@@ -165,7 +165,7 @@ const FEE_OR_SERVICE_WORDS = new Set([
 ]);
 // Words that make a *tax-like* label payroll or employment tax, but are not tax on their own: `Payroll Processing
 // Fee` and `Employer Service Charge` must stay excluded, so these only count alongside a TAX_CORE_WORDS word.
-const PAYROLL_TAX_QUALIFIER_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'unemployment']);
+const PAYROLL_TAX_QUALIFIER_WORDS = new Set(['payroll', 'employer', 'employers', 'employment', 'unemployment', 'employee', 'employees']);
 // A qualifier that names sales, use, or another transaction tax, so the row is not a bare `Tax` or `Taxes`.
 const TRANSACTION_TAX_QUALIFIERS = new Set([
   'sales', 'use', 'vat', 'gst', 'hst', 'pst', 'qst', 'state', 'county', 'city', 'local', 'provincial', 'municipal', 'excise',

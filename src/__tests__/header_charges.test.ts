@@ -926,11 +926,12 @@ describe('payroll tax is not header tax', () => {
     });
 
     it('resolves mixed payroll- and transaction-tax-worded labels the same way on any invoice', () => {
-      // A payroll qualifier (payroll, employer, employers, employment, unemployment) paired with a core tax
+      // A payroll qualifier (payroll, employee, employer, employment, unemployment) paired with a core tax
       // word always wins over a transaction-tax qualifier also present in the label, the same way the
       // "State Unemployment Tax" case above does ("unemployment" wins over "state").
       expect(isPayrollTaxCharge('County Employer Tax', {})).toBe(true);
       expect(isPayrollTaxCharge('Local Payroll Tax', {})).toBe(true);
+      expect(isPayrollTaxCharge('Employee Taxes', {})).toBe(true);
       // An acronym paired with a fee word and no core tax word is still a fee, whatever else qualifies it.
       expect(isPayrollTaxCharge('State FICA Fee', siblingContext)).toBe(false);
     });
