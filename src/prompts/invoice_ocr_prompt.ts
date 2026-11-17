@@ -162,7 +162,7 @@ function fullYear(year: string): number {
 }
 
 /**
- * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026), or a
+ * A printed date as YYYY-MM-DD: exact ISO, US month/day/year with one separator (11/11/26, 11-11-2026, 11.11.26), or a
  * month name with a four-digit year ("Nov 11, 2026", "11th November 2026"). Two-digit years are 20YY. Anything
  * else is null.
  */
@@ -173,7 +173,7 @@ export function normalizePrintedDate(value: string | null | undefined): string |
   const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return isoCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
 
-  const numeric = text.match(/^(\d{1,2})([/-])(\d{1,2})\2(\d{4}|\d{2})$/);
+  const numeric = text.match(/^(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})$/);
   if (numeric) return isoCalendarDate(fullYear(numeric[4]), Number(numeric[1]), Number(numeric[3]));
 
   const monthFirst = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(st|nd|rd|th)?,?\s+(\d{4})$/i);
