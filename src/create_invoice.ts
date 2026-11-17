@@ -981,7 +981,7 @@ async function processInvoiceCluster(
     const reimbursementDecision = await decideReimbursement(
       context.dbConnection,
       await readReimbursementPacket(processedAttachments, emailContext, abortSignal),
-      { defaultSupplierWid: DEFAULT_SUPPLIER_WID }
+      { defaultSupplierWid: DEFAULT_SUPPLIER_WID, emailContext }
     );
     if (reimbursementDecision.outcome === 'manual_entry') {
       debug('Reimbursement packet not booked', reimbursementDecision.manual);

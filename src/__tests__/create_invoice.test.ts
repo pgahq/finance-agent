@@ -373,6 +373,11 @@ describe('create_invoice', () => {
       expect(workday.loadPurchaseOrder).not.toHaveBeenCalled();
       expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][5]).toBeUndefined();
       expect(invoiceEnrichment.enrichInvoiceFromAttachments.mock.calls[0][9]).toEqual(reimbursement);
+      // The full Intercom conversation reaches the payee lookup, not just the attachment's own message, so a
+      // Supplier ID in an AP note can resolve a payee whose name alone is ambiguous between cached suppliers.
+      expect(reimbursementPacket.decideReimbursement.mock.calls[0][2]).toMatchObject({
+        emailContext: reimbursementRequest.emailContext,
+      });
       const submitArgs = workday.submitNewSupplierInvoice.mock.calls[0][1];
       expect(submitArgs).toMatchObject({
         supplierWID: 'wid-ellery',
