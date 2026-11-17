@@ -1874,6 +1874,80 @@ describe('enrich_invoice', () => {
       .toEqual([['Wages', 4000], ['401K', 200], ['Benefits', 300], ['Medical', 250], ['Workers Comp', 150], ['Taxes', 500]]);
   });
 
+  it('does not pin a payroll tax charge to a PO service line on update, even when its long label matches one (fictional payroll recharge)', async () => {
+    // Unlike the bare "Taxes" row above, "Employer Payroll Taxes" is long enough to satisfy the service-line
+    // matcher's own length guard, so a PO service line printed with the identical description would otherwise
+    // match it. The exclusion in placeChargesOnPoServiceLines has to stop that on update the same way it does
+    // on create.
+    const { enrichmentResponse } = require('../lib/ai.js');
+    const { getPurchaseOrder } = require('../lib/workday.js');
+    const invoiceLines = require('../lib/invoice_lines.js');
+    const { payrollRechargeHeader, payrollRechargeSiblingRows } = require('./fixtures/payroll_recharge.js');
+
+    getPurchaseOrder.mockResolvedValueOnce({
+      Response_Data: {
+        Purchase_Order: {
+          Purchase_Order_Data: {
+            Document_Number: 'PO-900002',
+            Purchase_Order_Document_Status_Reference: {
+              descriptor: 'Issued',
+              ID: [{ $attributes: { type: 'Document_Status_ID' }, $value: 'ISSUED' }]
+            },
+            Service_Line_Data: {
+              Line_Number: 1,
+              Service_Order_Line_ID: 'POL-900002-1',
+              Description: 'Employer Payroll Taxes',
+              Extended_Amount: 500
+            }
+          }
+        }
+      }
+    });
+    enrichmentResponse.mockResolvedValueOnce({
+      supplier: {
+        status: 'matching',
+        confidence: 0.9,
+        extractedInformation: { supplierName: 'Sample Staffing Co', memo: 'staff recharge' },
+        resolvedSupplier: null,
+        potentialDuplicateSuppliers: null,
+        recommendation: { action: 'no_action', reason: 'Supplier matches existing assignment' },
+        reason: 'High confidence match'
+      },
+      companyVerification: {
+        status: 'matching',
+        confidence: 0.85,
+        extractedInformation: {},
+        recommended: null,
+        reason: 'Company matches existing assignment'
+      },
+      ...payrollRechargeHeader,
+      extractedPurchaseOrderNumber: 'PO-900002',
+      invoiceLineQuantityDisplayed: false,
+      extractedInvoiceLines: payrollRechargeSiblingRows,
+      extractedOtherCharges: [{ label: 'Employer Payroll Taxes', amount: '$500.00' }],
+    });
+    invoiceLines.buildFinalInvoiceLines.mockImplementation(async (extracted: Array<{ description: string; totalPrice: string; pinnedPurchaseOrderLineId?: string }>) => ({
+      lines: extracted.map((line, index) => ({ lineOrder: index + 1, description: line.description, quantity: null, unitCost: null, extendedAmount: Number(line.totalPrice), purchaseOrderLineId: line.pinnedPurchaseOrderLineId ?? null })),
+      appliedFallbacks: { fund: false, costCenter: false, spendCategory: false, lineOfBusiness: false },
+      relatedLobByCostCenter: new Map()
+    }));
+
+    await processor({
+      data: [{
+        workdayID: 'test-invoice-id',
+        invoiceStatusAsText: 'Draft',
+        supplier: { descriptor: 'Existing Supplier', id: 'SUP-1' },
+        company1: { descriptor: 'Test Company', id: 'COMP-1' },
+        OCRSupplierInvoice: { descriptor: 'INV-900002$1', id: '0627e00a601c1001085f64bd33e20002' }
+      }]
+    } as any);
+
+    const built = invoiceLines.buildFinalInvoiceLines.mock.calls.at(-1)[0] as Array<{ description: string; pinnedPurchaseOrderLineId?: string }>;
+    const taxesCandidate = built.find(line => line.description === 'Employer Payroll Taxes');
+    expect(taxesCandidate).toBeDefined();
+    expect(taxesCandidate?.pinnedPurchaseOrderLineId).toBeUndefined();
+  });
+
   it('replaces the printed lines with one deposit line on update (SUPIN-470584)', async () => {
     const { enrichmentResponse } = require('../lib/ai.js');
     const { submitSupplierInvoiceUpdate } = require('../lib/workday.js');

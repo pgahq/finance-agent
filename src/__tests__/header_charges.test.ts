@@ -1109,10 +1109,10 @@ describe('payroll tax is not header tax', () => {
       expect(placed.otherCharges).toEqual([]);
     });
 
-    it('keeps a second, distinct payroll charge that only coincidentally matches the amount just cleared', () => {
-      // The amount-match dedupe below is for the common case of the same OCR-read row duplicated under a
-      // different label; it must not also swallow a genuinely separate payroll tax that happens to be the same
-      // size. Only the first matching charge is treated as the duplicate.
+    it('keeps every distinct payroll charge when more than one matches the amount just cleared', () => {
+      // The amount-match dedupe below is for the common case of exactly one OCR-duplicated read of the header
+      // row; with two or more other charges at that amount, a genuinely distinct payroll tax that happens to
+      // match it in size is indistinguishable from a duplicate, so neither is dropped as a guess.
       const placed = placePayrollTaxCharges({
         ...base,
         tax: '$500.00',
@@ -1121,8 +1121,8 @@ describe('payroll tax is not header tax', () => {
       });
 
       expect(placed.taxCleared).toBe(true);
-      expect(placed.addedLines).toBe(2);
-      expect(placed.lines.filter(line => line.totalPrice === '500.00').map(line => line.description)).toEqual(['FICA', 'FUTA']);
+      expect(placed.addedLines).toBe(3);
+      expect(placed.lines.filter(line => line.totalPrice === '500.00').map(line => line.description)).toEqual(['FICA', 'Employer Payroll Taxes', 'FUTA']);
       expect(placed.otherCharges).toEqual([]);
     });
 

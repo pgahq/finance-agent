@@ -310,8 +310,7 @@ export function placePayrollTaxCharges(input: {
   // The amount moved off the header field onto its own line, kept even after headerTaxCents is zeroed below, so a
   // later other charge of the same amount is recognized as the same OCR read repeated under a different label
   // (`FICA` in Tax_Amount, `Employer Payroll Taxes` as an other charge) and dropped rather than doubled onto the
-  // lines (see dedupe below). Consumed by at most one matching charge: a second, later charge of that same
-  // amount is kept as a distinct payroll tax rather than assumed to be yet another copy of the same row.
+  // lines (see dedupe below).
   let clearedHeaderTaxCents: number | undefined;
 
   // The main tax field itself can be a misread payroll or employment tax row (OCR put a bare "Taxes" straight
@@ -329,6 +328,16 @@ export function placePayrollTaxCharges(input: {
     headerTaxCents = 0;
   }
 
+  // How many printed other charges are payroll tax at exactly the amount just cleared off the header field.
+  // Only when that count is 1 can the charge below safely be assumed to be the same OCR-duplicated row as the
+  // header: with two or more, a genuinely distinct payroll tax that happens to match the header's amount is
+  // indistinguishable from a duplicate by amount alone, so none of them is dropped as a guess.
+  const clearedAmountOtherChargeCount = clearedHeaderTaxCents == null ? 0 : (input.otherCharges ?? []).filter(charge => {
+    const amount = parseCanonicalChargeAmount(charge.amount);
+    const cents = amount != null && amount > 0 ? toCents(amount) : undefined;
+    return cents === clearedHeaderTaxCents && isPayrollTaxCharge(charge.label, context);
+  }).length;
+
   const remaining: PrintedCharge[] = [];
   let droppedOrRepeatedAny = false;
   for (const charge of input.otherCharges ?? []) {
@@ -338,14 +347,11 @@ export function placePayrollTaxCharges(input: {
       remaining.push(charge);
       continue;
     }
-    // A charge that merely restates the (now resolved) header tax figure, or repeats the amount just moved off
-    // the header field onto a line, is a duplicate OCR read of the same row, not a second payroll tax charge:
-    // drop it rather than leaving it to double onto the lines or surface as an unexplained charge. Only the
-    // first charge of the cleared amount is treated this way, so a later, genuinely distinct payroll tax that
-    // happens to match it in size is still added as its own line.
-    if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents) || cents === clearedHeaderTaxCents) {
+    // A charge that merely restates the (now resolved) header tax figure, or is the sole other charge at the
+    // amount just moved off the header field, is a duplicate OCR read of the same row, not a second payroll tax
+    // charge: drop it rather than leaving it to double onto the lines or surface as an unexplained charge.
+    if (restatesHeaderTax(charge.label, cents, input.taxLabel, headerTaxCents) || (cents === clearedHeaderTaxCents && clearedAmountOtherChargeCount === 1)) {
       droppedOrRepeatedAny = true;
-      clearedHeaderTaxCents = undefined;
       continue;
     }
     const chargeTokens = labelTokenSet(charge.label);
